@@ -15,7 +15,7 @@ We take the security of Orplex Tech seriously. If you discover a security vulner
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
-Instead, please email: **security@orplex.dev**
+Instead, please email: **chandyash400@gmail.com**
 
 Include the following in your report:
 
