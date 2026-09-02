@@ -1,0 +1,139 @@
+name: Docs Preview
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs-site/**"
+
+concurrency:
+  group: docs-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  PREVIEW_PATH: pr-preview/${{ github.event.pull_request.number }}
+
+jobs:
+  deploy-preview:
+    name: Deploy Preview
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs-site
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build docs site
+        run: npm run build
+
+      # Deploy preview to gh-pages branch under /pr-preview/<number>/
+      - name: Deploy to GitHub Pages (preview)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs-site/build
+          destination_dir: ${{ env.PREVIEW_PATH }}
+          keep_files: true
+
+      # Comment on the PR with the preview link
+      - name: Comment preview link on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const previewUrl = `https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${context.payload.PREVIEW_PATH}/`;
+            const prNumber = context.payload.pull_request.number;
+
+            // Find existing comment from this workflow
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            const marker = '<!-- docs-preview-bot -->';
+            const existing = comments.find(c => c.body.includes(marker));
+
+            const body = `${marker}
+            ## 📚 Docs Preview
+
+            The docs site preview for this PR is live:
+
+            **[View Preview →](${previewUrl})**
+
+            > This preview auto-updates when you push new commits to this PR.
+            > The preview will be removed when the PR is merged or closed.
+            `.replace(/^            /gm, '');
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+
+  # Cleanup preview when PR is closed/merged
+  cleanup-preview:
+    name: Cleanup Preview
+    runs-on: ubuntu-latest
+    if: github.event.action == 'closed'
+    defaults:
+      run:
+        working-directory: docs-site
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+
+      - name: Remove preview directory
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -d "pr-preview/${{ github.event.pull_request.number }}" ]; then
+            rm -rf "pr-preview/${{ github.event.pull_request.number }}"
+            git add -A
+            git commit -m "Remove docs preview for PR #${{ github.event.pull_request.number }}"
+            git push
+          fi
+
+      - name: Remove PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ github.event.pull_request.number }},
+            });
+            const marker = '<!-- docs-preview-bot -->';
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+              });
+            }

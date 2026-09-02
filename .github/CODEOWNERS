@@ -1,0 +1,50 @@
+# Code Owners — Orplex Tech
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Each line is a file pattern followed by one or more owners.
+# Order matters — later patterns take precedence over earlier ones.
+#
+# These owners will be automatically requested for review when
+# a pull request modifies files matching the patterns below.
+
+# ── Default ──────────────────────────────────────────────────────────
+*                                       @orplex-tech/core
+
+# ── Core App ─────────────────────────────────────────────────────────
+src/app/                                @orplex-tech/core
+src/components/                         @orplex-tech/core
+src/lib/                                @orplex-tech/core
+prisma/                                 @orplex-tech/core
+
+# ── AI & Agent ───────────────────────────────────────────────────────
+src/lib/background-worker.ts            @orplex-tech/ai
+src/lib/enhanced-worker.ts              @orplex-tech/ai
+src/lib/multi-agent.ts                  @orplex-tech/ai
+src/lib/langchain-orchestrator.ts       @orplex-tech/ai
+src/lib/sona.ts                         @orplex-tech/ai
+src/lib/model-router.ts                 @orplex-tech/ai
+src/lib/tool-definitions.ts             @orplex-tech/ai
+src/lib/tool-handlers.ts                @orplex-tech/ai
+src/lib/eval/                           @orplex-tech/ai
+
+# ── VS Code Extension ────────────────────────────────────────────────
+vscode-extension/                       @orplex-tech/vscode
+
+# ── CLI ──────────────────────────────────────────────────────────────
+cli/                                    @orplex-tech/cli
+
+# ── Docs ─────────────────────────────────────────────────────────────
+docs-site/                              @orplex-tech/docs
+
+# ── Infrastructure & DevOps ──────────────────────────────────────────
+.github/                                @orplex-tech/devops
+Containerfile                           @orplex-tech/devops
+podman-compose.yml                      @orplex-tech/devops
+*.yml                                   @orplex-tech/devops
+
+# ── Auth & Security ──────────────────────────────────────────────────
+src/lib/auth.ts                         @orplex-tech/security
+src/lib/key-encryption.ts               @orplex-tech/security
+src/lib/rate-limiter.ts                 @orplex-tech/security
+src/lib/chat-middleware.ts              @orplex-tech/security
+src/lib/validators.ts                   @orplex-tech/security

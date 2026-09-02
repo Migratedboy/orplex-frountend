@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📚 Documentation
+    url: https://docs.orplex.dev
+    about: Check the docs before opening an issue — your question may already be answered.
+  - name: 🔒 Security Vulnerability
+    url: https://github.com/orplex-tech/orplex-tech/security/policy
+    about: Report security vulnerabilities privately. Do NOT open a public issue.
+  - name: 💬 Discord Community
+    url: https://discord.gg/orplex
+    about: Ask questions and get help from the community.

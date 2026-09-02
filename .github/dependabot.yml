@@ -1,0 +1,97 @@
+# Dependabot — Automated Dependency Updates
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+
+version: 2
+
+updates:
+  # ── Main app (npm) ────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    open-pull-requests-limit: 10
+    reviewers:
+      - orplex-tech/core
+    labels:
+      - dependencies
+      - chore
+    groups:
+      # Group minor/patch updates together to reduce PR noise
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Major versions handled manually
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
+
+  # ── Main app (GitHub Actions) ─────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    reviewers:
+      - orplex-tech/devops
+    labels:
+      - dependencies
+      - ci
+
+  # ── VS Code Extension (npm) ───────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /vscode-extension
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    reviewers:
+      - orplex-tech/vscode
+    labels:
+      - dependencies
+      - vscode
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # ── CLI Tool (npm) ────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /cli
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    reviewers:
+      - orplex-tech/cli
+    labels:
+      - dependencies
+      - cli
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # ── Docs Site (npm) ───────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /docs-site
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    reviewers:
+      - orplex-tech/docs
+    labels:
+      - dependencies
+      - docs-site
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch

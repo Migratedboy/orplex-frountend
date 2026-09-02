@@ -1,0 +1,441 @@
+// Prisma schema for Supabase (PostgreSQL)
+// Run: npx prisma db push (after setting DATABASE_URL in .env)
+// Or:  npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String              @id @default(cuid())
+  name             String?
+  email            String?             @unique
+  emailVerified    DateTime?
+  image            String?
+  accounts         Account[]
+  sessions         Session[]
+  conversations    Conversation[]
+  tasks            Task[]
+  agentRuns        AgentRun[]
+  workspaceMembers WorkspaceMember[]
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model Conversation {
+  id        String    @id @default(cuid())
+  title     String    @default("New Chat")
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  Message[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@map("conversations")
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String
+  content        String       @db.Text
+  createdAt      DateTime     @default(now())
+
+  @@map("messages")
+}
+
+model Task {
+  id          String     @id @default(cuid())
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prompt      String     @db.Text
+  mode        String     @default("ask") // "ask" | "plan" | "code"
+  status      String     @default("pending") // "pending" | "running" | "completed" | "failed"
+  result      String?    @db.Text
+  createdAt   DateTime   @default(now())
+  completedAt DateTime?
+
+  toolCalls   ToolCall[]
+
+  @@map("tasks")
+}
+
+model ToolCall {
+  id        String   @id @default(cuid())
+  taskId    String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tool      String
+  args      String   @db.Text
+  result    String?  @db.Text
+  status    String   @default("pending") // "pending" | "running" | "success" | "error"
+  duration  Int?     // milliseconds
+  createdAt DateTime @default(now())
+
+  @@map("tool_calls")
+}
+
+model AgentRun {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prompt       String   @db.Text
+  status       String   @default("pending") // "pending" | "spec" | "tests" | "implement" | "verify" | "done" | "failed"
+  workspace    String   @db.Text
+  executionTarget String @default("server")
+  autonomyPolicy String   @default("approval")
+  idempotencyKey String?  @unique
+  specResult   Json?
+  testsResult  Json?
+  patchesResult Json?
+  verifyResult Json?
+  result       Json?
+  retries      Int      @default(0)
+  tokenUsage   Int      @default(0)
+  createdAt    DateTime @default(now())
+  completedAt  DateTime?
+
+  steps        PipelineStep[]
+  tasks        AgentTask[]
+  events       RunEvent[]
+  artifacts    AgentArtifact[]
+  approvals    ApprovalRequest[]
+
+  @@map("agent_runs")
+}
+
+model PipelineStep {
+  id        String   @id @default(cuid())
+  runId     String
+  run       AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  state     String
+  input     String   @db.Text
+  output    String   @db.Text
+  duration  Int      @default(0)
+  success   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@map("pipeline_steps")
+}
+
+model AgentTask {
+  id          String   @id @default(cuid())
+  runId       String
+  run         AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  role        String
+  title       String
+  status      String   @default("pending")
+  input       Json
+  output      Json?
+  attempt     Int      @default(0)
+  leaseOwner  String?
+  leaseUntil  DateTime?
+  error       String?  @db.Text
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  dependencies AgentTaskDependency[] @relation("TaskDependencies")
+  dependents   AgentTaskDependency[] @relation("TaskDependents")
+  artifacts    AgentArtifact[]
+  events       RunEvent[]
+
+  @@index([runId, status])
+  @@index([leaseUntil])
+  @@map("agent_tasks")
+}
+
+model AgentTaskDependency {
+  taskId       String
+  dependsOnId  String
+  task         AgentTask @relation("TaskDependencies", fields: [taskId], references: [id], onDelete: Cascade)
+  dependsOn    AgentTask @relation("TaskDependents", fields: [dependsOnId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, dependsOnId])
+  @@map("agent_task_dependencies")
+}
+
+model RunEvent {
+  id        String    @id @default(cuid())
+  runId     String
+  run       AgentRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  taskId    String?
+  task      AgentTask? @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  sequence  Int
+  type      String
+  payload   Json
+  createdAt DateTime  @default(now())
+
+  @@unique([runId, sequence])
+  @@index([runId, createdAt])
+  @@map("run_events")
+}
+
+model AgentArtifact {
+  id        String    @id @default(cuid())
+  runId     String
+  run       AgentRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  taskId    String?
+  task      AgentTask? @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  kind      String
+  name      String
+  mediaType String
+  content   String    @db.Text
+  createdAt DateTime  @default(now())
+  comments  Comment[]
+
+  @@index([runId, kind])
+  @@map("agent_artifacts")
+}
+
+model ApprovalRequest {
+  id        String    @id @default(cuid())
+  runId     String
+  run       AgentRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  action    String
+  payload   Json
+  status    String    @default("pending")
+  decidedBy String?
+  decidedAt DateTime?
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([runId, status])
+  @@map("approval_requests")
+}
+
+// === Knowledge Base Models ===
+
+model Learning {
+  id        String   @id @default(cuid())
+  projectId String   @default("default")
+  pattern   String   // Short label: "auth-flow", "api-error-handling"
+  content   String   @db.Text // The actual learning text
+  tags      String[] // Searchable tags for retrieval
+  sourceRunId String? // Which agent run produced this learning
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId, tags])
+  @@map("learnings")
+}
+
+model Comment {
+  id         String        @id @default(cuid())
+  artifactId String
+  artifact   AgentArtifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  userId     String
+  content    String        @db.Text
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@index([artifactId])
+  @@map("comments")
+}
+
+model ApiKeyPool {
+  id          String   @id @default(cuid())
+  provider    String   // nvidia | openrouter
+  apiKey      String   // AES-256-GCM encrypted
+  model       String   // minimaxai/minimax-m3 | meta/llama-3.1-8b-instruct
+  usageToday  Int      @default(0)
+  dailyLimit  Int      @default(1000)
+  lastResetAt DateTime @default(now())
+  isActive    Boolean  @default(true)
+  priority    Int      @default(0)
+  failures    Int      @default(0)
+  lastUsedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([provider, isActive])
+  @@map("api_key_pool")
+}
+
+model UsageLog {
+  id        String   @id @default(cuid())
+  userId    String
+  provider  String
+  model     String
+  tokensIn  Int      @default(0)
+  tokensOut Int      @default(0)
+  latencyMs Int      @default(0)
+  success   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("usage_logs")
+}
+
+model UserQuota {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  requestsToday Int      @default(0)
+  dailyLimit    Int      @default(50)
+  lastResetAt   DateTime @default(now())
+  tier          String   @default("free")
+
+  @@map("user_quotas")
+}
+
+model UserApiKey {
+  id         String   @id @default(cuid())
+  userId     String
+  provider   String   // nvidia | openrouter
+  apiKey     String   // AES-256-GCM encrypted
+  model      String   // minimaxai/minimax-m3 | meta/llama-3.1-8b-instruct
+  isActive   Boolean  @default(true)
+  usageToday Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@map("user_api_keys")
+}
+
+// === Rate Limiting & Circuit Breaker ===
+
+model RateLimitWindow {
+  key       String   @db.Text
+  windowStart DateTime
+  count     Int      @default(1)
+  expiresAt DateTime
+
+  @@id([key, windowStart])
+  @@index([expiresAt])
+  @@map("rate_limit_windows")
+}
+
+model CircuitBreakerState {
+  provider    String   @id
+  failures    Int      @default(0)
+  isOpen      Boolean  @default(false)
+  openUntil   DateTime?
+  lastFailure DateTime?
+  updatedAt   DateTime @updatedAt
+
+  @@map("circuit_breaker_states")
+}
+
+// === Vector Memory & SONA Persistence ===
+
+model VectorMemoryEntry {
+  id          String   @id @default(cuid())
+  type        String   // code_change | conversation | pattern | error | convention
+  content     String   @db.Text
+  embedding   Json     // number[] (128-dim)
+  filePath    String?
+  tool        String?
+  success     Boolean?
+  tags        String[]
+  createdAt   DateTime @default(now())
+
+  @@index([type, createdAt])
+  @@map("vector_memory_entries")
+}
+
+model SonaPattern {
+  id          String   @id @default(cuid())
+  name        String
+  description String   @db.Text
+  embedding   Json     // number[] (128-dim)
+  steps       String[] // tool sequence
+  successRate Float    @default(1.0)
+  useCount    Int      @default(1)
+  avgDuration Int      @default(0)
+  tags        String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tags])
+  @@map("sona_patterns")
+}
+
+model SonaTrajectory {
+  id           String   @id @default(cuid())
+  task         String   @db.Text
+  embedding    Json     // number[] (128-dim)
+  outcome      String   // success | partial | failure
+  totalDuration Int     @default(0)
+  totalTokens  Int      @default(0)
+  filesChanged String[]
+  toolsUsed    String[]
+  tags         String[]
+  steps        Json     // TrajectoryStep[]
+  createdAt    DateTime @default(now())
+
+  @@index([outcome])
+  @@index([createdAt])
+  @@map("sona_trajectories")
+}
+
+// === Workspace & Multi-User Support ===
+
+model Workspace {
+  id        String            @id @default(cuid())
+  name      String
+  ownerId   String
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  members   WorkspaceMember[]
+
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        String    @default("member") // owner | admin | member
+  joinedAt    DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@map("workspace_members")
+}

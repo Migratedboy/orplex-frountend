@@ -1,0 +1,88 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature! Please fill out the information below
+        to help us understand your request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: |
+        What problem does this feature solve? What's the pain point?
+        Use the "I want to..." format if possible.
+      placeholder: "I want to be able to... so that..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe how you'd like this to work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered any other approaches or workarounds?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of Orplex would this affect?
+      multiple: false
+      options:
+        - Web UI
+        - VS Code Extension
+        - CLI Tool
+        - AI Agent / Tool Calling
+        - API
+        - Plugin System
+        - Admin / Monitoring
+        - Authentication / Auth
+        - Documentation
+        - Infrastructure / DevOps
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Importance
+      description: How important is this feature to you?
+      multiple: false
+      options:
+        - Nice to have
+        - Important — affects my workflow
+        - Critical — blocking my usage
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: |
+        Any other context, mockups, screenshots, or examples from other tools
+        that implement this feature.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues to make sure this is not a duplicate
+          required: true

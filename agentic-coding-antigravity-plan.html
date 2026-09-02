@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agentic coding upgrades — mimicking Antigravity</title>
+<style>
+  :root{
+    --bg:#0f1115;
+    --card:#171a20;
+    --card-border:#262a33;
+    --text:#eceef1;
+    --text-dim:#8c919c;
+    --text-faint:#5a5f6a;
+    --gray:#9297a3;
+    --teal:#4fd1a5;
+    --coral:#e2905f;
+    --purple:#a99bea;
+    --code-bg:#0b0d11;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    line-height:1.65;
+  }
+  .wrap{max-width:820px;margin:0 auto;padding:56px 24px 80px;}
+  header{margin-bottom:48px;}
+  .eyebrow{
+    text-transform:uppercase;letter-spacing:.12em;font-size:12px;
+    color:var(--teal);font-weight:600;margin-bottom:12px;
+  }
+  h1{font-size:32px;font-weight:600;margin:0 0 14px;letter-spacing:-.01em;}
+  .lede{color:var(--text-dim);font-size:16px;max-width:640px;}
+  h2{font-size:20px;font-weight:600;margin:0 0 4px;letter-spacing:-.01em;}
+  h2 .phase-num{color:var(--text-faint);font-weight:500;margin-right:8px;}
+  .section{margin-top:56px;}
+  .diagram-card{
+    background:var(--card);border:1px solid var(--card-border);
+    border-radius:14px;padding:24px 20px 12px;
+  }
+  .diagram-caption{
+    text-align:center;color:var(--text-faint);font-size:13px;margin-top:10px;
+  }
+  .phase{
+    background:var(--card);border:1px solid var(--card-border);
+    border-radius:14px;padding:24px 28px;margin-top:20px;
+  }
+  .phase-tag{
+    display:inline-block;font-size:11px;font-weight:600;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--bg);background:var(--teal);
+    border-radius:5px;padding:3px 8px;margin-bottom:14px;
+  }
+  .phase-tag.hard{background:var(--coral);}
+  .phase p{color:var(--text-dim);font-size:15px;margin:10px 0;}
+  .phase ul{margin:10px 0 0;padding-left:20px;color:var(--text-dim);font-size:15px;}
+  .phase li{margin:6px 0;}
+  code{
+    background:var(--code-bg);border:1px solid var(--card-border);
+    border-radius:4px;padding:1px 6px;font-size:13px;color:var(--teal);
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  .roadmap{
+    display:flex;flex-wrap:wrap;gap:10px;margin-top:20px;
+  }
+  .roadmap-step{
+    flex:1;min-width:130px;background:var(--card);border:1px solid var(--card-border);
+    border-radius:10px;padding:14px 16px;font-size:13px;
+  }
+  .roadmap-step .n{color:var(--text-faint);font-size:11px;letter-spacing:.06em;text-transform:uppercase;}
+  .roadmap-step .t{color:var(--text);font-weight:600;margin-top:4px;}
+  .callout{
+    background:rgba(226,144,95,0.08);border:1px solid rgba(226,144,95,0.35);
+    border-radius:12px;padding:20px 24px;margin-top:56px;
+  }
+  .callout h2{color:var(--coral);}
+  .callout p{color:var(--text-dim);font-size:15px;margin:10px 0 0;}
+  footer{margin-top:64px;color:var(--text-faint);font-size:13px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Architecture plan</div>
+    <h1>Bringing Antigravity-style productivity to your agent network</h1>
+    <p class="lede">A phased plan for adding a manager surface, browser-in-the-loop verification, artifacts, multi-agent collaboration, and a persistent knowledge base — mapped onto your existing Node/Express + Supabase + NVIDIA NIM stack.</p>
+  </header>
+
+  <section class="section">
+    <h2>Target architecture</h2>
+    <div class="diagram-card">
+      <svg width="100%" viewBox="0 0 680 450" role="img">
+        <title>Proposed Antigravity-style architecture</title>
+        <desc>A manager surface routes tasks to code, browser-test, and research agents, which produce artifacts that feed a knowledge base that loops learned context back into the manager surface for future tasks.</desc>
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+        </defs>
+
+        <g>
+          <rect x="190" y="40" width="300" height="56" rx="10" fill="#1c2027" stroke="#6b6f76" stroke-width="1"/>
+          <text x="340" y="58" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="600" fill="#eceef1">Manager surface</text>
+          <text x="340" y="76" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#9297a3">task queue + routing</text>
+        </g>
+
+        <line x1="340" y1="96" x2="340" y2="124" stroke="#3a3f4a" stroke-width="1"/>
+        <line x1="150" y1="124" x2="530" y2="124" stroke="#3a3f4a" stroke-width="1"/>
+        <line x1="150" y1="124" x2="150" y2="150" stroke="#3a3f4a" stroke-width="1" marker-end="url(#arrow)" context-stroke="#3a3f4a"/>
+        <line x1="340" y1="124" x2="340" y2="150" stroke="#3a3f4a" stroke-width="1" marker-end="url(#arrow)"/>
+        <line x1="530" y1="124" x2="530" y2="150" stroke="#3a3f4a" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <g>
+          <rect x="65" y="150" width="170" height="56" rx="10" fill="#16211e" stroke="#4fd1a5" stroke-width="1"/>
+          <text x="150" y="168" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="600" fill="#eceef1">Code agent</text>
+          <text x="150" y="186" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#9297a3">writes / edits code</text>
+        </g>
+        <g>
+          <rect x="255" y="150" width="170" height="56" rx="10" fill="#16211e" stroke="#4fd1a5" stroke-width="1"/>
+          <text x="340" y="168" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="600" fill="#eceef1">Browser agent</text>
+          <text x="340" y="186" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#9297a3">launch + verify UI</text>
+        </g>
+        <g>
+          <rect x="445" y="150" width="170" height="56" rx="10" fill="#16211e" stroke="#4fd1a5" stroke-width="1"/>
+          <text x="530" y="168" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="600" fill="#eceef1">Research agent</text>
+          <text x="530" y="186" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#9297a3">checks docs</text>
+        </g>
+
+        <line x1="150" y1="206" x2="150" y2="224" stroke="#3a3f4a" stroke-width="1"/>
+        <line x1="340" y1="206" x2="340" y2="224" stroke="#3a3f4a" stroke-width="1"/>
+        <line x1="530" y1="206" x2="530" y2="224" stroke="#3a3f4a" stroke-width="1"/>
+        <line x1="150" y1="224" x2="530" y2="224" stroke="#3a3f4a" stroke-width="1"/>
+        <line x1="340" y1="224" x2="340" y2="250" stroke="#3a3f4a" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <g>
+          <rect x="190" y="250" width="300" height="56" rx="10" fill="#241d1a" stroke="#e2905f" stroke-width="1"/>
+          <text x="340" y="268" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="600" fill="#eceef1">Artifacts</text>
+          <text x="340" y="286" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#9297a3">plan, diff, screenshots</text>
+        </g>
+
+        <line x1="340" y1="306" x2="340" y2="350" stroke="#3a3f4a" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <g>
+          <rect x="210" y="350" width="260" height="56" rx="10" fill="#1e1c26" stroke="#a99bea" stroke-width="1"/>
+          <text x="340" y="368" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="600" fill="#eceef1">Knowledge base</text>
+          <text x="340" y="386" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#9297a3">supabase context store</text>
+        </g>
+
+        <path d="M470,378 C630,378 630,68 490,68" fill="none" stroke="#5a5f6a" stroke-width="1" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+        <text x="498" y="58" text-anchor="start" font-size="12" fill="#8c919c">learned context</text>
+      </svg>
+      <div class="diagram-caption">Manager surface routes work → specialist agents execute in parallel → results become reviewable artifacts → successful patterns persist to the knowledge base and loop back in.</div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Build order</h2>
+    <div class="roadmap">
+      <div class="roadmap-step"><div class="n">Phase 1</div><div class="t">Manager surface + artifacts</div></div>
+      <div class="roadmap-step"><div class="n">Phase 2</div><div class="t">Browser-in-the-loop testing</div></div>
+      <div class="roadmap-step"><div class="n">Phase 3</div><div class="t">Multi-agent collaboration</div></div>
+      <div class="roadmap-step"><div class="n">Phase 4</div><div class="t">Persistent knowledge base</div></div>
+      <div class="roadmap-step"><div class="n">Phase 5</div><div class="t">Inline artifact feedback</div></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="phase">
+      <span class="phase-tag">Phase 1</span>
+      <h2>Manager surface + artifacts</h2>
+      <p>The foundation everything else hangs off. Biggest trust win for the least effort.</p>
+      <ul>
+        <li>Add a <code>tasks</code> table in Supabase: <code>id, agent, status (queued/running/needs_review/done), plan, created_at</code>. Created via <code>POST /tasks</code>; agents pick up work by polling or via Supabase realtime subscriptions.</li>
+        <li>Add an <code>artifacts</code> table: <code>id, task_id, type (plan/diff/screenshot/recording), content_or_url</code>. Store diffs as unified git-diff text, screenshots/recordings in a Supabase Storage bucket.</li>
+        <li>On the UI side, add a slide-out panel listing tasks as cards (status pill + artifact thumbnails). Clicking a node in the constellation UI opens that task's artifact trail instead of a raw log dump.</li>
+      </ul>
+    </div>
+
+    <div class="phase">
+      <span class="phase-tag hard">Phase 2</span>
+      <h2>Browser-in-the-loop verification</h2>
+      <p>The single highest-leverage feature — this is what actually gives you Antigravity-style confidence instead of "trust me, it compiles."</p>
+      <ul>
+        <li>Add Playwright as a dependency. Wrap it as a tool the Code agent can call: <code>launch_and_test(port)</code> — starts the dev server via <code>child_process</code>, opens the page headless, grabs a screenshot, checks the console for errors, optionally records video, returns pass/fail + artifact paths.</li>
+        <li>If your NIM model doesn't support native function calling reliably, fall back to structured JSON output (<code>respond only with {"tool": ..., "args": ...}</code>) and parse it yourself.</li>
+        <li>Every test run becomes an artifact row automatically — "did this actually work" becomes something you can look at, not something you have to trust.</li>
+      </ul>
+    </div>
+
+    <div class="phase">
+      <span class="phase-tag">Phase 3</span>
+      <h2>Multi-agent collaboration on one task</h2>
+      <p>You already have separate specialist agents — this phase lets them work the <em>same</em> task instead of separate ones.</p>
+      <ul>
+        <li>Manager decomposes an incoming task into subtasks, each tagged to a specialist agent, all pointing at the same <code>task_id</code>.</li>
+        <li>Instead of direct agent-to-agent messaging, have agents read/write to the shared task row in Supabase — Code writes a diff artifact, Browser agent tests it, Research agent checks docs if something fails. Loosely coupled, easy to debug, easy to extend.</li>
+      </ul>
+    </div>
+
+    <div class="phase">
+      <span class="phase-tag">Phase 4</span>
+      <h2>Persistent knowledge base</h2>
+      <ul>
+        <li>A <code>learnings</code> table per project: successful patterns, gotchas, snippets. Doesn't need to be fancy — pgvector on Supabase for real similarity search, or keyword search to start.</li>
+        <li>Before a task kicks off, do a retrieval pass and inject relevant past learnings into the system prompt. This is what makes agent #50 on a project faster than agent #1.</li>
+      </ul>
+    </div>
+
+    <div class="phase">
+      <span class="phase-tag">Phase 5</span>
+      <h2>Inline feedback on artifacts</h2>
+      <ul>
+        <li>A <code>comments</code> table linked to <code>artifact_id</code>. Leaving a comment appends it to that task's message history in Supabase and includes it in the agent's next NIM call — no restart needed.</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="callout">
+    <h2>Security, from day one</h2>
+    <p>Given the prior NVIDIA key exposure, build this in rather than bolting it on later: treat anything the Research agent scrapes off the web as untrusted input — never let scraped page content get executed as instructions. Keep any shell/browser execution sandboxed in a restricted child process. The PromptArmor finding on Antigravity's own prompt-injection vulnerability is a direct preview of what happens if this step gets skipped.</p>
+  </div>
+
+  <footer>Plan generated by Claude · reference document, not a build spec</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,82 @@
+{
+  "name": "orplex-tech",
+  "displayName": "Orplex Tech",
+  "description": "AI coding assistant with streaming chat, multi-provider support, and agentic tool calling",
+  "version": "0.1.0",
+  "publisher": "orplex-tech",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "orplex.chat", "title": "Orplex: Open Chat" },
+      { "command": "orplex.fix", "title": "Orplex: Fix Selected Code" },
+      { "command": "orplex.explain", "title": "Orplex: Explain Selected Code" },
+      { "command": "orplex.refactor", "title": "Orplex: Refactor Selected Code" },
+      { "command": "orplex.clearChat", "title": "Orplex: Clear Chat" },
+      { "command": "orplex.inlineChat", "title": "Orplex: Inline Chat" },
+      { "command": "orplex.switchModel", "title": "Orplex: Switch Model" },
+      { "command": "orplex.clearDiagnostics", "title": "Orplex: Clear Problems" }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "orplex", "title": "Orplex Tech", "icon": "$(robot)" }
+      ]
+    },
+    "views": {
+      "orplex": [
+        {
+          "type": "webview",
+          "id": "orplex.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "keybindings": [
+      { "command": "orplex.chat", "key": "ctrl+shift+o", "mac": "cmd+shift+o" },
+      { "command": "orplex.inlineChat", "key": "ctrl+i", "mac": "cmd+i", "when": "editorHasSelection" }
+    ],
+    "configuration": {
+      "title": "Orplex Tech",
+      "properties": {
+        "orplex.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:5000",
+          "description": "Orplex API server URL"
+        },
+        "orplex.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for authenticated access (optional for local)"
+        },
+        "orplex.model": {
+          "type": "string",
+          "default": "minimax-m3",
+          "description": "Model to use for completions"
+        },
+        "orplex.mode": {
+          "type": "string",
+          "enum": ["ask", "plan", "code"],
+          "default": "code",
+          "description": "Default agent mode"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^2.0.0",
+    "typescript": "^5.0.0"
+  }
+}

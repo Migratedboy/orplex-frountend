@@ -1,0 +1,103 @@
+# Release Drafter — auto-generates release notes from merged PRs
+# Docs: https://github.com/release-drafter/release-drafter
+
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+
+categories:
+  - title: "🚀 Features"
+    labels:
+      - "feature"
+      - "enhancement"
+      - "new"
+  - title: "🐛 Bug Fixes"
+    labels:
+      - "bug"
+      - "fix"
+      - "bugfix"
+      - "hotfix"
+  - title: "📚 Documentation"
+    labels:
+      - "documentation"
+      - "docs"
+  - title: "🔌 VS Code Extension"
+    labels:
+      - "vscode"
+      - "extension"
+  - title: "💻 CLI"
+    labels:
+      - "cli"
+  - title: "📖 Docs Site"
+    labels:
+      - "docs-site"
+      - "docusaurus"
+  - title: "🔌 Plugin System"
+    labels:
+      - "plugin"
+      - "plugins"
+  - title: "🔒 Security"
+    labels:
+      - "security"
+  - title: "🏗️ Infrastructure"
+    labels:
+      - "chore"
+      - "dependencies"
+      - "infra"
+      - "ci"
+      - "devops"
+  - title: "🧪 Tests"
+    labels:
+      - "test"
+      - "tests"
+      - "testing"
+
+change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
+change-title-escapes: '\<*_&'
+no-changes-template: "No changes since last release."
+
+version-resolver:
+  major:
+    labels:
+      - "major"
+      - "breaking"
+  minor:
+    labels:
+      - "feature"
+      - "enhancement"
+  patch:
+    labels:
+      - "bug"
+      - "fix"
+      - "chore"
+      - "dependencies"
+      - "security"
+  default: patch
+
+autolabeler:
+  - label: "chore"
+    title: "/^chore/i"
+  - label: "bug"
+    title: "/^fix/i"
+  - label: "feature"
+    title: "/^feat/i"
+  - label: "documentation"
+    title: "/^docs/i"
+  - label: "test"
+    title: "/^test/i"
+  - label: "security"
+    title: "/^security/i"
+
+exclude-labels:
+  - "skip-changelog"
+
+sort-by: title
+sort-order: asc
+
+template: |
+  ## Changes
+
+  $CHANGES
+
+  ## Contributors
+
+  $CONTRIBUTORS

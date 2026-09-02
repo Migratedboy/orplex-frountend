@@ -1,0 +1,28 @@
+{
+  "name": "orplex-cli",
+  "version": "0.1.0",
+  "description": "Orplex Tech CLI — chat with AI from your terminal",
+  "bin": {
+    "orplex": "./bin/orplex"
+  },
+  "type": "module",
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "commander": "^12.0.0",
+    "chalk": "^5.0.0",
+    "ora": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

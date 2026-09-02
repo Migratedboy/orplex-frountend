@@ -1,0 +1,71 @@
+# podman-compose.yml — Multi-service deployment for Orplex Tech
+# Usage: podman-compose up -d
+# Stop:  podman-compose down
+
+services:
+  app:
+    build:
+      context: .
+      containerfile: Containerfile
+    container_name: orplex-app
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - orplex
+    volumes:
+      # Persist uploads and logs
+      - orplex-data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+
+  db:
+    image: postgres:16-alpine
+    container_name: orplex-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: orplex
+      POSTGRES_USER: orplex
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-orplex_dev_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - orplex-pgdata:/var/lib/postgresql/data
+      # Init script for extensions (pgvector)
+      - ./prisma/init-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orplex"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - orplex
+
+  # Uptime monitoring
+  uptime-kuma:
+    image: louislam/uptime-kuma:latest
+    container_name: orplex-uptime
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - orplex-uptime:/app/data
+    networks:
+      - orplex
+
+volumes:
+  orplex-data:
+  orplex-pgdata:
+  orplex-uptime:
+
+networks:
+  orplex:
+    driver: bridge

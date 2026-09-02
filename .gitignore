@@ -1,0 +1,71 @@
+# Dependencies
+node_modules/
+jspm_packages/
+
+# Next.js
+.next/
+.nexus-build/
+out/
+
+# Environment variables (NEVER commit these)
+.env
+.env.local
+.env.*!.env.example
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Database
+*.db
+*.db-journal
+
+# IDE / OS
+.vscode-test
+.cache/
+.parcel-cache/
+
+# Project specific
+nexus_core
+stitch_ai_preview/
+stitch_ai_web_generation_engine.zip
+google auth.txt
+.freebuff/
+
+# Diagnostic reports
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Coverage
+coverage/
+*.lcov
+.nyc_output/
+
+# Temp files
+tmp/
+
+# Misc
+*.tgz
+.yarn-integrity
+.node_repl_history
+.lock-wscript
+build/Release
+
+# Secrets & credentials (NEVER commit)
+*.pem
+*.key
+*.cert
+*.p12
+*secret*
+*credential*
+service-account*.json
+
+# Backup files
+backups/
+*.bak
+*.backup

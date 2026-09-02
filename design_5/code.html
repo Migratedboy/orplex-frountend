@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Orplex Tech - Settings</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&amp;family=Lexend:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "inverse-surface": "#2f3132",
+                      "surface-container-highest": "#e2e2e3",
+                      "on-background": "#1a1c1d",
+                      "primary": "#a04100",
+                      "border-light": "#E4E4E7",
+                      "accent-warm": "#FFF7ED",
+                      "surface-pure": "#FFFFFF",
+                      "on-secondary": "#ffffff",
+                      "tertiary-container": "#dd8339",
+                      "surface-dim": "#dadadb",
+                      "on-surface": "#1a1c1d",
+                      "on-error": "#ffffff",
+                      "on-tertiary-fixed": "#301400",
+                      "secondary-fixed-dim": "#c8c6c5",
+                      "on-error-container": "#93000a",
+                      "secondary-container": "#e2dfde",
+                      "surface-container-low": "#f3f3f4",
+                      "primary-fixed-dim": "#ffb693",
+                      "inverse-primary": "#ffb693",
+                      "secondary-fixed": "#e5e2e1",
+                      "error-container": "#ffdad6",
+                      "on-tertiary-fixed-variant": "#703700",
+                      "on-tertiary": "#ffffff",
+                      "outline": "#8e7164",
+                      "tertiary": "#944b00",
+                      "secondary": "#5f5e5e",
+                      "error": "#ba1a1a",
+                      "outline-variant": "#e2bfb0",
+                      "surface-tint": "#a04100",
+                      "background": "#f9f9fa",
+                      "on-surface-variant": "#5a4136",
+                      "primary-fixed": "#ffdbcc",
+                      "on-tertiary-container": "#502600",
+                      "on-primary-fixed": "#351000",
+                      "surface-container-lowest": "#ffffff",
+                      "on-primary": "#ffffff",
+                      "surface-bright": "#f9f9fa",
+                      "on-secondary-container": "#636262",
+                      "surface": "#f9f9fa",
+                      "on-primary-fixed-variant": "#7a3000",
+                      "on-secondary-fixed": "#1c1b1b",
+                      "tertiary-fixed": "#ffdcc5",
+                      "on-primary-container": "#572000",
+                      "surface-variant": "#e2e2e3",
+                      "surface-container-high": "#e8e8e9",
+                      "tertiary-fixed-dim": "#ffb783",
+                      "inverse-on-surface": "#f0f1f2",
+                      "surface-container": "#eeeeef",
+                      "on-secondary-fixed-variant": "#474746",
+                      "surface-subtle": "#F9FAFB",
+                      "primary-container": "#ff6b00"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.125rem",
+                      "lg": "0.25rem",
+                      "xl": "0.5rem",
+                      "full": "0.75rem"
+              },
+              "spacing": {
+                      "margin-md": "32px",
+                      "container-max": "1280px",
+                      "gutter": "24px",
+                      "unit": "4px",
+                      "margin-lg": "64px",
+                      "margin-sm": "16px"
+              },
+              "fontFamily": {
+                      "headline-lg": [
+                              "Lexend"
+                      ],
+                      "display-lg": [
+                              "Lexend"
+                      ],
+                      "label-caps": [
+                              "JetBrains Mono"
+                      ],
+                      "headline-lg-mobile": [
+                              "Lexend"
+                      ],
+                      "code-md": [
+                              "JetBrains Mono"
+                      ],
+                      "body-md": [
+                              "Lexend"
+                      ],
+                      "label-sm": [
+                              "JetBrains Mono"
+                      ]
+              },
+              "fontSize": {
+                      "headline-lg": [
+                              "32px",
+                              {
+                                      "lineHeight": "1.2",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "display-lg": [
+                              "64px",
+                              {
+                                      "lineHeight": "1.1",
+                                      "letterSpacing": "-0.03em",
+                                      "fontWeight": "700"
+                              }
+                      ],
+                      "label-caps": [
+                              "10px",
+                              {
+                                      "lineHeight": "1",
+                                      "letterSpacing": "0.15em",
+                                      "fontWeight": "700"
+                              }
+                      ],
+                      "headline-lg-mobile": [
+                              "24px",
+                              {
+                                      "lineHeight": "1.2",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "code-md": [
+                              "14px",
+                              {
+                                      "lineHeight": "1.5",
+                                      "fontWeight": "450"
+                              }
+                      ],
+                      "body-md": [
+                              "16px",
+                              {
+                                      "lineHeight": "1.6",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "label-sm": [
+                              "11px",
+                              {
+                                      "lineHeight": "1.2",
+                                      "letterSpacing": "0.05em",
+                                      "fontWeight": "500"
+                              }
+                      ]
+              }
+      },
+          },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .material-symbols-outlined.fill {
+            font-variation-settings: 'FILL' 1;
+        }
+        
+        /* Custom scrollbar for webkit */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f9f9fa; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #e2e2e3; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #c8c6c5; 
+        }
+
+        /* Toggle Switch Styles */
+        .toggle-checkbox:checked {
+            right: 0;
+            border-color: #a04100;
+        }
+        .toggle-checkbox:checked + .toggle-label {
+            background-color: #a04100;
+        }
+        .toggle-checkbox:focus + .toggle-label {
+            box-shadow: 0 0 0 2px rgba(160, 65, 0, 0.2);
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md text-body-md h-full flex antialiased">
+<!-- SideNavBar -->
+<nav class="bg-surface-pure border-r border-border-light flat no shadows h-screen w-64 fixed left-0 top-0 flex flex-col py-gutter z-50">
+<!-- Brand / Header -->
+<div class="px-gutter mb-margin-md flex flex-col gap-2">
+<h1 class="font-headline-lg text-headline-lg font-bold text-primary">Orplex Tech</h1>
+<span class="font-label-caps text-label-caps text-secondary">Vivid Catalyst</span>
+</div>
+<!-- Navigation Links -->
+<div class="flex-1 overflow-y-auto flex flex-col gap-unit">
+<a class="flex items-center gap-3 px-4 py-3 text-secondary hover:bg-surface-container-low transition-colors hover:bg-accent-warm hover:text-primary transition-all duration-200 cursor-pointer active:scale-95 group" href="#">
+<span class="material-symbols-outlined group-hover:fill">add_comment</span>
+<span>New Chat</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-secondary hover:bg-surface-container-low transition-colors hover:bg-accent-warm hover:text-primary transition-all duration-200 cursor-pointer active:scale-95 group" href="#">
+<span class="material-symbols-outlined group-hover:fill">history</span>
+<span>History</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-secondary hover:bg-surface-container-low transition-colors hover:bg-accent-warm hover:text-primary transition-all duration-200 cursor-pointer active:scale-95 group" href="#">
+<span class="material-symbols-outlined group-hover:fill">terminal</span>
+<span>Terminal</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-secondary hover:bg-surface-container-low transition-colors hover:bg-accent-warm hover:text-primary transition-all duration-200 cursor-pointer active:scale-95 group" href="#">
+<span class="material-symbols-outlined group-hover:fill">inventory_2</span>
+<span>Packages</span>
+</a>
+<!-- Active State -->
+<a class="flex items-center gap-3 px-4 py-3 border-l-4 border-primary text-primary bg-accent-warm font-bold hover:bg-accent-warm hover:text-primary transition-all duration-200 cursor-pointer active:scale-95" href="#">
+<span class="material-symbols-outlined fill">settings</span>
+<span>Settings</span>
+</a>
+</div>
+<!-- User Profile Area (Footer of nav) -->
+<div class="px-gutter mt-auto pt-gutter border-t border-border-light">
+<div class="flex items-center gap-3 cursor-pointer hover:bg-surface-container-low p-2 rounded transition-colors -ml-2">
+<img alt="User Profile" class="w-10 h-10 rounded-full object-cover border border-border-light" data-alt="A small, circular avatar image showing a highly detailed, professional headshot of a user. The lighting is bright, studio quality, emphasizing clarity and modern corporate aesthetic against a neutral light background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBHTP49RymisyBhhhLFyAPIk-AN3w_0uBBKDMqF6XJBydfXYBJOkVOkj-Q0B-ruSu2QRHoVFfFLtFMAIYZ3a3PFLqn6JagPirrgOuFqNuZ2JwMOZBc9nxnxqzduT03I-CofF6sjKwF9kOXuK5zGdL7F03xXbkqpTQQJGcW6ecnNW__KjfL_e_-F3VdWzpI-mfW0ARxpiZrmH0hhuRwjhFXR-KvXGJw07xR2KSg2-S08tKS3GKu0gC0i"/>
+<div class="flex flex-col">
+<span class="font-bold text-sm">Alex Mercer</span>
+<span class="font-label-caps text-label-caps text-secondary">Pro Plan</span>
+</div>
+</div>
+</div>
+</nav>
+<!-- Main Content Area (Offset by SideNav) -->
+<div class="flex-1 ml-64 flex flex-col h-full overflow-hidden">
+<!-- TopAppBar -->
+<header class="bg-surface-pure border-b border-border-light flat no shadows h-16 flex justify-between items-center px-gutter w-full shrink-0 z-40 sticky top-0">
+<!-- Left: Breadcrumbs / Context -->
+<div class="flex items-center gap-4">
+<span class="font-headline-lg text-headline-lg font-bold text-primary">Settings</span>
+</div>
+<!-- Right: Search & Actions -->
+<div class="flex items-center gap-6">
+<!-- Search -->
+<div class="relative flex items-center focus-within:ring-2 focus-within:ring-primary rounded-DEFAULT">
+<span class="material-symbols-outlined absolute left-3 text-secondary text-lg">search</span>
+<input class="pl-10 pr-4 py-2 bg-surface border border-border-light rounded-DEFAULT text-sm focus:outline-none focus:border-primary transition-colors w-64 text-on-surface placeholder:text-secondary-fixed-dim" placeholder="Search settings..." type="text"/>
+</div>
+<!-- Trailing Icons -->
+<div class="flex items-center gap-4">
+<button class="text-secondary hover:text-primary transition-colors p-2 hover:bg-surface-container-low rounded-full">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="text-secondary hover:text-primary transition-colors p-2 hover:bg-surface-container-low rounded-full">
+<span class="material-symbols-outlined">help</span>
+</button>
+</div>
+</div>
+</header>
+<!-- Page Canvas -->
+<main class="flex-1 overflow-y-auto bg-surface-subtle p-gutter md:p-margin-md flex justify-center">
+<!-- Container for Bento-style layout -->
+<div class="w-full max-w-container-max flex flex-col lg:flex-row gap-gutter">
+<!-- Side-tab sub-navigation -->
+<aside class="w-full lg:w-48 shrink-0 flex flex-col gap-2">
+<button class="text-left px-4 py-2 border-l-4 border-primary text-primary bg-accent-warm font-bold font-body-md transition-colors rounded-r-sm">
+                        Profile
+                    </button>
+<button class="text-left px-4 py-2 border-l-4 border-transparent text-secondary hover:bg-surface-container-low hover:text-primary transition-colors font-body-md font-medium rounded-r-sm">
+                        Appearance
+                    </button>
+<button class="text-left px-4 py-2 border-l-4 border-transparent text-secondary hover:bg-surface-container-low hover:text-primary transition-colors font-body-md font-medium rounded-r-sm">
+                        API Keys
+                    </button>
+<button class="text-left px-4 py-2 border-l-4 border-transparent text-secondary hover:bg-surface-container-low hover:text-primary transition-colors font-body-md font-medium rounded-r-sm">
+                        Workspace
+                    </button>
+</aside>
+<!-- Settings Content Area -->
+<div class="flex-1 flex flex-col gap-margin-sm">
+<!-- Section Header -->
+<div class="mb-4">
+<h2 class="font-headline-lg text-headline-lg text-on-surface">Profile Settings</h2>
+<p class="text-secondary text-sm mt-1">Manage your personal information and preferences.</p>
+</div>
+<!-- Bento Grid Content -->
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-gutter">
+<!-- Card 1: Personal Info -->
+<div class="bg-surface-pure border border-border-light rounded-DEFAULT p-gutter flex flex-col gap-6 col-span-1 xl:col-span-2">
+<h3 class="font-bold text-lg text-on-surface border-b border-border-light pb-2">Personal Information</h3>
+<div class="flex items-start gap-gutter flex-col md:flex-row">
+<!-- Avatar Upload -->
+<div class="flex flex-col items-center gap-3 shrink-0">
+<div class="relative group cursor-pointer">
+<img alt="Profile Picture" class="w-24 h-24 rounded-full object-cover border-2 border-border-light group-hover:border-primary transition-colors" data-alt="A high resolution, detailed avatar image of a modern professional, well-lit studio style, neutral expression, set against a clean, light gray background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAefGEiNs4xO5hqHc1L6s5K2EIrWs0unSU4z0PyOODkB_bWLWgF_gmM3pafBlvzev_zGd83U8w05Lvdh3vMCdXNcxKhK5eqGPBEgOkhh3m254jiyd5kgQsScmrOV11CGufyDmd9fcefgBuZXehoyWBhKKMDcpbhp1lPifrUV2ZBXeBcfVaDZg-1cmuDlLqNN8IrZVqbkMgq_Ju4w3W8bB59BxKkIulINzOZPjZp5hOO1x8h4yJGd9tQ"/>
+<div class="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined text-white">photo_camera</span>
+</div>
+</div>
+<button class="text-primary font-label-caps text-label-caps hover:underline">Change Avatar</button>
+</div>
+<!-- Form Fields -->
+<div class="flex-1 w-full grid grid-cols-1 md:grid-cols-2 gap-4">
+<div class="flex flex-col gap-1">
+<label class="font-label-caps text-label-caps text-secondary">First Name</label>
+<input class="w-full bg-surface-pure border border-border-light rounded-DEFAULT px-3 py-2 text-on-surface focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 transition-all" type="text" value="Alex"/>
+</div>
+<div class="flex flex-col gap-1">
+<label class="font-label-caps text-label-caps text-secondary">Last Name</label>
+<input class="w-full bg-surface-pure border border-border-light rounded-DEFAULT px-3 py-2 text-on-surface focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 transition-all" type="text" value="Mercer"/>
+</div>
+<div class="flex flex-col gap-1 md:col-span-2">
+<label class="font-label-caps text-label-caps text-secondary">Email Address</label>
+<input class="w-full bg-surface-container-low border border-border-light rounded-DEFAULT px-3 py-2 text-secondary cursor-not-allowed" disabled="" type="email" value="alex.mercer@orplex.tech"/>
+</div>
+</div>
+</div>
+<div class="flex justify-end pt-4 border-t border-border-light mt-2">
+<button class="bg-primary text-on-primary px-6 py-2 rounded-DEFAULT font-bold hover:bg-tertiary transition-colors">Save Changes</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

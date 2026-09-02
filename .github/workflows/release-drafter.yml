@@ -1,0 +1,31 @@
+name: Release Drafter
+
+on:
+  # Auto-draft release notes when PRs are merged
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - labeled
+      - unlabeled
+  # Also update on push to main (catches any missed events)
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  update-release-draft:
+    name: Update Draft Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Draft a release
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
