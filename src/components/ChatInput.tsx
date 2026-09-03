@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import FileUpload from "./FileUpload";
 import ModeSelector, { AgentMode } from "./ModeSelector";
 import { useFileProcessor, formatFileSize, getFileIcon } from "@/hooks/useFileProcessor";
 import { IconDownload, IconStop, IconSend } from "./Icons";
 import QuotaIndicator from "./QuotaIndicator";
+import type { Skill } from "@/lib/skills";
 
 interface ChatInputProps {
   onSend: (text: string, fullContent: string, textFiles: any[], imageFiles: any[], mode: AgentMode) => void;
@@ -28,6 +29,13 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   const files = useFileProcessor();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const handleSkillSelected = useCallback((skill: Skill) => {
+    // Insert skill prefix into the input
+    const prefix = `${skill.promptPrefix}\n\n`;
+    setInput((prev) => prefix + prev);
+    textareaRef.current?.focus();
+  }, []);
+
   const handleSend = (text?: string) => {
     const msg = (text || input).trim();
     if (!msg && !files.hasFiles) return;
@@ -38,7 +46,9 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     let contentWithFiles = msg;
     if (textFiles.length > 0) {
       const fileBlocks = textFiles.map((f) =>
-        `\n\n---\n**File: \`${f.name}\`** (${formatFileSize(f.size)})\n\`\`\`\n${f.content}\n\`\`\``
+        `
+
+---\n**File: \`${f.name}\`** (${formatFileSize(f.size)})\n\`\`\`\n${f.content}\n\`\`\``
       ).join("");
       contentWithFiles = msg + fileBlocks;
     }
@@ -59,7 +69,9 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     let contentWithFiles = msg;
     if (textFiles.length > 0) {
       const fileBlocks = textFiles.map((f) =>
-        `\n\n---\n**File: \`${f.name}\`** (${formatFileSize(f.size)})\n\`\`\`\n${f.content}\n\`\`\``
+        `
+
+---\n**File: \`${f.name}\`** (${formatFileSize(f.size)})\n\`\`\`\n${f.content}\n\`\`\``
       ).join("");
       contentWithFiles = msg + fileBlocks;
     }
@@ -95,9 +107,10 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
           </div>
         )}
         <div className="chat-input-wrapper">
-          <div className="chat-attach-btn-wrap">
-            <FileUpload onFilesSelected={(newFiles) => files.addFiles(newFiles)} />
-          </div>
+          <FileUpload
+            onFilesSelected={(newFiles) => files.addFiles(newFiles)}
+            onSkillSelected={handleSkillSelected}
+          />
           <ModeSelector mode={agentMode} onChange={onModeChange} />
           <textarea
             ref={textareaRef}

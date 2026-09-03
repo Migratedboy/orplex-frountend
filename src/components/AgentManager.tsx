@@ -1,0 +1,513 @@
+"use client";
+
+import { useState, useEffect, useCallback, useRef } from "react";
+
+// === Types ===
+
+interface ManagerTask {
+  id: string;
+  role: string;
+  title: string;
+  status: string;
+  isLeased: boolean;
+  error?: string | null;
+  dependsOn: string[];
+  artifacts: { id: string; kind: string; name: string }[];
+}
+
+interface ManagerRun {
+  id: string;
+  prompt: string;
+  status: string;
+  autonomyPolicy: string;
+  executionTarget: string;
+  tokenUsage: number;
+  estimatedCostUsd: number;
+  estimatedCostLabel: string;
+  createdAt: string;
+  completedAt: string | null;
+  isActive: boolean;
+  artifactCount: number;
+  pendingApprovalCount: number;
+  tasks: ManagerTask[];
+}
+
+interface Notification {
+  id: string;
+  runId: string;
+  type: "completed" | "failed" | "approval" | "artifact";
+  message: string;
+  createdAt: string;
+  read: boolean;
+}
+
+// === Status Meta ===
+
+const RUN_STATUS: Record<string, { label: string; color: string; bg: string; icon: string }> = {
+  pending: { label: "Pending", color: "#71717a", bg: "#f4f4f5", icon: "⏳" },
+  planning: { label: "Planning", color: "#2563eb", bg: "#dbeafe", icon: "📋" },
+  executing: { label: "Executing", color: "#ea580c", bg: "#ffedd5", icon: "⚡" },
+  verifying: { label: "Verifying", color: "#7c3aed", bg: "#ede9fe", icon: "🔍" },
+  waiting_approval: { label: "Needs Review", color: "#b45309", bg: "#fef3c7", icon: "👁️" },
+  completed: { label: "Done", color: "#15803d", bg: "#dcfce7", icon: "✅" },
+  failed: { label: "Failed", color: "#b91c1c", bg: "#fee2e2", icon: "❌" },
+  cancelled: { label: "Cancelled", color: "#71717a", bg: "#f4f4f5", icon: "⏹️" },
+};
+
+const TASK_STATUS: Record<string, { label: string; color: string }> = {
+  pending: { label: "Queued", color: "#71717a" },
+  leased: { label: "Assigned", color: "#2563eb" },
+  running: { label: "Working", color: "#ea580c" },
+  waiting_approval: { label: "Review", color: "#b45309" },
+  verifying: { label: "Verifying", color: "#7c3aed" },
+  completed: { label: "Done", color: "#15803d" },
+  failed: { label: "Failed", color: "#b91c1c" },
+};
+
+const ROLE_META: Record<string, { icon: string; label: string }> = {
+  architect: { icon: "🏗️", label: "Architect" },
+  developer: { icon: "💻", label: "Developer" },
+  reviewer: { icon: "🔍", label: "Reviewer" },
+  verifier: { icon: "✅", label: "Verifier" },
+  browser: { icon: "🌐", label: "Browser" },
+  researcher: { icon: "📚", label: "Researcher" },
+};
+
+function timeAgo(iso: string): string {
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+// === Spawn Dialog ===
+
+function SpawnDialog({ onSpawn, onClose }: { onSpawn: (prompt: string, mode: string, model: string) => void; onClose: () => void }) {
+  const [prompt, setPrompt] = useState("");
+  const [mode, setMode] = useState("code");
+  const [model, setModel] = useState("auto");
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const handleSubmit = () => {
+    if (!prompt.trim()) return;
+    onSpawn(prompt.trim(), mode, model);
+    onClose();
+  };
+
+  return (
+    <div className="manager-spawn-overlay" onClick={onClose}>
+      <div className="manager-spawn-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="manager-spawn-header">
+          <h3>🚀 Spawn Agent</h3>
+          <button className="manager-spawn-close" onClick={onClose}>✕</button>
+        </div>
+
+        <textarea
+          ref={inputRef}
+          className="manager-spawn-input"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Describe the task for the agent to work on...&#10;&#10;Examples:&#10;• Fix the login form validation bug&#10;• Add unit tests for the API routes&#10;• Refactor the database layer to use transactions&#10;• Build a new dashboard page for analytics"
+          rows={5}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSubmit();
+          }}
+        />
+
+        <div className="manager-spawn-options">
+          <div className="manager-spawn-option">
+            <label>Mode</label>
+            <div className="manager-spawn-chips">
+              {["ask", "plan", "code"].map((m) => (
+                <button
+                  key={m}
+                  className={`manager-spawn-chip ${mode === m ? "active" : ""}`}
+                  onClick={() => setMode(m)}
+                >
+                  {m === "ask" ? "💬 Ask" : m === "plan" ? "📋 Plan" : "⚡ Code"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="manager-spawn-option">
+            <label>Model</label>
+            <select
+              className="manager-spawn-select"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+            >
+              <option value="auto">Auto (smart routing)</option>
+              <option value="gpt-4o">GPT-4o</option>
+              <option value="claude-sonnet">Claude Sonnet</option>
+              <option value="gemini-pro">Gemini Pro</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="manager-spawn-actions">
+          <span className="manager-spawn-hint">⌘ + Enter to spawn</span>
+          <button
+            className="manager-spawn-btn"
+            onClick={handleSubmit}
+            disabled={!prompt.trim()}
+          >
+            Spawn Agent →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// === Agent Card ===
+
+function AgentCard({ run, onSelect, onKill }: {
+  run: ManagerRun;
+  onSelect: (runId: string) => void;
+  onKill: (runId: string) => void;
+}) {
+  const status = RUN_STATUS[run.status] || RUN_STATUS.pending;
+  const tasks = run.tasks || [];
+  const doneCount = tasks.filter((t) => t.status === "completed").length;
+  const progress = tasks.length > 0 ? (doneCount / tasks.length) * 100 : 0;
+
+  return (
+    <div
+      className={`manager-card ${run.isActive ? "manager-card-active" : ""}`}
+      onClick={() => onSelect(run.id)}
+    >
+      {/* Status Bar */}
+      <div className="manager-card-status" style={{ background: status.bg }}>
+        <span className="manager-card-status-icon">{status.icon}</span>
+        <span className="manager-card-status-label" style={{ color: status.color }}>
+          {status.label}
+        </span>
+        {run.pendingApprovalCount > 0 && (
+          <span className="manager-card-approval-badge">
+            {run.pendingApprovalCount} review{run.pendingApprovalCount > 1 ? "s" : ""}
+          </span>
+        )}
+      </div>
+
+      {/* Prompt */}
+      <div className="manager-card-prompt">
+        {run.prompt.length > 120 ? run.prompt.slice(0, 120) + "..." : run.prompt}
+      </div>
+
+      {/* Progress */}
+      {tasks.length > 0 && (
+        <div className="manager-card-progress">
+          <div className="manager-card-progress-bar">
+            <div
+              className="manager-card-progress-fill"
+              style={{ width: `${progress}%`, background: status.color }}
+            />
+          </div>
+          <span className="manager-card-progress-text">
+            {doneCount}/{tasks.length} tasks
+          </span>
+        </div>
+      )}
+
+      {/* Task Decomposition Preview */}
+      {tasks.length > 1 && (
+        <div className="manager-card-tasks">
+          {tasks.slice(0, 4).map((task) => {
+            const taskMeta = TASK_STATUS[task.status] || TASK_STATUS.pending;
+            const roleMeta = ROLE_META[task.role] || { icon: "📄", label: task.role };
+            return (
+              <div key={task.id} className="manager-card-task-row">
+                <span className="manager-card-task-role">{roleMeta.icon}</span>
+                <span className="manager-card-task-title">{task.title.slice(0, 40)}</span>
+                <span className="manager-card-task-status" style={{ color: taskMeta.color }}>
+                  {task.status === "running" ? "◉" : task.status === "completed" ? "✓" : "○"}
+                </span>
+              </div>
+            );
+          })}
+          {tasks.length > 4 && (
+            <div className="manager-card-task-more">+{tasks.length - 4} more</div>
+          )}
+        </div>
+      )}
+
+      {/* Meta */}
+      <div className="manager-card-meta">
+        <span>{run.estimatedCostLabel}</span>
+        <span>•</span>
+        <span>{timeAgo(run.createdAt)}</span>
+        {run.artifactCount > 0 && (
+          <>
+            <span>•</span>
+            <span>📦 {run.artifactCount}</span>
+          </>
+        )}
+      </div>
+
+      {/* Kill button for active runs */}
+      {run.isActive && (
+        <button
+          className="manager-card-kill"
+          onClick={(e) => {
+            e.stopPropagation();
+            onKill(run.id);
+          }}
+          title="Cancel this agent"
+        >
+          ⏹
+        </button>
+      )}
+    </div>
+  );
+}
+
+// === Inbox Panel ===
+
+function InboxPanel({ notifications, onMarkRead, onNavigate }: {
+  notifications: Notification[];
+  onMarkRead: (id: string) => void;
+  onNavigate: (runId: string) => void;
+}) {
+  const unread = notifications.filter((n) => !n.read);
+
+  return (
+    <div className="manager-inbox">
+      <div className="manager-inbox-header">
+        <h4>📬 Inbox</h4>
+        {unread.length > 0 && (
+          <span className="manager-inbox-badge">{unread.length}</span>
+        )}
+      </div>
+      <div className="manager-inbox-list">
+        {notifications.length === 0 ? (
+          <div className="manager-inbox-empty">No notifications yet</div>
+        ) : (
+          notifications.map((n) => (
+            <div
+              key={n.id}
+              className={`manager-inbox-item ${n.read ? "" : "unread"}`}
+              onClick={() => {
+                onMarkRead(n.id);
+                onNavigate(n.runId);
+              }}
+            >
+              <div className="manager-inbox-item-icon">
+                {n.type === "completed" ? "✅" : n.type === "failed" ? "❌" : n.type === "approval" ? "👁️" : "📦"}
+              </div>
+              <div className="manager-inbox-item-content">
+                <div className="manager-inbox-item-message">{n.message}</div>
+                <div className="manager-inbox-item-time">{timeAgo(n.createdAt)}</div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// === Main Manager Component ===
+
+export default function AgentManager() {
+  const [runs, setRuns] = useState<ManagerRun[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showSpawn, setShowSpawn] = useState(false);
+  const [showInbox, setShowInbox] = useState(false);
+  const [filter, setFilter] = useState<"all" | "active" | "completed">("all");
+  const [selectedRun, setSelectedRun] = useState<string | null>(null);
+
+  // Fetch runs
+  const fetchRuns = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ limit: "50" });
+      if (filter === "active") params.set("status", "active");
+      const res = await fetch(`/api/agent/runs?${params}`);
+      const data = await res.json();
+      if (data.success) {
+        setRuns(data.runs || []);
+      }
+    } catch {}
+    setLoading(false);
+  }, [filter]);
+
+  // Fetch notifications
+  const fetchNotifications = useCallback(async () => {
+    try {
+      const res = await fetch("/api/agent/notifications?limit=20");
+      const data = await res.json();
+      if (data.success) {
+        setNotifications(data.notifications || []);
+      }
+    } catch {}
+  }, []);
+
+  // Initial fetch + polling
+  useEffect(() => {
+    setLoading(true);
+    fetchRuns();
+    fetchNotifications();
+    const interval = setInterval(() => {
+      fetchRuns();
+      fetchNotifications();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [fetchRuns, fetchNotifications]);
+
+  // Spawn agent
+  const handleSpawn = async (prompt: string, mode: string, _model: string) => {
+    try {
+      const res = await fetch("/api/agent/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, mode, autonomyPolicy: "approval" }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchRuns();
+        // Open the artifact panel for the new run
+        try {
+          const { openArtifactPanel } = await import("./AppLayout");
+          openArtifactPanel(data.run.id);
+        } catch {}
+      }
+    } catch {}
+  };
+
+  // Kill agent
+  const handleKill = async (runId: string) => {
+    try {
+      await fetch(`/api/agent/runs/${runId}`, { method: "DELETE" });
+      fetchRuns();
+    } catch {}
+  };
+
+  // Mark notification read
+  const handleMarkRead = async (id: string) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
+    );
+    try {
+      await fetch(`/api/agent/notifications/${id}/read`, { method: "POST" });
+    } catch {}
+  };
+
+  // Navigate to run
+  const handleNavigate = async (runId: string) => {
+    setSelectedRun(runId);
+    try {
+      const { openArtifactPanel } = await import("./AppLayout");
+      openArtifactPanel(runId);
+    } catch {}
+  };
+
+  // Filter runs
+  const filteredRuns = runs.filter((r) => {
+    if (filter === "active") return r.isActive;
+    if (filter === "completed") return r.status === "completed" || r.status === "failed";
+    return true;
+  });
+
+  const activeCount = runs.filter((r) => r.isActive).length;
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  return (
+    <div className="manager-container">
+      {/* Header */}
+      <div className="manager-header">
+        <div className="manager-header-left">
+          <h2 className="manager-title">🎛️ Agent Manager</h2>
+          <p className="manager-subtitle">
+            {activeCount > 0
+              ? `${activeCount} agent${activeCount > 1 ? "s" : ""} working`
+              : "All agents idle"}
+          </p>
+        </div>
+
+        <div className="manager-header-actions">
+          {/* Inbox */}
+          <button
+            className="manager-inbox-btn"
+            onClick={() => setShowInbox(!showInbox)}
+          >
+            📬
+            {unreadCount > 0 && <span className="manager-inbox-btn-badge">{unreadCount}</span>}
+          </button>
+
+          {/* Filter */}
+          <div className="manager-filter">
+            {(["all", "active", "completed"] as const).map((f) => (
+              <button
+                key={f}
+                className={`manager-filter-btn ${filter === f ? "active" : ""}`}
+                onClick={() => setFilter(f)}
+              >
+                {f === "all" ? "All" : f === "active" ? `Active (${activeCount})` : "Done"}
+              </button>
+            ))}
+          </div>
+
+          {/* Spawn */}
+          <button className="manager-spawn-btn" onClick={() => setShowSpawn(true)}>
+            + Spawn Agent
+          </button>
+        </div>
+      </div>
+
+      {/* Inbox Sidebar */}
+      {showInbox && (
+        <InboxPanel
+          notifications={notifications}
+          onMarkRead={handleMarkRead}
+          onNavigate={handleNavigate}
+        />
+      )}
+
+      {/* Agent Grid */}
+      <div className="manager-grid">
+        {loading ? (
+          <div className="manager-loading">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="manager-card-skeleton" />
+            ))}
+          </div>
+        ) : filteredRuns.length === 0 ? (
+          <div className="manager-empty">
+            <div className="manager-empty-icon">🚀</div>
+            <h3>No agents {filter === "active" ? "working" : filter === "completed" ? "completed" : ""}</h3>
+            <p>
+              {filter === "active"
+                ? "Spawn an agent to get started."
+                : "Click \"Spawn Agent\" to dispatch your first task."}
+            </p>
+            <button className="manager-spawn-btn" onClick={() => setShowSpawn(true)}>
+              + Spawn Agent
+            </button>
+          </div>
+        ) : (
+          filteredRuns.map((run) => (
+            <AgentCard
+              key={run.id}
+              run={run}
+              onSelect={handleNavigate}
+              onKill={handleKill}
+            />
+          ))
+        )}
+      </div>
+
+      {/* Spawn Dialog */}
+      {showSpawn && (
+        <SpawnDialog onSpawn={handleSpawn} onClose={() => setShowSpawn(false)} />
+      )}
+    </div>
+  );
+}

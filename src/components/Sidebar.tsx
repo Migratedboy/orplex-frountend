@@ -12,6 +12,7 @@ import { virtualFS, VirtualFileNode } from "@/lib/virtual-fs";
 
 const NAV_ITEMS = [
   { href: "/history", label: "History", Icon: IconHistory },
+  { href: "/manager", label: "Agent Manager", Icon: IconAgent, badge: "runs" as const },
   { href: "/runs", label: "Runs Board", Icon: IconAgent, badge: "runs" as const },
   { href: "/plugins", label: "Plugins", Icon: IconPlugins },
   { href: "/settings", label: "Settings", Icon: IconSettings },

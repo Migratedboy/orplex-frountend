@@ -1,0 +1,36 @@
+# render.yaml — Deploy to Render (free tier)
+# Free tier: web service spins down after 15 min inactivity
+# Auto-wakes on first request (~30s cold start)
+
+services:
+  # === Main App (Next.js) ===
+  - type: web
+    name: orplex-tech
+    runtime: node
+    plan: free
+    buildCommand: npm install && npx prisma generate && npm run build
+    startCommand: npx prisma db push --skip-generate && npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXTAUTH_SECRET
+        generateValue: true
+      - key: NEXTAUTH_URL
+        sync: false
+        value: https://orplex-tech.onrender.com
+      - key: DATABASE_URL
+        fromDatabase:
+          name: orplex-db
+          property: connectionString
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+
+  # === PostgreSQL Database ===
+  - type: pgsql
+    name: orplex-db
+    plan: free
+    # Free tier: 90 days, 1 GB storage
+    # Database spins down after 90 days of inactivity

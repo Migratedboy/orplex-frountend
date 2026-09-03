@@ -55,6 +55,10 @@ export async function GET(request: NextRequest) {
           leaseOwner: true,
           error: true,
           dependencies: { select: { dependsOnId: true } },
+          artifacts: {
+            select: { id: true, kind: true, name: true },
+            orderBy: { createdAt: "asc" },
+          },
         },
       },
       approvals: {
@@ -89,6 +93,7 @@ export async function GET(request: NextRequest) {
         isLeased: t.status === "running" && t.leaseOwner !== null,
         error: t.error,
         dependsOn: t.dependencies.map((d) => d.dependsOnId),
+        artifacts: t.artifacts,
       })),
     };
   });
@@ -101,4 +106,50 @@ export async function GET(request: NextRequest) {
     runs: boardRuns,
     summary: { total: boardRuns.length, active: activeCount, pendingApprovals },
   });
+}
+
+/**
+ * POST /api/agent/runs — Create a new agent run (spawn an agent)
+ */
+export async function POST(request: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.id) {
+    return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
+  }
+
+  const body = await request.json().catch(() => ({}));
+  const { prompt, mode = "code", autonomyPolicy = "approval", executionTarget = "server" } = body;
+
+  if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
+    return NextResponse.json({ success: false, error: "prompt is required" }, { status: 400 });
+  }
+
+  try {
+    const run = await prisma.agentRun.create({
+      data: {
+        userId: session.user.id,
+        prompt: prompt.trim(),
+        status: "pending",
+        workspace: ".",
+        executionTarget,
+        autonomyPolicy,
+        idempotencyKey: `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      },
+    });
+
+    // Create a spawn event
+    await prisma.runEvent.create({
+      data: {
+        runId: run.id,
+        sequence: 0,
+        type: "spawned",
+        payload: { prompt: prompt.trim(), mode },
+      },
+    });
+
+    return NextResponse.json({ success: true, run });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ success: false, error: msg }, { status: 500 });
+  }
 }
