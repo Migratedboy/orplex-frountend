@@ -167,15 +167,21 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
         .then((j: {
           success?: boolean;
           models?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
+          coldModelIds?: string[];
           throttledModels?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
           userModels?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
           keysRev?: string;
         }) => {
+          const coldIds = new Set(j.coldModelIds ?? []);
           const list = (j.models ?? []).map((m) => ({
             key: m.id,
             name: m.name || m.id,
             tag: PROVIDER_TAG[m.provider] || m.provider,
-            detail: [m.free ? "free" : undefined, m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : undefined]
+            detail: [
+              coldIds.has(m.id) ? "❄ cold" : undefined,
+              m.free ? "free" : undefined,
+              m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : undefined,
+            ]
               .filter(Boolean)
               .join(" · ") || undefined,
           }));

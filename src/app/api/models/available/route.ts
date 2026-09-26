@@ -28,6 +28,9 @@ export async function GET(_request: NextRequest) {
 
   try {
     const { models, throttledModels, probedAt, providers } = await getVerifiedModels();
+    // cold = probe timed out on NVIDIA build.farm warm-up (listed + 4xx-less).
+    // Passed through so the picker can tag them instead of silently hiding.
+    const coldIds = new Set(models.filter((m) => (m as { cold?: boolean }).cold).map((m) => m.id));
 
     // BYOK listings from the user's stored keys. Empty caches simply
     // contribute nothing; failures must never break the endpoint.
@@ -63,7 +66,16 @@ export async function GET(_request: NextRequest) {
       /* BYOK section is best-effort */
     }
 
-    return Response.json({ success: true, models, throttledModels, probedAt, providers, userModels, keysRev });
+    return Response.json({
+      success: true,
+      models,
+      coldModelIds: [...coldIds],
+      throttledModels,
+      probedAt,
+      providers,
+      userModels,
+      keysRev,
+    });
   } catch {
     return Response.json(
       { success: true, models: [], throttledModels: [], providers: [], probedAt: new Date().toISOString(), userModels: [], keysRev: "" },

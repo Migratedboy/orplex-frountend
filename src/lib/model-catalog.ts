@@ -34,6 +34,14 @@ export interface CatalogModel {
    * from genuinely dead models.
    */
   throttled?: boolean;
+  /**
+   * Probe TIMED OUT without an HTTP error — NVIDIA build.farm cold-loads
+   * model functions on first invocation, so a freshly listed model can hang
+   * for minutes then work fine (kimi-k3 did exactly this). The model stays
+   * IN the catalog (listed = the provider offers it right now), flagged so
+   * the picker renders it tagged "cold" instead of pretending it verified.
+   */
+  cold?: boolean;
 }
 
 interface CatalogResult {
@@ -246,7 +254,7 @@ async function listProviderModelsRaw(def: ProviderDef): Promise<RawModel[] | nul
 // ---------------------------------------------------------------------------
 
 /** Probe verdict per model. */
-type ProbeVerdict = "ok" | "rate_limited" | "dead";
+type ProbeVerdict = "ok" | "rate_limited" | "cold_start" | "dead";
 
 /** Probe one model with a minimal completion. True iff it answers with content. */
 export async function probeModel(
@@ -306,9 +314,21 @@ export async function probeModel(
     // reasoning — finish_reason "length"), which still proves the model works.
     return Array.isArray(json.choices) && json.choices.length > 0 ? "ok" : "dead";
   } catch (err) {
-    // Timeouts land here: Groq queues requests when the per-minute token
-    // budget is tight — a queued-then-served response is still proof of life,
-    // hence the generous budget. Log so silent kills become diagnosable.
+    // Timeouts land here. Two very different causes:
+    //  - Groq queues under token-budget pressure — queued-then-served is
+    //    still proof of life, hence the generous budget.
+    //  - NVIDIA build.farm cold-loads model functions: a freshly listed
+    //    model can hang past ANY timeout on its first invocations, then
+    //    work fine minutes later (kimi-k3 did exactly this). Treating that
+    //    as dead permanently removes working models from the picker.
+    // A listed model whose probe only TIMED OUT (never 4xx'd) is marked
+    // cold_start: kept in the picker, tagged "cold", visibly separate from
+    // probe-verified rows. Only the HTTP-error paths below return "dead".
+    const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError" || /timeout|abort/i.test(err.message));
+    if (timedOut && provider === "nvidia") {
+      console.warn(`[model-catalog] probe ${provider}/${modelId}: timeout — build.farm cold-start, keeping as cold_start`);
+      return "cold_start";
+    }
     console.warn(
       `[model-catalog] probe ${provider}/${modelId}: ${err instanceof Error ? err.name + ": " + err.message : String(err)}`
     );
@@ -506,6 +526,9 @@ async function sweepCatalog(): Promise<CatalogResult> {
     if (!arr || arr.length === 0) return undefined;
     if (arr.includes("ok")) return "ok";
     if (arr.includes("rate_limited")) return "rate_limited";
+    // cold_start (NVIDIA build.farm warm-up) outranks dead only when every
+    // provider listing it timed out — one provider actually answering wins.
+    if (arr.includes("cold_start")) return "cold_start";
     return "dead";
   };
 
@@ -531,7 +554,10 @@ async function sweepCatalog(): Promise<CatalogResult> {
         ...(v === "rate_limited" ? { throttled: true } : {}),
       };
       if (v === "rate_limited") throttledOut.push(entry);
-      else out.push(entry);
+      else {
+        if (v === "cold_start") entry.cold = true;
+        out.push(entry);
+      }
     }
   }
   // Fully-verified first, then provider + name for stable order.
