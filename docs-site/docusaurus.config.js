@@ -1,3 +1,6 @@
+const lightCodeTheme = require("prism-react-renderer").themes.github;
+const darkCodeTheme = require("prism-react-renderer").themes.dracula;
+
 module.exports = {
   title: "Orplex Tech",
   tagline: "AI coding assistant with streaming chat, multi-provider support, and agentic tool calling",
@@ -38,7 +41,7 @@ module.exports = {
       ],
       copyright: `Copyright ${new Date().getFullYear()} Orplex Tech.`,
     },
-    prism: { theme: require("prism-react-renderer").themes.github, darkTheme: require("prism-react-renderer").themes.dracula },
+    prism: { theme: lightCodeTheme, darkTheme: darkCodeTheme },
   },
   presets: [
     ["classic", {

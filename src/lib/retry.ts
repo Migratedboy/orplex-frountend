@@ -67,6 +67,27 @@ export function retryAfterMs(err: unknown, now = Date.now()): number | null {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Race `fn` against a timeout WITHOUT leaking the timer: when either side
+ * settles, the loser's setTimeout is cleared so Jest's open-handle detector
+ * (and any long-lived process) sees nothing dangling.
+ */
+async function withTimeout<T>(fn: Promise<T>, ms: number, label: string, attempt: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      fn,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} attempt ${attempt} timed out after ${ms}ms`)), ms);
+        // Never keep a process/worker alive just for this timer.
+        (timer as unknown as { unref?: () => void }).unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Retry `fn` on transient failures with exponential backoff + full jitter.
  * Non-transient errors (400, 401, 403 — bad request/key) rethrow immediately:
  * retrying those just burns the caller's budget.
@@ -84,12 +105,7 @@ export async function withRetry<T>(
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       if (opts.attemptTimeoutMs) {
-        return await Promise.race([
-          fn(attempt),
-          sleep(opts.attemptTimeoutMs).then(() => {
-            throw new Error(`${label} attempt ${attempt} timed out after ${opts.attemptTimeoutMs}ms`);
-          }),
-        ]);
+        return await withTimeout(fn(attempt), opts.attemptTimeoutMs, label, attempt);
       }
       return await fn(attempt);
     } catch (err) {

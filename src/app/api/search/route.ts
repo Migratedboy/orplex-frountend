@@ -40,8 +40,13 @@ async function searchGoogle(query: string): Promise<SearchResult[]> {
   const html = await res.text();
 
   // Consent/challenge pages contain no result anchors — treat as failure.
-  if (/consent\.google\.com|detected unusual traffic/i.test(html)) {
-    throw new Error("Google consent/challenge page");
+  // 2026-09: Google's gbv=1 endpoint now answers with a JS-retry interstitial
+  // (httpservice/retry/enablejs) containing ZERO /url?q= links — detect it so
+  // the chain skips to the next engine in milliseconds instead of parsing air.
+  if (
+    /consent\.google\.com|detected unusual traffic|httpservice\/retry\/enablejs/i.test(html)
+  ) {
+    throw new Error("Google bot-wall/JS-retry page");
   }
 
   const results: SearchResult[] = [];
@@ -125,6 +130,34 @@ async function searchDuckDuckGo(query: string): Promise<SearchResult[]> {
   return results;
 }
 
+/**
+ * Last-resort engine: DDG's lite endpoint is a tiny static page (table rows,
+ * class="result-link") that survives server fetches without JS challenges.
+ * Verified live: 200 + 10 result-links where html.duckduckgo.com and Google
+ * both bot-wall the request.
+ */
+async function searchDuckDuckGoLite(query: string): Promise<SearchResult[]> {
+  const res = await fetch(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, {
+    headers: { "User-Agent": BROWSER_UA },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`DDG-lite ${res.status}`);
+  const html = await res.text();
+
+  const results: SearchResult[] = [];
+  const linkRe = /<a[^>]*class="result-link"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
+  let m: RegExpExecArray | null;
+  while ((m = linkRe.exec(html)) !== null && results.length < 10) {
+    let url = m[1];
+    const uddg = url.match(/uddg=([^&]+)/);
+    if (uddg) url = decodeURIComponent(uddg[1]);
+    const title = m[2].replace(/<[^>]+>/g, "").trim();
+    if (title && /^https?:\/\//i.test(url)) results.push({ title, url, snippet: "" });
+  }
+  if (results.length === 0) throw new Error("DDG-lite returned no results");
+  return results;
+}
+
 export async function POST(request: NextRequest) {
   const session = await getServerSession(jwtOnlyOptions);
   if (!session?.user?.id) {
@@ -142,6 +175,7 @@ export async function POST(request: NextRequest) {
       { name: "google", fn: searchGoogle },
       { name: "bing", fn: searchBing },
       { name: "duckduckgo", fn: searchDuckDuckGo },
+      { name: "ddg-lite", fn: searchDuckDuckGoLite },
     ];
 
     let lastError: string = "unknown";

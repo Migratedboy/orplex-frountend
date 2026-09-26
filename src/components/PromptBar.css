@@ -213,6 +213,38 @@
   font-size: 12px;
 }
 
+.prompt-bar__model-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 8px;
+  color: var(--pb-muted);
+  font-size: 12px;
+}
+
+.prompt-bar__model-loading-spinner {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid var(--pb-muted);
+  border-top-color: transparent;
+  animation: prompt-bar-spin 0.7s linear infinite;
+}
+
+@keyframes prompt-bar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prompt-bar__model-loading-spinner {
+    animation-duration: 1.6s;
+  }
+}
+
 .prompt-bar__field {
   position: relative;
   isolation: isolate;

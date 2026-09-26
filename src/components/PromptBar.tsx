@@ -184,6 +184,8 @@ export interface PromptBarProps {
   onModeChange?: (mode: PromptBarMode) => void;
   /** Recently used models (most recent first) — shown when the model menu opens with an empty search */
   recentModels?: PromptBarModel[];
+  /** True while the parent is fetching the live verified catalog — the model menu shows a small loading indicator instead of implying the short list is everything */
+  modelsLoading?: boolean;
   /** Fired when the model menu opens so the parent can (re)load the verified catalog */
   onModelMenuOpened?: () => unknown;
   /** Extra condition that enables sending even with an empty draft (e.g. attached files) */
@@ -240,6 +242,7 @@ export default function PromptBar({
   onModeChange,
   recentModels,
   onModelMenuOpened,
+  modelsLoading = false,
   onDraftChange,
   onRegisterClear,
   onRegisterControls,
@@ -798,6 +801,12 @@ export default function PromptBar({
                   ) : null}
                 </button>
                 ))}
+              {open === "model" && modelsLoading ? (
+                <div className="prompt-bar__model-loading" role="status" aria-live="polite">
+                  <span className="prompt-bar__model-loading-spinner" aria-hidden="true" />
+                  <span>Fetching verified models…</span>
+                </div>
+              ) : null}
               {open === "model" && list.length > renderLimit ? (
                 <button
                   type="button"
@@ -808,7 +817,8 @@ export default function PromptBar({
                   <span className="prompt-bar__row-name">Show {Math.min(MODEL_CHUNK, list.length - renderLimit)} more…</span>
                 </button>
               ) : null}
-              {list.length === 0 ? <div className="prompt-bar__empty">No matches for “{query}”</div> : null}
+              {list.length === 0 && !modelsLoading ? <div className="prompt-bar__empty">No matches for “{query}”</div> : null}
+              {list.length === 0 && modelsLoading ? <div className="prompt-bar__empty">Loading the live catalog…</div> : null}
             </>
           )}
         </div>

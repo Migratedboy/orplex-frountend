@@ -167,6 +167,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
         .then((j: {
           success?: boolean;
           models?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
+          throttledModels?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
           userModels?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
           keysRev?: string;
         }) => {
@@ -194,7 +195,21 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             userModelsRef.current = userList;
           }
           if (list.length > 0) {
-            setCatalogModels(list);
+            // Throttled models (verified listing, probe rate-limited) ride at
+            // the end with a visible tag — the picker stays full even when a
+            // free tier is mid-sweep, and selecting one still works (the
+            // server's failover chain may serve it fine).
+            const throttledList = (j.throttledModels ?? [])
+              .filter((m) => !list.some((x) => x.key === m.id))
+              .map((m) => ({
+                key: m.id,
+                name: m.name || m.id,
+                tag: PROVIDER_TAG[m.provider] || m.provider,
+                detail: ["throttled", m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : undefined]
+                  .filter(Boolean)
+                  .join(" · "),
+              }));
+            setCatalogModels([...list, ...throttledList]);
             finish();
             return;
           }
@@ -372,6 +387,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             commands={SKILL_CATEGORIES.flatMap((c) => c.skills.map((s) => ({ key: s.id, name: `/${s.name}`, description: s.description, insert: s.promptPrefix })))}
             models={models}
             recentModels={recentModels}
+            modelsLoading={catalogLoading}
             onModelMenuOpened={loadCatalog}
             defaultModel={pickerState.modelKey ?? models[0].key}
             efforts={["Low", "Medium", "High"]}
