@@ -36,7 +36,9 @@ const SKIP_PARTS = new Set(["node_modules", ".next", "coverage", ".git", ".docus
 // relative to the repo root (eval fixtures define mock endpoints for agent
 // tasks — the agent is supposed to create those routes); refs are exact.
 const REF_ALLOWLIST_FILES = ["src/lib/eval/**"];
-const REF_ALLOWLIST = new Set([]);
+// api-base.test.ts exercises the fetch-seam with deliberately fake routes
+// (they assert URL construction, never a real handler).
+const REF_ALLOWLIST = new Set(["/api/ping", "/api/x"]);
 
 const strict = process.argv.includes("--strict");
 
