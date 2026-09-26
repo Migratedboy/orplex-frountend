@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 
+import { apiFetch } from "@/lib/api-base";
 // === Types ===
 
 interface ManagerTask {
@@ -85,10 +86,12 @@ function timeAgo(iso: string): string {
 
 // === Spawn Dialog ===
 
-function SpawnDialog({ onSpawn, onClose }: { onSpawn: (prompt: string, mode: string, model: string) => void; onClose: () => void }) {
+function SpawnDialog({ onSpawn, onClose }: { onSpawn: (prompt: string, mode: string, model: string, schedule: "now" | "tonight") => void; onClose: () => void }) {
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState("code");
   const [model, setModel] = useState("auto");
+  const [customMode, setCustomMode] = useState(false);
+  const [schedule, setSchedule] = useState<"now" | "tonight">("now");
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -97,7 +100,8 @@ function SpawnDialog({ onSpawn, onClose }: { onSpawn: (prompt: string, mode: str
 
   const handleSubmit = () => {
     if (!prompt.trim()) return;
-    onSpawn(prompt.trim(), mode, model);
+    const chosen = customMode && !model.trim() ? "auto" : model.trim();
+    onSpawn(prompt.trim(), mode, chosen, schedule);
     onClose();
   };
 
@@ -139,16 +143,47 @@ function SpawnDialog({ onSpawn, onClose }: { onSpawn: (prompt: string, mode: str
 
           <div className="manager-spawn-option">
             <label>Model</label>
-            <select
-              className="manager-spawn-select"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-            >
-              <option value="auto">Auto (smart routing)</option>
-              <option value="gpt-4o">GPT-4o</option>
-              <option value="claude-sonnet">Claude Sonnet</option>
-              <option value="gemini-pro">Gemini Pro</option>
-            </select>
+            {customMode ? (
+              <input
+                className="manager-spawn-select"
+                value={model}
+                placeholder="e.g. anthropic/claude-sonnet-4 (BYOK — your key)"
+                autoFocus
+                onChange={(e) => setModel(e.target.value)}
+                onBlur={(e) => { if (!e.target.value.trim()) { setModel("auto"); setCustomMode(false); } }}
+              />
+            ) : (
+              <select
+                className="manager-spawn-select"
+                value={model}
+                onChange={(e) => {
+                  if (e.target.value === "__custom__") { setCustomMode(true); setModel(""); }
+                  else setModel(e.target.value);
+                }}
+              >
+                <option value="auto">Auto (provider default)</option>
+                <option value="__custom__">Custom (BYOK model id)…</option>
+              </select>
+            )}
+          </div>
+
+          <div className="manager-spawn-option">
+            <label>Schedule</label>
+            <div className="manager-spawn-chips">
+              <button
+                className={`manager-spawn-chip ${schedule === "now" ? "active" : ""}`}
+                onClick={() => setSchedule("now")}
+              >
+                ⚡ Now
+              </button>
+              <button
+                className={`manager-spawn-chip ${schedule === "tonight" ? "active" : ""}`}
+                onClick={() => setSchedule("tonight")}
+                title="Run overnight at 02:00 — the morning PR queue"
+              >
+                🌙 Tonight (02:00)
+              </button>
+            </div>
           </div>
         </div>
 
@@ -330,7 +365,7 @@ export default function AgentManager() {
     try {
       const params = new URLSearchParams({ limit: "50" });
       if (filter === "active") params.set("status", "active");
-      const res = await fetch(`/api/agent/runs?${params}`);
+      const res = await apiFetch(`/api/agent/runs?${params}`);
       const data = await res.json();
       if (data.success) {
         setRuns(data.runs || []);
@@ -342,7 +377,7 @@ export default function AgentManager() {
   // Fetch notifications
   const fetchNotifications = useCallback(async () => {
     try {
-      const res = await fetch("/api/agent/notifications?limit=20");
+      const res = await apiFetch("/api/agent/notifications?limit=20");
       const data = await res.json();
       if (data.success) {
         setNotifications(data.notifications || []);
@@ -362,13 +397,37 @@ export default function AgentManager() {
     return () => clearInterval(interval);
   }, [fetchRuns, fetchNotifications]);
 
+  // Provider badge (free tier vs BYOK) — fetched once.
+  const [provider, setProvider] = useState<{ provider: string; model: string; budgetMode: string; keyPresent: boolean } | null>(null);
+  useEffect(() => {
+    apiFetch("/api/agent/provider-status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => (d?.success ? setProvider(d) : null))
+      .catch(() => {});
+  }, []);
+
   // Spawn agent
-  const handleSpawn = async (prompt: string, mode: string, _model: string) => {
+  const handleSpawn = async (prompt: string, mode: string, model: string, schedule: "now" | "tonight") => {
     try {
-      const res = await fetch("/api/agent/runs", {
+      // 🌙 Morning PR queue: park the run until 02:00 local so the serial
+      // executor sips through it overnight (8k-TPM compliant by construction).
+      let notBefore: string | undefined;
+      if (schedule === "tonight") {
+        const tonight = new Date();
+        tonight.setHours(2, 0, 0, 0);
+        if (tonight.getTime() <= Date.now()) tonight.setDate(tonight.getDate() + 1);
+        notBefore = tonight.toISOString();
+      }
+      const res = await apiFetch("/api/agent/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, mode, autonomyPolicy: "approval" }),
+        body: JSON.stringify({
+          prompt,
+          mode,
+          autonomyPolicy: "approval",
+          ...(model && model !== "auto" ? { modelOverride: model } : {}),
+          ...(notBefore ? { notBefore } : {}),
+        }),
       });
       const data = await res.json();
       if (data.success) {
@@ -385,7 +444,7 @@ export default function AgentManager() {
   // Kill agent
   const handleKill = async (runId: string) => {
     try {
-      await fetch(`/api/agent/runs/${runId}`, { method: "DELETE" });
+      await apiFetch(`/api/agent/runs/${runId}`, { method: "DELETE" });
       fetchRuns();
     } catch {}
   };
@@ -396,7 +455,7 @@ export default function AgentManager() {
       prev.map((n) => (n.id === id ? { ...n, read: true } : n))
     );
     try {
-      await fetch(`/api/agent/notifications/${id}/read`, { method: "POST" });
+      await apiFetch(`/api/agent/notifications/${id}/read`, { method: "POST" });
     } catch {}
   };
 
@@ -429,6 +488,18 @@ export default function AgentManager() {
             {activeCount > 0
               ? `${activeCount} agent${activeCount > 1 ? "s" : ""} working`
               : "All agents idle"}
+            {provider && (
+              <span
+                className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-label align-middle"
+                style={{
+                  background: provider.budgetMode === "byok" ? "rgba(16,185,129,.15)" : "rgba(99,102,241,.12)",
+                  color: provider.budgetMode === "byok" ? "#10b981" : "#818cf8",
+                }}
+                title={provider.keyPresent ? `${provider.provider} · ${provider.model}` : `${provider.provider} — ${provider.budgetMode === "byok" ? "key missing" : "default key"}`}
+              >
+                {provider.budgetMode === "byok" ? "🔑 BYOK" : "🆓 Free tier"} · {provider.model}
+              </span>
+            )}
           </p>
         </div>
 

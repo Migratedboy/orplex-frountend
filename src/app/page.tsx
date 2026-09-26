@@ -32,11 +32,11 @@ export default function ChatPage() {
   const [fastLoading, setFastLoading] = useState(false);
 
   const sendingRef = useRef(false);
-  const handleSend = async (text: string, fullContent: string, textFiles: any[], imageFiles: any[], mode: AgentMode) => {
+  const handleSend = async (text: string, fullContent: string, textFiles: any[], imageFiles: any[], mode: AgentMode, effort?: string, model?: string) => {
     if (sendingRef.current) return; // Prevent double-send (sync ref, no async lag)
     sendingRef.current = true;
     try {
-      await session.sendMessage(text, fullContent, textFiles, imageFiles, mode);
+      await session.sendMessage(text, fullContent, textFiles, imageFiles, mode, effort, model);
     } finally {
       sendingRef.current = false;
     }
@@ -45,11 +45,40 @@ export default function ChatPage() {
   const handleFastAnswer = async (userMessage: string) => {
     if (fastLoading) return;
     setFastLoading(true);
-    // Cancel the background task so it doesn't overwrite the fast answer
+    // Kill the background agent so it can't overwrite the fast answer later
     try {
-      const { cancelTask } = await import("@/lib/background-chat");
-      cancelTask();
+      const { abortCurrentTask } = await import("@/lib/background-chat");
+      abortCurrentTask();
     } catch {}
+
+    // Target the assistant bubble that follows the user's own message (the
+    // one "Answer Now" was clicked on). Searching the whole store for the
+    // last assistant message can overwrite a DIFFERENT conversation's or an
+    // older finished reply when history is loaded mid-run.
+    let bubbleIdx = -1;
+    {
+      const msgs = session.messages;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === "user" && msgs[i].content === userMessage) {
+          bubbleIdx = i + 1;
+          break;
+        }
+      }
+    }
+    if (bubbleIdx < 0 || bubbleIdx >= session.messages.length) {
+      // No matching exchange in the store (e.g. user left the page mid-run and
+      // the agent finished in the background). Answer in a fresh pair instead
+      // of silently dropping the response.
+      session.setMessages(prev => {
+        const now = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+        return [
+          ...prev,
+          { role: "user" as const, content: userMessage, time: now },
+          { role: "assistant" as const, content: "", time: now },
+        ];
+      });
+    }
+
     try {
       const res = await fetch("/api/chat/fast", {
         method: "POST",
@@ -60,8 +89,30 @@ export default function ChatPage() {
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let content = "";
-      // Find the last assistant message and update it
-      const msgs = session.setMessages;
+      const writeChunk = (next: string) => {
+        session.setMessages(prev => {
+          // Re-locate the assistant bubble each chunk: if the user's message
+          // appears multiple times, pick the one that still has an EMPTY
+          // assistant bubble right after it (the one this answer owns).
+          for (let i = prev.length - 2; i >= 0; i--) {
+            if (prev[i].role === "user" && prev[i].content === userMessage) {
+              const idx = i + 1;
+              if (idx < prev.length && prev[idx].role === "assistant" && !prev[idx].content) {
+                const updated = [...prev];
+                updated[idx] = { ...updated[idx], content: next };
+                return updated;
+              }
+            }
+          }
+          // Fall back to the slot captured at click time if it still exists.
+          if (bubbleIdx >= 0 && bubbleIdx < prev.length && prev[bubbleIdx].role === "assistant") {
+            const updated = [...prev];
+            updated[bubbleIdx] = { ...updated[bubbleIdx], content: next };
+            return updated;
+          }
+          return prev;
+        });
+      };
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -74,17 +125,7 @@ export default function ChatPage() {
               const parsed = JSON.parse(data);
               if (parsed.content) {
                 content += parsed.content;
-                // Update the last assistant message
-                msgs(prev => {
-                  const updated = [...prev];
-                  for (let i = updated.length - 1; i >= 0; i--) {
-                    if (updated[i].role === "assistant") {
-                      updated[i] = { ...updated[i], content };
-                      break;
-                    }
-                  }
-                  return updated;
-                });
+                writeChunk(content);
               }
             } catch {}
           }
@@ -136,6 +177,7 @@ export default function ChatPage() {
           isStreaming={session.isStreaming}
           agentMode={agentMode}
           onModeChange={setAgentMode}
+          conversationId={session.conversationId}
           onFastAnswer={handleFastAnswer}
           lastUserMessage={session.messages.filter(m => m.role === "user").pop()?.content}
           queue={session.queue}

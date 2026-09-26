@@ -1,4 +1,5 @@
 import type { EvalTask } from "../types";
+import { apiFetch } from "@/lib/api-base";
 
 /**
  * API integration bug tasks — broken HTTP calls, wrong content types,
@@ -193,7 +194,7 @@ export const apiIntegrationTasks: EvalTask[] = [
 }
 
 export async function loadConfig(): Promise<AppConfig> {
-  const res = await fetch("/api/config");
+  const res = await apiFetch("/api/config");
   if (!res.ok) throw new Error("Config fetch failed");
 
   // Bug: no try/catch around JSON parse
@@ -210,7 +211,7 @@ export async function loadConfig(): Promise<AppConfig> {
 }
 
 export async function loadConfig(): Promise<AppConfig> {
-  const res = await fetch("/api/config");
+  const res = await apiFetch("/api/config");
   if (!res.ok) throw new Error("Config fetch failed");
 
   try {
@@ -251,7 +252,7 @@ export async function loadConfig(): Promise<AppConfig> {
         path: "src/services/status.ts",
         content: `export async function checkHealth(): Promise<boolean> {
   try {
-    const res = await fetch("/api/health", {
+    const res = await apiFetch("/api/health", {
       method: "POST", // Bug: should be GET for a read-only check
     });
     return res.ok;
@@ -265,7 +266,7 @@ export async function loadConfig(): Promise<AppConfig> {
     expectedFiles: {
       "src/services/status.ts": `export async function checkHealth(): Promise<boolean> {
   try {
-    const res = await fetch("/api/health", {
+    const res = await apiFetch("/api/health", {
       method: "GET",
     });
     return res.ok;

@@ -49,7 +49,7 @@ export async function POST(
 
     const { artifactId } = await params;
     const body = await request.json();
-    const { content } = body;
+    const { content, anchorX, anchorY } = body;
 
     if (!content || typeof content !== "string" || content.trim().length === 0) {
       return NextResponse.json(
@@ -57,6 +57,11 @@ export async function POST(
         { status: 400 }
       );
     }
+
+    // Anchors are optional; when present they must be 0–1 fractions (they
+    // position a pin on a screenshot artifact, so out-of-range = bad client).
+    const validAnchor = (v: unknown): v is number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
 
     // Verify artifact exists
     const artifact = await prisma.agentArtifact.findUnique({
@@ -70,12 +75,14 @@ export async function POST(
       );
     }
 
-    // Create the comment
+    // Create the comment (with optional pin position for visual annotations)
+    const hasAnchor = validAnchor(anchorX) && validAnchor(anchorY);
     const comment = await prisma.comment.create({
       data: {
         artifactId,
         userId: (session.user as any).id || "unknown",
         content: content.trim(),
+        ...(hasAnchor ? { anchorX, anchorY } : {}),
       },
     });
 
@@ -90,6 +97,7 @@ export async function POST(
           artifactId,
           commentId: comment.id,
           content: content.trim(),
+          ...(hasAnchor ? { anchorX, anchorY } : {}),
           userId: (session.user as any).id || "unknown",
         },
       },

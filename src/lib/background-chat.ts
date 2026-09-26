@@ -2,6 +2,9 @@
 // Survives page navigation — the tool-calling loop keeps running in the background
 // When the user returns to the chat page, the UI reattaches and shows current state
 
+import { trackTaskStart, trackTaskEnd } from "./run-sync";
+import { normalizeThinkingBlocks } from "./stream-reader";
+
 // === Types ===
 
 export interface ChatMessage {
@@ -25,8 +28,12 @@ export interface BackgroundTask {
   completedAt?: number;
   todos: TodoItem[];
   question: PendingQuestion | null;
+  /** True when the user pressed Stop — worker must exit without failing */
+  aborted?: boolean;
   /** Aggregate outcome stats — powers actionable completion notifications */
   stats: TaskStats;
+  /** Chat mode this task ran under ("ask" | "code" | "plan") — gates run persistence */
+  mode: string;
 }
 
 export interface TaskStats {
@@ -60,6 +67,117 @@ const listeners = new Set<Listener>();
 let taskIdCounter = 0;
 let generationCounter = 0; // Increments each time a new task starts — stale async checks this
 
+// Abort control for the in-flight agent stream. Cancel/Stop aborts this so the
+// worker's fetch and read loop terminate immediately (no wasted provider tokens).
+let abortController: AbortController | null = null;
+
+export function getTaskAbortSignal(): AbortSignal | null {
+  return abortController?.signal ?? null;
+}
+
+// === Reload snapshot ===
+// The worker loop lives in browser memory, so a page reload kills an in-flight
+// task mid-stream. To avoid silently losing the partial work, the task state is
+// mirrored (throttled) into sessionStorage while in-flight, then flushed on
+// pagehide. After reload, the app re-reads it and rebuilds the visible exchange
+// as an explicitly "interrupted" pair. Terminal tasks clear the snapshot — they
+// are already written back + saved through the normal subscriber path.
+
+export interface TaskSnapshot {
+  version: 1;
+  id: string;
+  conversationId: string | null;
+  userMessage: string;
+  displayContent: string;
+  status: string;
+  statusDetail: string;
+  startedAt: number;
+  mode: string;
+}
+
+const SNAPSHOT_KEY = "orplex:bg-task-snapshot";
+const SNAPSHOT_THROTTLE_MS = 300;
+const SNAPSHOT_MAX_CHARS = 200000;
+let lastSnapshotWrite = 0;
+let snapshotPageHideAdded = false;
+
+function hasTaskStorage(): boolean {
+  try {
+    return typeof window !== "undefined" && typeof window.sessionStorage !== "undefined" && !!window.sessionStorage;
+  } catch {
+    return false;
+  }
+}
+
+function isInFlightStatus(status: string): boolean {
+  return status === "streaming" || status === "tool_executing" || status === "awaiting_approval";
+}
+
+/** Write the current task to sessionStorage so a reload can restore it. */
+export function persistTaskSnapshot(force = false): void {
+  if (!hasTaskStorage() || !currentTask) return;
+
+  // Only in-flight tasks are worth restoring — terminal ones were already
+  // handled by the subscriber (write-back + conversation save).
+  if (!isInFlightStatus(currentTask.status)) {
+    clearTaskSnapshot();
+    return;
+  }
+
+  const now = Date.now();
+  if (!force && now - lastSnapshotWrite < SNAPSHOT_THROTTLE_MS) return;
+  lastSnapshotWrite = now;
+  ensurePageHideFlush();
+
+  try {
+    const snap: TaskSnapshot = {
+      version: 1,
+      id: currentTask.id,
+      conversationId: currentTask.conversationId,
+      userMessage: currentTask.userMessage,
+      displayContent: currentTask.displayContent.slice(0, SNAPSHOT_MAX_CHARS),
+      status: currentTask.status,
+      statusDetail: currentTask.statusDetail,
+      startedAt: currentTask.startedAt,
+      mode: currentTask.mode,
+    };
+    window.sessionStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snap));
+  } catch {
+    // Quota exceeded / private mode — best-effort only
+  }
+}
+
+/** Read + remove the saved snapshot (restore consumes it exactly once). */
+export function readTaskSnapshot(): TaskSnapshot | null {
+  if (!hasTaskStorage()) return null;
+  try {
+    const raw = window.sessionStorage.getItem(SNAPSHOT_KEY);
+    if (!raw) return null;
+    const snap = JSON.parse(raw) as TaskSnapshot;
+    if (!snap || snap.version !== 1 || typeof snap.userMessage !== "string") return null;
+    return snap;
+  } catch {
+    return null;
+  }
+}
+
+export function clearTaskSnapshot(): void {
+  if (!hasTaskStorage()) return;
+  try {
+    window.sessionStorage.removeItem(SNAPSHOT_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+// Grab the freshest state when the tab is about to go away (throttle may have
+// skipped the last few chunks). Registered lazily to keep Node/SSR safe.
+function ensurePageHideFlush(): void {
+  if (snapshotPageHideAdded || typeof window === "undefined") return;
+  snapshotPageHideAdded = true;
+  window.addEventListener("pagehide", () => persistTaskSnapshot(true));
+}
+
 // === Subscribe / notify ===
 
 export function subscribeBackgroundChat(listener: Listener): () => void {
@@ -70,9 +188,17 @@ export function subscribeBackgroundChat(listener: Listener): () => void {
 }
 
 function notify() {
+  // Hand listeners a FRESH shallow copy on every event. The module mutates
+  // currentTask in place across chunks, so passing the same reference would
+  // make React bail out of re-rendering (setState with an Object.is-equal
+  // value is a no-op) — streamed content would only appear when the task
+  // finished instead of growing live in the bubble.
+  const snapshot = currentTask ? { ...currentTask } : null;
   for (const listener of listeners) {
-    listener(currentTask);
+    listener(snapshot);
   }
+  // Keep the reload snapshot fresh while a task is running (throttled writes)
+  persistTaskSnapshot();
 }
 
 // === Stats tracking (for actionable notifications) ===
@@ -115,10 +241,13 @@ export function isBackgroundTaskRunning(): boolean {
 export function startTask(
   conversationId: string | null,
   userMessage: string,
-  initialMessages: ChatMessage[]
+  initialMessages: ChatMessage[],
+  mode: string = "code"
 ): string {
   const id = `bg-${++taskIdCounter}`;
   generationCounter++;
+  // Fresh abort controller for this task — any prior cancel must not affect it
+  abortController = new AbortController();
   currentTask = {
     id,
     conversationId,
@@ -130,9 +259,12 @@ export function startTask(
     startedAt: Date.now(),
     todos: [],
     question: null,
+    mode,
     stats: { filesChanged: 0, commandsRun: 0, toolCalls: 0, rejectedActions: 0, failedSteps: 0 },
   };
   notify();
+  // Mirror this task into a durable AgentRun row (browser only, best-effort)
+  trackTaskStart(currentTask);
   return id;
 }
 
@@ -222,18 +354,24 @@ export function completeTask(finalContent?: string) {
   currentTask.statusDetail = "Complete";
   currentTask.completedAt = Date.now();
   const completedId = currentTask.id;
+  const completedTask = currentTask;
   notify();
+
+  // Persist the terminal state to the run record (best-effort, browser only)
+  trackTaskEnd(completedTask).catch(() => {});
 
   // Actionable notification: lead with what happened, not just "done"
   sendNotification("Orplex Agent", buildCompletionSummary(currentTask));
 
-  // Clear task after a delay — but only if no new task has started
-  setTimeout(() => {
+  // Clear task after a delay — but only if no new task has started.
+  // unref so browser-task housekeeping never holds a Node process/Jest worker open.
+  const cleanupTimer = setTimeout(() => {
     if (currentTask && currentTask.id === completedId && currentTask.status === "done") {
       currentTask = null;
       notify();
     }
   }, 10000);
+  cleanupTimer.unref?.();
 }
 
 export function failTask(error: string) {
@@ -241,9 +379,16 @@ export function failTask(error: string) {
   currentTask.status = "error";
   currentTask.statusDetail = error;
   currentTask.error = error;
+  // Raw reasoning must never bleed into the response text on a failed task
+  // either — normalize markers so the ThinkingCard still renders it collapsed.
+  currentTask.displayContent = normalizeThinkingBlocks(currentTask.displayContent);
   currentTask.completedAt = Date.now();
   const failedId = currentTask.id;
+  const failedTask = currentTask;
   notify();
+
+  // Persist the terminal state to the run record (best-effort, browser only)
+  trackTaskEnd(failedTask).catch(() => {});
 
   const { filesChanged, commandsRun } = currentTask.stats;
   const progress = filesChanged > 0 || commandsRun > 0
@@ -251,25 +396,55 @@ export function failTask(error: string) {
     : "";
   sendNotification("Orplex Agent", `Task failed: ${error}${progress}`);
 
-  setTimeout(() => {
+  const failCleanupTimer = setTimeout(() => {
     if (currentTask && currentTask.id === failedId && currentTask.status === "error") {
       currentTask = null;
       notify();
     }
   }, 15000);
+  failCleanupTimer.unref?.();
 }
 
-export function cancelTask() {
+export function cancelTask(options: { abort?: boolean } = {}) {
   if (!currentTask) return;
+
+  const cancelledId = currentTask.id;
+
+  if (options.abort) {
+    // User pressed Stop (or New Chat while running) — kill the in-flight
+    // request so the worker stops burning provider tokens immediately.
+    currentTask.aborted = true;
+    abortController?.abort();
+  }
+
   currentTask.status = "error";
   currentTask.statusDetail = "Cancelled";
+  // Stop pressed mid-think: normalize reasoning blocks NOW, before the
+  // terminal notification reaches the subscriber (which writes displayContent
+  // into the message store). Markers get repaired instead of removed, so the
+  // ThinkingCard still renders — only the raw-as-answer bleed is prevented.
+  currentTask.displayContent = normalizeThinkingBlocks(currentTask.displayContent);
   currentTask.completedAt = Date.now();
+  const cancelledTask = currentTask;
   notify();
 
-  setTimeout(() => {
-    currentTask = null;
-    notify();
+  // Persist the cancelled state to the run record (best-effort, browser only)
+  trackTaskEnd(cancelledTask).catch(() => {});
+
+  // Clear from state shortly after — but never clear a NEWER task that
+  // started in the meantime (user sent another message right after Stop).
+  const cancelCleanupTimer = setTimeout(() => {
+    if (currentTask && currentTask.id === cancelledId) {
+      currentTask = null;
+      notify();
+    }
   }, 2000);
+  cancelCleanupTimer.unref?.();
+}
+
+/** Convenience for callers that always mean "stop the current agent now" */
+export function abortCurrentTask() {
+  cancelTask({ abort: true });
 }
 
 // === Notification summaries ===

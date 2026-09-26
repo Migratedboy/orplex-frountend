@@ -8,7 +8,7 @@ module.exports = {
     {
       type: "category",
       label: "Guides",
-      items: ["guides/architecture", "guides/self-hosting", "guides/plugins", "guides/vscode"],
+      items: ["guides/features", "guides/architecture", "guides/self-hosting", "guides/split-deployment", "guides/plugins", "guides/orplex-config", "guides/extending-orplex", "guides/claude-code", "guides/vscode", "guides/agent-portability"],
     },
     {
       type: "category",

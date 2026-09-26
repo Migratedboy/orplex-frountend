@@ -54,7 +54,7 @@
         },
         "orplex.model": {
           "type": "string",
-          "default": "minimax-m3",
+          "default": "openai/gpt-oss-120b",
           "description": "Model to use for completions"
         },
         "orplex.mode": {

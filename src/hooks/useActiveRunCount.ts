@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api-base";
 
 /**
  * Polls /api/agent/runs?status=active for the count of in-progress runs.
@@ -19,7 +20,7 @@ export function useActiveRunCount(pollMs = 10000): {
     let alive = true;
     const fetchActive = async () => {
       try {
-        const res = await fetch("/api/agent/runs?status=active&limit=50");
+        const res = await apiFetch("/api/agent/runs?status=active&limit=50");
         const data = await res.json();
         if (alive && data.success) {
           setActiveRuns(data.summary?.active ?? 0);

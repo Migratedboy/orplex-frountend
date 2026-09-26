@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+    <link rel="stylesheet" href="./panel.css" />
+  </head>
+  <body>
+    <div class="panel">
+      <header>
+        <h1>FocusLock</h1>
+        <button id="close" class="ghost" title="Close">✕</button>
+      </header>
+
+      <label class="field">
+        <span>Hours</span>
+        <input id="hours" type="number" min="0" max="24" step="1" value="0" />
+      </label>
+
+      <label class="field">
+        <span>Minutes</span>
+        <input id="minutes" type="number" min="0" max="59" step="1" value="30" />
+      </label>
+
+      <div class="presets">
+        <button data-min="15">15m</button>
+        <button data-min="30">30m</button>
+        <button data-min="60">1h</button>
+      </div>
+
+      <div class="mode">
+        <label class="mode-option">
+          <input type="radio" name="mode" value="lockdown" />
+          <span><strong>Lockdown</strong> — fullscreen lock, blocks everything</span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="mode" value="class" checked />
+          <span><strong>Class mode</strong> — pin your class window; other apps are blocked</span>
+        </label>
+      </div>
+
+      <div id="class-section" class="class-section hidden">
+        <div class="class-row">
+          <select id="window-select"><option value="">Loading windows…</option></select>
+          <button id="refresh-windows" class="ghost" title="Refresh list">⟳</button>
+        </div>
+        <div class="note">Your class window goes borderless fullscreen and stays pinned — opening other apps bounces straight back. It's restored when the session ends.</div>
+      </div>
+
+      <label class="strict">
+        <input id="strict" type="checkbox" />
+        <span>Strict mode — native keyboard hook blocks Alt+Tab &amp; Win key (all modes)</span>
+      </label>
+      <div id="strict-note" class="note"></div>
+
+      <div id="error" class="error"></div>
+
+      <div class="actions">
+        <button id="cancel" class="ghost">Cancel</button>
+        <button id="lock" class="primary">Lock</button>
+      </div>
+    </div>
+    <script type="module" src="./panel.js"></script>
+  </body>
+</html>

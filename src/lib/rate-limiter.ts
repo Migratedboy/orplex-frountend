@@ -34,6 +34,8 @@ function startSweepIfNeeded(): void {
       if (now > entry.expiresAt) cache.delete(key);
     }
   }, CACHE_SWEEP_INTERVAL_MS);
+  // Don't hold the Node process (or a Jest worker) open just for cache sweeps.
+  sweepTimer.unref?.();
 }
 
 // ---------------------------------------------------------------------------
@@ -59,45 +61,38 @@ export async function checkBurstLimit(userId: string): Promise<boolean> {
   if (cached && now <= cached.expiresAt) {
     if (cached.count >= BURST_LIMIT) return false;
     cached.count++;
-    // Write-through to DB (fire and forget for performance)
+    // Write-through to DB. The upsert is atomic (unique on key+windowStart),
+    // and the DB is authoritative: when its count comes back, it overwrites
+    // this process's optimistic cache value, healing any drift caused by
+    // concurrent processes serving the same user.
     prisma.rateLimitWindow
       .upsert({
         where: { key_windowStart: { key, windowStart } },
         update: { count: { increment: 1 } },
         create: { key, windowStart, count: 1, expiresAt },
       })
+      .then((row) => {
+        const entry = cache.get(key);
+        if (entry && now <= entry.expiresAt) entry.count = row.count;
+      })
       .catch(() => {});
     return true;
   }
 
-  // Slow path: query DB for current window
+  // Slow path: single atomic upsert that returns the new count. Doing the
+  // increment inside the DB (rather than findUnique → update) removes the
+  // check-then-act race where two concurrent cold requests both read count
+  // < limit and both pass. If the increment pushes us over, we deny — a
+  // rare, off-by-one deny is fail-closed and far better than fail-open.
   try {
-    const existing = await prisma.rateLimitWindow.findUnique({
+    const row = await prisma.rateLimitWindow.upsert({
       where: { key_windowStart: { key, windowStart } },
+      update: { count: { increment: 1 } },
+      create: { key, windowStart, count: 1, expiresAt },
     });
 
-    const currentCount = existing?.count || 0;
-    if (currentCount >= BURST_LIMIT) {
-      cache.set(key, { count: currentCount, expiresAt: expiresAt.getTime() });
-      return false;
-    }
-
-    // Increment
-    const newCount = currentCount + 1;
-    cache.set(key, { count: newCount, expiresAt: expiresAt.getTime() });
-
-    if (existing) {
-      await prisma.rateLimitWindow.update({
-        where: { key_windowStart: { key, windowStart } },
-        data: { count: { increment: 1 } },
-      });
-    } else {
-      await prisma.rateLimitWindow.create({
-        data: { key, windowStart, count: 1, expiresAt },
-      });
-    }
-
-    return true;
+    cache.set(key, { count: row.count, expiresAt: expiresAt.getTime() });
+    return row.count <= BURST_LIMIT;
   } catch {
     // On DB error, fall back to allowing the request (fail-open)
     return true;

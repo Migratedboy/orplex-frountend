@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef } from "react";
 import { useToast } from "@/components/Toast";
 
+import { apiFetch } from "@/lib/api-base";
 export interface FileNode {
   name: string;
   path: string;
@@ -135,6 +136,31 @@ export function useFileSystem() {
 
       const fileCount = fileHandlesRef.current.size;
       toast(`Indexed ${fileCount} files in "${handle.name}". AI can now read your workspace!`, "success");
+
+      // Register the ABSOLUTE path server-side so agent terminal commands
+      // (npm install, node server.js, …) run in THIS folder. The File System
+      // Access API never exposes paths, so derive it from an indexed file via
+      // Electron's webUtils.getPathForFile (empty outside Electron — the
+      // server then falls back to its own cwd).
+      try {
+        let absPath = "";
+        for (const fileHandle of fileHandlesRef.current.values()) {
+          const f = await fileHandle.getFile();
+          const p = await (window as any).orplexDesktop?.getPathForFile?.(f);
+          if (p) {
+            absPath = p.replace(/[\\/][^\\/]+$/, ""); // strip filename → directory
+            break;
+          }
+        }
+        if (absPath) {
+          const res = await apiFetch("/api/agent/workspace-cwd", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: absPath }),
+          });
+          if (res.ok) toast(`Terminal commands will run in "${absPath}"`, "success");
+        }
+      } catch {}
     } catch (err: any) {
       if (err.name !== "AbortError") {
         console.error(err);

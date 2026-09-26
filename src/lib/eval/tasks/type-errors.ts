@@ -1,4 +1,5 @@
 import type { EvalTask } from "../types";
+import { apiFetch } from "@/lib/api-base";
 
 /**
  * Type error tasks — the agent must fix TypeScript compilation failures.
@@ -549,8 +550,8 @@ export function isActive(status: TaskStatus): boolean {
 
 // Usage
 const responses = await allSettled([
-  fetch("/api/users"),
-  fetch("/api/posts"),
+  apiFetch("/api/users"),
+  apiFetch("/api/posts"),
 ]);
 const data = responses.map((r) => r.json());
 `,
@@ -569,8 +570,8 @@ const data = responses.map((r) => r.json());
 
 // Usage
 const responses = await allSettled([
-  fetch("/api/users"),
-  fetch("/api/posts"),
+  apiFetch("/api/users"),
+  apiFetch("/api/posts"),
 ]);
 const data = responses.map((r) => r.json());
 `,

@@ -12,6 +12,13 @@ const ReactMarkdown = dynamic(
   { ssr: false, loading: () => <p className="md-paragraph">Loading…</p> }
 );
 
+// Lazy-load the meter strip — only agents' transcript summaries use it.
+const PromptMeterStrip = dynamic(() => import("./PromptMeterStrip"), { ssr: false });
+
+// The worker appends the per-task meter summary as its own paragraph; detect
+// it and render the designed strip instead of plain italic text.
+const METER_LINE_PREFIX = "Prompt meter:";
+
 // Lazy-load syntax highlighter — removes ~70KB from main bundle
 const SyntaxHighlighter = dynamic(
   () => import("react-syntax-highlighter").then(mod => mod.Prism),
@@ -37,6 +44,18 @@ function SyntaxHighlighterWithTheme({ language, children, ...props }: { language
 
 interface Props {
   content: string;
+}
+
+/** Flatten a react-markdown children tree to plain text (for detection). */
+function flattenText(node: unknown): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(flattenText).join("");
+  if (typeof node === "object" && "props" in (node as Record<string, unknown>)) {
+    const props = (node as { props?: { children?: unknown } }).props;
+    return flattenText(props?.children);
+  }
+  return "";
 }
 
 function getFileExt(lang: string): string {
@@ -112,6 +131,17 @@ export default function MarkdownRenderer({ content }: Props) {
           return <>{children}</>;
         },
         p({ children }) {
+          // Prompt-meter summary line → designed strip (see PromptMeterStrip).
+          // Wrapped: a cosmetic detection must NEVER break message rendering
+          // (a stale HMR chunk here once crashed every chat page).
+          try {
+            const text = flattenText(children);
+            if (text.trim().startsWith(METER_LINE_PREFIX)) {
+              return <PromptMeterStrip line={text} />;
+            }
+          } catch {
+            /* fall through to the plain paragraph */
+          }
           return <p className="md-paragraph">{children}</p>;
         },
         ul({ children }) {
@@ -148,6 +178,9 @@ export default function MarkdownRenderer({ content }: Props) {
           return <br />;
         },
         img({ src, alt }) {
+          // Markdown like `![]()` produces src="" — rendering it would make the
+          // browser re-fetch the whole page (and trip the Next.js dev warning).
+          if (!src) return null;
           return (
             <div className="md-image-wrap">
               <img src={src} alt={alt || ""} className="md-image" loading="lazy" />

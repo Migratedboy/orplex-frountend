@@ -1,0 +1,65 @@
+/* FocusLock fullscreen overlay. */
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(1200px 700px at 50% 20%, #171d33 0%, #05060c 65%);
+  color: #e8ecf8;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  user-select: none;
+  cursor: default;
+}
+
+.wrap {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.ring {
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  background-color: #101319;
+  background-size: cover;
+  background-position: center;
+  box-shadow: 0 0 0 6px rgba(77, 124, 255, 0.18), 0 18px 60px rgba(0, 0, 0, 0.6);
+}
+
+h1 {
+  margin: 4px 0 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.countdown {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 88px;
+  letter-spacing: 6px;
+  line-height: 1;
+}
+
+.hint {
+  margin: 2px 0 0;
+  color: #9aa3bf;
+  font-size: 14px;
+}
+
+.strictstatus {
+  font-size: 12px;
+  color: #8fd0ff;
+  min-height: 16px;
+}
+
+.abort {
+  font-size: 12px;
+  color: #ff9c9c;
+  min-height: 16px;
+}

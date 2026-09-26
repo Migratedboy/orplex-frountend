@@ -1,19 +1,16 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import {
+  getPendingApprovals,
+  approveRequest,
+  approveRequestAlways,
+  rejectRequest,
+  type PendingApproval,
+} from "@/lib/approval-store";
+import { apiFetch } from "@/lib/api-base";
 
 type RiskLevel = "low" | "medium" | "high";
-
-interface PendingApproval {
-  id: string;
-  type: "write_file" | "edit_file" | "run_command";
-  summary: string;
-  details: Record<string, unknown>;
-  risk?: RiskLevel;
-  riskReason?: string;
-  diff?: string;
-  createdAt: number;
-}
 
 const RISK_STYLES: Record<RiskLevel, { label: string; className: string; icon: string }> = {
   low: { label: "Low risk", className: "approval-risk-low", icon: "-" },
@@ -21,6 +18,12 @@ const RISK_STYLES: Record<RiskLevel, { label: string; className: string; icon: s
   high: { label: "Elevated risk", className: "approval-risk-high", icon: "!!" },
 };
 
+/**
+ * Global approval dialog. Reads pending approvals directly from the in-memory
+ * approval store (the background worker runs in this same JS realm, so the
+ * store IS the source of truth — the /api/agent/approve poll is kept only as a
+ * harmless fallback that adds server-side approvals if any exist).
+ */
 export default function ApprovalDialog() {
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -32,20 +35,34 @@ export default function ApprovalDialog() {
 
   const current = approvals.find(a => a.id === currentId) || null;
 
-  // Poll for pending approvals every 2 seconds — no dependency on `current`
+  // Poll the LOCAL store every 500ms (fast so the dialog feels instant), and
+  // merge in any server-side approvals from the API as a fallback.
   useEffect(() => {
     let alive = true;
+
     const poll = async () => {
       try {
-        const res = await fetch("/api/agent/approve");
-        const data = await res.json();
+        const local = getPendingApprovals();
+        let server: PendingApproval[] = [];
+        try {
+          const res = await apiFetch("/api/agent/approve");
+          if (res.ok) {
+            const data = await res.json();
+            server = (data.approvals || []) as PendingApproval[];
+          }
+        } catch {}
+
         if (!alive) return;
-        if (data.approvals?.length > 0) {
-          setApprovals(data.approvals);
-          // Auto-select first approval (server sorts highest-risk first)
+
+        // Merge, de-dup by id (local wins — it has the live resolver).
+        const seen = new Set(local.map(a => a.id));
+        const merged = [...local, ...server.filter(a => !seen.has(a.id))];
+
+        if (merged.length > 0) {
+          setApprovals(merged);
           if (!currentIdRef.current) {
-            setCurrentId(data.approvals[0].id);
-          } else if (!data.approvals.some((a: PendingApproval) => a.id === currentIdRef.current)) {
+            setCurrentId(merged[0].id);
+          } else if (!merged.some((a: PendingApproval) => a.id === currentIdRef.current)) {
             // Current approval was resolved — clear it
             setCurrentId(null);
             setExpanded(false);
@@ -57,17 +74,27 @@ export default function ApprovalDialog() {
         }
       } catch {}
     };
+
     poll();
-    const interval = setInterval(poll, 2000);
+    const interval = setInterval(poll, 500);
     return () => { alive = false; clearInterval(interval); };
   }, []); // Empty deps — uses ref for current ID
 
-  const respond = useCallback(async (id: string, action: "approve" | "reject") => {
-    await fetch("/api/agent/approve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, action }),
-    });
+  const respond = useCallback(async (id: string, action: "approve" | "reject" | "always") => {
+    // Approvals live in the local store (same realm as the worker) — resolve
+    // there first; the server fallback also gets told for parity.
+    if (action === "approve") approveRequest(id);
+    else if (action === "always") approveRequestAlways(id);
+    else rejectRequest(id);
+
+    try {
+      await apiFetch("/api/agent/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action: action === "always" ? "approve" : action }),
+      });
+    } catch {}
+
     setCurrentId(null);
     setExpanded(false);
     // Remove from list
@@ -87,6 +114,7 @@ export default function ApprovalDialog() {
   // Risk tier — defaults to medium for legacy approvals without a tier
   const risk: RiskLevel = current.risk || "medium";
   const riskStyle = RISK_STYLES[risk];
+  const hasDiff = Boolean(current.diff);
 
   return (
     <div className="approval-overlay">
@@ -131,13 +159,13 @@ export default function ApprovalDialog() {
         )}
 
         {/* Diff display */}
-        {current.diff && (
+        {hasDiff && (
           <>
             <button
               className="approval-expand-btn"
               onClick={() => setExpanded(!expanded)}
             >
-              {expanded ? "Hide changes" : "Show changes"}
+              {expanded ? "Hide diff" : "Show diff"}
             </button>
             {expanded && (
               <pre className="approval-diff">
@@ -147,13 +175,20 @@ export default function ApprovalDialog() {
           </>
         )}
 
-        {/* Action buttons */}
+        {/* Action buttons — Reject / Always allow / Approve */}
         <div className="approval-actions">
           <button
             className="approval-reject"
             onClick={() => respond(current.id, "reject")}
           >
             Reject
+          </button>
+          <button
+            className="approval-always"
+            onClick={() => respond(current.id, "always")}
+            title="Approve and skip this dialog for identical future actions"
+          >
+            Always allow
           </button>
           <button
             className="approval-approve"

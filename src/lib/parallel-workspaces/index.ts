@@ -9,8 +9,10 @@
 
 import { execSync, spawn } from "child_process";
 import { mkdir, cp, rm, writeFile, readFile, readdir, stat } from "fs/promises";
-import { join, basename } from "path";
+import { join, dirname, resolve, sep, relative } from "path";
 import { randomBytes } from "crypto";
+import { recordRuntimeLog } from "@/lib/runtime-log";
+import { runtimeState } from "@/lib/runtime-state";
 
 // === Types ===
 
@@ -20,8 +22,12 @@ export interface Workspace {
   rootDir: string;
   /** Isolated workspace directory */
   workspaceDir: string;
-  /** Git branch name (if using worktrees) */
+  /** Git branch name (worktree mode only) */
   branchName?: string;
+  /** How this workspace was created: git worktree or full directory copy. */
+  mode: "worktree" | "copy" | "copy-fallback";
+  /** When mode is copy-fallback: why the git-worktree path failed. */
+  fallbackReason?: string;
   /** Creation timestamp */
   createdAt: Date;
   /** Associated agent run ID */
@@ -67,7 +73,7 @@ export async function createWorkspace(
   if (isGitRepo) {
     return createGitWorktree(rootDir, id, branchName, runId);
   } else {
-    return createDirectoryCopy(rootDir, id, runId);
+    return createDirectoryCopy(rootDir, id, runId, "copy", "not a git repository");
   }
 }
 
@@ -83,11 +89,9 @@ async function createGitWorktree(
   const workspaceDir = join(rootDir, ".orplex-workspaces", id);
 
   try {
-    // Create the worktree directory
-    execSync(`mkdir -p "${join(rootDir, ".orplex-workspaces")}"`, {
-      cwd: rootDir,
-      stdio: "pipe",
-    });
+    // Create the worktree directory (fs API — `mkdir -p` is Unix-shell-only
+    // and would fail through cmd.exe on Windows)
+    await mkdir(join(rootDir, ".orplex-workspaces"), { recursive: true });
 
     // Create branch if it doesn't exist
     try {
@@ -115,6 +119,7 @@ async function createGitWorktree(
       rootDir,
       workspaceDir,
       branchName,
+      mode: "worktree",
       createdAt: new Date(),
       runId,
     };
@@ -122,11 +127,16 @@ async function createGitWorktree(
     workspaces.set(id, workspace);
     return workspace;
   } catch (err) {
-    // Fallback to directory copy if worktree fails
-    console.warn(
-      `[Workspace] Git worktree failed, falling back to directory copy: ${(err as Error).message}`
-    );
-    return createDirectoryCopy(rootDir, id, runId);
+    // Git-worktree creation failed — this SILENTLY changes merge semantics and
+    // costs a full project copy. Make it loud: warn log, runtime-log event,
+    // and a process-wide metric the System page surfaces.
+    const reason = (err as Error).message || String(err);
+    runtimeState.workspaces.fallbackCount++;
+    runtimeState.workspaces.lastFallbackAt = new Date().toISOString();
+    runtimeState.workspaces.lastFallbackReason = reason.slice(0, 300);
+    console.warn(`[Workspace] Git worktree failed, falling back to directory copy: ${reason}`);
+    recordRuntimeLog("workspace", "warn", `worktree failed — degraded to directory copy: ${reason.slice(0, 200)}`);
+    return createDirectoryCopy(rootDir, id, runId, "copy-fallback", reason.slice(0, 300));
   }
 }
 
@@ -136,7 +146,9 @@ async function createGitWorktree(
 async function createDirectoryCopy(
   rootDir: string,
   id: string,
-  runId?: string
+  runId?: string,
+  mode: "copy" | "copy-fallback" = "copy",
+  fallbackReason?: string
 ): Promise<Workspace> {
   const workspaceDir = join(rootDir, ".orplex-workspaces", id);
   await mkdir(workspaceDir, { recursive: true });
@@ -158,6 +170,8 @@ async function createDirectoryCopy(
     id,
     rootDir,
     workspaceDir,
+    mode,
+    ...(fallbackReason ? { fallbackReason } : {}),
     createdAt: new Date(),
     runId,
   };
@@ -220,6 +234,23 @@ export async function getWorkspaceFiles(
   return files;
 }
 
+// Never walk into these — too heavy and never part of a meaningful merge
+const SKIP_DIRS = new Set([
+  "node_modules",
+  ".git",
+  ".next",
+  "dist",
+  "build",
+  ".cache",
+  "coverage",
+  "__pycache__",
+  ".venv",
+  "venv",
+  ".orplex-workspaces",
+  ".orplex-verify",
+  ".orplex-video",
+]);
+
 async function collectFiles(
   dir: string,
   root: string,
@@ -228,6 +259,7 @@ async function collectFiles(
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name.startsWith(".")) continue;
+    if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue;
     const fullPath = join(dir, entry.name);
     const relativePath = fullPath.slice(root.length + 1);
     if (entry.isDirectory()) {
@@ -236,6 +268,19 @@ async function collectFiles(
       files.push(relativePath);
     }
   }
+}
+
+/**
+ * Resolve a user-supplied file path inside a workspace.
+ * Returns null if the path escapes the workspace directory.
+ */
+function resolveInside(dir: string, filePath: string): string | null {
+  const resolved = resolve(dir, filePath);
+  const rel = relative(dir, resolved);
+  // Escape attempts: absolute paths, parent traversal, or drive-relative tricks
+  if (rel === "") return resolved;
+  if (rel.split(sep).some((part) => part === "..")) return null;
+  return resolved;
 }
 
 /**
@@ -248,8 +293,11 @@ export async function readWorkspaceFile(
   const ws = workspaces.get(workspaceId);
   if (!ws) return null;
 
+  const fullPath = resolveInside(ws.workspaceDir, filePath);
+  if (!fullPath) return null;
+
   try {
-    return await readFile(join(ws.workspaceDir, filePath), "utf-8");
+    return await readFile(fullPath, "utf-8");
   } catch {
     return null;
   }
@@ -266,10 +314,11 @@ export async function writeWorkspaceFile(
   const ws = workspaces.get(workspaceId);
   if (!ws) return false;
 
+  const fullPath = resolveInside(ws.workspaceDir, filePath);
+  if (!fullPath) return false;
+
   try {
-    const fullPath = join(ws.workspaceDir, filePath);
-    const dir = fullPath.slice(0, fullPath.lastIndexOf("/"));
-    await mkdir(dir, { recursive: true });
+    await mkdir(dirname(fullPath), { recursive: true });
     await writeFile(fullPath, content, "utf-8");
     return true;
   } catch {
@@ -298,6 +347,7 @@ export async function getWorkspaceFileStats(
   for (const file of files) {
     try {
       const s = await stat(join(ws.workspaceDir, file));
+      if (!s.isFile()) continue;
       stats.push({
         path: file,
         size: s.size,
@@ -327,19 +377,35 @@ export async function prepareMerge(
   }
 
   try {
-    // If git worktree, create a diff
+    // If git worktree, diff its working tree against the shared base commit.
+    // Note: the worktree branch is never committed to, so comparing branch
+    // refs would always show an empty diff. We diff the working directory
+    // instead, and include untracked files (git diff omits them).
     if (ws.branchName) {
       try {
         const diff = execSync(
-          `git diff "${ws.branchName}" --stat`,
-          { cwd: ws.rootDir, stdio: "pipe", timeout: 10000 }
+          `git diff "${ws.branchName}" --name-only`,
+          { cwd: ws.workspaceDir, stdio: "pipe", timeout: 10000 }
         ).toString();
 
-        const filesChanged = diff
+        const changed = diff
           .split("\n")
-          .filter((line) => line.includes("|"))
-          .map((line) => line.split("|")[0].trim())
+          .map((l) => l.trim())
           .filter(Boolean);
+
+        // Untracked files created by the agent
+        const status = execSync(
+          `git status --porcelain`,
+          { cwd: ws.workspaceDir, stdio: "pipe", timeout: 10000 }
+        ).toString();
+        const untracked = status
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l.startsWith("??"))
+          .map((l) => l.slice(2).trim());
+
+        // Deduplicate, preserving order
+        const filesChanged = Array.from(new Set([...changed, ...untracked]));
 
         return {
           success: true,
@@ -358,6 +424,7 @@ export async function prepareMerge(
     for (const file of wsFiles) {
       try {
         const wsContent = await readWorkspaceFile(workspaceId, file);
+        // Root path already validated by readWorkspaceFile (safe relative paths)
         let rootContent: string | null = null;
         try {
           rootContent = await readFile(join(ws.rootDir, file), "utf-8");
@@ -412,9 +479,14 @@ export async function applyMerge(
       try {
         const content = await readWorkspaceFile(workspaceId, file);
         if (content !== null) {
-          const fullPath = join(ws.rootDir, file);
-          const dir = fullPath.slice(0, fullPath.lastIndexOf("/"));
-          await mkdir(dir, { recursive: true });
+          const fullPath = resolve(ws.rootDir, file);
+          // Never let a merge write outside the project root
+          const rel = relative(ws.rootDir, fullPath);
+          if (rel === "" || rel.split(sep).some((part) => part === "..")) {
+            conflicts.push(file);
+            continue;
+          }
+          await mkdir(dirname(fullPath), { recursive: true });
           await writeFile(fullPath, content, "utf-8");
           applied.push(file);
         }
@@ -456,6 +528,13 @@ export async function destroyWorkspace(
           { cwd: ws.rootDir, stdio: "pipe", timeout: 15000 }
         );
       } catch {}
+      // Delete the leftover branch so orphaned refs don't pile up
+      try {
+        execSync(
+          `git branch -D "${ws.branchName}"`,
+          { cwd: ws.rootDir, stdio: "pipe", timeout: 10000 }
+        );
+      } catch {}
     }
 
     // Remove directory
@@ -480,13 +559,20 @@ export async function getFileDiff(
 
   try {
     const wsContent = await readWorkspaceFile(workspaceId, filePath);
+    if (wsContent === null) return null;
+
+    // Never let a diff read outside the project root
+    const rootPath = resolve(ws.rootDir, filePath);
+    const rel = relative(ws.rootDir, rootPath);
+    if (rel === "" || rel.split(sep).some((part) => part === "..")) return null;
+
     let rootContent: string | null = null;
     try {
-      rootContent = await readFile(join(ws.rootDir, filePath), "utf-8");
+      rootContent = await readFile(rootPath, "utf-8");
     } catch {}
 
     if (wsContent === rootContent) return null;
-    if (wsContent === null || rootContent === null) return null;
+    if (rootContent === null) return null; // File only exists in workspace
 
     // Simple line-by-line diff
     const wsLines = wsContent.split("\n");

@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import {
   createRunInputSchema,
   createTaskInputSchema,
+  runStatusSchema,
   type CreateRunInput,
   type CreateTaskInput,
   type RuntimeArtifact,
@@ -80,25 +81,40 @@ export async function appendRuntimeEvent<T>(
 ) {
   await assertRunOwner(event.runId, userId);
 
-  return prisma.$transaction(async (transaction) => {
-    const latest = await transaction.runEvent.findFirst({
-      where: { runId: event.runId },
-      orderBy: { sequence: "desc" },
-      select: { sequence: true },
-    });
-    const sequence = event.sequence > 0 ? event.sequence : (latest?.sequence ?? 0) + 1;
+  // The (runId, sequence) unique index is the authority. Compute the next
+  // sequence optimistically, then let the INSERT arbitrate: on a unique-
+  // constraint collision (a concurrent writer won the race) re-read the max
+  // sequence and retry. P2002 is Prisma's unique-constraint error code.
+  const P2002 = "P2002";
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      let sequence = event.sequence;
+      if (sequence <= 0) {
+        const latest = await prisma.runEvent.findFirst({
+          where: { runId: event.runId },
+          orderBy: { sequence: "desc" },
+          select: { sequence: true },
+        });
+        sequence = (latest?.sequence ?? 0) + 1;
+      }
 
-    return transaction.runEvent.create({
-      data: {
-        runId: event.runId,
-        taskId: event.taskId,
-        sequence,
-        type: event.type,
-        payload: serializeEvent(event),
-        createdAt: new Date(event.createdAt),
-      },
-    });
-  });
+      return await prisma.runEvent.create({
+        data: {
+          runId: event.runId,
+          taskId: event.taskId,
+          sequence,
+          type: event.type,
+          payload: serializeEvent(event),
+          createdAt: new Date(event.createdAt),
+        },
+      });
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code !== P2002 || attempt === 4) throw err;
+      // Lost the sequence race — loop and recompute.
+    }
+  }
+  throw new Error("unreachable: appendRuntimeEvent retry loop");
 }
 
 export async function checkpointRuntimeRun(
@@ -129,28 +145,33 @@ export async function leaseNextRuntimeTask(userId: string, runId: string, leaseO
   await assertRunOwner(runId, userId);
   const leaseUntil = new Date(Date.now() + 5 * 60 * 1000);
 
-  return prisma.$transaction(async (transaction) => {
-    const task = await transaction.agentTask.findFirst({
-      where: {
-        runId,
-        status: "pending",
-        dependencies: { every: { dependsOn: { status: "completed" } } },
-      },
-      orderBy: { createdAt: "asc" },
-    });
-    if (!task) return null;
-
-    return transaction.agentTask.update({
-      where: { id: task.id },
-      data: {
-        status: "running",
-        leaseOwner,
-        leaseUntil,
-        attempt: { increment: 1 },
-        startedAt: new Date(),
-      },
-    });
+  // Read the candidate task OUTSIDE the write transaction, then claim it with
+  // an atomic compare-and-set: updateMany only flips the row if it is still
+  // pending. Two concurrent workers can select the same task, but only one
+  // CAS succeeds; the loser sees 0 updated rows and picks the next task.
+  const task = await prisma.agentTask.findFirst({
+    where: {
+      runId,
+      status: "pending",
+      dependencies: { every: { dependsOn: { status: "completed" } } },
+    },
+    orderBy: { createdAt: "asc" },
   });
+  if (!task) return null;
+
+  const claimed = await prisma.agentTask.updateMany({
+    where: { id: task.id, status: "pending" },
+    data: {
+      status: "running",
+      leaseOwner,
+      leaseUntil,
+      attempt: { increment: 1 },
+      startedAt: new Date(),
+    },
+  });
+  if (claimed.count === 0) return null; // another worker claimed it — try again next poll
+
+  return prisma.agentTask.findUnique({ where: { id: task.id } });
 }
 
 export async function completeRuntimeTask(
@@ -236,13 +257,66 @@ export async function getRuntimeRun(userId: string, runId: string) {
   });
 }
 
-export async function getRuntimeEvents(userId: string, runId: string, afterSequence = 0) {
+export async function getRuntimeEvents(userId: string, runId: string, afterSequence = -1) {
   await assertRunOwner(runId, userId);
 
   return prisma.runEvent.findMany({
-    where: { runId, sequence: { gt: Math.max(0, afterSequence) } },
+    // afterSequence = -1 (the initial fetch) includes sequence 0 — the
+    // executor's `spawned` event lives at sequence 0 and was previously
+    // invisible on the timeline (off-by-one on the first render).
+    where: { runId, sequence: { gt: Math.max(-1, afterSequence) } },
     orderBy: { sequence: "asc" },
   });
+}
+
+// Terminal statuses never need sweeping; everything else is "in progress"
+const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled"];
+const ACTIVE_RUN_STATUSES = runStatusSchema.options.filter(
+  (s) => !TERMINAL_RUN_STATUSES.includes(s)
+);
+const ACTIVE_TASK_STATUSES = ["pending", "leased", "running", "verifying"];
+
+/**
+ * Fail runs stuck in an in-progress state past the staleness window.
+ *
+ * The live agent mirrors its tasks into AgentRun rows from the browser. When a
+ * tab crashes (or the browser is closed mid-task), the terminal checkpoint
+ * never arrives and the run stays "pending"/"executing" forever — a ghost that
+ * keeps the board's active badge lit. Any in-flight tasks on those runs are
+ * cancelled and the run itself is marked failed.
+ *
+ * Call lazily from the read paths (runs GET, board feed) — cheap when nothing
+ * is stale, and those endpoints poll frequently enough to self-heal.
+ *
+ * @returns number of runs swept
+ */
+export async function sweepStaleRuns(userId: string, staleMs = 30 * 60 * 1000): Promise<number> {
+  const cutoff = new Date(Date.now() - staleMs);
+
+  const stale = await prisma.agentRun.findMany({
+    where: {
+      userId,
+      status: { in: ACTIVE_RUN_STATUSES },
+      createdAt: { lt: cutoff },
+    },
+    select: { id: true },
+  });
+
+  if (stale.length === 0) return 0;
+
+  const ids = stale.map((r) => r.id);
+  await prisma.$transaction([
+    prisma.agentTask.updateMany({
+      where: { runId: { in: ids }, status: { in: ACTIVE_TASK_STATUSES } },
+      data: { status: "cancelled", leaseOwner: null, leaseUntil: null },
+    }),
+    prisma.agentRun.updateMany({
+      where: { id: { in: ids } },
+      data: { status: "failed", completedAt: new Date() },
+    }),
+  ]);
+
+  return stale.length;
 }
 
 async function assertRunOwner(runId: string, userId: string) {

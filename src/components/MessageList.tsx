@@ -3,6 +3,7 @@
 import { useRef, useEffect } from "react";
 import { VirtualList } from "./VirtualList";
 import MessageContent from "./MessageContent";
+import ThinkingCard from "./ThinkingCard";
 import ToolCallDisplay from "./ToolCallDisplay";
 import { MessageSkeleton } from "./Skeleton";
 import { Message } from "@/hooks/useMessages";
@@ -155,7 +156,7 @@ function MessageRow({ msg, index, agentRunning, isLast }: {
         )}
         {msg.role === "user" && msg.images && msg.images.length > 0 && (
           <div className="msg-images">
-            {msg.images.map((img, ii) => (
+            {msg.images.filter(img => img.dataUrl).map((img, ii) => (
               <div key={ii} className="msg-image-thumb">
                 <img src={img.dataUrl} alt={img.name} />
                 <div className="msg-image-label">{img.name}</div>
@@ -170,14 +171,7 @@ function MessageRow({ msg, index, agentRunning, isLast }: {
               {msg.content ? (
                 <MessageContent content={msg.content} isThinking={agentRunning && isLast} />
               ) : agentRunning && isLast ? (
-                <div className="thinking-pill thinking-pill--active">
-                  <div className="thinking-pill-header">
-                    <div className="thinking-pill-left">
-                      <span className="thinking-pill-spinner"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6.219-8.56" /></svg></span>
-                      <span className="thinking-pill-label">Thinking...</span>
-                    </div>
-                  </div>
-                </div>
+                <ThinkingCard content="" isThinking={true} />
               ) : null}
               <div className="msg-time-actions">
                 <div className="msg-time">{msg.time}</div>

@@ -1,0 +1,190 @@
+/* FocusLock widget: 64px circle idle, horizontal 172x64 pill while locked. */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  width: 100%;
+  height: 100%;
+}
+
+/* Padded host: the glow canvas bleeds 20px past the shape on every side.
+   Pointer-transparent so dragging/clicking still reaches #circle. */
+#glow-host {
+  position: fixed;
+  left: 20px;
+  top: 20px;
+  width: calc(100% - 40px);
+  height: calc(100% - 40px);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.specular-canvas {
+  position: absolute;
+  left: -20px;
+  top: -20px;
+  pointer-events: none;
+}
+
+/* The shape is offset by PAD inside the bigger window. */
+#circle {
+  position: absolute;
+  left: 20px;
+  top: 20px;
+  cursor: grab;
+  touch-action: none;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #2b6cff, #7a3cff);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    width 0.25s ease,
+    height 0.25s ease,
+    border-radius 0.25s ease,
+    background 0.25s ease;
+  overflow: hidden;
+  user-select: none;
+}
+
+#logo {
+  /* Cover the whole circle: full-bleed logo, clipped round by #circle. */
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+/* Locked: horizontal pill with metallic vertical shading (cylinder look). */
+body.locked #circle {
+  width: 172px;
+  height: 64px;
+  border-radius: 32px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 42%, rgba(0, 0, 0, 0.4)),
+    linear-gradient(180deg, #323a52, #14182a);
+  align-items: stretch;
+  justify-content: center;
+}
+
+body.locked #logo {
+  display: none;
+}
+
+#cylinder {
+  display: none;
+  position: absolute;
+  inset: 0;
+}
+
+body.locked #cylinder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* HH / MM / SS segments with dot separators, like a flip-clock pill. */
+#segments {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  padding: 0 12px;
+}
+
+.seg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 42px;
+}
+
+.seg-val {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.05;
+  color: #eaf0ff;
+  letter-spacing: 1px;
+}
+
+.seg-label {
+  margin-top: 2px;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  color: rgba(190, 202, 230, 0.75);
+}
+
+/* Colon-dot separators: two stacked 3px dots. */
+.sep {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0 2px;
+  padding-top: 10px; /* optically center against val+label stack */
+}
+
+.sep span {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(190, 202, 230, 0.8);
+}
+
+/* Seconds segment gets a violet tint, as in the reference art. */
+.seg:last-child .seg-val {
+  color: #b9a8ff;
+}
+
+#fill-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+/* Drains right-to-left as the session elapses. */
+#fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0%;
+  background: linear-gradient(90deg, rgba(43, 108, 255, 0.4), rgba(130, 90, 255, 0.45));
+  transition: width 0.4s linear;
+}
+
+#tickwrap {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: 3;
+}
+
+body.blocked-flash #tickwrap {
+  opacity: 1;
+}
+
+#tick {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 2px solid rgba(255, 80, 80, 0.9);
+  box-shadow: 0 0 12px rgba(255, 80, 80, 0.6);
+}

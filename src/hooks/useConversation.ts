@@ -1,26 +1,29 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useConversations } from "@/components/ConversationProvider";
+import { OPEN_CONVERSATION_EVENT } from "@/lib/navigation-events";
 import { Message } from "./useMessages";
+import { apiFetch } from "@/lib/api-base";
 
 export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]) => void) {
   const { data: session } = useSession();
   const { refresh } = useConversations();
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [loadingConvo, setLoadingConvo] = useState(false);
+  // Guards against a slow response for an OLD conversation overwriting the
+  // messages of a newer one when the user clicks through chats quickly.
+  const loadTokenRef = useRef(0);
 
-  // Load a specific conversation by ID from the URL (?c=...)
-  useEffect(() => {
-    if (!session?.user) return;
-    const params = new URLSearchParams(window.location.search);
-    const convoId = params.get("c");
-    if (!convoId) return; // No conversation to load — start fresh
+  const loadConversation = useCallback((convoId: string | null) => {
+    if (!session?.user?.id || !convoId) return;
+    const token = ++loadTokenRef.current;
     setLoadingConvo(true);
-    fetch(`/api/conversations?id=${convoId}`)
+    apiFetch(`/api/conversations?id=${encodeURIComponent(convoId)}`)
       .then((r) => r.json())
       .then((data) => {
+        if (token !== loadTokenRef.current) return; // superseded — drop stale
         const conv = data.conversation;
         if (conv) {
           setConversationId(conv.id);
@@ -32,19 +35,50 @@ export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]
         }
         setLoadingConvo(false);
       })
-      .catch(() => setLoadingConvo(false));
-  }, [session, setMessages]);
+      .catch(() => {
+        if (token === loadTokenRef.current) setLoadingConvo(false);
+      });
+  }, [session?.user?.id, setMessages]);
+
+  // Load a specific conversation by ID from the URL (?c=...). Runs on mount
+  // (direct links / full page loads) AND reacts to later navigations, because
+  // opening a conversation from the Sidebar / TopBar / History does a
+  // client-side router.push that never remounts '/' and never fires popstate.
+  // Without the event + popstate listeners, clicking a conversation while on
+  // the chat page changed the URL but never loaded its messages.
+  useEffect(() => {
+    if (!session?.user) return;
+
+    const fromUrl = () => {
+      const convoId = new URLSearchParams(window.location.search).get("c");
+      loadConversation(convoId);
+    };
+    const onOpenConversation = (e: Event) => {
+      const detail = (e as CustomEvent<{ id?: string }>).detail;
+      loadConversation(detail?.id ?? new URLSearchParams(window.location.search).get("c"));
+    };
+
+    fromUrl(); // direct link / first paint
+    window.addEventListener("popstate", fromUrl);
+    window.addEventListener(OPEN_CONVERSATION_EVENT, onOpenConversation);
+    return () => {
+      window.removeEventListener("popstate", fromUrl);
+      window.removeEventListener(OPEN_CONVERSATION_EVENT, onOpenConversation);
+    };
+  }, [session, loadConversation]);
 
   const saveConversation = useCallback(async (
     userContent: string,
-    assistantContent: string
+    assistantContent: string,
+    conversationIdOverride?: string | null
   ) => {
     try {
-      const res = await fetch("/api/conversations", {
+      const targetId = conversationIdOverride !== undefined ? conversationIdOverride : conversationId;
+      const res = await apiFetch("/api/conversations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          conversationId,
+          conversationId: targetId,
           messages: [
             { role: "user", content: userContent },
             { role: "assistant", content: assistantContent },

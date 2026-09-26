@@ -8,9 +8,12 @@ import {
   fetchWithProviderRetry,
   prependStatusMessage,
   buildMultipartMessages,
+  modelVariants,
 } from "@/lib/chat-middleware";
 import { sseTransform } from "@/lib/ai-providers";
-import { M3_TOOL_DEFINITIONS, M3_SYSTEM_PROMPT, ASK_SYSTEM_PROMPT } from "@/lib/tool-definitions";
+import { isMockAiEnabled, createMockProviderStream } from "@/lib/mock-ai";
+import { M3_TOOL_DEFINITIONS } from "@/lib/tool-definitions";
+import { buildSystemPrompt } from "@/lib/master-prompt";
 import { routeToModel } from "@/lib/model-router";
 import { preprocessMessages } from "@/lib/vision-preprocessor";
 
@@ -20,6 +23,20 @@ export async function POST(request: NextRequest) {
     const auth = await requireAuth();
     if (!auth.ok) return auth.response;
     const { userId } = auth;
+
+    // --- Dev/test keyless mock provider (MOCK_AI=1, non-production only) ---
+    // Short-circuits before burst/quota counting (mock traffic is not real
+    // usage) and before provider selection, answering every request with a
+    // slow deterministic fake stream. See src/lib/mock-ai.ts.
+    if (isMockAiEnabled(request.headers)) {
+      return new Response(sseTransform(createMockProviderStream()), {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    }
 
     // --- Step 2: Burst rate limit ---
     const burst = await enforceBurstLimit(userId);
@@ -68,7 +85,37 @@ export async function POST(request: NextRequest) {
     );
 
     // --- Step 7: Select providers and fetch stream ---
-    const providerConfigs = await getProviderConfigs(userId);
+    // The prompt-bar choice rides along: OpenRouter providers are re-pointed
+    // at the requested model inside getProviderConfigs (any id works there);
+    // fixed-model providers (Groq, NVIDIA NIM) keep theirs and only match or
+    // not below. Absent choice → unchanged auto-routing.
+    const requestedModel = parsed.model?.trim();
+    const providerConfigs = await getProviderConfigs(userId, requestedModel || undefined);
+
+    if (requestedModel) {
+      // Accept the requested id in any sibling form (bare ↔ `:free`) — the
+      // ladder includes fallback aliases so a paid slug out of credits can
+      // still reach the model's free variant on the same provider.
+      const acceptable = new Set(modelVariants(requestedModel));
+      const matching = providerConfigs.filter((p) => acceptable.has(p.model));
+      if (matching.length === 0) {
+        console.warn(
+          `[chat] requested model "${requestedModel}" has no available provider ` +
+          `(configured: ${providerConfigs.map((p) => `${p.name}:${p.model}`).join(", ") || "none"})`
+        );
+        return Response.json(
+          {
+            success: false,
+            error: {
+              message: `The selected model (${requestedModel}) is not available right now. Pick another model or try again later.`,
+            },
+          },
+          { status: 503 },
+        );
+      }
+      providerConfigs.length = 0;
+      providerConfigs.push(...matching);
+    }
 
     // For complex tasks, prioritize premium providers
     if (routingDecision.tier === 3 && providerConfigs.length > 0) {
@@ -83,21 +130,48 @@ export async function POST(request: NextRequest) {
     let stream: ReadableStream | null = null;
     let lastError = "";
 
+    // Reasoning effort from the prompt bar (low/medium/high). Medium is the
+    // model default — only sent for models that support reasoning_effort.
+    const effort = parsed.effort;
+
     for (const provider of providerConfigs) {
+      if (effort && effort !== "medium") {
+        console.log(`[chat] effort=${effort} → ${provider.model}`);
+      }
+      // Groq's free tier enforces a tight tokens-per-minute cap per model
+      // (~8k TPM); the full master prompt + tool definitions alone exceed it
+      // and every request dies with HTTP 413. The compact profile + reduced
+      // completion budget fits comfortably under the cap.
+      const isGroq = provider.name.toLowerCase().includes("groq");
       const requestBody = {
         model: provider.model,
         messages: [
           {
             role: "system",
-            content: mode === "ask" ? ASK_SYSTEM_PROMPT : M3_SYSTEM_PROMPT,
+            // The Master Prompt: one composed source of truth per mode —
+            // full doctrine on turn 1, compact on repair/continue turns
+            // (profile arrives from the worker via the request body).
+            content: buildSystemPrompt({
+              mode,
+              effort,
+              profile: isGroq ? "compact" : parsed.profile === "compact" ? "compact" : "full",
+              capabilities: { browser: true },
+            }),
           },
           ...processedMessages,
         ],
         ...(mode === "ask"
           ? {}
-          : { tools: M3_TOOL_DEFINITIONS, tool_choice: "auto" }),
-        max_completion_tokens: routingDecision.model.maxTokens,
+          : { tools: isGroq ? M3_TOOL_DEFINITIONS.slice(0, 3) : M3_TOOL_DEFINITIONS, tool_choice: "auto" }),
+        max_completion_tokens: isGroq
+          ? Math.min(2048, routingDecision.model.maxTokens)
+          : effort === "low"
+            ? Math.min(4096, routingDecision.model.maxTokens)
+            : routingDecision.model.maxTokens,
         temperature: routingDecision.model.temperature,
+        ...(effort && effort !== "medium" && /gpt-oss/i.test(provider.model)
+          ? { reasoning_effort: effort }
+          : {}),
         stream: true,
       };
 
@@ -107,6 +181,7 @@ export async function POST(request: NextRequest) {
         break;
       }
       lastError = result.error;
+      console.warn(`[chat] provider "${provider.name}" failed: ${result.error}`);
     }
 
     if (!stream) {

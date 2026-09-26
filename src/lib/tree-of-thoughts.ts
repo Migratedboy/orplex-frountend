@@ -61,39 +61,47 @@ export async function runTreeOfThoughts(
 ): Promise<ToTResult> {
   const branches: ThoughtBranch[] = [];
 
-  // Generate each branch in parallel (simulated sequential for API)
-  for (const strategy of STRATEGIES.slice(0, maxBranches)) {
-    const prompt = `Build the following. Strategy: ${strategy.approach}
+  // Generate all branches TRULY in parallel — independent model calls racing
+  // the slowest branch, not a serial sum. A failed branch scores 0 and stays
+  // in the race rather than failing the whole ToT run.
+  const picked = STRATEGIES.slice(0, maxBranches);
+  const settled = await Promise.all(
+    picked.map(async (strategy) => {
+      const prompt = `Build the following. Strategy: ${strategy.approach}\n\n${task}\n\n${strategy.systemSuffix}`;
 
-${task}
+      let response = "";
+      try {
+        response = await modelCall([
+          { role: 'system', content: `You are a senior developer. ${strategy.approach}` },
+          { role: 'user', content: prompt },
+        ]);
+      } catch (err) {
+        response = ""; // failed branch → zero files → score 0, race continues
+      }
 
-${strategy.systemSuffix}`;
+      // Parse files from response
+      const files = parseFilesFromResponse(response);
 
-    const response = await modelCall([
-      { role: 'system', content: `You are a senior developer. ${strategy.approach}` },
-      { role: 'user', content: prompt },
-    ]);
+      // Score the output
+      let score = 0;
+      for (const file of files) {
+        const report = analyzeCodeQuality(file.path, file.content);
+        score += report.score;
+      }
+      score = files.length > 0 ? score / files.length : 0;
 
-    // Parse files from response
-    const files = parseFilesFromResponse(response);
-
-    // Score the output
-    let score = 0;
-    for (const file of files) {
-      const report = analyzeCodeQuality(file.path, file.content);
-      score += report.score;
-    }
-    score = files.length > 0 ? score / files.length : 0;
-
-    branches.push({
-      id: strategy.id,
-      name: strategy.name,
-      approach: strategy.approach,
-      files,
-      score,
-      selected: false,
-    });
-  }
+      const branch: ThoughtBranch = {
+        id: strategy.id,
+        name: strategy.name,
+        approach: strategy.approach,
+        files,
+        score,
+        selected: false,
+      };
+      return branch;
+    })
+  );
+  branches.push(...settled);
 
   // Pick the winner
   const sorted = [...branches].sort((a, b) => b.score - a.score);

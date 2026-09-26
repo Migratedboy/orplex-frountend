@@ -9,7 +9,7 @@
  * Key feature: Parallel execution of independent tasks
  */
 
-import { callM3, callM3WithTools } from "./multi-agent";
+import { callM3, callM3WithTools } from "./m3-client";
 
 // ============================================================
 // Types

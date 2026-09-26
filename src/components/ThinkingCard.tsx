@@ -1,76 +1,99 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { IconCheck, IconLoader } from "./Icons";
+import LatticeLoader from "./LatticeLoader";
 
 interface ThinkingCardProps {
   content: string;
   isThinking?: boolean;
 }
 
+/**
+ * Collapsible "Thinking" pill backed by LatticeLoader. Streams the model's
+ * reasoning live while `isThinking` is true (lattice animates + timer runs),
+ * then collapses to a done-state pill that can be re-opened to review the
+ * reasoning.
+ */
 export default function ThinkingCard({ content, isThinking = false }: ThinkingCardProps) {
-  const [expanded, setExpanded] = useState(true); // Default expanded so text is visible
-  const [elapsed, setElapsed] = useState(0);
-  const finalTimeRef = useRef(0);
-  const startTimeRef = useRef(Date.now());
-  const bodyRef = useRef<HTMLDivElement>(null);
+  const [wasThinking, setWasThinking] = useState(isThinking);
+  const [expanded, setExpanded] = useState(isThinking);
+  // Seconds to freeze into the done-state loader (LatticeLoader's timer
+  // restarts on remount, so the final duration is captured here).
+  const [finalSeconds, setFinalSeconds] = useState(0);
+  const startRef = useRef<number | null>(null);
 
+  // When a new thinking session starts on this card, reset the clock.
   useEffect(() => {
-    if (!isThinking) {
-      // Capture final time when thinking stops
-      finalTimeRef.current = Date.now() - startTimeRef.current;
-      return;
+    // First pass: establish the start time post-hydration (impure Date.now()
+    // can't run during render).
+    if (startRef.current == null) startRef.current = Date.now();
+    if (isThinking && !wasThinking) {
+      startRef.current = Date.now();
+      setFinalSeconds(0);
     }
-    const interval = setInterval(() => {
-      setElapsed(Date.now() - startTimeRef.current);
-    }, 100);
-    return () => clearInterval(interval);
-  }, [isThinking]);
+    if (isThinking) {
+      setWasThinking(true);
+    }
+  }, [isThinking, wasThinking]);
 
+  // When thinking stops, freeze the duration and collapse.
   useEffect(() => {
-    if (expanded && bodyRef.current && isThinking) {
-      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+    if (!isThinking && wasThinking) {
+      setFinalSeconds((prev) => (prev > 0 ? prev : (Date.now() - (startRef.current ?? Date.now())) / 1000));
+      setWasThinking(false);
+      setExpanded(false);
     }
-  }, [content, expanded, isThinking]);
+  }, [isThinking, wasThinking]);
 
-  const displayTime = isThinking ? elapsed : finalTimeRef.current;
-  const seconds = (displayTime / 1000).toFixed(1);
-  const hasContent = content.length > 0;
+  const hasContent = content.trim().length > 0;
+  const wordCount = content.trim().split(/\s+/).filter(Boolean).length;
+  // Rough token estimate (≈4 chars/token for English). Live while streaming,
+  // frozen once done since `content` stops changing — makes the effort
+  // setting's effect visible per answer (Low ≪ High).
+  const tokenEstimate = Math.ceil(content.length / 4);
 
   return (
-    <div className={`thinking-pill ${isThinking ? "thinking-pill--active" : "thinking-pill--done"}`}>
+    <div className="thinking-card">
       <button
-        className="thinking-pill-header"
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
+        type="button"
+        className="thinking-card__head"
+        onClick={() => hasContent && setExpanded((v) => !v)}
+        aria-expanded={hasContent ? expanded : undefined}
+        title={hasContent ? (expanded ? "Hide reasoning" : "Show reasoning") : undefined}
       >
-        <div className="thinking-pill-left">
-          {isThinking ? (
-            <span className="thinking-pill-spinner">
-              <IconLoader size={12} />
-            </span>
-          ) : (
-            <span className="thinking-pill-check">
-              <IconCheck size={12} />
-            </span>
-          )}
-          <span className="thinking-pill-label">
-            {isThinking ? "Thinking..." : "Reasoning Complete"}
+        <LatticeLoader
+          label="Thinking"
+          doneLabel="Thought for"
+          status={isThinking ? "working" : "done"}
+          pattern="orbit"
+          grid={3}
+          shape="round"
+          color="#FF6B00"
+          doneColor="#22c55e"
+          cellSize={5}
+          gap={2}
+          fontSize={12}
+          showTimer={isThinking || finalSeconds > 0}
+          elapsed={isThinking ? undefined : finalSeconds > 0 ? finalSeconds : undefined}
+        />
+        {hasContent && (
+          <span className="thinking-card__meta">
+            · ~{tokenEstimate.toLocaleString()} tokens
+            {!isThinking && wordCount > 0 ? ` · ${wordCount} words` : ""}
           </span>
-        </div>
-        <div className="thinking-pill-right">
-          {(isThinking || hasContent) && (
-            <span className="thinking-pill-time">{seconds}s</span>
-          )}
-          <span className="thinking-pill-chevron">{expanded ? "\u2212" : "+"}</span>
-        </div>
+        )}
+        {hasContent && (
+          <span className="thinking-card__chevron" aria-hidden="true">
+            {expanded ? "−" : "+"}
+          </span>
+        )}
       </button>
-      {expanded && (
-        <div className="thinking-pill-body" ref={bodyRef}>
-          <div className="thinking-pill-content">
-            {hasContent ? content : (isThinking ? "Waiting for reasoning..." : "No reasoning content")}
-            {isThinking && <span className="thinking-pill-cursor">{"\u258C"}</span>}
-          </div>
+      {hasContent && expanded && (
+        <div className="thinking-card__reasoning">
+          <pre className="thinking-card__reasoning-text">
+            {content.trim()}
+            {isThinking && <span className="thinking-card__cursor" />}
+          </pre>
         </div>
       )}
     </div>

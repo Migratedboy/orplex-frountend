@@ -144,6 +144,8 @@ export function startAutoReset(intervalMs = 60_000): () => void {
   _resetInterval = setInterval(() => {
     resetCircuitBreakers().catch(() => {});
   }, intervalMs);
+  // Don't hold the process open just for breaker resets.
+  _resetInterval.unref?.();
 
   return () => {
     if (_resetInterval) {

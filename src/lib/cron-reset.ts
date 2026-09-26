@@ -1,7 +1,14 @@
 import { resetDailyCounts } from "./key-pool";
 import { prisma } from "./prisma";
+import { recordRuntimeLog } from "./runtime-log";
+import { runtimeState } from "./runtime-state";
 
 let cronStarted = false;
+
+/** Cron lifecycle for the admin System page (shared cross-bundle state). */
+export function getCronStatus() {
+  return { ...runtimeState.cron };
+}
 
 /**
  * Try to acquire a distributed lock using PostgreSQL advisory lock.
@@ -28,6 +35,7 @@ async function tryAdvisoryLock(lockId: number): Promise<boolean> {
 export function startDailyResetCron(): void {
   if (cronStarted) return;
   cronStarted = true;
+  runtimeState.cron.scheduled = true;
 
   // Calculate ms until next midnight UTC
   function getMsUntilMidnight(): number {
@@ -39,6 +47,7 @@ export function startDailyResetCron(): void {
 
   function scheduleNext() {
     const delay = getMsUntilMidnight();
+    runtimeState.cron.nextResetAt = new Date(Date.now() + delay).toISOString();
     setTimeout(async () => {
       try {
         // Only one instance in a multi-instance deployment runs the reset
@@ -49,9 +58,12 @@ export function startDailyResetCron(): void {
           console.log("[cron] Resetting daily usage counters...");
           await resetDailyCounts();
           console.log("[cron] Daily reset complete.");
+          recordRuntimeLog("cron", "info", "daily usage counter reset complete");
+          runtimeState.cron.lastResetAt = new Date().toISOString();
         }
       } catch (err) {
         console.error("[cron] Daily reset failed:", err);
+        recordRuntimeLog("cron", "error", `daily reset failed: ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`);
       }
       scheduleNext(); // Schedule next midnight
     }, delay);

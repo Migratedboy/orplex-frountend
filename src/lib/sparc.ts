@@ -12,7 +12,7 @@
  * Based on Ruflo's SPARC methodology that enforces disciplined AI-assisted development.
  */
 
-import { callM3, callM3WithTools } from "./multi-agent";
+import { callM3, callM3WithTools } from "./m3-client";
 
 // ============================================================
 // Types

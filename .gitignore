@@ -17,6 +17,10 @@ dist/
 build/
 *.tsbuildinfo
 
+# Electron
+electron-dist/
+release/
+
 # Logs
 logs/
 *.log
@@ -25,6 +29,7 @@ npm-debug.log*
 # Database
 *.db
 *.db-journal
+.localpg/
 
 # IDE / OS
 .vscode-test
@@ -69,3 +74,17 @@ service-account*.json
 backups/
 *.bak
 *.backup
+
+# Playwright E2E artifacts
+/test-results/
+/playwright-report/
+/blob-report/
+
+# Live-validation scratch workspace
+/.live-validate/
+/.rubric-history/
+
+# Model catalog probe cache + test sweep results (local runtime artifacts)
+.model-catalog-cache.json
+.model-test-results.json
+.orplex-workspaces/

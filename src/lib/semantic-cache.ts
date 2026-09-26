@@ -10,7 +10,14 @@
  * - M3 skips tool calls for known patterns
  */
 
-import crypto from "crypto";
+// Client-safe id: the worker bundle (browser) imports this module — Node's
+// "crypto" import would break the webpack build. crypto.randomUUID exists on
+// both the Web Crypto API and modern Node (>=16.7) fallbacks below.
+function newId(): string {
+  const g = globalThis as { crypto?: { randomUUID?: () => string } };
+  if (g.crypto?.randomUUID) return g.crypto.randomUUID();
+  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 interface CacheEntry {
   id: string;
@@ -116,7 +123,7 @@ export function configureCache(config: Partial<CacheConfig>) {
 export function cacheResponse(query: string, response: string, toolsUsed: string[], contextHash: string = ""): void {
   if (!cacheConfig.enabled) return;
   cacheStore.push({
-    id: crypto.randomUUID(),
+    id: newId(),
     queryEmbedding: embedText(query),
     queryText: query,
     response,

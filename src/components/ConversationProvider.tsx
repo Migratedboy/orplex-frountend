@@ -3,6 +3,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
 import { useSession } from "next-auth/react";
 
+import { apiFetch } from "@/lib/api-base";
 export interface Conversation {
   id: string;
   title: string;
@@ -42,7 +43,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const fetchConversations = useCallback(() => {
     if (!session?.user?.id) return;
     setLoading(true);
-    fetch("/api/conversations")
+    apiFetch("/api/conversations")
       .then((r) => r.json())
       .then((data) => {
         if (data.conversations) setConversations(data.conversations);
@@ -64,7 +65,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       prev.map((c) => (c.id === id ? { ...c, title } : c))
     );
     try {
-      await fetch(`/api/conversations/${id}`, {
+      await apiFetch(`/api/conversations/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
@@ -79,7 +80,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     // Optimistic update — remove from local state immediately.
     setConversations((prev) => prev.filter((c) => c.id !== id));
     try {
-      await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+      await apiFetch(`/api/conversations/${id}`, { method: "DELETE" });
     } catch {
       // Revert on failure
       fetchConversations();

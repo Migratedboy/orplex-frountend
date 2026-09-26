@@ -7,18 +7,33 @@ interface ThemeContextType {
   toggle: () => void;
 }
 
-const ThemeContext = createContext<ThemeContextType>({ dark: false, toggle: () => {} });
+const ThemeContext = createContext<ThemeContextType>({ dark: true, toggle: () => {} });
 
 export function useTheme() {
   return useContext(ThemeContext);
 }
 
+/**
+ * Theme is DARK by default (set server-side on <html> in layout.tsx). The only
+ * stored preference is an explicit LIGHT choice ("orplex-theme": "light") —
+ * when the user switches to light we persist it and honor it on every load;
+ * anything else (no preference, "dark", unreadable storage) stays dark.
+ */
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(true);
 
   useEffect(() => {
-    const saved = localStorage.getItem("orplex-theme");
-    if (saved === "dark") {
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem("orplex-theme");
+    } catch {
+      // localStorage unavailable — keep dark default
+    }
+    if (saved === "light") {
+      setDark(false);
+      document.documentElement.classList.remove("dark");
+    } else {
+      // no explicit light preference → dark (covers first run and "dark")
       setDark(true);
       document.documentElement.classList.add("dark");
     }
@@ -27,7 +42,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const toggle = () => {
     setDark((prev) => {
       const next = !prev;
-      localStorage.setItem("orplex-theme", next ? "dark" : "light");
+      try {
+        localStorage.setItem("orplex-theme", next ? "dark" : "light");
+      } catch {
+        // persistence is best-effort
+      }
       document.documentElement.classList.toggle("dark", next);
       return next;
     });

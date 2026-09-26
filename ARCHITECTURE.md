@@ -32,7 +32,7 @@ Orplex Tech is an AI coding assistant built with Next.js 16, React 18, and Postg
 │       │             │            │              │        │
 │  ┌────┴─────────────┴────────────┴──────────────┴────┐  │
 │  │              Background Workers                   │  │
-│  │  background-worker │ enhanced-worker │ multi-agent │  │
+│  │  background-worker │ multi-agent │  │
 │  └────────────────────┬──────────────────────────────┘  │
 │                       │                                  │
 │  ┌────────────────────┴──────────────────────────────┐  │
@@ -67,8 +67,8 @@ Orplex Tech is an AI coding assistant built with Next.js 16, React 18, and Postg
 | `ai-providers.ts` | Multi-provider routing (OpenAI, Anthropic, OpenRouter) |
 | `model-router.ts` | Smart model selection based on task type |
 | `background-worker.ts` | Main tool-calling loop (runs in background) |
-| `background-chat.ts` | Global singleton chat store (survives page navigation) |
-| `enhanced-worker.ts` | LangChain-orchestrated worker with plan-and-execute |
+| `background-chat.ts` | Global singleton chat store (survives page navigation; snapshots in-flight tasks to sessionStorage for reload recovery) |
+| `run-sync.ts` | Mirrors live agent tasks into durable AgentRun rows (browser) |
 | `enhanced-system-prompt.ts` | System prompt for the coding agent |
 | `tool-definitions.ts` | OpenAI function calling tool schemas |
 | `multi-agent.ts` | Multi-agent orchestration with swarm intelligence |
@@ -89,7 +89,6 @@ Orplex Tech is an AI coding assistant built with Next.js 16, React 18, and Postg
 | `code-generators.ts` | Code generation utilities |
 | `code-quality-checker.ts` | Static analysis and quality scoring |
 | `rate-limiter.ts` | Rate limiting with sliding window counters |
-| `rate-limit-retry.ts` | Retry logic with exponential backoff |
 | `circuit-breaker.ts` | Circuit breaker for provider resilience |
 | `circuit-breaker-reset.ts` | DB-backed auto-reset with advisory locks |
 | `key-pool.ts` | API key pool with round-robin and quota tracking |

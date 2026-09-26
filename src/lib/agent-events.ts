@@ -55,7 +55,7 @@ export function emitActivity(entry: {
 
 export interface PreviewEvent {
   url: string;
-  source: "preview_browser" | "take_screenshot";
+  source: "preview_browser" | "take_screenshot" | "verify_app";
   timestamp: number;
 }
 

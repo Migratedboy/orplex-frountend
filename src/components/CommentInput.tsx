@@ -1,13 +1,18 @@
 "use client";
 
 import { useState } from "react";
+import { apiFetch } from "@/lib/api-base";
 
 interface CommentInputProps {
   artifactId: string;
-  onCommentAdded?: (comment: { id: string; content: string; createdAt: string }) => void;
+  /** Optional pin position (0–1 fractions) captured from a screenshot click. */
+  anchor?: { x: number; y: number };
+  /** Called when the user dismisses a captured anchor without commenting. */
+  onCancelAnchor?: () => void;
+  onCommentAdded?: (comment: { id: string; content: string; createdAt: string; anchorX?: number | null; anchorY?: number | null }) => void;
 }
 
-export default function CommentInput({ artifactId, onCommentAdded }: CommentInputProps) {
+export default function CommentInput({ artifactId, anchor, onCancelAnchor, onCommentAdded }: CommentInputProps) {
   const [content, setContent] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -16,10 +21,13 @@ export default function CommentInput({ artifactId, onCommentAdded }: CommentInpu
 
     setSubmitting(true);
     try {
-      const res = await fetch(`/api/agent/artifacts/${artifactId}/comments`, {
+      const res = await apiFetch(`/api/agent/artifacts/${artifactId}/comments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: content.trim() }),
+        body: JSON.stringify({
+          content: content.trim(),
+          ...(anchor ? { anchorX: anchor.x, anchorY: anchor.y } : {}),
+        }),
       });
 
       if (res.ok) {
@@ -36,14 +44,28 @@ export default function CommentInput({ artifactId, onCommentAdded }: CommentInpu
 
   return (
     <div className="comment-input">
+      {anchor && (
+        <span className="comment-input-anchor" title="Pinned to screenshot">
+          📍 {Math.round(anchor.x * 100)}%, {Math.round(anchor.y * 100)}%
+          <button
+            type="button"
+            className="comment-input-anchor-cancel"
+            onClick={onCancelAnchor}
+            aria-label="Remove pin"
+          >
+            ×
+          </button>
+        </span>
+      )}
       <input
         type="text"
         value={content}
         onChange={(e) => setContent(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-        placeholder="Add feedback for the agent..."
+        placeholder={anchor ? "What should change here?" : "Add feedback for the agent..."}
         className="comment-input-field"
         disabled={submitting}
+        autoFocus={!!anchor}
       />
       <button
         onClick={handleSubmit}

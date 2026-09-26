@@ -118,7 +118,8 @@ export async function preprocessMessages(
         const textPart = msg.content.find((p: any) => p.type === "text");
         const originalText = textPart?.text || "";
 
-        // Describe each image
+        // Describe each image in THIS message only — never share across messages
+        const localDescriptions: string[] = [];
         for (const img of imageParts) {
           const imgUrl = img.image_url.url;
           const base64 = imgUrl.startsWith("data:")
@@ -128,16 +129,18 @@ export async function preprocessMessages(
           const result = await describeImage(base64, userPrompt);
 
           if (result.success && result.text) {
+            localDescriptions.push(result.text);
             descriptions.push(result.text);
           } else {
             // Fallback — tell the model the image couldn't be processed
+            localDescriptions.push(`[Image could not be analyzed: ${result.error || "unknown error"}]`);
             descriptions.push(`[Image could not be analyzed: ${result.error || "unknown error"}]`);
           }
         }
 
         // Replace multimodal content with text description
-        const descriptionText = descriptions.length > 0
-          ? descriptions.map((d, i) => `[IMAGE ${i + 1} DESCRIPTION]:\n${d}`).join("\n\n")
+        const descriptionText = localDescriptions.length > 0
+          ? localDescriptions.map((d, i) => `[IMAGE ${i + 1} DESCRIPTION]:\n${d}`).join("\n\n")
           : "";
 
         const mergedContent = `${originalText}\n\n${descriptionText}`.trim();

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { sweepStaleRuns } from "@/lib/agent/runtime";
 import { estimateCostFromTotal, formatCost } from "@/lib/cost-estimator";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +25,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
 
+  // Self-heal: runs orphaned by a crashed tab (never received a terminal
+  // checkpoint) are older than the staleness window in an active status.
+  // The board + active badge poll this endpoint, so a sweep happens on read.
+  await sweepStaleRuns(session.user.id).catch(() => {});
+
   const limit = Math.min(parseInt(request.nextUrl.searchParams.get("limit") || "20", 10) || 20, 50);
+  // Debug seam for BYOK: ?model=... previews the resolved model, never the key.
+  const modelOverride = request.nextUrl.searchParams.get("model");
   const statusFilter = request.nextUrl.searchParams.get("status");
 
   const where: Record<string, unknown> = { userId: session.user.id };
@@ -45,6 +53,16 @@ export async function GET(request: NextRequest) {
       tokenUsage: true,
       createdAt: true,
       completedAt: true,
+      // Queue + resilience metadata for the board (morning-queue scheduling,
+      // lease priority, per-run model override, restart requeue count).
+      priority: true,
+      notBefore: true,
+      modelOverride: true,
+      retries: true,
+      // Mission grouping: children carry the parent id + shared label so the
+      // board can swimlane a mission's runs together.
+      parentRunId: true,
+      missionLabel: true,
       tasks: {
         orderBy: { createdAt: "asc" },
         select: {
@@ -63,7 +81,7 @@ export async function GET(request: NextRequest) {
       },
       approvals: {
         where: { status: "pending" },
-        select: { id: true, action: true },
+        select: { id: true, action: true, createdAt: true },
       },
       _count: { select: { artifacts: true } },
     },
@@ -78,6 +96,10 @@ export async function GET(request: NextRequest) {
       autonomyPolicy: run.autonomyPolicy,
       executionTarget: run.executionTarget,
       tokenUsage: run.tokenUsage,
+      priority: run.priority,
+      notBefore: run.notBefore?.toISOString() ?? null,
+      modelOverride: run.modelOverride,
+      retries: run.retries,
       estimatedCostUsd,
       estimatedCostLabel: formatCost(estimatedCostUsd),
       createdAt: run.createdAt.toISOString(),
@@ -85,6 +107,12 @@ export async function GET(request: NextRequest) {
       isActive: ACTIVE_RUN_STATUSES.includes(run.status),
       artifactCount: run._count.artifacts,
       pendingApprovalCount: run.approvals.length,
+      // Full pending approvals for the board's inline approve/deny actions.
+      pendingApprovals: run.approvals.map((a) => ({
+        id: a.id,
+        action: a.action,
+        createdAt: a.createdAt.toISOString(),
+      })),
       tasks: run.tasks.map((t) => ({
         id: t.id,
         role: t.role,
@@ -124,6 +152,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "prompt is required" }, { status: 400 });
   }
 
+  // BYOK per-task model + morning-queue scheduling on the single-spawn path.
+  const modelOverride =
+    typeof body.modelOverride === "string" && body.modelOverride.trim()
+      ? body.modelOverride.trim().slice(0, 120)
+      : null;
+  const priority = Number.isInteger(body.priority) ? (body.priority as number) : 0;
+  const notBefore =
+    typeof body.notBefore === "string" && !Number.isNaN(Date.parse(body.notBefore))
+      ? new Date(body.notBefore)
+      : null;
+
   try {
     const run = await prisma.agentRun.create({
       data: {
@@ -133,6 +172,9 @@ export async function POST(request: NextRequest) {
         workspace: ".",
         executionTarget,
         autonomyPolicy,
+        ...(modelOverride ? { modelOverride } : {}),
+        ...(priority !== 0 ? { priority } : {}),
+        ...(notBefore ? { notBefore } : {}),
         idempotencyKey: `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       },
     });
@@ -143,7 +185,12 @@ export async function POST(request: NextRequest) {
         runId: run.id,
         sequence: 0,
         type: "spawned",
-        payload: { prompt: prompt.trim(), mode },
+        payload: {
+          prompt: prompt.trim(),
+          mode,
+          ...(modelOverride ? { model: modelOverride } : {}),
+          ...(notBefore ? { scheduledFor: notBefore.toISOString() } : {}),
+        },
       },
     });
 

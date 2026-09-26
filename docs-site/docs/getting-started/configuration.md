@@ -46,3 +46,9 @@ You can change the model in the UI settings or via the `orplex.model` configurat
 |----------|---------|-------------|
 | `ALLOWED_ORIGINS` | `http://localhost:5000` | Comma-separated allowed origins |
 | `BLOCKED_COMMANDS` | (built-in) | Additional blocked commands |
+
+## Workspace Config File
+
+Per-workspace agent behavior — MCP tool servers and deny/notify tool hooks —
+lives in `orplex.config.json` at your workspace root. See the
+[orplex.config.json reference](../guides/orplex-config.md).

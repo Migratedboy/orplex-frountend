@@ -1,6 +1,39 @@
 import type { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 import GitHubProvider from "next-auth/providers/github";
+import type { CookieOption } from "next-auth";
+
+// ---------------------------------------------------------------------------
+// Split-deployment cookie controls.
+// Same parent domain (app.example.com + api.example.com): set
+// AUTH_COOKIE_DOMAIN=.example.com and the session cookie just works.
+// Unrelated domains: AUTH_COOKIE_SAMESITE=None (HTTPS required) so the
+// browser accepts the cross-site cookie at all.
+// ---------------------------------------------------------------------------
+function splitDeploymentCookies(): Partial<Record<string, CookieOption>> | undefined {
+  const domain = (process.env.AUTH_COOKIE_DOMAIN || "").trim();
+  const sameSite = (process.env.AUTH_COOKIE_SAMESITE || "").trim().toLowerCase();
+  if (!domain && !sameSite) return undefined;
+  const useSecure = sameSite === "none" || process.env.NEXTAUTH_URL?.startsWith("https://") === true;
+  const build = (name: string): CookieOption => ({
+    name,
+    options: {
+      ...(domain ? { domain } : {}),
+      ...(sameSite === "none" ? { sameSite: "none" as const } : {}),
+      path: "/",
+      secure: useSecure,
+    },
+  });
+  return {
+    sessionToken: build("next-auth.session-token"),
+    callbackUrl: build("next-auth.callback-url"),
+    csrfToken: build("next-auth.csrf-token"),
+    state: build("next-auth.state"),
+    nonce: build("next-auth.nonce"),
+  };
+}
+
+const SPLIT_COOKIES = splitDeploymentCookies();
 
 
 // Shared JWT callbacks — used by both full authOptions and lightweight jwtOnlyOptions.
@@ -35,10 +68,8 @@ export const authOptions: NextAuthOptions = {
   // Lazy-load PrismaAdapter only when this module is actually evaluated
   // (i.e., during OAuth flows in the [...nextauth] route handler).
   get adapter() {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { PrismaAdapter } = require("@next-auth/prisma-adapter");
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { prisma } = require("@/lib/prisma");
+    const { prisma } = require("../lib/prisma");
     return PrismaAdapter(prisma);
   },
   providers: [
@@ -60,6 +91,7 @@ export const authOptions: NextAuthOptions = {
   ],
   session: { strategy: "jwt", maxAge: 30 * 24 * 60 * 60 },
   pages: { signIn: "/auth/signin" },
+  ...(SPLIT_COOKIES ? { cookies: SPLIT_COOKIES } : {}),
   callbacks: {
     ...jwtCallbacks,
     // GitHub returns refresh_token_expires_in which Prisma schema doesnt have
@@ -88,6 +120,7 @@ export const jwtOnlyOptions: NextAuthOptions = {
   providers: [],
   session: { strategy: "jwt", maxAge: 30 * 24 * 60 * 60 },
   pages: { signIn: "/auth/signin" },
+  ...(SPLIT_COOKIES ? { cookies: SPLIT_COOKIES } : {}),
   callbacks: jwtCallbacks,
   secret: process.env.NEXTAUTH_SECRET,
 };

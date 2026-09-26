@@ -8,6 +8,21 @@ interface IconProps {
 
 // === Navigation ===
 
+/** Right-panel toggle: sidebar with header rows and a collapse chevron.
+ *  Mirrored (scaleX(-1)) by the caller when the panel is closed. */
+export function IconPanel({ size = 16, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="M9 3v18" />
+      <line x1="5" y1="7" x2="7" y2="7" />
+      <line x1="5" y1="11" x2="7" y2="11" />
+      <line x1="5" y1="15" x2="7" y2="15" />
+      <path d="M15 10l-2 2 2 2" />
+    </svg>
+  );
+}
+
 export function IconChat({ size = 16, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className}>

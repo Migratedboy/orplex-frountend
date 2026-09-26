@@ -49,6 +49,12 @@ export function requestApproval(
     ? { level: riskHint, reason: "Caller-classified", autoApprovable: false }
     : classifyRisk(toolForType(type), details);
 
+  // A remembered "Always allow" rule silently approves identical requests
+  // (never high-risk ones — those always require explicit review).
+  if (assessment.level !== "high" && hasAlwaysRule(type, details)) {
+    return Promise.resolve(true);
+  }
+
   return new Promise<boolean>((resolve) => {
     const id = nextId();
     const approval: PendingApproval = {
@@ -65,8 +71,10 @@ export function requestApproval(
     };
     pending.set(id, approval);
 
-    // Auto-reject after 5 minutes
-    setTimeout(() => {
+    // Auto-reject after 5 minutes. Unref'd where available (node/jest) so a
+    // pending approval never keeps the process alive — in the browser the
+    // timer handle is a plain number and this is a no-op.
+    const rejectTimer = setTimeout(() => {
       const a = pending.get(id);
       if (a && a.status === "pending") {
         a.status = "rejected";
@@ -74,6 +82,9 @@ export function requestApproval(
         pending.delete(id);
       }
     }, 5 * 60 * 1000);
+    if (typeof rejectTimer === "object" && rejectTimer && "unref" in rejectTimer) {
+      (rejectTimer as { unref: () => void }).unref();
+    }
   });
 }
 
@@ -107,6 +118,75 @@ export function getPendingApprovals(): PendingApproval[] {
       ...a,
       resolve: undefined, // Don't serialize the resolver
     }));
+}
+
+// ---------------------------------------------------------------------------
+// "Always allow" rules — remembered per (type, key) so the user doesn't have
+// to re-approve identical actions every turn. Persisted to localStorage when
+// available (browser) so they survive reloads.
+// ---------------------------------------------------------------------------
+
+interface AlwaysRule {
+  type: ApprovalType;
+  /** Command head (first two words) for commands; normalized path for files */
+  key: string;
+}
+
+const ALWAYS_KEY = "orplex:always-allow";
+
+function loadAlwaysRules(): AlwaysRule[] {
+  try {
+    if (typeof window === "undefined") return [];
+    const raw = window.localStorage.getItem(ALWAYS_KEY);
+    return raw ? (JSON.parse(raw) as AlwaysRule[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveAlwaysRules(rules: AlwaysRule[]): void {
+  try {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(ALWAYS_KEY, JSON.stringify(rules));
+  } catch {}
+}
+
+/** Stable identity of an approval for "always allow" matching. */
+export function approvalKey(type: ApprovalType, details: Record<string, unknown>): string {
+  if (type === "run_command") {
+    return String(details.command || "").trim().split(/\s+/).slice(0, 2).join(" ").toLowerCase();
+  }
+  return String(details.path || "").replace(/\\/g, "/");
+}
+
+/**
+ * Approve AND remember: resolves this request and stores a rule so identical
+ * future actions (same command head / file path) skip the dialog. High-risk
+ * actions are never auto-approved by rules.
+ */
+export function approveRequestAlways(id: string): boolean {
+  const a = pending.get(id);
+  if (!a || a.status !== "pending") return false;
+
+  if (a.risk !== "high") {
+    const rules = loadAlwaysRules();
+    const rule: AlwaysRule = { type: a.type, key: approvalKey(a.type, a.details) };
+    if (!rules.some(r => r.type === rule.type && r.key === rule.key)) {
+      rules.push(rule);
+      saveAlwaysRules(rules);
+    }
+  }
+
+  a.status = "approved";
+  a.resolve?.(true);
+  pending.delete(id);
+  return true;
+}
+
+/** True if a matching "always allow" rule exists for this request. */
+export function hasAlwaysRule(type: ApprovalType, details: Record<string, unknown>): boolean {
+  const key = approvalKey(type, details);
+  return loadAlwaysRules().some(r => r.type === type && r.key === key);
 }
 
 /** Map a legacy ApprovalType back to the tool name for classification */

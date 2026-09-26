@@ -7,12 +7,66 @@ export default function SignInPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [availableProviders, setAvailableProviders] = useState<Record<string, { name: string; id: string }>>({});
+  // null = not probed yet (button hidden while checking); true/false = bypass available
+  const [devEnabled, setDevEnabled] = useState<boolean | null>(null);
+  // Shown after "End dev session": "ended" when a session was cleared,
+  // "none" when there was nothing to end.
+  const [devNotice, setDevNotice] = useState<"ended" | "none" | null>(null);
 
   // Fetch available providers from NextAuth so we only show buttons
   // for providers that have valid credentials configured.
   useEffect(() => {
     getProviders().then((p) => p && setAvailableProviders(p)).catch(() => {});
+    // Check whether the dev-only session bypass is available (NODE_ENV !== production).
+    fetch("/api/dev/session")
+      .then((r) => r.json().catch(() => null))
+      .then((d) => setDevEnabled(!!d?.enabled))
+      .catch(() => setDevEnabled(false));
+    // "End dev session" reloads to ?devSessionEnded=1 — surface a one-shot
+    // notice and clean the URL so a later refresh doesn't repeat it.
+    if (new URLSearchParams(window.location.search).get("devSessionEnded") === "1") {
+      setDevNotice("ended");
+      window.history.replaceState({}, "", "/auth/signin");
+    }
   }, []);
+
+  const handleDevLogin = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/dev/session?action=login");
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "dev login failed");
+      // Cookie is set; navigate into the app (middleware accepts the signed session).
+      window.location.href = "/";
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Dev login failed. Please try again.");
+      setLoading(false);
+    }
+  };
+
+  const handleDevLogout = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/dev/session?action=logout");
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "dev logout failed");
+      // The dev cookie is httpOnly — the route above expired it. When a
+      // session existed, reload into the sign-in page so the in-memory
+      // NextAuth session state is dropped too and the tester can sign in
+      // with a different identity. Otherwise just say so in place.
+      if (data?.hadSession) {
+        window.location.href = "/auth/signin?devSessionEnded=1";
+      } else {
+        setDevNotice("none");
+        setLoading(false);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to end dev session. Please try again.");
+      setLoading(false);
+    }
+  };
 
   const handleOAuth = async (provider: "google" | "github") => {
     setLoading(true);
@@ -147,6 +201,52 @@ export default function SignInPage() {
               </button>
             )}
           </div>
+
+          {/* Dev-only bypass — rendered only when the dev session endpoint is enabled */}
+          {devEnabled && (
+            <div className="border-2 border-dashed border-[#ff6b00]/40 rounded-lg p-4 bg-[#FFFBFF]">
+              <p className="text-[10px] font-bold text-[#a04100] tracking-[0.12em] uppercase font-['JetBrains_Mono',monospace] mb-2">
+                Development Only
+              </p>
+              {devNotice === "ended" && (
+                <p className="text-[11px] font-['JetBrains_Mono',monospace] text-[#1a7f37] bg-[#e6f4ea] border border-[#1a7f37]/30 rounded px-2 py-1.5 mb-2 leading-[1.4]">
+                  ✓ Dev session ended — you can now sign in with a different identity.
+                </p>
+              )}
+              {devNotice === "none" && (
+                <p className="text-[11px] font-['JetBrains_Mono',monospace] text-[#8a8a8a] bg-[#f4f4f5] border border-[#d4d4d8] rounded px-2 py-1.5 mb-2 leading-[1.4]">
+                  No active dev session — already signed out.
+                </p>
+              )}
+              <button
+                onClick={handleDevLogin}
+                disabled={loading}
+                className="w-full border-2 border-[#ff6b00] bg-[#ff6b00] hover:bg-[#e55f00] text-white text-[12px] font-bold font-['JetBrains_Mono',monospace] py-3 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="16 18 22 12 16 6" />
+                  <polyline points="8 6 2 12 8 18" />
+                </svg>
+                {loading ? "Signing in…" : "Continue as Dev User"}
+              </button>
+              <button
+                onClick={handleDevLogout}
+                disabled={loading}
+                title="Clears the local dev session cookie so you can test the OAuth sign-in flow"
+                className="w-full mt-2 border-2 border-[#a04100]/40 hover:border-[#a04100] text-[#a04100] hover:bg-[#FFF7ED] text-[12px] font-bold font-['JetBrains_Mono',monospace] py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                  <polyline points="16 17 21 12 16 7" />
+                  <line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
+                {loading ? "Ending session…" : "End dev session"}
+              </button>
+              <p className="text-[10px] text-[#8a8a8a] font-['JetBrains_Mono',monospace] mt-2 leading-[1.5]">
+                Local test session — bypasses OAuth. Log out to test the real sign-in flow. Never shown in production.
+              </p>
+            </div>
+          )}
 
           {/* Footer */}
           <p className="text-center text-[11px] text-[#5f5e5e] font-['JetBrains_Mono',monospace] mt-[16px]">

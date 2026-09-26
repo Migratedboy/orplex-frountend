@@ -10,11 +10,11 @@ import { checkUserQuota, incrementUserQuota } from "../rate-limiter";
 
 export const FREE_TIER = {
   /** Max requests per day for free users */
-  DAILY_LIMIT: 50,
+  DAILY_LIMIT: 1000,
   /** Max tokens per prompt */
   MAX_TOKENS_PER_PROMPT: 4096,
-  /** Allowed models (free tier only gets M3) */
-  ALLOWED_MODELS: ["minimax-m3"] as const,
+  /** Allowed models (free tier only gets the verified-live Groq flagship) */
+  ALLOWED_MODELS: ["openai/gpt-oss-120b"] as const,
   /** Max file uploads per prompt */
   MAX_FILE_UPLOADS: 5,
   /** Max conversation length */

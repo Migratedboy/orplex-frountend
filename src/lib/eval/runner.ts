@@ -109,6 +109,12 @@ async function callAgent(
     const decoder = new TextDecoder();
     let fullContent = "";
     let buffer = "";
+    // Native tool_calls arrive as OpenAI-style streamed fragments: each delta
+    // carries { index, function: { name?, arguments? } } where arguments is a
+    // partial JSON string. Reassemble per index, then parse below. Without
+    // this, every native-tool write was invisible to the scorer (evals only
+    // saw XML-format calls) and scored 0 on tasks the agent actually fixed.
+    const pendingToolCalls = new Map<number, { name?: string; arguments: string }>();
 
     while (true) {
       const { done, value } = await reader.read();
@@ -126,6 +132,17 @@ async function callAgent(
             try {
               const parsed = JSON.parse(data);
               if (parsed.content) fullContent += parsed.content;
+              if (Array.isArray(parsed.tool_calls)) {
+                for (const tc of parsed.tool_calls) {
+                  const idx = typeof tc.index === "number" ? tc.index : 0;
+                  const entry = pendingToolCalls.get(idx) ?? { arguments: "" };
+                  if (tc.function?.name) entry.name = tc.function.name;
+                  if (typeof tc.function?.arguments === "string") {
+                    entry.arguments += tc.function.arguments;
+                  }
+                  pendingToolCalls.set(idx, entry);
+                }
+              }
             } catch {}
           }
         }
@@ -135,6 +152,22 @@ async function callAgent(
     // Parse tool calls from the accumulated content
     const fileWrites = parseWriteCalls(fullContent);
     const fileEdits = parseEditCalls(fullContent);
+
+    // Merge native tool calls (reassembled from stream deltas). XML remains
+    // the fallback for models that emit tool calls as text.
+    for (const tc of pendingToolCalls.values()) {
+      if (!tc.name || !tc.arguments) continue;
+      try {
+        const args = JSON.parse(tc.arguments);
+        if (tc.name === "write_file" && args.path && args.content !== undefined) {
+          if (!fileWrites.some((w) => w.path === args.path && w.content === args.content)) {
+            fileWrites.push({ path: args.path, content: args.content });
+          }
+        } else if (tc.name === "edit_file" && args.path && args.old_text && args.new_text) {
+          fileEdits.push({ path: args.path, oldText: args.old_text, newText: args.new_text });
+        }
+      } catch {}
+    }
 
     return { content: fullContent, fileWrites, fileEdits };
   } catch (err: any) {

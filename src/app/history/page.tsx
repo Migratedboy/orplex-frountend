@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useConversations, type Conversation } from "@/components/ConversationProvider";
+import { announceConversationOpen } from "@/lib/navigation-events";
 import { IconSearch, IconMessage, IconTrash, IconClose } from "@/components/Icons";
 
 export default function HistoryPage() {
@@ -73,7 +74,7 @@ export default function HistoryPage() {
                   </div>
                   <div className="history-card">
                     {items.map((item, i) => (
-                      <div key={item.id} onClick={() => router.push(`/?c=${item.id}`)}
+                      <div key={item.id} onClick={() => { router.push(`/?c=${item.id}`); announceConversationOpen(item.id); }}
                         className="history-item" style={{ borderBottom: i < items.length - 1 ? "1px solid var(--border-color, #E4E4E7)" : "none" }}>
                         <div className="history-item-icon">
                           <IconMessage size={16} />

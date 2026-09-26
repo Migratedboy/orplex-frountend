@@ -25,6 +25,24 @@ const features = [
     icon: "🔌",
   },
   {
+    title: "BYOK Frontier Mode",
+    description:
+      "Set AI_PROVIDER=custom with any OpenAI-compatible endpoint and your own Claude, Gemini, or OpenRouter key. Per-run model overrides, and the Manager badge always shows which mode is live.",
+    icon: "🔑",
+  },
+  {
+    title: "Morning PR Queue",
+    description:
+      "Queue tasks for 02:00 (or stagger a batch via the API) and the serial executor sips through them overnight — one run at a time, free-tier friendly. Branches are pushed with PR or compare links: wake up, review the diff, merge.",
+    icon: "🌙",
+  },
+  {
+    title: "Audit Bundle",
+    description:
+      "Every run exports one tamper-evident JSON file: SHA-256 hash-chained events, artifacts, and approval decisions, plus a human-readable manifest. A verify endpoint recomputes the chain — provable agents, not vibes.",
+    icon: "🧾",
+  },
+  {
     title: "Risk-Tiered Safety",
     description:
       "Reads auto-approve, writes require consent, destructive ops get flagged. Diff view with accept/reject per hunk.",
@@ -33,13 +51,13 @@ const features = [
   {
     title: "Plugin System",
     description:
-      "22 built-in plugins: linter, type-checker, test generator, secret scanner. Build your own with lifecycle hooks.",
+      "Built-in plugins with a curated keep-list on by default — secret scanner, path guard, cost tracker. Enable more per workspace.",
     icon: "🧩",
   },
   {
-    title: "Advanced Reasoning",
+    title: "Context Discipline",
     description:
-      "Multi-agent orchestration, self-correcting loops, RAG + vector memory, tree-of-thoughts. Gets smarter over time.",
+      "Summarizing compaction preserves decisions instead of dropping old turns, evidence-gated workspace memory re-enters prompts, and MCP servers plug external tools into the loop.",
     icon: "🧠",
   },
   {

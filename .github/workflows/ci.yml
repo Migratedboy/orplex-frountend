@@ -37,6 +37,9 @@ jobs:
       - name: TypeCheck
         run: npm run typecheck
 
+      - name: API wiring audit
+        run: npm run audit
+
   # ──────────────────────────────────────────────────────────────────
   # Tests (unit + integration, with coverage)
   # ──────────────────────────────────────────────────────────────────

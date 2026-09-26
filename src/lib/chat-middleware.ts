@@ -75,9 +75,12 @@ export async function enforceBurstLimit(
       response: Response.json(
         {
           success: false,
-          error: { message: "Too many requests. Wait a moment." },
+          error: { message: "Too many requests. Try again in about a minute." },
         },
-        { status: 429 },
+        {
+          status: 429,
+          headers: { "Retry-After": "60" },
+        },
       ),
     };
   }
@@ -201,10 +204,40 @@ export function sanitizeAndValidateInput(
 
 export async function getProviderConfigs(
   userId?: string,
+  /** Model id picked in the prompt bar. OpenRouter keys can serve any model
+   *  id (their `model` field is only a default), so openrouter providers are
+   *  re-pointed at the requested model; fixed-model providers (Groq, NVIDIA
+   *  NIM) keep their own and simply match or not downstream. */
+  requestedModel?: string,
 ): Promise<ProviderConfig[]> {
   const providers: ProviderConfig[] = [];
 
-  // Priority 1: User's own API keys
+  // Registry-driven config builder. Every registry provider is
+  // OpenAI-compatible for chat (Anthropic via its documented compat endpoint),
+  // so one shape serves all; per-provider extras (OpenRouter attribution
+  // headers) ride along. MODEL env overrides keep working per provider id.
+  const { getProviderDef } = await import("@/lib/provider-registry");
+  const configFor = (
+    providerId: string,
+    apiKey: string,
+    model: string | undefined,
+    name: string
+  ): ProviderConfig | null => {
+    const def = getProviderDef(providerId);
+    if (!def) return null;
+    const envModel = process.env[`${providerId.toUpperCase()}_MODEL`];
+    return {
+      name,
+      url: `${def.baseUrl}/chat/completions`,
+      apiKey,
+      model: model || envModel || def.fallbackModel,
+      ...(def.extraHeaders || def.authStyle === "x-api-key"
+        ? { extraHeaders: { ...(def.extraHeaders ?? {}) } }
+        : {}),
+    };
+  };
+
+  // Priority 1: User's own API keys (any registry provider)
   if (userId) {
     try {
       const { prisma } = await import("@/lib/prisma");
@@ -215,21 +248,8 @@ export async function getProviderConfigs(
       for (const uk of userKeys) {
         try {
           const decrypted = decryptKey(uk.apiKey);
-          if (uk.provider === "openrouter") {
-            providers.push({
-              name: "openrouter-personal",
-              url: "https://openrouter.ai/api/v1/chat/completions",
-              apiKey: decrypted,
-              model: uk.model || "minimax/minimax-m3:free",
-            });
-          } else if (uk.provider === "nvidia") {
-            providers.push({
-              name: "nvidia-personal",
-              url: "https://integrate.api.nvidia.com/v1/chat/completions",
-              apiKey: decrypted,
-              model: uk.model || "openai/gpt-oss-120b",
-            });
-          }
+          const cfg = configFor(uk.provider, decrypted, uk.model || undefined, `${uk.provider}-personal`);
+          if (cfg) providers.push(cfg);
         } catch {
           /* provider unavailable */
         }
@@ -244,50 +264,65 @@ export async function getProviderConfigs(
     const { getAvailableKey } = await import("@/lib/key-pool");
     const poolKey = await getAvailableKey();
     if (poolKey) {
-      if (poolKey.provider === "openrouter") {
-        providers.push({
-          name: "openrouter-pool",
-          url: "https://openrouter.ai/api/v1/chat/completions",
-          apiKey: poolKey.apiKey,
-          model: poolKey.model || "minimax/minimax-m3:free",
-        });
-      } else if (poolKey.provider === "nvidia") {
-        providers.push({
-          name: "nvidia-pool",
-          url: "https://integrate.api.nvidia.com/v1/chat/completions",
-          apiKey: poolKey.apiKey,
-          model: poolKey.model || "openai/gpt-oss-120b",
-        });
-      }
+      const cfg = configFor(poolKey.provider, poolKey.apiKey, poolKey.model || undefined, `${poolKey.provider}-pool`);
+      if (cfg) providers.push(cfg);
     }
   } catch {
     /* provider unavailable */
   }
 
-  // Priority 3: Environment variables
-  const orKey = process.env.OPENROUTER_API_KEY || "";
-  const orModel = process.env.OPENROUTER_MODEL || "minimax/minimax-m3:free";
-  if (orKey && !providers.some((p) => p.name.includes("openrouter"))) {
-    providers.push({
-      name: "OpenRouter",
-      url: "https://openrouter.ai/api/v1/chat/completions",
-      apiKey: orKey,
-      model: orModel,
-    });
+  // Priority 3: Environment variables, in registry display order. A provider
+  // whose key already appeared (personal/pool) is skipped — dedupe by
+  // provider id prefix of the config name (`<id>-personal` / `<id>-pool`).
+  const { listProviderDefs } = await import("@/lib/provider-registry");
+  for (const def of listProviderDefs()) {
+    const envKey = process.env[def.keyEnvVar] || "";
+    if (!envKey) continue;
+    if (providers.some((p) => p.name === `${def.id}-personal` || p.name === `${def.id}-pool`)) continue;
+    const cfg = configFor(def.id, envKey, undefined, def.label);
+    if (cfg) providers.push(cfg);
   }
 
-  const nvKey = process.env.NVIDIA_API_KEY || "";
-  const nvModel = process.env.NVIDIA_MODEL || "openai/gpt-oss-120b";
-  if (nvKey && !providers.some((p) => p.name.includes("NVIDIA"))) {
-    providers.push({
-      name: "NVIDIA",
-      url: "https://integrate.api.nvidia.com/v1/chat/completions",
-      apiKey: nvKey,
-      model: nvModel,
-    });
+  // Prompt-bar model selection: all three providers are OpenAI-compatible
+  // endpoints where the key serves the provider's whole catalog — the `model`
+  // field is per-request. Re-point EVERY provider at the requested id, then
+  // add sibling-form fallbacks (`id` ↔ `id:free`) after the home attempts, so
+  // a paid slug with no credits falls through to its free variant and an
+  // OpenRouter-only listing of an NVIDIA-hosted id still reaches NVIDIA.
+  // Providers that don't host an id just fail fast (~100ms) and the ladder
+  // moves on — exactly what the per-attempt retry loop is for.
+  if (requestedModel && providers.length > 0) {
+    const variants = modelVariants(requestedModel);
+    const [primary, ...fallbacks] = variants;
+    for (const p of providers) p.model = primary;
+    for (const alt of fallbacks) {
+      for (const base of [...providers]) {
+        const alias: ProviderConfig = { ...base, model: alt };
+        if (!providers.some((p) => p.name === alias.name && p.model === alias.model)) {
+          providers.push(alias);
+        }
+      }
+    }
   }
 
   return providers;
+}
+
+/** Sibling ids to try for a requested model: `x:free` ↔ `x`. OpenRouter lists
+ *  free tiers under a `:free` suffix while NVIDIA/Groq host the bare id, and
+ *  vice versa — trying both forms on every provider is what makes a picker
+ *  entry answer even when its home route is out of credits or quota. */
+export function modelVariants(id: string): string[] {
+  const trimmed = (id || "").trim();
+  if (!trimmed) return [];
+  const variants = [trimmed];
+  if (trimmed.endsWith(":free")) {
+    const bare = trimmed.slice(0, ":free".length * -1);
+    if (bare && !variants.includes(bare)) variants.push(bare);
+  } else {
+    variants.push(`${trimmed}:free`);
+  }
+  return variants;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,11 +333,23 @@ export async function fetchWithProviderRetry(
   provider: ProviderConfig,
   requestBody: Record<string, unknown>,
 ): Promise<{ ok: true; stream: ReadableStream } | { ok: false; error: string }> {
-  const maxAttempts = 3;
+  const maxAttempts = 4;
+  // Global ceiling for this provider's attempt-ladder: even with retries and
+  // backoff, one provider must never eat more than ~75s — the next provider
+  // (or the 503 to the client) has to stay reachable.
+  const deadline = Date.now() + 75_000;
   let lastError = "";
+  let body = requestBody;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (Date.now() > deadline) {
+      lastError = lastError || `${provider.name}: attempt budget exhausted`;
+      break;
+    }
     try {
+      // Cap each attempt: a provider that accepts the connection but never
+      // responds must fail over to the next attempt/provider instead of
+      // hanging the whole /api/chat route (and the client stream) forever.
       const res = await fetch(provider.url, {
         method: "POST",
         headers: {
@@ -310,12 +357,27 @@ export async function fetchWithProviderRetry(
           Authorization: `Bearer ${provider.apiKey}`,
           ...provider.extraHeaders,
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(body),
+        // Per-attempt cap shrinks as the ladder's global deadline approaches:
+        // a hung provider must fail over fast enough that the next provider
+        // (or the client) isn't left waiting minutes.
+        signal: AbortSignal.timeout(Math.max(5_000, deadline - Date.now())),
       });
 
-      if (res.status === 429 && attempt < maxAttempts) {
-        const retryAfter = parseInt(
-          res.headers.get("retry-after") || "60",
+      // Auth rejection is terminal for THIS key: retrying cannot help. Report
+      // immediately so the provider ladder moves to the next provider.
+      if (res.status === 401 || res.status === 403) {
+        lastError = `${provider.name}: key rejected (HTTP ${res.status})`;
+        break;
+      }
+
+      // 429: rate limit (backoff). 5xx: upstream/up-provider failure — the
+      // next attempt (or auto-router upstream) usually succeeds, so retry.
+      if ((res.status === 429 || res.status >= 500) && attempt < maxAttempts) {
+        // Free-tier providers send retry-after up to 60s; honoring it fully
+        // can stall a chat for minutes. Cap the wait and fail over quickly.
+        const retryAfter = Math.min(
+          parseInt(res.headers.get("retry-after") || "3", 10),
           10,
         );
         await new Promise((r) => setTimeout(r, retryAfter * 1000));
@@ -324,6 +386,16 @@ export async function fetchWithProviderRetry(
 
       if (!res.ok) {
         const errText = await res.text().catch(() => "unknown");
+        // Self-heal: small-context models (e.g. Groq allam-2-7b @ 4096)
+        // reject our default completion budget outright and name the cap in
+        // the error. Retry immediately with the provider's own limit.
+        const cap = errText.match(
+          /max_completion_tokens`?\s+must be less than or equal to\s+`?(\d+)/i,
+        );
+        if (cap) {
+          body = { ...body, max_completion_tokens: Number(cap[1]) };
+          continue;
+        }
         lastError = `${provider.name} HTTP ${res.status}: ${errText.slice(0, 200)}`;
         break;
       }
@@ -333,7 +405,7 @@ export async function fetchWithProviderRetry(
         break;
       }
 
-      return { ok: true, stream: res.body };
+      return okStreamPeeked(provider.name, res.body);
     } catch (err) {
       lastError = `${provider.name}: ${(err as Error).message}`;
       if (attempt < maxAttempts) {
@@ -343,6 +415,62 @@ export async function fetchWithProviderRetry(
   }
 
   return { ok: false, error: lastError };
+}
+
+/**
+ * Inspect the first bytes of an SSE body before committing to it.
+ *
+ * Some providers (NVIDIA NIM) answer HTTP 200 and put the real failure
+ * INSIDE the stream — `data: {"error":{"message":"ResourceExhausted: worker
+ * limit..."}}` followed by `[DONE]`. Serving that to the client means an
+ * instantly-empty chat message. Peeking lets the ladder fail over to the
+ * next provider instead; a healthy first chunk is re-attached so nothing
+ * is lost.
+ */
+async function okStreamPeeked(
+  providerName: string,
+  upstream: ReadableStream<Uint8Array>,
+): Promise<{ ok: true; stream: ReadableStream } | { ok: false; error: string }> {
+  const reader = upstream.getReader();
+  const first = await reader.read();
+  if (first.done || !first.value) {
+    return { ok: false, error: `${providerName}: empty response body` };
+  }
+  const head = new TextDecoder().decode(first.value);
+  const errLine = head.split("\n").find((l) => l.startsWith("data:"));
+  if (errLine) {
+    try {
+      const payload = JSON.parse(errLine.slice(5).trim()) as { error?: { message?: string } };
+      if (payload && typeof payload === "object" && "error" in payload) {
+        const msg = payload.error?.message ?? JSON.stringify(payload.error);
+        return {
+          ok: false,
+          error: `${providerName} in-stream error: ${String(msg).slice(0, 180)}`,
+        };
+      }
+    } catch {
+      // Not JSON (chunk may be split mid-line, or a plain delta) — healthy.
+    }
+  }
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      controller.enqueue(first.value);
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+        controller.close();
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+    cancel() {
+      reader.cancel().catch(() => {});
+    },
+  });
+  return { ok: true, stream };
 }
 
 // ---------------------------------------------------------------------------

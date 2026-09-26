@@ -1,5 +1,16 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
+/** Post-hydration random width (percent) for skeleton shimmer bars. */
+function useRandomWidth(min: number, span: number): string | null {
+  const [width, setWidth] = useState<string | null>(null);
+  useEffect(() => {
+    setWidth(`${Math.round(min + Math.random() * span)}%`);
+  }, [min, span]);
+  return width;
+}
+
 /** Skeleton for the Files panel */
 export function FilesPanelSkeleton() {
   return (
@@ -8,11 +19,18 @@ export function FilesPanelSkeleton() {
       <div className="skeleton" style={{ height: 32, borderRadius: 6, marginBottom: 12 }} />
       {/* File tree skeleton */}
       {Array.from({ length: 8 }).map((_, i) => (
-        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", paddingLeft: i % 3 === 0 ? 0 : i % 3 === 1 ? 16 : 32 }}>
-          <div className="skeleton" style={{ width: i % 3 === 0 ? 16 : 12, height: i % 3 === 0 ? 16 : 12, borderRadius: i % 3 === 0 ? 3 : 2, flexShrink: 0 }} />
-          <div className="skeleton" style={{ width: `${40 + Math.random() * 40}%`, height: 12, borderRadius: 4, animationDelay: `${i * 50}ms` }} />
-        </div>
+        <SkeletonRow key={i} indent={i % 3 === 0 ? 0 : i % 3 === 1 ? 16 : 32} icon={i % 3 === 0} min={40} span={40} delay={i * 50} />
       ))}
+    </div>
+  );
+}
+
+function SkeletonRow({ indent, icon, min, span, delay }: { indent: number; icon: boolean; min: number; span: number; delay: number }) {
+  const width = useRandomWidth(min, span);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", paddingLeft: indent }}>
+      <div className="skeleton" style={{ width: icon ? 16 : 12, height: icon ? 16 : 12, borderRadius: icon ? 3 : 2, flexShrink: 0 }} />
+      <div className="skeleton" style={{ width: width ?? "40%", height: 12, borderRadius: 4, animationDelay: `${delay}ms` }} />
     </div>
   );
 }
@@ -40,11 +58,18 @@ export function TerminalPanelSkeleton() {
   return (
     <div className="rp-terminal-skeleton" style={{ padding: 16, fontFamily: "'JetBrains Mono', monospace" }}>
       {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-          <div className="skeleton" style={{ width: 20, height: 12, borderRadius: 2, flexShrink: 0, animationDelay: `${i * 80}ms` }} />
-          <div className="skeleton" style={{ width: `${30 + Math.random() * 60}%`, height: 12, borderRadius: 2, animationDelay: `${i * 80 + 40}ms` }} />
-        </div>
+        <TerminalRow key={i} delay={i * 80} />
       ))}
+    </div>
+  );
+}
+
+function TerminalRow({ delay }: { delay: number }) {
+  const width = useRandomWidth(30, 60);
+  return (
+    <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+      <div className="skeleton" style={{ width: 20, height: 12, borderRadius: 2, flexShrink: 0, animationDelay: `${delay}ms` }} />
+      <div className="skeleton" style={{ width: width ?? "30%", height: 12, borderRadius: 2, animationDelay: `${delay + 40}ms` }} />
     </div>
   );
 }
@@ -73,15 +98,22 @@ export function ChangesPanelSkeleton() {
   return (
     <div className="rp-changes-skeleton" style={{ padding: 16 }}>
       {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} style={{ marginBottom: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <div className="skeleton" style={{ width: 16, height: 16, borderRadius: 3, flexShrink: 0 }} />
-            <div className="skeleton" style={{ width: `${50 + Math.random() * 30}%`, height: 12, borderRadius: 4 }} />
-            <div className="skeleton" style={{ width: 40, height: 12, borderRadius: 4, marginLeft: "auto" }} />
-          </div>
-          <div className="skeleton" style={{ height: 60, borderRadius: 4, animationDelay: `${i * 100}ms` }} />
-        </div>
+        <ChangesRow key={i} delay={i * 100} />
       ))}
+    </div>
+  );
+}
+
+function ChangesRow({ delay }: { delay: number }) {
+  const width = useRandomWidth(50, 30);
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <div className="skeleton" style={{ width: 16, height: 16, borderRadius: 3, flexShrink: 0 }} />
+        <div className="skeleton" style={{ width: width ?? "50%", height: 12, borderRadius: 4 }} />
+        <div className="skeleton" style={{ width: 40, height: 12, borderRadius: 4, marginLeft: "auto" }} />
+      </div>
+      <div className="skeleton" style={{ height: 60, borderRadius: 4, animationDelay: `${delay}ms` }} />
     </div>
   );
 }

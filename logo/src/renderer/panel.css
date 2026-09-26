@@ -1,0 +1,208 @@
+/* FocusLock settings panel. */
+
+:root {
+  color-scheme: dark;
+  --bg: #0f1220;
+  --card: #171c2f;
+  --line: #262d47;
+  --text: #e8ecf8;
+  --muted: #9aa3bf;
+  --accent: #4d7cff;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  user-select: none;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px 16px;
+  height: calc(100% - 30px);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+h1 {
+  font-size: 15px;
+  margin: 0;
+  letter-spacing: 0.4px;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.field span {
+  color: var(--muted);
+}
+
+input[type='number'] {
+  width: 70px;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-bottom: 1px solid var(--line);
+  font-size: 16px;
+  text-align: right;
+  outline: none;
+}
+
+input[type='number']::-webkit-inner-spin-button {
+  opacity: 1;
+}
+
+.presets {
+  display: flex;
+  gap: 8px;
+}
+
+.presets button {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.presets button:hover {
+  border-color: var(--accent);
+}
+
+.mode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mode-option {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.mode-option input {
+  margin-top: 2px;
+}
+
+.mode-option strong {
+  color: var(--text);
+}
+
+.class-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.class-section.hidden {
+  display: none;
+}
+
+.class-row {
+  display: flex;
+  gap: 6px;
+}
+
+.class-row select {
+  flex: 1;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 7px 8px;
+  outline: none;
+  max-width: 100%;
+}
+
+.class-row button {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.strict {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.strict input {
+  margin-top: 2px;
+}
+
+.note {
+  font-size: 11px;
+  color: var(--muted);
+  min-height: 14px;
+}
+
+.error {
+  font-size: 12px;
+  color: #ff8080;
+  min-height: 16px;
+}
+
+.actions {
+  margin-top: auto;
+  display: flex;
+  gap: 10px;
+}
+
+button.primary {
+  flex: 1;
+  padding: 10px 0;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #2b6cff, #7a3cff);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.ghost {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+#close {
+  padding: 2px 8px;
+  font-size: 12px;
+}

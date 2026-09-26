@@ -29,6 +29,10 @@ export async function POST(request: NextRequest) {
         id: workspace.id,
         workspaceDir: workspace.workspaceDir,
         branchName: workspace.branchName,
+        // "copy-fallback" means the git-worktree path FAILED — the UI should
+        // flag it, since merge semantics and disk cost differ.
+        mode: workspace.mode,
+        fallbackReason: workspace.fallbackReason ?? null,
         createdAt: workspace.createdAt.toISOString(),
       },
     });
@@ -62,6 +66,8 @@ export async function GET() {
       rootDir: w.rootDir,
       workspaceDir: w.workspaceDir,
       branchName: w.branchName,
+      mode: w.mode,
+      fallbackReason: w.fallbackReason ?? null,
       createdAt: w.createdAt.toISOString(),
       runId: w.runId,
     })),

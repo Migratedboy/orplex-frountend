@@ -3,6 +3,26 @@ import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+/**
+ * Strip internal display markers from message content for list previews:
+ * [THINKING]…[/THINKING] reasoning blocks, [OK]/[FAIL]/[BLOCKED]/[SUCCESS]
+ * status lines, and leftover tool tags. Falls back to the first non-empty
+ * line when stripping empties everything (e.g. thinking-only messages).
+ */
+function cleanSnippet(content: string | null | undefined): string {
+  if (!content) return "";
+  let text = content
+    .replace(/\[THINKING\][\s\S]*?(\[\/THINKING\]|$)/gi, " ")
+    .replace(/^\[(?:OK|FAIL|BLOCKED|SUCCESS|ERROR)\][^\n]*$/gim, " ")
+    .replace(/<\/?tool_(?:call|result)[^>]*>[\s\S]*?(?:<\/tool_(?:call|result)>|$)/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) {
+    text = content.replace(/\[(?:THINKING|\/THINKING)\]/gi, "").replace(/\s+/g, " ").trim();
+  }
+  return text;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -28,7 +48,14 @@ export async function GET(request: NextRequest) {
       orderBy: { updatedAt: "desc" },
     });
 
-    return NextResponse.json({ conversations });
+    // Clean the preview snippet so raw [THINKING]/status markers never leak
+    // into the history page or sidebar lists.
+    const cleaned = conversations.map((c) => ({
+      ...c,
+      messages: c.messages?.map((m) => ({ ...m, content: cleanSnippet(m.content) })) ?? [],
+    }));
+
+    return NextResponse.json({ conversations: cleaned });
   } catch (error) {
     console.error("[Conversations GET] Error:", error);
     return NextResponse.json({ conversations: [], conversation: null });
@@ -45,6 +72,24 @@ export async function POST(request: NextRequest) {
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return NextResponse.json({ error: "Messages required" }, { status: 400 });
+    }
+
+    // Guard against FK violations from stale JWTs: a session token minted
+    // before a DB reset can carry a userId that no longer exists. Upsert the
+    // user first so Conversation.userId always has a matching row.
+    try {
+      await prisma.user.upsert({
+        where: { id: session.user.id },
+        update: {},
+        create: {
+          id: session.user.id,
+          email: session.user.email || `${session.user.id}@orplex.local`,
+          name: session.user.name || "User",
+        },
+      });
+    } catch {
+      // If the upsert fails (e.g. email conflict), the create below will
+      // surface the real error.
     }
 
     let conv;

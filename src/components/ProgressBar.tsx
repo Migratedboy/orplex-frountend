@@ -23,12 +23,14 @@ export default function ProgressBar({
   agent,
 }: ProgressBarProps) {
   const [elapsed, setElapsed] = useState(0);
-  const startTime = useRef(Date.now());
+  const startTime = useRef<number | null>(null);
 
   useEffect(() => {
     if (!isRunning) return;
+    // Capture the start time post-hydration (impure Date.now() can't run in render).
+    if (startTime.current == null) startTime.current = Date.now();
     const interval = setInterval(() => {
-      setElapsed(Date.now() - startTime.current);
+      setElapsed(Date.now() - (startTime.current as number));
     }, 100);
     return () => clearInterval(interval);
   }, [isRunning]);

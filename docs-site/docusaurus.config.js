@@ -5,7 +5,7 @@ module.exports = {
   baseUrl: "/",
   onBrokenLinks: "throw",
   onBrokenMarkdownLinks: "warn",
-  favicon: "img/favicon.ico",
+  favicon: "img/favicon.png",
   organizationName: "orplex-tech",
   projectName: "orplex-tech",
   themeConfig: {
@@ -44,7 +44,7 @@ module.exports = {
     ["classic", {
       docs: { sidebarPath: "./sidebars.js" },
       blog: false,
-      theme: { customCss: "./src/css/custom.css" },
+      theme: { customCss: ["./src/css/custom.css", "./src/css/fonts.css"] },
     }],
   ],
 };

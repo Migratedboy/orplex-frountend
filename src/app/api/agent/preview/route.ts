@@ -84,6 +84,12 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
+  // Auth check
+  const session = await getServerSession(jwtOnlyOptions);
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const previewId = request.nextUrl.searchParams.get("id");
   if (!previewId) {
     return NextResponse.json({ error: "Preview ID required" }, { status: 400 });

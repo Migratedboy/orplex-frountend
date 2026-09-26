@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { openArtifactPanel } from "./AppLayout";
+import { apiFetch } from "@/lib/api-base";
 
 type Tab = "thoughts" | "chat";
 
@@ -30,7 +31,7 @@ export default function ThoughtStream() {
 
     // Call AI API
     try {
-      const res = await fetch("/api/chat", {
+      const res = await apiFetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: [...messages, userMsg].map((m) => ({ role: m.role === "agent" ? "assistant" : "user", content: m.text })) }),

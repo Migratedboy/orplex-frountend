@@ -14,25 +14,27 @@ interface ProviderConfig {
 }
 
 function getFastProvider(): ProviderConfig | null {
-  // Try OpenRouter first (llama 8b — fastest)
-  const orKey = process.env.OPENROUTER_API_KEY || "";
-  if (orKey) {
+  // Groq first — gpt-oss-20b is the fastest live-verified model (sub-second
+  // probe latency) and the key works without credits. The old OpenRouter
+  // meta-llama/llama-3.1-8b-instruct default 402s on a zero-credit key.
+  const groqKey = process.env.GROQ_API_KEY || "";
+  if (groqKey) {
     return {
-      name: "OpenRouter-Fast",
-      url: "https://openrouter.ai/api/v1/chat/completions",
-      apiKey: orKey,
-      model: "meta-llama/llama-3.1-8b-instruct",
-      extraHeaders: { "HTTP-Referer": "https://orplex.tech", "X-Title": "Orplex Tech IDE" },
+      name: "Groq-Fast",
+      url: "https://api.groq.com/openai/v1/chat/completions",
+      apiKey: groqKey,
+      model: process.env.GROQ_FAST_MODEL || "openai/gpt-oss-20b",
     };
   }
-  // Fallback to NVIDIA (llama 8b on NIM — also free)
+  // Fallback to NVIDIA NIM (nemotron-3-super — live-verified, ~0.5s probe).
+  // The old meta/llama-3.1-8b-instruct id is 410 Gone (end-of-life).
   const nvKey = process.env.NVIDIA_API_KEY || "";
   if (nvKey) {
     return {
       name: "NVIDIA-Fast",
       url: "https://integrate.api.nvidia.com/v1/chat/completions",
       apiKey: nvKey,
-      model: "meta/llama-3.1-8b-instruct",
+      model: "nvidia/nemotron-3-super-120b-a12b",
     };
   }
   return null;
@@ -77,8 +79,6 @@ export async function POST(request: NextRequest) {
         max_completion_tokens: 512,
         temperature: 0.5,
         stream: true,
-        // M3: disable thinking for instant fast responses
-        thinking: { type: "disabled" },
       }),
     });
 

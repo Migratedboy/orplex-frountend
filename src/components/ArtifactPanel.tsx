@@ -2,17 +2,24 @@
 
 import { useState, useEffect } from "react";
 import ArtifactCard from "./ArtifactCard";
+import RunTimeline from "./RunTimeline";
+import BranchReviewPanel, { type ReviewRun } from "./BranchReviewPanel";
 import { estimateCostFromTotal, formatCost } from "@/lib/cost-estimator";
+import { apiFetch } from "@/lib/api-base";
 
 // === Types ===
 
 interface Artifact {
   id: string;
+  runId?: string;
   kind: string;
   name: string;
   content: string;
   mediaType: string;
   createdAt: string;
+  status?: string | null;
+  reviewNote?: string | null;
+  sequence?: number | null;
 }
 
 interface AgentTask {
@@ -32,6 +39,9 @@ interface AgentRun {
   tasks: AgentTask[];
   tokenUsage?: number;
   createdAt: string;
+  result?: { branch?: string | null; worktreeDir?: string | null; summary?: string | null } | null;
+  artifacts: Artifact[];
+  approvals: Array<{ id: string; action: string; payload: unknown; status: string; createdAt: string }>;
 }
 
 interface ArtifactPanelProps {
@@ -63,24 +73,45 @@ export default function ArtifactPanel({ open, runId, onClose }: ArtifactPanelPro
   const [loading, setLoading] = useState(false);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
 
-  // Fetch run data when panel opens
+  // Fetch run data when panel opens. With no explicit runId (the common
+  // chat-flow case), fall back to the user's latest run so auto browser
+  // verification artifacts (screenshots, timelines) are still reachable.
   useEffect(() => {
-    if (!open || !runId) {
+    if (!open) {
       setRun(null);
       return;
     }
 
-    setLoading(true);
-    fetch(`/api/agent/runs/${runId}`)
-      .then((res) => res.json())
-      .then((data) => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        let id = runId;
+        if (!id) {
+          const listRes = await apiFetch("/api/agent/runs?limit=1");
+          const listData = await listRes.json();
+          id = listData.runs?.[0]?.id || null;
+        }
+        if (!id) {
+          if (!cancelled) setRun(null);
+          return;
+        }
+        const res = await apiFetch(`/api/agent/runs/${id}`);
+        const data = await res.json();
+        if (cancelled) return;
         setRun(data.run || null);
         if (data.run?.tasks?.length > 0) {
           setSelectedTask(data.run.tasks[0].id);
         }
-      })
-      .catch(() => setRun(null))
-      .finally(() => setLoading(false));
+      } catch {
+        if (!cancelled) setRun(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [open, runId]);
 
   // Poll for updates while run is active
@@ -88,7 +119,7 @@ export default function ArtifactPanel({ open, runId, onClose }: ArtifactPanelPro
     if (!open || !runId || !run || run.status === "done" || run.status === "failed") return;
 
     const interval = setInterval(() => {
-      fetch(`/api/agent/runs/${runId}`)
+      apiFetch(`/api/agent/runs/${runId}`)
         .then((res) => res.json())
         .then((data) => setRun(data.run || null))
         .catch(() => {});
@@ -98,6 +129,7 @@ export default function ArtifactPanel({ open, runId, onClose }: ArtifactPanelPro
   }, [open, runId, run?.status]);
 
   const selectedTaskData = run?.tasks?.find((t) => t.id === selectedTask);
+  const terminal = run?.status === "completed" || run?.status === "failed" || run?.status === "cancelled";
 
   return (
     <div className={`artifact-panel ${open ? "open" : ""}`}>
@@ -149,6 +181,20 @@ export default function ArtifactPanel({ open, runId, onClose }: ArtifactPanelPro
                 </span>
               </div>
             </div>
+
+            {/* Live event stream + branch review (mission control) */}
+            <RunTimeline runId={run.id} active={!terminal} />
+            <BranchReviewPanel
+              run={run as unknown as ReviewRun}
+  onChanged={() => {
+                // Re-pull run + approvals + artifacts after an approval,
+                // merge, or discard decision.
+                apiFetch(`/api/agent/runs/${run.id}`)
+                  .then((r) => r.json())
+                  .then((d) => d.run && setRun(d.run))
+                  .catch(() => {});
+              }}
+            />
 
             {/* Task Tabs */}
             <div className="artifact-panel-tabs">

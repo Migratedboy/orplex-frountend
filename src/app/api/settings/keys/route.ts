@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { encryptKey, decryptKey, maskKey } from "@/lib/key-encryption";
+import { getProviderDef, providerLabel } from "@/lib/provider-registry";
 
 // GET /api/settings/keys — List user's keys
 export async function GET() {
@@ -21,11 +22,16 @@ export async function GET() {
       keys: keys.map(k => ({
         id: k.id,
         provider: k.provider,
+        providerLabel: providerLabel(k.provider),
         model: k.model,
         apiKeyMasked: "****",
         isActive: k.isActive,
         usageToday: k.usageToday,
         createdAt: k.createdAt,
+        verified: k.verified ?? false,
+        lastVerifiedAt: k.lastVerifiedAt,
+        modelsFetchedAt: k.modelsFetchedAt,
+        cachedModelCount: Array.isArray(k.modelsCache) ? (k.modelsCache as unknown[]).length : null,
       })),
     });
   } catch (err: any) {
@@ -33,7 +39,7 @@ export async function GET() {
   }
 }
 
-// POST /api/settings/keys — Add a user key
+// POST /api/settings/keys — Add a user key (any registry provider)
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(jwtOnlyOptions);
@@ -43,44 +49,46 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
     const { provider, apiKey, model } = body;
+    const label = typeof body?.label === "string" ? body.label.trim().slice(0, 60) : "";
 
     if (!provider || !apiKey || !model) {
       return NextResponse.json({ error: "provider, apiKey, and model are required" }, { status: 400 });
     }
 
-    if (!["nvidia", "openrouter"].includes(provider)) {
-      return NextResponse.json({ error: "provider must be nvidia or openrouter" }, { status: 400 });
+    const def = getProviderDef(provider);
+    if (!def) {
+      return NextResponse.json(
+        { error: `Unknown provider "${String(provider).slice(0, 40)}" — pick one from the list.` },
+        { status: 400 }
+      );
     }
 
-    // Validate key format
-    if (provider === "nvidia" && !apiKey.startsWith("nvapi-")) {
-      return NextResponse.json({ error: "NVIDIA keys must start with nvapi-" }, { status: 400 });
-    }
-    if (provider === "openrouter" && !apiKey.startsWith("sk-or-")) {
-      return NextResponse.json({ error: "OpenRouter keys must start with sk-or-" }, { status: 400 });
-    }
+    // Advisory prefix check — a mismatch is a warning, not a rejection.
+    // Prefixes drift and the live test below is the real gate.
+    const keyText = String(apiKey);
+    const prefixWarning =
+      def.keyPrefix && !keyText.startsWith(def.keyPrefix)
+        ? `${def.label} keys usually start with "${def.keyPrefix}" — the live test decides.`
+        : undefined;
 
-    // Test the key
+    // Live validation against the provider's OpenAI-compatible chat endpoint
+    // with the chosen model — the same path real chat traffic takes.
     let isValid = false;
     try {
-      const testUrl = provider === "nvidia"
-        ? "https://integrate.api.nvidia.com/v1/chat/completions"
-        : "https://openrouter.ai/api/v1/chat/completions";
-
-      const testRes = await fetch(testUrl, {
+      const testRes = await fetch(`${def.baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-          ...(provider === "openrouter" ? { "HTTP-Referer": "https://orplex.tech" } : {}),
+          Authorization: `Bearer ${keyText}`,
+          ...(def.extraHeaders ?? {}),
         },
         body: JSON.stringify({
           model,
           messages: [{ role: "user", content: "hi" }],
           max_tokens: 5,
         }),
+        signal: AbortSignal.timeout(20_000),
       });
-
       isValid = testRes.ok;
     } catch {
       isValid = false;
@@ -94,13 +102,16 @@ export async function POST(request: NextRequest) {
     }
 
     // Encrypt and store
-    const encrypted = encryptKey(apiKey);
+    const encrypted = encryptKey(keyText);
     const key = await prisma.userApiKey.create({
       data: {
         userId: session.user.id,
         provider,
         apiKey: encrypted,
         model,
+        ...(label ? { label } : {}),
+        verified: true,
+        lastVerifiedAt: new Date(),
       },
     });
 
@@ -109,10 +120,11 @@ export async function POST(request: NextRequest) {
         id: key.id,
         provider: key.provider,
         model: key.model,
-        apiKeyMasked: maskKey(apiKey),
+        apiKeyMasked: maskKey(keyText),
         isValid: true,
         message: "Key added successfully",
       },
+      warning: prefixWarning,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

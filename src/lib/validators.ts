@@ -63,6 +63,19 @@ export const chatMessageSchema = z.object({
   ).min(1, "Messages required").max(100, "Too many messages"),
   conversationId: z.string().nullable().optional(),
   mode: z.enum(["ask", "plan", "code"]).optional().default("ask"),
+  // Reasoning effort selected in the prompt bar (medium = model default).
+  // Accepts any casing ("Low" from the UI) and normalizes to lowercase.
+  effort: z.preprocess(
+    (v) => (typeof v === "string" ? v.toLowerCase() : v),
+    z.enum(["low", "medium", "high"]).optional()
+  ),
+  // Prompt profile: "full" (default) carries the complete master prompt;
+  // "compact" is sent by the worker on repair/continue turns where the full
+  // doctrine is already in conversation history (saves TPM on free tiers).
+  profile: z.enum(["full", "compact"]).optional().default("full"),
+  // Model id picked in the prompt bar (e.g. "openai/gpt-oss-120b"). When set,
+  // only providers serving this exact model may answer the request.
+  model: z.string().max(200).optional(),
   // Top-level images — passed by background worker for vision preprocessing
   images: z.array(z.string()).optional(),
 });

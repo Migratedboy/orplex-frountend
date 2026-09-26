@@ -33,7 +33,7 @@ AI coding assistant with streaming chat, multi-provider support, and agentic too
 |---------|---------|-------------|
 | `orplex.apiUrl` | `http://localhost:5000` | Orplex server URL |
 | `orplex.apiKey` | `""` | API key (optional) |
-| `orplex.model` | `minimax-m3` | Model to use |
+| `orplex.model` | `openai/gpt-oss-120b` | Model to use |
 | `orplex.mode` | `code` | Agent mode (ask/plan/code) |
 
 ## Requirements

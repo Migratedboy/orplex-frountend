@@ -6,7 +6,7 @@ describe("quota-manager", () => {
   // ---------------------------------------------------------------
   describe("FREE_TIER constants", () => {
     it("has correct daily limit", () => {
-      expect(FREE_TIER.DAILY_LIMIT).toBe(50);
+      expect(FREE_TIER.DAILY_LIMIT).toBe(1000);
     });
 
     it("has correct max tokens per prompt", () => {
@@ -14,7 +14,7 @@ describe("quota-manager", () => {
     });
 
     it("only allows minimax-m3", () => {
-      expect(FREE_TIER.ALLOWED_MODELS).toEqual(["minimax-m3"]);
+      expect(FREE_TIER.ALLOWED_MODELS).toEqual(["openai/gpt-oss-120b"]);
     });
 
     it("has correct max file uploads", () => {
@@ -44,8 +44,8 @@ describe("quota-manager", () => {
   // isModelAllowed
   // ---------------------------------------------------------------
   describe("isModelAllowed", () => {
-    it("allows minimax-m3 on free tier", () => {
-      expect(isModelAllowed("minimax-m3", "free")).toBe(true);
+    it("allows gpt-oss-120b on free tier", () => {
+      expect(isModelAllowed("openai/gpt-oss-120b", "free")).toBe(true);
     });
 
     it("blocks other models on free tier", () => {

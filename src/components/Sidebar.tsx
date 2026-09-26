@@ -7,6 +7,7 @@ import { useConversations } from "./ConversationProvider";
 import { IconChat, IconHistory, IconPlugins, IconSettings, IconEdit, IconTrash, IconClose, IconMenu, IconAgent } from "./Icons";
 import { useFileSystemContext, FileNode } from "./FileSystemProvider";
 import { useBackgroundChat } from "@/hooks/useBackgroundChat";
+import { announceConversationOpen } from "@/lib/navigation-events";
 import { useActiveRunCount } from "@/hooks/useActiveRunCount";
 import { virtualFS, VirtualFileNode } from "@/lib/virtual-fs";
 
@@ -158,7 +159,12 @@ export default function Sidebar() {
     }
   }, [directoryName, fileTree, readFile]);
 
-  const loadConversation = (id: string) => { router.push(`/?c=${id}`); setMobileOpen(false); };
+  const loadConversation = (id: string) => {
+    router.push(`/?c=${id}`);
+    // SPA push doesn't remount '/' — tell the mounted hook to load it.
+    announceConversationOpen(id);
+    setMobileOpen(false);
+  };
 
   const handleRename = async (id: string) => {
     if (!editTitle.trim()) return;

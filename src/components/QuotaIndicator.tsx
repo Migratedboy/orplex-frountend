@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api-base";
 
 export default function QuotaIndicator() {
   const [quota, setQuota] = useState<{ remaining: number; limit: number } | null>(null);
 
   useEffect(() => {
-    fetch("/api/user/quota")
+    apiFetch("/api/user/quota")
       .then(r => r.json())
       .then(data => setQuota(data))
       .catch(() => {});

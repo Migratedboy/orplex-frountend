@@ -3,24 +3,54 @@ import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import { useToast } from "@/components/Toast";
 import { IconCheck } from "@/components/Icons";
+import { formatTokens } from "@/lib/board-format";
+import { estimateCostFromTotal, formatCost } from "@/lib/cost-estimator";
+import { chartScale, dailySpendBars, splitIsPartial } from "@/lib/spend-format";
+import type { SpendAggregates, SpendRun } from "@/lib/spend-format";
+import { listProviderDefs, type ProviderDef } from "@/lib/provider-registry";
+import type { ListedModel } from "@/lib/provider-models";
 
 interface UserKey {
   id: string;
   provider: string;
+  providerLabel: string;
   model: string;
   apiKeyMasked: string;
   isActive: boolean;
   usageToday: number;
   createdAt: string;
+  verified?: boolean;
+  lastVerifiedAt?: string | null;
+  modelsFetchedAt?: string | null;
+  cachedModelCount?: number | null;
+}
+
+const PROVIDER_DEFS = listProviderDefs();
+
+function tierBadge(def: ProviderDef) {
+  return def.free ? (
+    <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(16,185,129,.15)", color: "#10b981", fontWeight: 600 }}>FREE TIER</span>
+  ) : (
+    <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(99,102,241,.12)", color: "#818cf8", fontWeight: 600 }}>PAY-PER-USE</span>
+  );
 }
 
 function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "error" | "success") => void }) {
   const [keys, setKeys] = useState<UserKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
-  const [newKey, setNewKey] = useState({ provider: "nvidia", apiKey: "", model: "minimax/minimax-m3:free" });
+  const [selectedDef, setSelectedDef] = useState<ProviderDef | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("");
   const [addStatus, setAddStatus] = useState("");
+  const [addWarning, setAddWarning] = useState("");
   const [adding, setAdding] = useState(false);
+
+  // Model-fetching engine state
+  const [models, setModels] = useState<ListedModel[] | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState("");
+  const [modelQuery, setModelQuery] = useState("");
 
   const fetchKeys = async () => {
     try {
@@ -31,24 +61,63 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
 
   useEffect(() => { fetchKeys(); }, []);
 
+  const resetAddFlow = () => {
+    setShowAdd(false);
+    setSelectedDef(null);
+    setApiKey("");
+    setModel("");
+    setAddStatus("");
+    setAddWarning("");
+    setModels(null);
+    setModelsError("");
+    setModelQuery("");
+  };
+
+  const fetchModels = async () => {
+    if (!selectedDef || !apiKey.trim()) return;
+    setModelsLoading(true);
+    setModelsError("");
+    try {
+      const res = await fetch("/api/settings/keys/models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: selectedDef.id, apiKey: apiKey.trim() }),
+      });
+      const j = await res.json();
+      if (j.success && Array.isArray(j.models)) {
+        setModels(j.models);
+        if (j.warning) setAddWarning(j.warning);
+        if (!model && j.models.length > 0) setModel("");
+      } else {
+        setModels(null);
+        setModelsError(j.error || "Could not fetch models.");
+      }
+    } catch {
+      setModelsError("Network error while fetching models.");
+    }
+    setModelsLoading(false);
+  };
+
   const addKey = async () => {
+    if (!selectedDef) return;
     setAdding(true);
     setAddStatus("Testing key...");
+    setAddWarning("");
     try {
       const res = await fetch("/api/settings/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newKey),
+        body: JSON.stringify({ provider: selectedDef.id, apiKey: apiKey.trim(), model: model.trim() || selectedDef.fallbackModel }),
       });
       const data = await res.json();
       if (res.ok) {
         setAddStatus(data.key.message);
         toast("API key added", "success");
-        setShowAdd(false);
-        setNewKey({ provider: "nvidia", apiKey: "", model: "minimax/minimax-m3:free" });
+        resetAddFlow();
         fetchKeys();
       } else {
         setAddStatus(data.error || "Failed");
+        if (data.warning) setAddWarning(data.warning);
       }
     } catch { setAddStatus("Network error"); }
     setAdding(false);
@@ -60,6 +129,14 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
     toast("Key removed", "success");
     fetchKeys();
   };
+
+  const filteredModels = (models ?? [])
+    .filter((m) => {
+      if (!modelQuery.trim()) return true;
+      const q = modelQuery.toLowerCase();
+      return m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q);
+    })
+    .slice(0, 80);
 
   return (
     <div className="settings-section">
@@ -77,14 +154,66 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                 {keys.map(key => (
                   <div key={key.id} className="settings-api-item">
                     <div className="settings-api-header">
-                      <span className="settings-api-name">{key.provider === "nvidia" ? "NVIDIA NIM" : "OpenRouter"}</span>
-                      <span className="settings-api-status settings-api-status-active">Active</span>
+                      <span className="settings-api-name">{key.providerLabel || key.provider}</span>
+                      <span className="settings-api-status settings-api-status-active">
+                        {key.verified ? "✓ Verified" : "Active"}
+                      </span>
                     </div>
                     <p className="settings-api-desc">Model: {key.model}</p>
+                    {key.cachedModelCount != null && (
+                      <p className="settings-api-desc" style={{ fontSize: 11, opacity: 0.75 }}>
+                        {key.cachedModelCount} models listed{key.modelsFetchedAt ? ` · ${new Date(key.modelsFetchedAt).toLocaleDateString()}` : ""}
+                      </p>
+                    )}
                     <div className="settings-api-key-display">
                       <span className="settings-api-key-masked">{key.apiKeyMasked}</span>
                     </div>
-                    <div style={{ marginTop: 8 }}>
+                    <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        onClick={async () => {
+                          setModelsLoading(true);
+                          try {
+                            const res = await fetch("/api/settings/keys/models", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ provider: key.provider, keyId: key.id }),
+                            });
+                            const j = await res.json();
+                            toast(j.success ? `${j.count} models fetched` : (j.error || "Fetch failed"), j.success ? "success" : "error");
+                            fetchKeys();
+                          } catch { toast("Network error", "error"); }
+                          setModelsLoading(false);
+                        }}
+                        className="settings-save-btn"
+                        style={{ background: "#f3f4f6", color: "#374151", border: "1px solid #e4e4e7" }}
+                      >
+                        {modelsLoading ? "…" : "Refresh models"}
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`Verify models for ${key.providerLabel || key.provider}?\n\nThis sends a tiny test request to up to 12 models using your key (small credit cost).`)) return;
+                          setModelsLoading(true);
+                          try {
+                            const res = await fetch("/api/settings/keys/models", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ provider: key.provider, keyId: key.id, mode: "verify" }),
+                            });
+                            const j = await res.json();
+                            toast(
+                              j.success ? `${j.verifiedCount}/${j.probedCount} models verified live` : (j.error || "Verify failed"),
+                              j.success ? "success" : "error"
+                            );
+                            fetchKeys();
+                          } catch { toast("Network error", "error"); }
+                          setModelsLoading(false);
+                        }}
+                        className="settings-save-btn"
+                        style={{ background: "#f3f4f6", color: "#374151", border: "1px solid #e4e4e7" }}
+                        title="Probe up to 12 models with a tiny request to prove they answer — results get a ✓ in the picker"
+                      >
+                        {modelsLoading ? "…" : "Verify models"}
+                      </button>
                       <button onClick={() => deleteKey(key.id)} className="settings-save-btn" style={{ background: "#fef2f2", color: "#ef4444", border: "1px solid #fecaca" }}>
                         Remove
                       </button>
@@ -98,33 +227,128 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
               <button onClick={() => setShowAdd(true)} className="settings-save-btn" style={{ marginTop: 12 }}>
                 + Add API Key
               </button>
+            ) : !selectedDef ? (
+              <div style={{ marginTop: 12 }}>
+                <p style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Pick a provider</p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
+                  {PROVIDER_DEFS.map((def) => (
+                    <button
+                      key={def.id}
+                      onClick={() => { setSelectedDef(def); setModel(""); setModels(null); setModelsError(""); }}
+                      className="settings-api-item"
+                      style={{ textAlign: "left", cursor: "pointer", border: "1px solid #e4e4e7", borderRadius: 8, padding: 12, background: "#fff" }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{def.label}</span>
+                        {tierBadge(def)}
+                      </div>
+                      <p style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{def.tagline}</p>
+                    </button>
+                  ))}
+                </div>
+                <button onClick={resetAddFlow} className="settings-save-btn" style={{ marginTop: 12, background: "#f3f4f6", color: "#374151" }}>
+                  Cancel
+                </button>
+              </div>
             ) : (
               <div style={{ marginTop: 12, padding: 16, background: "#f9f9fa", borderRadius: 8, border: "1px solid #e4e4e7" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr 1fr", gap: 8, marginBottom: 8 }}>
-                  <select value={newKey.provider} onChange={e => {
-                    const p = e.target.value;
-                    setNewKey({ ...newKey, provider: p, model: p === "nvidia" ? "minimax/minimax-m3:free" : "meta-llama/llama-3.1-8b-instruct" });
-                  }} style={{ padding: 8, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7" }}>
-                    <option value="nvidia">NVIDIA NIM (Free)</option>
-                    <option value="openrouter">OpenRouter (Pay-per-use)</option>
-                  </select>
-                  <input type="password" placeholder="Paste your API key here" value={newKey.apiKey} onChange={e => setNewKey({ ...newKey, apiKey: e.target.value })} style={{ padding: 8, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7" }} />
-                  <input placeholder="Model" value={newKey.model} onChange={e => setNewKey({ ...newKey, model: e.target.value })} style={{ padding: 8, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7" }} />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>{selectedDef.label}</span>
+                  <button onClick={() => setSelectedDef(null)} style={{ fontSize: 11, background: "none", border: "none", color: "#6b7280", cursor: "pointer" }}>
+                    ← change provider
+                  </button>
                 </div>
+
+                <label style={{ fontSize: 11, fontWeight: 600, display: "block", marginBottom: 4 }}>API key</label>
+                <input
+                  type="password"
+                  placeholder={selectedDef.keyPrefix ? `e.g. ${selectedDef.keyPrefix}…` : "Paste your API key here"}
+                  value={apiKey}
+                  onChange={e => { setApiKey(e.target.value); setModels(null); setModelsError(""); }}
+                  style={{ width: "100%", padding: 8, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7", marginBottom: 6 }}
+                />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <a href={selectedDef.keyHintUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#818cf8" }}>
+                    Get a {selectedDef.label} key ↗
+                  </a>
+                  <button
+                    onClick={fetchModels}
+                    disabled={modelsLoading || !apiKey.trim()}
+                    className="settings-save-btn"
+                    style={{ fontSize: 11, padding: "4px 10px" }}
+                  >
+                    {modelsLoading ? "Fetching…" : models ? "Re-fetch models" : "Fetch models"}
+                  </button>
+                </div>
+
+                {modelsError && <p style={{ fontSize: 11, color: "#ef4444", marginBottom: 8 }}>{modelsError}</p>}
+                {addWarning && <p style={{ fontSize: 11, color: "#d97706", marginBottom: 8 }}>{addWarning}</p>}
+
+                {models && models.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <input
+                      placeholder="Search models…"
+                      value={modelQuery}
+                      onChange={e => setModelQuery(e.target.value)}
+                      style={{ width: "100%", padding: 6, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7", marginBottom: 6 }}
+                    />
+                    <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid #e4e4e7", borderRadius: 6, background: "#fff" }}>
+                      {filteredModels.map((m) => (
+                        <button
+                          key={m.id}
+                          onClick={() => setModel(m.id)}
+                          style={{
+                            display: "block", width: "100%", textAlign: "left", padding: "7px 10px",
+                            borderBottom: "1px solid #f3f4f6", background: model === m.id ? "rgba(99,102,241,.1)" : "transparent",
+                            border: "none", cursor: "pointer",
+                          }}
+                        >
+                          <div style={{ fontSize: 12, display: "flex", justifyContent: "space-between", gap: 8 }}>
+                            <span style={{ fontWeight: 500 }}>{m.name}</span>
+                            <span style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                              {m.free && <span style={{ fontSize: 10, color: "#10b981", fontWeight: 600 }}>FREE</span>}
+                              {m.contextWindow ? <span style={{ fontSize: 10, color: "#9ca3af" }}>{Math.round(m.contextWindow / 1024)}k ctx</span> : null}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.id}</div>
+                        </button>
+                      ))}
+                      {filteredModels.length === 0 && (
+                        <p style={{ fontSize: 11, color: "#9ca3af", padding: 10 }}>No models match &quot;{modelQuery}&quot;.</p>
+                      )}
+                    </div>
+                    <p style={{ fontSize: 10, color: "#9ca3af", marginTop: 4 }}>
+                      Showing {filteredModels.length} of {models.length} fetched models.
+                    </p>
+                  </div>
+                )}
+
+                <label style={{ fontSize: 11, fontWeight: 600, display: "block", marginBottom: 4 }}>Model</label>
+                <input
+                  placeholder={selectedDef.fallbackModel}
+                  value={model}
+                  onChange={e => setModel(e.target.value)}
+                  style={{ width: "100%", padding: 8, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7", marginBottom: 8 }}
+                />
+                {!model.trim() && (
+                  <p style={{ fontSize: 10, color: "#9ca3af", marginBottom: 8 }}>
+                    Empty = default model ({selectedDef.fallbackModel}).
+                  </p>
+                )}
+
                 {addStatus && <p style={{ fontSize: 11, color: addStatus.includes("success") || addStatus.includes("added") ? "green" : "#ef4444", marginBottom: 8 }}>{addStatus}</p>}
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={addKey} disabled={adding || !newKey.apiKey} className="settings-save-btn">
+                  <button onClick={addKey} disabled={adding || !apiKey.trim()} className="settings-save-btn">
                     {adding ? "Testing..." : "Add Key"}
                   </button>
-                  <button onClick={() => { setShowAdd(false); setAddStatus(""); }} className="settings-save-btn" style={{ background: "#f3f4f6", color: "#374151" }}>
+                  <button onClick={resetAddFlow} className="settings-save-btn" style={{ background: "#f3f4f6", color: "#374151" }}>
                     Cancel
                   </button>
                 </div>
                 <p className="settings-hint" style={{ marginTop: 8 }}>
-                  {newKey.provider === "nvidia"
-                    ? "Get a free key at build.nvidia.com — unlimited requests, no credit card needed."
-                    : "Get a key at openrouter.ai — pay-per-use, starts at ~$0.1/M tokens."
-                  }
+                  {selectedDef.free
+                    ? `${selectedDef.label} has a free tier — grab a key, paste it above, and Fetch models fills the list for you.`
+                    : `${selectedDef.label} is pay-per-use with your own credits. Fetch models lists everything your key can reach.`}
                 </p>
               </div>
             )}
@@ -139,6 +363,141 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
     </div>
   );
 }
+
+interface SpendProviderInfo {
+  provider: string;
+  model: string;
+  keyPresent: boolean;
+  budgetMode: string;
+  keyEnvVar: string;
+  knownProvider: boolean;
+}
+
+interface SpendData {
+  history: SpendRun[];
+  totals: SpendAggregates;
+  provider: SpendProviderInfo;
+}
+
+function SettingsCostTab() {
+  const [data, setData] = useState<SpendData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const fetchSpend = async () => {
+    try {
+      const res = await fetch("/api/agent/spend");
+      const json = await res.json();
+      if (res.ok && json.success) {
+        setData(json);
+        setError("");
+      } else {
+        setError(json.error || "Failed to load usage");
+      }
+    } catch {
+      setError("Network error");
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { fetchSpend(); }, []);
+
+  const bars = data ? dailySpendBars(data.history) : [];
+  const scale = chartScale(bars, 96);
+  const totals = data?.totals;
+  const provider = data?.provider;
+  const recent = data ? [...data.history].slice(-15).reverse() : [];
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-header">
+        <h2 className="settings-section-title">Provider &amp; Cost</h2>
+        <p className="settings-section-desc">Which provider serves your runs, plus token usage and estimated spend per run. Estimates use list-price rates — never a bill.</p>
+      </div>
+
+      <div className="settings-card">
+        {provider ? (
+          <div className="settings-about-grid">
+            <div className="settings-about-item">
+              <span className="settings-about-label">Provider</span>
+              <span className="settings-about-value">{provider.provider}{provider.budgetMode === "free" ? " (free tier)" : " (BYOK)"}</span>
+            </div>
+            <div className="settings-about-item">
+              <span className="settings-about-label">Default model</span>
+              <span className="settings-about-value">{provider.model}</span>
+            </div>
+            <div className="settings-about-item">
+              <span className="settings-about-label">API key</span>
+              <span className="settings-about-value">{provider.keyPresent ? "configured" : "not set"}</span>
+            </div>
+            <div className="settings-about-item">
+              <span className="settings-about-label">Runs metered</span>
+              <span className="settings-about-value">{totals ? totals.runCount : 0}</span>
+            </div>
+          </div>
+        ) : (
+          <p className="settings-hint">Provider info unavailable.</p>
+        )}
+      </div>
+
+      <div className="settings-card" style={{ marginTop: 16 }}>
+        {loading ? (
+          <p className="settings-hint">Loading usage...</p>
+        ) : error ? (
+          <p className="settings-hint" style={{ color: "#ef4444" }}>{error}</p>
+        ) : bars.length === 0 ? (
+          <p className="settings-hint">No token usage recorded yet — run an agent task and it will show up here.</p>
+        ) : (
+          <>
+            {totals && (
+              <div className="settings-about-grid" style={{ marginBottom: 16 }}>
+                <div className="settings-about-item">
+                  <span className="settings-about-label">Total tokens</span>
+                  <span className="settings-about-value">{formatTokens(totals.totalTokens)}</span>
+                </div>
+                <div className="settings-about-item">
+                  <span className="settings-about-label">Prompt / completion</span>
+                  <span className="settings-about-value">{formatTokens(totals.promptTokens)} / {formatTokens(totals.completionTokens)}{splitIsPartial(totals) ? " (partial)" : ""}</span>
+                </div>
+                <div className="settings-about-item">
+                  <span className="settings-about-label">Estimated spend</span>
+                  <span className="settings-about-value">{formatCost(totals.estimatedCostUsd)}</span>
+                </div>
+              </div>
+            )}
+            <div className="spend-chart" role="img" aria-label={`Daily token usage across ${bars.length} day(s), peak ${formatTokens(scale.maxTokens)} tokens`}>
+              {bars.map((b) => (
+                <div key={b.day} className="spend-chart-col" title={`${b.label}: ${formatTokens(b.tokens)} tokens · ${formatCost(b.costUsd)} est · ${b.runCount} run(s)`}>
+                  <div className="spend-chart-bar" style={{ height: `${scale.heightFor(b.tokens)}px` }} />
+                  <span className="spend-chart-label">{b.label}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      {!loading && !error && recent.length > 0 && (
+        <div className="settings-card" style={{ marginTop: 16 }}>
+          <div className="spend-table">
+            <div className="spend-table-row spend-table-head">
+              <span>When</span><span>Model</span><span>Provider</span><span style={{ textAlign: "right" }}>Tokens</span><span style={{ textAlign: "right" }}>Est. cost</span>
+            </div>
+            {recent.map((r) => (
+              <div key={r.id} className="spend-table-row">
+                <span>{new Date(r.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                <span className="spend-table-mono" title={r.model}>{r.model}</span>
+                <span>{r.provider || "—"}</span>
+                <span style={{ textAlign: "right" }} title={r.promptTokens != null ? `prompt ${formatTokens(r.promptTokens)} + completion ${formatTokens(r.completionTokens ?? 0)}` : undefined}>{formatTokens(r.totalTokens)}</span>
+                <span style={{ textAlign: "right" }}>{formatCost(estimateCostFromTotal(r.totalTokens, r.model))}</span>
+              </div>
+            ))}
+          </div>
+          <button onClick={fetchSpend} className="settings-save-btn" style={{ marginTop: 12 }}>Refresh</button>
+        </div>
+      )}
+    </div>
+  );}
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState("profile");
@@ -165,6 +524,7 @@ export default function SettingsPage() {
   const tabs = [
     { id: "profile", label: "Profile" },
     { id: "appearance", label: "Appearance" },
+    { id: "cost", label: "Provider & Cost" },
     { id: "api", label: "API Keys" },
     { id: "about", label: "About" },
   ];
@@ -261,6 +621,10 @@ export default function SettingsPage() {
               </div>
             )}
 
+            {activeTab === "cost" && (
+              <SettingsCostTab />
+            )}
+
             {activeTab === "api" && (
               <SettingsApiKeyTab toast={toast} />
             )}
@@ -283,11 +647,11 @@ export default function SettingsPage() {
                     </div>
                     <div className="settings-about-item">
                       <span className="settings-about-label">Framework</span>
-                      <span className="settings-about-value">Next.js 14 + TypeScript</span>
+                      <span className="settings-about-value">Next.js + TypeScript</span>
                     </div>
                     <div className="settings-about-item">
                       <span className="settings-about-label">AI Backend</span>
-                      <span className="settings-about-value">OpenRouter / NVIDIA</span>
+                      <span className="settings-about-value">Multi-provider (Groq, Claude, Gemini, +9)</span>
                     </div>
                   </div>
                 </div>

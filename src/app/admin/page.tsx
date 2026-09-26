@@ -29,6 +29,22 @@ interface UsageStats {
   topUsers: { userId: string; requests: number }[];
 }
 
+interface BackupFile {
+  filename: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+interface BackupStatus {
+  pgDump: { available: boolean; source: string };
+  databaseConfigured: boolean;
+  backupDir: string;
+  lastBackup: BackupFile | null;
+  backupCount: number;
+  totalSizeBytes: number;
+  retention: { maxStaleHours: number; maxTotalMB: number; warnings: { kind: string; message: string }[] };
+}
+
 export default function AdminPage() {
   const [keys, setKeys] = useState<Key[]>([]);
   const [summary, setSummary] = useState<PoolSummary | null>(null);
@@ -36,14 +52,19 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
-  const [newKey, setNewKey] = useState({ provider: "nvidia", apiKey: "", model: "minimax/minimax-m3:free", dailyLimit: 1000, priority: 5 });
+  const [newKey, setNewKey] = useState({ provider: "nvidia", apiKey: "", model: "nvidia/nemotron-3-super-120b-a12b", dailyLimit: 1000, priority: 5 });
   const [addStatus, setAddStatus] = useState("");
+  const [backups, setBackups] = useState<BackupStatus | null>(null);
+  const [backupHint, setBackupHint] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMsg, setBackupMsg] = useState("");
 
   const fetchData = async () => {
     try {
-      const [keysRes, usageRes] = await Promise.all([
+      const [keysRes, usageRes, backupsRes] = await Promise.all([
         fetch("/api/admin/keys"),
         fetch("/api/admin/usage"),
+        fetch("/api/admin/backups"),
       ]);
       if (keysRes.ok) {
         const data = await keysRes.json();
@@ -52,6 +73,19 @@ export default function AdminPage() {
       }
       if (usageRes.ok) {
         setUsage(await usageRes.json());
+      }
+      if (backupsRes.ok) {
+        const data = await backupsRes.json();
+        setBackups({
+          pgDump: data.pgDump,
+          databaseConfigured: data.databaseConfigured,
+          backupDir: data.backupDir,
+          lastBackup: data.lastBackup,
+          backupCount: data.backupCount,
+          totalSizeBytes: data.totalSizeBytes,
+          retention: data.retention ?? { maxStaleHours: 25, maxTotalMB: 0, warnings: [] },
+        });
+        setBackupHint(data.setupHint ?? null);
       }
     } catch {
       setError("Failed to load admin data");
@@ -74,7 +108,7 @@ export default function AdminPage() {
       if (res.ok) {
         setAddStatus(data.key.message);
         setShowAdd(false);
-        setNewKey({ provider: "nvidia", apiKey: "", model: "minimax/minimax-m3:free", dailyLimit: 1000, priority: 5 });
+        setNewKey({ provider: "nvidia", apiKey: "", model: "nvidia/nemotron-3-super-120b-a12b", dailyLimit: 1000, priority: 5 });
         fetchData();
       } else {
         setAddStatus(data.error || "Failed");
@@ -99,12 +133,37 @@ export default function AdminPage() {
     fetchData();
   };
 
+  const fmtMB = (n: number) => `${(n / 1024 / 1024).toFixed(2)} MB`;
+
+  const triggerBackup = async () => {
+    setBackupBusy(true);
+    setBackupMsg("Backing up...");
+    try {
+      const res = await fetch("/api/admin/backups", { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setBackupMsg(`✓ Created ${String(data.backup.path).split(/[\\/]/).pop()} (${fmtMB(data.backup.size)})`);
+        setBackups(data.status);
+        setBackupHint(null);
+      } else {
+        setBackupMsg(data.error || "Backup failed");
+        if (data.setupHint) setBackupHint(data.setupHint);
+      }
+    } catch {
+      setBackupMsg("Network error");
+    }
+    setBackupBusy(false);
+  };
+
   if (loading) return <div style={{ padding: 40, fontFamily: "monospace" }}>Loading admin dashboard...</div>;
   if (error) return <div style={{ padding: 40, color: "red" }}>{error}</div>;
 
   return (
     <div style={{ padding: 24, fontFamily: "'JetBrains Mono', monospace", maxWidth: 1000, margin: "0 auto" }}>
-      <h1 style={{ fontSize: 20, marginBottom: 24 }}>Admin Dashboard</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 24 }}>
+        <h1 style={{ fontSize: 20, margin: 0 }}>Admin Dashboard</h1>
+        <a href="/admin/system" style={{ fontSize: 12, color: "#a04100" }}>System status →</a>
+      </div>
 
       {/* Summary Cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
@@ -188,6 +247,63 @@ export default function AdminPage() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* Database Backups */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h2 style={{ fontSize: 14, margin: 0 }}>Database Backups</h2>
+          <button
+            onClick={triggerBackup}
+            disabled={backupBusy || (backups !== null && !backups.pgDump.available)}
+            style={{ background: "#a04100", color: "#fff", border: "none", borderRadius: 4, padding: "6px 12px", cursor: backupBusy ? "wait" : "pointer", fontSize: 12, opacity: backupBusy || (backups !== null && !backups.pgDump.available) ? 0.6 : 1 }}
+          >
+            {backupBusy ? "Backing up..." : "Back Up Now"}
+          </button>
+        </div>
+        <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, fontSize: 12 }}>
+          {backups ? (
+            <>
+              <div>
+                pg_dump:{" "}
+                <span style={{ color: backups.pgDump.available ? "green" : "red", fontWeight: 700 }}>
+                  {backups.pgDump.available ? `available (${backups.pgDump.source})` : "not found"}
+                </span>
+                {!backups.databaseConfigured && <span style={{ color: "#b45309" }}> · DATABASE_URL not set</span>}
+              </div>
+              {backupHint && <div style={{ color: "#b45309", marginTop: 6 }}>{backupHint}</div>}
+              <div style={{ marginTop: 8 }}>
+                {backups.lastBackup ? (
+                  <>
+                    Last backup: {new Date(backups.lastBackup.createdAt).toLocaleString()} · {fmtMB(backups.lastBackup.sizeBytes)}
+                  </>
+                ) : (
+                  "No backups yet"
+                )}
+                {backups.backupCount > 0 && (
+                  <span>
+                     · {backups.backupCount} file(s) · {fmtMB(backups.totalSizeBytes)} total
+                  </span>
+                )}
+              </div>
+              {backups.retention.warnings.map((w) => (
+                <div key={w.kind} style={{ marginTop: 8, color: "#b45309", fontWeight: 600 }}>
+                  ⚠ {w.message}
+                </div>
+              ))}
+              {backupMsg && <div style={{ marginTop: 8, color: backupMsg.startsWith("✓") ? "green" : "red" }}>{backupMsg}</div>}
+              <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+                Retention: warn if newest &gt; {backups.retention.maxStaleHours}h
+                {backups.retention.maxTotalMB > 0 ? ` · total > ${backups.retention.maxTotalMB} MB (ORPLEX_BACKUP_MAX_TOTAL_MB)` : " · size uncapped (ORPLEX_BACKUP_MAX_TOTAL_MB)"}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+                Stored in {backups.backupDir} · restore with pg_restore · daily cron at server boot
+              </div>
+            </>
+          ) : (
+            "Loading backups..."
+          )}
+        </div>
       </div>
 
       {/* Usage by Provider */}

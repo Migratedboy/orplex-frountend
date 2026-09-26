@@ -82,8 +82,12 @@ export const PLUGIN_REGISTRY: PluginEntry[] = [
   { name: "db-migration", category: "domain", description: "Generates Prisma migrations from schema changes", activate: activateDBMigration },
 ];
 
-// Default enabled plugins
-const DEFAULT_ENABLED = ["logger", "secret-scanner", "input-sanitizer", "linter", "cost-tracker", "memory-sync", "testgen", "type-checker"];
+// Default enabled plugins — the keep-list: plugins with real dispatch paths
+// and per-use value. Everything else in PLUGIN_REGISTRY stays available via
+// the enable/disable UI (localStorage) but no longer activates by default —
+// fewer activated plugins means fewer timers and open handles on low-spec
+// machines (8GB RAM is the published minimum-spec test case).
+const DEFAULT_ENABLED = ["logger", "cost-tracker", "secret-scanner", "path-traversal", "input-sanitizer"];
 
 // Load from localStorage if available
 function loadPluginState(): Set<string> {

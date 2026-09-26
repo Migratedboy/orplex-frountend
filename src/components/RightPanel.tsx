@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useRef, Component, type ReactNode } f
 import { useFileSystemContext } from "./FileSystemProvider";
 import { useBackgroundChat } from "@/hooks/useBackgroundChat";
 import DiffView from "./DiffView";
+import { embeddableUrl } from "@/lib/embeddable";
+import { apiFetch } from "@/lib/api-base";
 
 type Tab = "queue" | "changes" | "files" | "preview" | "terminal";
 
@@ -42,6 +44,7 @@ interface RightPanelProps {
   open: boolean;
   onClose: () => void;
   defaultTab?: Tab;
+  onResizingChange?: (resizing: boolean) => void;
 }
 
 // === Queue Tab ===
@@ -82,7 +85,7 @@ function ChangesTab() {
     let alive = true;
     const poll = async () => {
       try {
-        const res = await fetch("/api/agent/changes");
+        const res = await apiFetch("/api/agent/changes");
         const data = await res.json();
         if (alive && data.changes) setChanges(data.changes);
       } catch {}
@@ -238,37 +241,213 @@ function FileNodeItem({ node, depth, filter, onSelect, activePath }: {
   );
 }
 
-// === Preview Tab (live browser iframe) ===
-// Global ref for the screenshot tool — stored in a module-level WeakRef-safe variable
+// === Preview Tab — embedded browser (Chrome-style) ===
+// Same-origin proxy so sites with X-Frame-Options still render. Tabs,
+// per-tab history, back/forward/reload, omnibox with search fallback.
+
+interface BrowserTab {
+  id: number;
+  history: string[];
+  index: number; // position in history
+  title: string;
+}
+
+/** Reserved id for the agent's own browser tab (never from nextTabId). */
+const AGENT_TAB_ID = 999999;
+
 let _previewIframeEl: HTMLIFrameElement | null = null;
 export function getPreviewIframe() { return _previewIframeEl; }
 
-function PreviewTab() {
-  const [url, setUrl] = useState("");
-  const [inputUrl, setInputUrl] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [agentDriven, setAgentDriven] = useState(false);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+const HOME_SUGGESTIONS = [
+  { label: "3000", url: "http://localhost:3000" },
+  { label: "5173", url: "http://localhost:5173" },
+  { label: "8080", url: "http://localhost:8080" },
+  { label: "4200", url: "http://localhost:4200" },
+];
 
-  // Register global ref for the screenshot tool — cleaned up on unmount
+function faviconFor(u: string): string {
+  try {
+    const host = new URL(underlyingUrl(u)).hostname;
+    if (!host || host === window.location.hostname) return "";
+    return `https://www.google.com/s2/favicons?domain=${host}&sz=32`;
+  } catch {
+    return "";
+  }
+}
+
+/** Unwrap app-internal wrapper URLs (/api/proxy?url=…) to the real target. */
+function underlyingUrl(u: string): string {
+  const px = u.match(/^\/api\/proxy\?url=([^&]+)/);
+  if (px) {
+    try { return decodeURIComponent(px[1]); } catch { return u; }
+  }
+  return u;
+}
+
+function displayUrl(u: string): string {
+  // Search-page URLs display as the query itself ("youtube at DuckDuckGo" →
+  // "youtube"), like a real browser shows the query in the omnibox.
+  const sp = u.match(/^\/api\/search-page\?q=(.+)$/);
+  if (sp) {
+    try { return decodeURIComponent(sp[1]); } catch { return sp[1]; }
+  }
+  try {
+    const parsed = new URL(underlyingUrl(u));
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    return `${parsed.hostname}${path}${parsed.search}`;
+  } catch {
+    return u;
+  }
+}
+
+/**
+ * Omnipresent URL normalization: search terms → a search results page, bare
+ * hosts → https. Native (Electron real-browser) mode searches Google for
+ * real, exactly like Chrome's omnibox; the iframe fallback uses our
+ * server-rendered results page because Google blocks framing.
+ */
+function toNavigateUrl(input: string, nativeMode = false): string {
+  const u = input.trim();
+  if (!u) return "";
+  if (/^https?:\/\//i.test(u)) return u;
+  // App-internal paths (proxy wraps, search page) pass through untouched.
+  if (u.startsWith("/")) return u;
+  if (/^localhost(:\d+)?(\/|$)/i.test(u) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/|$)/.test(u)) {
+    return `http://${u}`;
+  }
+  // Looks like a domain (has a dot + valid chars) → https, else web search.
+  if (/^[\w-]+(\.[\w-]+)+(\/|$)/.test(u)) return `https://${u}`;
+  if (nativeMode) {
+    // Real browser view: search Google directly (no bot-challenge — it's a
+    // genuine Chrome client with real fingerprints).
+    return `https://www.google.com/search?q=${encodeURIComponent(u)}&udm=14`;
+  }
+  // Iframe fallback: our server-rendered results page (Bing RSS-backed) —
+  // search engines bot-challenge server fetches and their JS-heavy pages
+  // don't survive the rewriting proxy.
+  return `/api/search-page?q=${encodeURIComponent(u)}`;
+}
+
+/**
+ * What actually loads in the iframe:
+ *  - YouTube (+ a few embed-friendly hosts) → their official embed player
+ *  - localhost dev servers → direct (no proxy; proxy would break HMR websockets)
+ *  - everything else → same-origin proxy (defeats X-Frame-Options)
+ */
+function iframeSrcFor(url: string): string {
+  const embeddable = embeddableUrl(url);
+  if (embeddable) return embeddable;
+  if (/^http:\/\/localhost(:\d+)?/i.test(url) || /^http:\/\/127\.0\.0\.1(:\d+)?/i.test(url)) return url;
+  // Same-origin app pages (embedded search results) load directly.
+  if (url.startsWith("/")) return url;
+  return `/api/proxy?url=${encodeURIComponent(url)}`;
+}
+
+const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
+  const [tabs, setTabs] = useState<BrowserTab[]>([{ id: 1, history: [], index: -1, title: "New Tab" }]);
+  const [activeId, setActiveId] = useState(1);
+  const [omnibox, setOmnibox] = useState("");
+  const [omniboxFocused, setOmniboxFocused] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [agentDriven, setAgentDriven] = useState(false);
+  const [nextTabId, setNextTabId] = useState(2);
+  const [reloadTick, setReloadTick] = useState(0);
+  // The URL actually bound to the iframe. Only EXPLICIT navigation (omnibox,
+  // back/forward, agent, reload) touches this — in-frame link clicks are
+  // mirrored into history without remounting the iframe (which would reload
+  // the page the user just clicked).
+  const [frameSrc, setFrameSrc] = useState("");
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const loadStartedRef = useRef(0);
+  // Live local dev servers (probed server-side via TCP): the new-tab page
+  // marks ports with a real listener so the user opens the REAL localhost
+  // preview of the server running on their machine, not a guess.
+  const [homePorts, setHomePorts] = useState(
+    HOME_SUGGESTIONS.map(s => ({ ...s, live: false }))
+  );
+  useEffect(() => {
+    let alive = true;
+    const probe = () => {
+      apiFetch("/api/localhost-probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ports: HOME_SUGGESTIONS.map(s => parseInt(s.label, 10)) }),
+      })
+        .then(r => r.json())
+        .then(d => {
+          if (!alive || !Array.isArray(d?.live)) return;
+          const liveSet = new Set<number>(d.live);
+          setHomePorts(HOME_SUGGESTIONS.map(s => ({
+            ...s,
+            live: liveSet.has(parseInt(s.label, 10)),
+          })));
+        })
+        .catch(() => {});
+    };
+    probe();
+    const iv = setInterval(probe, 10_000);
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
+
+  // === NATIVE PREVIEW (Electron) ===
+  // Inside the desktop shell the "viewport" is a placeholder div: the real
+  // pixels come from a Chromium WebContentsView owned by the main process,
+  // positioned over the placeholder via IPC. Real browser = real devtools
+  // semantics, HMR websockets, service workers, no X-Frame-Options games.
+  const native = typeof window !== "undefined" ? window.orplexDesktop?.preview ?? null : null;
+  const nativeMapRef = useRef<Map<number, number>>(new Map()); // renderer tabId -> main view id
+  const viewportRef = useRef<HTMLDivElement>(null);
+  // The agent's dedicated browser view. Its id arrives via the
+  // orplex:agent-browser-tab window event (fired by the worker's browser
+  // tools); events from that view update the AGENT tab, not the user's.
+  const [agentViewId, setAgentViewId] = useState<number | null>(null);
+  const agentViewIdRef = useRef<number | null>(null);
+  agentViewIdRef.current = agentViewId;
+  const agentTabIdRef = useRef<number | null>(null);
+
+  // Latest navigateTo for event subscriptions that must always act on the
+  // currently-active tab (agent preview events arrive async).
+  const navigateRef = useRef<(raw: string, opts?: { replace?: boolean }) => void>(() => {});
+  const activeIdRef = useRef(1);
+  activeIdRef.current = activeId;
+
+  /** Get (lazily create) the main-process view backing a renderer tab. */
+  const ensureNativeTab = useCallback(
+    async (tabId: number): Promise<number | null> => {
+      if (!native) return null;
+      const existing = nativeMapRef.current.get(tabId);
+      if (existing !== undefined) return existing;
+      const mainId = await native.createTab();
+      nativeMapRef.current.set(tabId, mainId);
+      return mainId;
+    },
+    [native]
+  );
+
+  const activeTab = tabs.find(t => t.id === activeId) ?? tabs[0];
+  const currentUrl = activeTab?.history[activeTab.index] || "";
+
+  // Register global ref for the screenshot tool.
   useEffect(() => {
     _previewIframeEl = iframeRef.current;
     return () => { _previewIframeEl = null; };
   }, []);
 
+  // Omnibox mirrors the current page URL unless the user is editing it.
+  useEffect(() => {
+    if (!omniboxFocused) setOmnibox(displayUrl(currentUrl));
+  }, [currentUrl, omniboxFocused]);
+
   // Live agent preview: when the agent calls preview_browser or
-  // take_screenshot, navigate this iframe to the target URL.
+  // take_screenshot, navigate the ACTIVE tab to the target URL.
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
     let alive = true;
     import("@/lib/background-worker").then(({ onPreviewEvent }) => {
       if (!alive) return;
       unsubscribe = onPreviewEvent((event) => {
-        setUrl(event.url);
-        setInputUrl(event.url);
         setAgentDriven(true);
-        setLoading(true);
+        navigateRef.current(event.url, { replace: true });
       });
     }).catch(() => {});
     return () => {
@@ -277,61 +456,422 @@ function PreviewTab() {
     };
   }, []);
 
-  const navigate = useCallback((target?: string) => {
-    const u = (target || inputUrl).trim();
-    if (!u) return;
-    setError("");
+  // === Native preview plumbing (Electron only) ===
+  // The worker's browser tools announce the agent view id + ask the panel to
+  // show the agent tab. Creating the renderer tab here keeps state in sync.
+  useEffect(() => {
+    if (!native) return;
+    const handler = async () => {
+      try {
+        const viewId = await (window.orplexDesktop!.agentBrowser!.getId());
+        setAgentViewId(viewId);
+        setTabs(prev => {
+          const existing = prev.find(t => t.id === AGENT_TAB_ID);
+          if (existing) return prev;
+          return [...prev, { id: AGENT_TAB_ID, history: [], index: -1, title: "Agent Browser" }];
+        });
+        setActiveId(AGENT_TAB_ID);
+        // Map renderer tab → view so visibility/bounds effects target it.
+        agentViewIdRef.current = viewId;
+        const map = nativeMapRef.current;
+        if (!map.has(AGENT_TAB_ID)) map.set(AGENT_TAB_ID, viewId);
+        agentTabIdRef.current = AGENT_TAB_ID;
+      } catch {}
+    };
+    window.addEventListener("orplex:agent-browser-tab", handler);
+    return () => window.removeEventListener("orplex:agent-browser-tab", handler);
+  }, [native]);
+
+  // Mirror main-process navigation/loading/title events into tab state.
+  useEffect(() => {
+    if (!native) return;
+    const off = native.onEvent((event) => {
+      // Attribute the event to the right renderer tab by view id: the agent
+      // view's events go to the AGENT tab; everything else to the active tab.
+      const isAgent = agentViewIdRef.current !== null && event.viewId === agentViewIdRef.current;
+      const tabId = isAgent ? AGENT_TAB_ID : activeIdRef.current;
+      switch (event.type) {
+        case "navigated": {
+          const url = String(event.url || "");
+          if (!url || url === "about:blank") return;
+          setTabs(prev => prev.map(t => {
+            if (t.id !== tabId) return t;
+            const cur = t.history[t.index] || "";
+            // In-page anchors: replace, don't grow history.
+            if (event.inPage) {
+              const history = [...t.history.slice(0, t.index), url];
+              return { ...t, history, index: history.length - 1 };
+            }
+            if (cur === url) return t;
+            // The renderer already pushed this URL for explicit navigations.
+            const history = cur ? [...t.history.slice(0, t.index + 1), url] : [url];
+            return { ...t, history, index: history.length - 1, title: displayUrl(url) };
+          }));
+          break;
+        }
+        case "loading":
+          setLoading(Boolean(event.loading));
+          break;
+        case "title-updated": {
+          const title = String(event.title || "").slice(0, 40);
+          if (title) setTabs(prev => prev.map(t => (t.id === tabId ? { ...t, title } : t)));
+          break;
+        }
+        case "window-open": {
+          // target=_blank inside a preview page → open as a new preview tab
+          const url = String(event.url || "");
+          if (url) navigateRef.current(url);
+          break;
+        }
+      }
+    });
+    return off;
+  }, [native]);
+
+  // Keep the native view positioned over the viewport placeholder.
+  useEffect(() => {
+    if (!native) return;
+    const sync = () => {
+      const el = viewportRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const mainId = nativeMapRef.current.get(activeIdRef.current);
+      if (mainId === undefined) return;
+      void native.setBounds(mainId, {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      });
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    if (viewportRef.current) ro.observe(viewportRef.current);
+    window.addEventListener("scroll", sync, true);
+    window.addEventListener("resize", sync);
+    const iv = setInterval(sync, 500); // layout shifts without resize events
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("scroll", sync, true);
+      window.removeEventListener("resize", sync);
+      clearInterval(iv);
+    };
+  }, [native]);
+
+  // Show/hide native views: visible only while the browser tab is active
+  // AND the whole panel is open (panelActive encodes both).
+  useEffect(() => {
+    if (!native) return;
+    const mainId = nativeMapRef.current.get(activeId);
+    void native.showTab(panelActive ? mainId ?? null : null);
+  }, [native, activeId, panelActive, tabs]);
+
+  // Destroy all native views when the component unmounts (panel teardown).
+  useEffect(() => {
+    if (!native) return;
+    const map = nativeMapRef.current;
+    return () => {
+      for (const mainId of map.values()) void native.closeTab(mainId);
+      map.clear();
+    };
+  }, [native]);
+
+  /** Core navigation: pushes onto the active tab's history (or replaces the current entry). */
+  const navigateTo = useCallback((raw: string, opts: { replace?: boolean } = {}) => {
+    const target = toNavigateUrl(raw, !!native);
+    if (!target) return;
+    setTabs(prev => prev.map(t => {
+      if (t.id !== activeId) return t;
+      if (opts.replace) {
+        const history = [...t.history.slice(0, t.index), target];
+        return { ...t, history, index: history.length - 1 };
+      }
+      const history = [...t.history.slice(0, t.index + 1), target];
+      return { ...t, history, index: history.length - 1, title: displayUrl(target) };
+    }));
     setLoading(true);
-    setAgentDriven(false);
-    const full = u.startsWith("http") ? u : `http://${u}`;
-    setInputUrl(full);
-    setUrl(full);
-  }, [inputUrl]);
+    loadStartedRef.current = Date.now();
+    if (native) {
+      // Native: load the REAL URL in the isolated WebContentsView. App-
+      // internal paths (embedded search page) resolve against our origin.
+      const absolute = target.startsWith("/") ? `${window.location.origin}${target}` : target;
+      void ensureNativeTab(activeId).then(mainId => {
+        if (mainId === null) return;
+        void native.navigate(mainId, absolute);
+        // TEMP DIAGNOSTIC: dump native view state 2s after first navigation
+        setTimeout(() => {
+          void native.diag().then(d => console.log("[native-preview-diag]", JSON.stringify(d)));
+        }, 2000);
+      });
+    } else {
+      setFrameSrc(iframeSrcFor(target));
+      setReloadTick(t => t + 1);
+    }
+  }, [activeId, native, ensureNativeTab]);
+  navigateRef.current = navigateTo;
+
+  // In-frame navigation sync: when the user clicks a link inside a page
+  // (search results, proxied sites), the iframe navigates itself — mirror it
+  // into the tab's history so back/forward, the omnibox, and the title stay
+  // truthful. Same-origin frames only; cross-origin embeds throw and are
+  // skipped. Proxied in-frame URLs are stored UNWRAPPED (the real target) so
+  // the omnibox reads like a real browser, and embeddable targets (YouTube
+  // watch pages) are upgraded to the official embed player — clicking a video
+  // in the search results must PLAY, not render a broken proxied SPA.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const win = iframeRef.current?.contentWindow;
+      if (!win) return;
+      let href = "";
+      try { href = win.location.href; } catch { return; }
+      if (!href || href === "about:blank") return;
+      const origin = window.location.origin;
+      if (!href.startsWith(origin)) return;
+      const path = href.slice(origin.length) || "/";
+      const real = underlyingUrl(path);
+      const embed = real !== path ? embeddableUrl(real) : null;
+      const store = embed ?? real;
+      if (path === currentUrl || store === currentUrl) return;
+      if (embed) {
+        setLoading(true);
+        setFrameSrc(embed);
+        setReloadTick(t => t + 1);
+      }
+      setTabs(prev => prev.map(t => {
+        if (t.id !== activeId) return t;
+        const cur = t.history[t.index] || "";
+        if (store === cur || path === cur) return t;
+        const history = [...t.history.slice(0, t.index + 1), store];
+        return { ...t, history, index: history.length - 1, title: displayUrl(store) };
+      }));
+    }, 400);
+    return () => clearInterval(id);
+  }, [activeId, currentUrl]);
+
+  // The iframe's src is derived from history; changing it triggers a load.
+  // onLoad marks loading complete (proxy pages + same-origin = readable).
+  const handleIframeLoad = () => {
+    setLoading(false);
+    // Same-origin proxy lets us read the title for the tab strip.
+    try {
+      const doc = iframeRef.current?.contentDocument;
+      const title = doc?.title?.trim();
+      if (title) {
+        setTabs(prev => prev.map(t => (t.id === activeId ? { ...t, title: title.slice(0, 40) } : t)));
+      }
+    } catch {}
+  };
+
+  const canBack = activeTab && activeTab.index > 0;
+  const canForward = activeTab && activeTab.index < activeTab.history.length - 1;
+
+  const go = (delta: number) => {
+    if (!activeTab) return;
+    const next = activeTab.index + delta;
+    if (next < 0 || next >= activeTab.history.length) return;
+    const target = activeTab.history[next];
+    setTabs(prev => prev.map(t => (t.id === activeId ? { ...t, index: next } : t)));
+    setLoading(true);
+    if (native) {
+      const mainId = nativeMapRef.current.get(activeId);
+      if (mainId !== undefined) void (delta < 0 ? native.goBack(mainId) : native.goForward(mainId));
+    } else {
+      setFrameSrc(iframeSrcFor(target));
+      setReloadTick(t => t + 1);
+    }
+  };
+
+  const reload = () => {
+    if (!currentUrl) return;
+    setLoading(true);
+    if (native) {
+      const mainId = nativeMapRef.current.get(activeId);
+      if (mainId !== undefined) void native.reload(mainId);
+    } else {
+      // Reload the page the user is actually ON (currentUrl may have changed
+      // via in-frame navigation even though frameSrc still holds the entry the
+      // iframe was explicitly pointed at).
+      setFrameSrc(iframeSrcFor(currentUrl));
+      // Remount the iframe via key (React-idiomatic full reload).
+      setReloadTick(t => t + 1);
+    }
+  };
+
+  const newTab = () => {
+    const id = nextTabId;
+    setNextTabId(id + 1);
+    setTabs(prev => [...prev, { id, history: [], index: -1, title: "New Tab" }]);
+    setActiveId(id);
+    setOmnibox("");
+    setFrameSrc("");
+  };
+
+  const closeTab = (id: number) => {
+    if (native) {
+      const mainId = nativeMapRef.current.get(id);
+      if (mainId !== undefined) {
+        void native.closeTab(mainId);
+        nativeMapRef.current.delete(id);
+      }
+    }
+    setTabs(prev => {
+      const rest = prev.filter(t => t.id !== id);
+      if (rest.length === 0) return [{ id: nextTabId, history: [], index: -1, title: "New Tab" }];
+      return rest;
+    });
+    if (activeId === id) {
+      const rest = tabs.filter(t => t.id !== id);
+      const nextId = rest[rest.length - 1]?.id ?? nextTabId;
+      setActiveId(nextId);
+      const target = rest[rest.length - 1]?.history[rest[rest.length - 1]?.index] || "";
+      if (!native) setFrameSrc(target ? iframeSrcFor(target) : "");
+    }
+  };
+
+  const isSecure = underlyingUrl(currentUrl).startsWith("https://");
+  const showNewTabPage = !currentUrl;
 
   return (
-    <div className="rp-preview">
-      <div className="rp-preview-bar">
-        <span className="rp-preview-lock" title="Navigate">{'>'}</span>
-        <input
-          className="rp-preview-url"
-          value={inputUrl}
-          onChange={e => setInputUrl(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && navigate()}
-          placeholder="localhost:3000"
-        />
-        {agentDriven && !loading && (
-          <span className="rp-preview-agent-badge" title="The agent navigated to this page">agent</span>
-        )}
-        {loading && <span className="rp-preview-loading">...</span>}
-      </div>
-      {error && <div className="rp-preview-error">{error}</div>}
-      <div className="rp-preview-viewport">
-        {url ? (
-          <iframe
-            ref={iframeRef}
-            src={url}
-            className="rp-preview-iframe"
-            onLoad={() => setLoading(false)}
-            onError={() => { setLoading(false); setError("Failed to load"); }}
-            sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-            title="Browser Preview"
-          />
-        ) : (
-          <div className="rp-preview-empty">
-            <div className="rp-preview-empty-icon">{'>'}</div>
-            <div className="rp-preview-empty-title">Browser Preview</div>
-            <div className="rp-preview-empty-hint">Enter a URL above or let the AI open one</div>
-            <div className="rp-preview-empty-ports">
-              <button className="rp-preview-port-btn" onClick={() => navigate("http://localhost:3000")}>3000</button>
-              <button className="rp-preview-port-btn" onClick={() => navigate("http://localhost:5173")}>5173</button>
-              <button className="rp-preview-port-btn" onClick={() => navigate("http://localhost:8080")}>8080</button>
-              <button className="rp-preview-port-btn" onClick={() => navigate("http://localhost:4200")}>4200</button>
+    <div className="rp-browser">
+      {/* Tab strip */}
+      <div className="rp-browser-tabs">
+        {tabs.map(t => {
+          const tUrl = t.history[t.index] || "";
+          return (
+            <div
+              key={t.id}
+              className={`rp-browser-tab ${t.id === activeId ? "rp-browser-tab-active" : ""}`}
+              onClick={() => {
+                if (t.id === activeId) return;
+                setActiveId(t.id);
+                const target = t.history[t.index] || "";
+                setFrameSrc(target ? iframeSrcFor(target) : "");
+              }}
+              title={t.title}
+            >
+              {tUrl && faviconFor(tUrl) ? (
+                <img className="rp-browser-favicon" src={faviconFor(tUrl)} alt="" width={14} height={14} />
+              ) : (
+                <span className="rp-browser-favicon rp-browser-favicon-empty" />
+              )}
+              <span className="rp-browser-tab-title">{t.title}</span>
+              <button
+                className="rp-browser-tab-close"
+                aria-label="Close tab"
+                onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}
+              >×</button>
             </div>
+          );
+        })}
+        <button className="rp-browser-newtab" aria-label="New tab" onClick={newTab}>+</button>
+      </div>
+
+      {/* Toolbar */}
+      <div className="rp-browser-toolbar">
+        <button className="rp-browser-btn" disabled={!canBack} onClick={() => go(-1)} title="Back" aria-label="Back">←</button>
+        <button className="rp-browser-btn" disabled={!canForward} onClick={() => go(1)} title="Forward" aria-label="Forward">→</button>
+        <button className="rp-browser-btn" onClick={reload} title="Reload" aria-label="Reload">⟳</button>
+        <button
+          className="rp-browser-btn"
+          onClick={() => {
+            if (!currentUrl) return;
+            // Hand the REAL page to the user's REAL browser — never the
+            // internal /api/proxy wrapper (Electron shell.openExternal;
+            // plain-browser fallback opens a new tab).
+            const real = underlyingUrl(currentUrl);
+            if (window.orplexDesktop?.openExternal) { window.orplexDesktop.openExternal(real); }
+            else window.open(real, "_blank", "noopener");
+          }}
+          disabled={!currentUrl}
+          title="Open this page in your real browser"
+          aria-label="Open in real browser"
+        >↗</button>
+        <div className={`rp-browser-omnibox ${omniboxFocused ? "rp-browser-omnibox-focus" : ""}`}>
+          <span
+            className={`rp-browser-shield ${isSecure ? "rp-browser-shield-secure" : "rp-browser-shield-insecure"}`}
+            title={isSecure ? "Connection is secure" : "Not secure"}
+          >
+            {isSecure ? "🔒" : "⚠"}
+          </span>
+          <input
+            className="rp-browser-url"
+            value={omnibox}
+            onChange={e => setOmnibox(e.target.value)}
+            onFocus={e => { setOmniboxFocused(true); e.currentTarget.select(); }}
+            onBlur={() => setOmniboxFocused(false)}
+            onKeyDown={e => {
+              if (e.key === "Enter") {
+                setOmniboxFocused(false);
+                e.currentTarget.blur();
+                navigateTo(omnibox);
+              }
+              if (e.key === "Escape") {
+                setOmniboxFocused(false);
+                setOmnibox(currentUrl);
+                e.currentTarget.blur();
+              }
+            }}
+            placeholder="Search the web or type a URL"
+            spellCheck={false}
+          />
+          {agentDriven && !loading && currentUrl && (
+            <span className="rp-preview-agent-badge" title="The agent navigated to this page">agent</span>
+          )}
+        </div>
+      </div>
+      {loading && <div className="rp-browser-progress" />}
+
+      {/* Viewport */}
+      <div className="rp-preview-viewport" ref={native ? viewportRef : undefined} data-native-preview={native ? "true" : undefined}>
+        {showNewTabPage ? (
+          <div className="rp-preview-empty">
+            <div className="rp-preview-empty-icon">🌐</div>
+            <div className="rp-preview-empty-title">Orplex Browser</div>
+            <div className="rp-preview-empty-hint">Search the web or enter a URL — or let the AI open one</div>
+            <div className="rp-preview-empty-ports">
+              {homePorts.map(p => (
+                <button key={p.url} className="rp-preview-port-btn" onClick={() => navigateTo(p.url)} title={p.live ? "Server is running" : "Nothing detected on this port yet"}>
+                  {p.label}{p.live ? " •" : ""}
+                </button>
+              ))}
+            </div>
+            {homePorts.some(p => p.live) && (
+              <div className="rp-preview-empty-hint" style={{ marginTop: 6 }}>
+                ● = dev server detected on your machine — click to open the live preview
+              </div>
+            )}
           </div>
+        ) : native ? (
+          // Native mode: the real Chromium view is layered above this
+          // placeholder by the main process (positioned via preview:setBounds).
+          <div className="rp-preview-native-placeholder" aria-hidden="true" />
+        ) : (
+          <iframe
+            key={`${frameSrc}#${reloadTick}`}
+            ref={iframeRef}
+            // Empty src would make the iframe load the app page itself; render
+            // src-less (about:blank) instead until an explicit navigation sets it.
+            src={frameSrc || undefined}
+            className="rp-preview-iframe"
+            onLoad={handleIframeLoad}
+            sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+            title="Orplex Browser"
+          />
         )}
       </div>
     </div>
   );
+};
+
+// Module-level flag: once the browser tab has mounted (in this panel
+// session), keep it mounted across tab switches so native WebContentsViews
+// survive — only their visibility toggles.
+const mountedBrowserRef = { current: false };
+
+function BrowserPreview({ panelActive }: { panelActive: boolean }) {
+  mountedBrowserRef.current = true;
+  return <BrowserPreviewInner panelActive={panelActive} />;
 }
 
 // === Terminal Tab (SSE streaming) ===
@@ -375,7 +915,9 @@ function TerminalTab() {
     setLines(prev => [...prev, { type: "cmd", text: `$ ${command}`, ts: Date.now() }]);
 
     try {
-      const res = await fetch("/api/agent/terminal/stream", {
+      // Persistent REAL shell session: cd/env persist across commands and
+      // long-running processes (dev servers) keep running in the background.
+      const res = await apiFetch("/api/agent/terminal/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command }),
@@ -408,19 +950,19 @@ function TerminalTab() {
             if (line.startsWith("event: ")) eventType = line.slice(7);
             if (line.startsWith("data: ")) eventData = line.slice(6);
           }
+          // The session route JSON-encodes all data payloads.
+          try { eventData = JSON.parse(eventData); } catch {}
 
           if (eventType === "stdout" && eventData) {
             setLines(prev => [...prev, { type: "stdout", text: eventData }]);
           } else if (eventType === "stderr" && eventData) {
             setLines(prev => [...prev, { type: "stderr", text: eventData }]);
           } else if (eventType === "done") {
-            try {
-              const result = JSON.parse(eventData);
-              const exitCode = result.code;
-              if (exitCode !== 0 && exitCode !== null) {
-                setLines(prev => [...prev, { type: "error", text: `exit code ${exitCode}`, ts: Date.now() }]);
-              }
-            } catch {}
+            // eventData is the process exit code (string) or "0".
+            const exitCode = parseInt(eventData, 10);
+            if (!Number.isNaN(exitCode) && exitCode !== 0) {
+              setLines(prev => [...prev, { type: "error", text: `exit code ${exitCode}`, ts: Date.now() }]);
+            }
             setLines(prev => [...prev, { type: "done", text: "", ts: Date.now() }]);
           } else if (eventType === "error") {
             setLines(prev => [...prev, { type: "error", text: eventData, ts: Date.now() }]);
@@ -500,13 +1042,78 @@ function TerminalTab() {
 }
 
 // === Main Component ===
-export default function RightPanel({ open, onClose, defaultTab }: RightPanelProps) {
+export default function RightPanel({ open, onClose, defaultTab, onResizingChange }: RightPanelProps) {
+  // Storage reads happen in effects, NOT in useState initializers — the
+  // server renders the defaults and a client-side restore would be a
+  // hydration mismatch (React error #418).
   const [activeTab, setActiveTab] = useState<Tab>(defaultTab || "files");
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem("orplex.rightPanelTab");
+      if (saved && ["queue", "changes", "files", "preview", "terminal"].includes(saved)) {
+        setActiveTab(saved as Tab);
+      }
+    } catch {}
+    // Run once after hydration.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Sync tab when defaultTab changes (e.g. from Ctrl+T)
+  // Sync tab when defaultTab changes (e.g. from Ctrl+T) + persist choice
   useEffect(() => {
     if (defaultTab) setActiveTab(defaultTab);
   }, [defaultTab]);
+  useEffect(() => {
+    try { sessionStorage.setItem("orplex.rightPanelTab", activeTab); } catch {}
+  }, [activeTab]);
+
+  // === Resize (drag the left grip) ===
+  // Width is persisted and published as --rp-w so the main-content margins
+  // follow the panel automatically.
+  // Panel width lives IN CODE (no persistence): 620px out of the box — a
+  // real browser width for the preview. Dragging resizes for the session;
+  // reload always returns to the coded default.
+  const DEFAULT_RP_WIDTH = 620;
+  const [width, setWidth] = useState<number>(DEFAULT_RP_WIDTH);
+  const [resizing, setResizing] = useState(false);
+  const widthRef = useRef(width);
+  widthRef.current = width;
+  const dragStart = useRef({ x: 0, w: 0 });
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--rp-w", `${Math.round(width)}px`);
+  }, [width]);
+
+  useEffect(() => {
+    onResizingChange?.(resizing);
+    return () => onResizingChange?.(false);
+  }, [resizing]);
+
+  useEffect(() => {
+    if (!resizing) return undefined;
+    // Freeze text selection + show the resize cursor for the whole drag.
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onPointerMove = (e: PointerEvent) => {
+      const max = Math.min(720, window.innerWidth - 320);
+      // Clamp the max FIRST, then enforce the 280 floor — on narrow windows
+      // max can drop below the floor and must not shrink the panel.
+      const next = Math.max(280, Math.min(max, dragStart.current.w + (dragStart.current.x - e.clientX)));
+      setWidth(next);
+    };
+    const stop = () => {
+      setResizing(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+  }, [resizing]);
 
   if (!open) return null;
 
@@ -519,7 +1126,33 @@ export default function RightPanel({ open, onClose, defaultTab }: RightPanelProp
   ];
 
   return (
-    <aside className="right-panel" style={{ position: "fixed", top: 64, right: 0, bottom: 0, width: "min(320px, 100vw)", zIndex: 35 }}>
+    <aside
+      className="right-panel"
+      style={{ position: "fixed", top: 64, right: 0, bottom: 0, width: "min(var(--rp-w, 620px), 100vw)", zIndex: 35 }}
+      data-resizing={resizing ? "" : undefined}
+    >
+      {/* Resize grip — drag to resize, double-click to reset, arrows for keyboard */}
+      <div
+        className="rp-resize-grip"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize panel"
+        title="Drag to resize · double-click to reset"
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          dragStart.current = { x: e.clientX, w: widthRef.current };
+          try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch {}
+          setResizing(true);
+        }}
+        onDoubleClick={() => setWidth(DEFAULT_RP_WIDTH)}
+        onKeyDown={(e) => {
+          const step = e.shiftKey ? 40 : 16;
+          const max = Math.min(720, window.innerWidth - 320);
+          if (e.key === "ArrowLeft") { e.preventDefault(); setWidth(w => Math.max(280, Math.min(max, w + step))); }
+          if (e.key === "ArrowRight") { e.preventDefault(); setWidth(w => Math.max(280, Math.min(max, w - step))); }
+        }}
+        tabIndex={0}
+      />
       <div className="rp-tabs">
         {tabs.map(tab => (
           <button
@@ -538,7 +1171,20 @@ export default function RightPanel({ open, onClose, defaultTab }: RightPanelProp
           {activeTab === "queue" && <QueueTab />}
           {activeTab === "changes" && <ChangesTab />}
           {activeTab === "files" && <FilesTab />}
-          {activeTab === "preview" && <PreviewTab />}
+          {/* Native preview views can't be hidden by CSS — keep mounted and
+              toggle their visibility via preview:showTab on prop change. */}
+          {(activeTab === "preview" || mountedBrowserRef.current) && (
+            // height:100% keeps the flex chain intact — .rp-browser sizes
+            // against .rp-content exactly as it did as a direct child.
+            <div
+              style={{
+                height: "100%",
+                display: activeTab === "preview" ? undefined : "none",
+              }}
+            >
+              <BrowserPreview panelActive={activeTab === "preview" && open} />
+            </div>
+          )}
           {activeTab === "terminal" && <TerminalTab />}
         </TabErrorBoundary>
       </div>

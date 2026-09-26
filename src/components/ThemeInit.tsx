@@ -3,18 +3,21 @@
 import { useEffect } from "react";
 
 /**
- * Initializes the dark theme from localStorage on mount.
+ * Early theme bootstrap — runs before the app paints its UI.
+ * DARK is the default (layout.tsx ships <html class="dark">); the only stored
+ * preference is an explicit LIGHT choice in localStorage ("orplex-theme").
  * Replaces the inline <script> tag that was causing React warnings.
- * Must be rendered as a child of <html> to set the class before paint.
  */
 export default function ThemeInit() {
   useEffect(() => {
     try {
-      if (localStorage.getItem("orplex-theme") === "dark") {
+      if (localStorage.getItem("orplex-theme") === "light") {
+        document.documentElement.classList.remove("dark");
+      } else {
         document.documentElement.classList.add("dark");
       }
     } catch {
-      // localStorage unavailable
+      // localStorage unavailable — stay dark
     }
   }, []);
 

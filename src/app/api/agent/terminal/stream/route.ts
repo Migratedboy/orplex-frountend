@@ -27,10 +27,44 @@ export async function POST(request: NextRequest) {
 
   // SSE stream
   const encoder = new TextEncoder();
+  let childProc: import("child_process").ChildProcess | null = null;
+
+  const killChild = (force = false) => {
+    if (!childProc || childProc.killed) return;
+    if (childProc.exitCode !== null || childProc.signalCode !== null) return;
+    try {
+      childProc.kill(force ? "SIGKILL" : "SIGTERM");
+      // On Windows SIGTERM is ignored — escalate after a grace period
+      if (process.platform === "win32" || force) {
+        setTimeout(() => {
+          if (childProc && childProc.exitCode === null && childProc.signalCode === null) {
+            try {
+              childProc.kill("SIGKILL");
+            } catch {}
+          }
+        }, 3000).unref?.();
+      }
+    } catch {}
+  };
+
   const stream = new ReadableStream({
     async start(controller) {
       const send = (event: string, data: string) => {
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${data}\n\n`));
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${data}\n\n`));
+        } catch {
+          // Stream already closed — client gone
+        }
+      };
+
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        killChild();
+        try {
+          controller.close();
+        } catch {}
       };
 
       try {
@@ -40,38 +74,55 @@ export async function POST(request: NextRequest) {
         const proc = spawn(command, [], {
           shell: true,
           cwd,
-          timeout: 30000,
           env: { ...process.env, NODE_ENV: "development" },
         });
+        childProc = proc;
 
         let stdout = "";
         let stderr = "";
+        let killedByTimeout = false;
 
-        proc.stdout.on("data", (chunk: Buffer) => {
+        const timeoutTimer = setTimeout(() => {
+          killedByTimeout = true;
+          killChild(true);
+          send("error", "Command timed out after 30s");
+          finish();
+        }, 30000);
+        timeoutTimer.unref?.();
+
+        proc.stdout?.on("data", (chunk: Buffer) => {
           const text = chunk.toString();
           stdout += text;
           send("stdout", text);
         });
 
-        proc.stderr.on("data", (chunk: Buffer) => {
+        proc.stderr?.on("data", (chunk: Buffer) => {
           const text = chunk.toString();
           stderr += text;
           send("stderr", text);
         });
 
         proc.on("close", (code) => {
-          send("done", JSON.stringify({ code, stdout, stderr }));
-          controller.close();
+          clearTimeout(timeoutTimer);
+          if (!killedByTimeout) {
+            send("done", JSON.stringify({ code, stdout, stderr }));
+          }
+          finish();
         });
 
         proc.on("error", (err) => {
+          clearTimeout(timeoutTimer);
           send("error", err.message);
-          controller.close();
+          finish();
         });
       } catch (err: any) {
         send("error", err.message || "Failed to execute");
-        controller.close();
+        finish();
       }
+    },
+    cancel() {
+      // Client disconnected (tab closed, fetch aborted) — kill the child process
+      killChild(true);
     },
   });
 

@@ -2,7 +2,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useTheme } from "@/components/ThemeProvider";
 import { useRouter } from "next/navigation";
-import { IconSearch, IconBug, IconSun, IconMoon, IconBell } from "./Icons";
+import { announceConversationOpen } from "@/lib/navigation-events";
+import { IconSearch, IconBug, IconSun, IconMoon, IconBell, IconPanel } from "./Icons";
+import { apiFetch } from "@/lib/api-base";
 
 interface SearchResult { id: string; title: string; messages: { content: string }[]; }
 interface Notification { id: string; message: string; type: string; read: boolean; createdAt: string; }
@@ -22,7 +24,7 @@ export default function TopBar({ title = "Orplex Tech", onBugReport, onTogglePan
     if (cached) {
       try { setNotifications(JSON.parse(cached)); } catch {}
     }
-    fetch("/api/notifications").then(r => r.json()).then(d => {
+    apiFetch("/api/notifications").then(r => r.json()).then(d => {
       const notifs = d.notifications || [];
       setNotifications(notifs);
       sessionStorage.setItem("notifications", JSON.stringify(notifs));
@@ -32,7 +34,7 @@ export default function TopBar({ title = "Orplex Tech", onBugReport, onTogglePan
   useEffect(() => {
     if (!search.trim()) { setResults([]); return; }
     const t = setTimeout(() => {
-      fetch(`/api/search?q=${encodeURIComponent(search)}`).then(r => r.json()).then(d => setResults(d.results || [])).catch(() => {});
+      apiFetch(`/api/search?q=${encodeURIComponent(search)}`).then(r => r.json()).then(d => setResults(d.results || [])).catch(() => {});
     }, 300);
     return () => clearTimeout(t);
   }, [search]);
@@ -45,6 +47,8 @@ export default function TopBar({ title = "Orplex Tech", onBugReport, onTogglePan
 
   const handleSearchResultClick = useCallback((id: string) => {
     router.push(`/?c=${id}`);
+    // SPA push doesn't remount '/' — tell the mounted hook to load it.
+    announceConversationOpen(id);
     setShowResults(false);
     setSearch("");
   }, [router]);
@@ -80,7 +84,14 @@ export default function TopBar({ title = "Orplex Tech", onBugReport, onTogglePan
         </div>
         {onTogglePanel && (
           <button onClick={onTogglePanel} className={`topbar-icon-btn ${panelOpen ? "topbar-panel-active" : ""}`} title="Toggle right panel" aria-label="Toggle right panel">
-            <span style={{ fontSize: 14, fontWeight: 700 }}>{panelOpen ? "]" : "["}</span>
+            <span
+              style={{
+                display: "inline-flex",
+                transform: panelOpen ? "none" : "scaleX(-1)",
+              }}
+            >
+              <IconPanel size={16} />
+            </span>
           </button>
         )}
         {onBugReport && (

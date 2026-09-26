@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+    <link rel="stylesheet" href="./lock.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="ring"></div>
+      <h1>Focus session in progress</h1>
+      <div id="countdown" class="countdown">00:00:00</div>
+      <p class="hint">
+        Stay on task. This screen will lift when the timer ends.
+      </p>
+      <div id="strictstatus" class="strictstatus"></div>
+      <div id="abort" class="abort"></div>
+    </div>
+    <script type="module" src="./lock.js"></script>
+  </body>
+</html>

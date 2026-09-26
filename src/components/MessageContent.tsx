@@ -49,8 +49,9 @@ interface ContentSegment {
 
 function parseContent(raw: string): ContentSegment[] {
   const segments: ContentSegment[] = [];
-  // Added thinking pattern: lines starting with thinking emoji
-  const pattern = /([<]tool_call[\s\S]*?[<]\/tool_call[>]|<tool_result[^>]*>[\s\S]*?<\/tool_result>|^(?:analysing|reading|writing|listing|thinking)[\s]+\[[^\]]+\]|^\[OK\]\s+.+|^\[FAIL\]\s+.+|^\[THINKING\][\s\S]*?(?=\n\S|$))/gm;
+  // Thinking pattern: a closed [THINKING]...[/THINKING] block (multi-line)
+  // or a still-streaming unclosed block that runs to the end of the content.
+  const pattern = /([<]tool_call[\s\S]*?[<]\/tool_call[>]|<tool_result[^>]*>[\s\S]*?<\/tool_result>|^(?:analysing|reading|writing|listing|thinking)[\s]+\[[^\]]+\]|^\[OK\]\s+.+|^\[FAIL\]\s+.+|^\[THINKING\]\n[\s\S]*?\[\/THINKING\]|^\[THINKING\][\s\S]*$)/gm;
 
   let lastIndex = 0;
   let match;
@@ -80,8 +81,12 @@ function parseContent(raw: string): ContentSegment[] {
       const statusMatch = line.match(/^(\w+[\s]+)\[([^\]]+)\]/);
       if (statusMatch) segments.push({ type: "status", content: line, action: statusMatch[1].trim(), path: statusMatch[2] });
     } else if (line.startsWith("[THINKING]")) {
-      // M3 thinking content
-      const thinkingText = line.replace(/^[THINKING]\s*/, "").trim();
+      // M3/reasoning-model thinking — multi-line, optionally closed with
+      // [/THINKING] once the turn's answer text has been appended.
+      const thinkingText = line
+        .replace(/^\[THINKING\]\s*/, "")
+        .replace(/\s*\[\/THINKING\]$/, "")
+        .trim();
       if (thinkingText) segments.push({ type: "thinking", content: thinkingText });
     } else if (/^\[OK\]/.test(line)) {
       segments.push({ type: "success", content: line, detail: line.replace(/^\[OK\]\s*/, "").trim() });

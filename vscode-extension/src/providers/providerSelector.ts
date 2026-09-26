@@ -13,12 +13,12 @@ export const PROVIDERS: ProviderInfo[] = [
   {
     id: "openrouter",
     label: "OpenRouter",
-    models: ["minimax/minimax-m3:free", "anthropic/claude-sonnet-4", "meta-llama/llama-3.1-70b-instruct"],
+    models: ["qwen/qwen3.8-27b:free", "anthropic/claude-sonnet-4", "meta-llama/llama-3.1-70b-instruct"],
   },
   {
     id: "nvidia",
     label: "NVIDIA",
-    models: ["openai/gpt-oss-120b", "meta/llama-3.1-8b-instruct"],
+    models: ["openai/gpt-oss-120b", "nvidia/nemotron-3-super-120b-a12b"],
   },
   {
     id: "openai",

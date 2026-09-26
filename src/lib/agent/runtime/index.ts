@@ -8,6 +8,7 @@ export {
   getRuntimeRun,
   leaseNextRuntimeTask,
   recordRuntimeArtifact,
+  sweepStaleRuns,
 } from "./service";
 
 export {

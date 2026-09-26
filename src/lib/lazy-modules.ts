@@ -59,8 +59,8 @@ let _syntaxHighlighter: any = null;
 export async function getSyntaxHighlighter() {
   if (_syntaxHighlighter) return _syntaxHighlighter;
 
-  const module = await import("react-syntax-highlighter");
-  _syntaxHighlighter = module;
+  const syntaxModule = await import("react-syntax-highlighter");
+  _syntaxHighlighter = syntaxModule;
   return _syntaxHighlighter;
 }
 
@@ -72,8 +72,8 @@ let _jszip: any = null;
 export async function getJSZip() {
   if (_jszip) return _jszip;
 
-  const module = await import("jszip");
-  _jszip = module.default;
+  const jszipModule = await import("jszip");
+  _jszip = jszipModule.default;
   return _jszip;
 }
 
@@ -85,7 +85,7 @@ let _zod: any = null;
 export async function getZod() {
   if (_zod) return _zod;
 
-  const module = await import("zod");
-  _zod = module;
+  const zodModule = await import("zod");
+  _zod = zodModule;
   return _zod;
 }

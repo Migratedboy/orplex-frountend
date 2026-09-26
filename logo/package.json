@@ -1,0 +1,48 @@
+{
+  "name": "focuslock",
+  "productName": "FocusLock",
+  "version": "0.1.0",
+  "description": "A circular desktop widget that locks your PC for a chosen duration.",
+  "main": "dist/main/main.js",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "tsc -p tsconfig.renderer.json",
+    "build:native": "node-gyp rebuild --directory=native --output=../prebuilds",
+    "build:helper": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe -nologo -optimize -out:prebuilds\\FocusLockKeyboardHook.exe -target:exe native\\KeyboardHook.cs",
+    "verify:strict": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-strict-hook.ps1",
+    "copy-assets": "node scripts/copy-assets.js",
+    "build": "npm run build:main && npm run build:renderer && npm run copy-assets",
+    "start": "npm run build && cross-env FOCUSLOCK_DEV_ABORT=1 electron .",
+    "dev": "npm run start",
+    "prod": "npm run build && electron .",
+    "smoke": "npm run build && cross-env FOCUSLOCK_SMOKE=1 FOCUSLOCK_DEV_ABORT=1 electron .",
+    "test": "node scripts/compile-tests.js && node --test dist-tests/",
+    "dist": "npm run build && electron-builder --win portable"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "node-addon-api": "^8.3.0",
+    "node-gyp": "^11.0.0",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "com.hey.focuslock",
+    "files": [
+      "dist/**/*",
+      "assets/**/*",
+      "prebuilds/**/*"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "dist/native/**"
+    ],
+    "win": {
+      "target": "portable"
+    }
+  }
+}

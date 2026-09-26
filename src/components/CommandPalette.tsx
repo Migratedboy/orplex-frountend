@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { IconSearch, IconChat, IconHistory, IconSettings, IconAgent, IconTerminal, IconPlugins } from "./Icons";
 
+import { apiFetch } from "@/lib/api-base";
 // === Command model ===
 
 export interface Command {
@@ -56,7 +57,7 @@ export default function CommandPalette({ open, onClose, onOpenPanel, onOpenRun }
     setQuery("");
     setSelectedIdx(0);
     requestAnimationFrame(() => inputRef.current?.focus());
-    fetch("/api/agent/runs?limit=10")
+    apiFetch("/api/agent/runs?limit=10")
       .then(r => r.json())
       .then(d => { if (d.success) setRuns(d.runs || []); })
       .catch(() => {});
@@ -66,7 +67,7 @@ export default function CommandPalette({ open, onClose, onOpenPanel, onOpenRun }
   useEffect(() => {
     if (!open) return;
     const interval = setInterval(() => {
-      fetch("/api/agent/runs?limit=10")
+      apiFetch("/api/agent/runs?limit=10")
         .then(r => r.json())
         .then(d => { if (d.success) setRuns(d.runs || []); })
         .catch(() => {});
@@ -88,6 +89,8 @@ export default function CommandPalette({ open, onClose, onOpenPanel, onOpenRun }
       ["/history", "History", "conversations past"],
       ["/plugins", "Plugins", "extensions"],
       ["/settings", "Settings", "preferences config"],
+      ["/admin/system", "System Status", "admin hardware memory janitor pacer watchdog"],
+      ["/admin", "Admin Dashboard", "admin keys backups"],
     ];
     for (const [href, label, keywords] of navTargets) {
       cmds.push({

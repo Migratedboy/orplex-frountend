@@ -1,7 +1,20 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { apiFetch } from "@/lib/api-base";
 
 interface Plugin { name: string; category: string; description: string; enabled: boolean; }
+
+// Real workspace bundle (skills + hooks + MCP as one installable unit)
+interface BundleInfo {
+  name: string;
+  version: string | null;
+  description: string | null;
+  dir: string;
+  skillCount: number;
+  hasHooks: boolean;
+  hasMcp: boolean;
+  warnings: string[];
+}
 
 const COLORS: Record<string, string> = { core: "#f97316", quality: "#22c55e", intelligence: "#3b82f6", security: "#ef4444", devops: "#a855f7", domain: "#06b6d4" };
 const ICONS: Record<string, string> = { core: "C", quality: "Q", intelligence: "I", security: "S", devops: "D", domain: "M" };
@@ -37,6 +50,47 @@ const DEFAULT_PLUGINS: Plugin[] = [
 export default function PluginsPage() {
   const [plugins, setPlugins] = useState<Plugin[]>(DEFAULT_PLUGINS);
   const [filter, setFilter] = useState("all");
+  const [bundles, setBundles] = useState<BundleInfo[]>([]);
+  const [bundleBusy, setBundleBusy] = useState("");
+  const [bundleMsg, setBundleMsg] = useState("");
+
+  const loadBundles = useCallback(() => {
+    apiFetch("/api/agent/plugins")
+      .then((r) => r.json())
+      .then((d) => setBundles(d.plugins || []))
+      .catch(() => setBundles([]));
+  }, []);
+
+  useEffect(() => {
+    loadBundles();
+  }, [loadBundles]);
+
+  const installBundle = async (dir: string | null) => {
+    setBundleBusy(dir || "all");
+    setBundleMsg("");
+    try {
+      const res = await apiFetch("/api/agent/plugins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(dir ? { pluginDir: dir } : {}),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setBundleMsg(data.error || "Install failed");
+      } else {
+        const parts = (data.installed || []).map(
+          (r: { name: string; installedSkills: string[]; mergedHooks: number; mergedMcp: number }) =>
+            `${r.name}: ${r.installedSkills.length} skill(s), ${r.mergedHooks} hook(s), ${r.mergedMcp} mcp server(s)`
+        );
+        setBundleMsg(`Installed — ${parts.join(" · ")}`);
+        loadBundles();
+      }
+    } catch {
+      setBundleMsg("Install failed");
+    } finally {
+      setBundleBusy("");
+    }
+  };
 
   const toggle = (name: string) => {
     setPlugins(prev => prev.map(p => p.name === name ? { ...p, enabled: !p.enabled } : p));
@@ -51,6 +105,58 @@ export default function PluginsPage() {
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 24, fontWeight: 700, color: "#1a1a1a", marginBottom: 4 }}>Plugins</h1>
         <p style={{ color: "#666", fontSize: 14 }}>{enabledCount} of {plugins.length} plugins enabled</p>
+      </div>
+
+      {/* Workspace bundles — real skills+hooks+MCP installable units */}
+      <div style={{ marginBottom: 28, padding: 16, borderRadius: 10, border: "1px dashed #d4d4d8", background: "#fafafa" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: "#1a1a1a" }}>Workspace bundles</div>
+            <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
+              Drop a folder with <code style={{ fontSize: 11 }}>orplex-plugin.json</code> (+ skills/, hooks.json, mcp.json) into the workspace, then install. Existing files are never overwritten.
+            </div>
+          </div>
+          {bundles.length > 0 && (
+            <button
+              onClick={() => installBundle(null)}
+              disabled={bundleBusy !== ""}
+              style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontWeight: 600, fontSize: 13, cursor: bundleBusy ? "default" : "pointer", opacity: bundleBusy ? 0.6 : 1 }}
+            >
+              {bundleBusy === "all" ? "Installing…" : `Install all (${bundles.length})`}
+            </button>
+          )}
+        </div>
+        {bundleMsg && <div style={{ marginTop: 8, fontSize: 12, color: "#2f7d4f", fontWeight: 600 }}>{bundleMsg}</div>}
+        {bundles.length === 0 ? (
+          <div style={{ marginTop: 10, fontSize: 12, color: "#a0a0a0" }}>No bundles found in this workspace.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+            {bundles.map((b) => (
+              <div key={b.dir} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", borderRadius: 8, border: "1px solid #e5e5e5", background: "#fff" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: "#1a1a1a" }}>
+                    {b.name}
+                    {b.version ? <span style={{ fontSize: 11, color: "#888", marginLeft: 6 }}>v{b.version}</span> : null}
+                  </div>
+                  <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
+                    {b.description || "No description"} · {b.skillCount} skill{b.skillCount === 1 ? "" : "s"}
+                    {b.hasHooks ? " · hooks" : ""}{b.hasMcp ? " · mcp" : ""}
+                  </div>
+                  {b.warnings.length > 0 && (
+                    <div style={{ fontSize: 11, color: "#b3362c", marginTop: 2 }}>{b.warnings.join(" · ")}</div>
+                  )}
+                </div>
+                <button
+                  onClick={() => installBundle(b.dir)}
+                  disabled={bundleBusy !== ""}
+                  style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #e5e5e5", background: "#fff", fontSize: 12, fontWeight: 600, cursor: bundleBusy ? "default" : "pointer", color: "#1a1a1a" }}
+                >
+                  {bundleBusy === b.dir ? "Installing…" : "Install"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         <button onClick={() => setFilter("all")} style={{ padding: "6px 14px", borderRadius: 20, fontSize: 13, fontWeight: 500, cursor: "pointer", border: "none", background: filter === "all" ? "#1a1a1a" : "#f0f0f0", color: filter === "all" ? "#fff" : "#666" }}>All ({plugins.length})</button>

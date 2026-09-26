@@ -1,4 +1,5 @@
 import type { EvalTask } from "../types";
+import { apiFetch } from "@/lib/api-base";
 
 /**
  * React component bug tasks — incorrect hooks usage, render bugs,
@@ -30,7 +31,7 @@ export const reactBugTasks: EvalTask[] = [
           "  const [page, setPage] = useState(1);\n" +
           "\n" +
           "  useEffect(() => {\n" +
-          "    fetch(`/api/users?page=${page}`)\n" +
+          "    apiFetch(`/api/users?page=${page}`)\n" +
           '      .then((r) => r.json())\n' +
           "      .then((d) => setUsers(d.users));\n" +
           "  }, []); // Missing `page` dependency\n" +
@@ -55,7 +56,7 @@ export const reactBugTasks: EvalTask[] = [
         "  const [page, setPage] = useState(1);\n" +
         "\n" +
         "  useEffect(() => {\n" +
-        "    fetch(`/api/users?page=${page}`)\n" +
+        "    apiFetch(`/api/users?page=${page}`)\n" +
         '      .then((r) => r.json())\n' +
         "      .then((d) => setUsers(d.users));\n" +
         "  }, [page]);\n" +

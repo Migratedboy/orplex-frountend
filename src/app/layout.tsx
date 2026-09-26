@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import "./fonts.css";
 import "./globals.css";
 import Providers from "@/components/Providers";
 import BootGate from "@/components/loader/BootGate";
@@ -36,7 +37,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" className="dark" suppressHydrationWarning>
       <body>
         <ThemeInit />
         <Providers>

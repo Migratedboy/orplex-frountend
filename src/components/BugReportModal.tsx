@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { IconBug, IconClose, IconCheck } from "./Icons";
+import { apiFetch } from "@/lib/api-base";
 
 interface Props { onClose: () => void; }
 
@@ -23,7 +24,7 @@ export default function BugReportModal({ onClose }: Props) {
     if (!title.trim() || !description.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch("/api/bug-report", {
+      const res = await apiFetch("/api/bug-report", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: title.trim(), description: description.trim(), severity }),

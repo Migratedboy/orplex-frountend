@@ -18,9 +18,9 @@ Orplex offers a free tier that gives users daily request quotas without needing 
 
 | Limit | Free Tier | Pro Tier |
 |-------|-----------|----------|
-| Daily requests | 50 | Unlimited |
+| Daily requests | 1,000 | Unlimited |
 | Max tokens per prompt | 4,096 | 16,384 |
-| Allowed models | minimax-m3 | All |
+| Allowed models | gpt-oss-120b | All |
 | Max file uploads | 5 | 20 |
 | Max messages per conversation | 50 | 200 |
 
@@ -41,12 +41,12 @@ No body required — uses the authenticated session.
   "isNew": true,
   "quota": {
     "requestsToday": 0,
-    "dailyLimit": 50,
+    "dailyLimit": 1000,
     "lastResetAt": "2025-01-01T00:00:00.000Z"
   },
   "limits": {
     "dailyPrompts": 50,
-    "allowedModels": ["minimax-m3"],
+    "allowedModels": ["gpt-oss-120b"],
     "maxTokensPerPrompt": 4096,
     "maxFileUploads": 5,
     "maxMessages": 50
@@ -63,7 +63,7 @@ No body required — uses the authenticated session.
   "isNew": false,
   "quota": {
     "requestsToday": 12,
-    "dailyLimit": 50,
+    "dailyLimit": 1000,
     "lastResetAt": "2025-01-01T00:00:00.000Z"
   },
   "limits": { "..." }
@@ -90,7 +90,7 @@ Get current usage and remaining quota for the authenticated user.
   },
   "limits": {
     "maxTokensPerPrompt": 4096,
-    "allowedModels": ["minimax-m3"],
+    "allowedModels": ["gpt-oss-120b"],
     "maxFileUploads": 5,
     "maxMessages": 50
   }

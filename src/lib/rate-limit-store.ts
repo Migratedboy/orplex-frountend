@@ -22,6 +22,8 @@ export class InMemoryRateLimitStore implements RateLimitStore {
   constructor(autoCleanup = true) {
     if (autoCleanup) {
       this.cleanupTimer = setInterval(() => this.cleanup(), 60000);
+      // Don't hold the process open just for cleanup sweeps.
+      this.cleanupTimer.unref?.();
     }
   }
 
