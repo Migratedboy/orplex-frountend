@@ -101,10 +101,13 @@ export default async function middleware(request: NextRequest) {
 
   // The embedded-browser proxy serves THIRD-PARTY pages — the app CSP would
   // break their fonts/styles/scripts. Proxy responses carry their own
-  // relaxed policy instead. /api/search-page is the iframe-fallback results
-  // page for the same embedded browser — it MUST stay frameable by the app,
-  // so the global frame-ancestors 'none' below would break it (broken-page
-  // icon in the tab). Both get frame-ancestors 'self'.
+  // relaxed-on-assets, hard-on-exfiltration policy instead. /api/search-page
+  // is the iframe-fallback results page for the same embedded browser — it
+  // MUST stay frameable by the app, so the global frame-ancestors 'none'
+  // below would break it (broken-page icon in the tab). Both get the same
+  // policy: frame-ancestors 'self', but connect-src 'none' so third-party
+  // page JS served same-origin cannot call the app's session-authenticated
+  // /api/* endpoints, and no frame-src so it can't nest other sites.
   if (
     request.nextUrl.pathname.startsWith("/api/proxy") ||
     request.nextUrl.pathname.startsWith("/api/search-page")
@@ -112,10 +115,15 @@ export default async function middleware(request: NextRequest) {
     response.headers.set(
       "Content-Security-Policy",
       [
-        "default-src 'self' https: http://localhost:* http://127.0.0.1:* data: blob: 'unsafe-inline' 'unsafe-eval'",
+        "default-src 'self' https: http: data: blob: 'unsafe-inline' 'unsafe-eval'",
+        "connect-src 'none'", // no /api/* calls, no localhost probing from framed third-party JS
+        "form-action 'self' https:", // proxied forms + our own search form
         "frame-ancestors 'self'", // must be framable by the app
+        "base-uri 'self'",
+        "object-src 'none'",
       ].join('; ')
     );
+    response.headers.set("Referrer-Policy", "no-referrer");
     return response;
   }
 

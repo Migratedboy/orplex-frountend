@@ -1,15 +1,53 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import * as nodeDns from "node:dns/promises";
 import { jwtOnlyOptions } from "@/lib/auth";
 import { isProxiableUrl, rewriteHtml } from "@/lib/browser-proxy";
+import { resolveTargetGuard, nextRedirectUrl, buildPassthroughHeaders } from "@/lib/proxy-guard";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
-const BLOCKED_HOSTS = [/^localhost$/i, /^127\./, /^0\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2\d|3[01])\./, /^169\.254\./, /\.local$/i, /^::1$/];
+/** Cap on manual redirect hops — failure mode is an honest error page. */
+const MAX_REDIRECTS = 5;
 
-function isInternalHost(hostname: string): boolean {
-  return BLOCKED_HOSTS.some((re) => re.test(hostname));
+/**
+ * Fetch a proxied target with redirect re-validation: unlike `redirect:
+ * "follow"` (which would happily bounce to http://127.0.0.1:5433 after the
+ * initial URL passed the SSRF guard), every hop is guarded again. Returns
+ * the final response plus the URL it actually came from.
+ */
+async function guardedFetch(
+  startUrl: string,
+  signal: AbortSignal,
+): Promise<{ res: Response; finalUrl: string } | { error: string }> {
+  let current = startUrl;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const guard = await resolveTargetGuard(current, (h) => nodeDns.lookup(h, { all: true }));
+    if (!guard.ok) return { error: `Blocked: ${guard.reason}` };
+    const res = await fetch(current, {
+      signal,
+      redirect: "manual", // we re-validate each hop ourselves
+      headers: {
+        "User-Agent": UA,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        // Defense in depth: never volunteer cookies to the target even if a
+        // future refactor adds a cookie jar — the proxy is uncredentialed.
+        "Cookie": "",
+      },
+    });
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      const next = nextRedirectUrl(current, res.headers.get("location"));
+      if (!next) return { error: "Redirect without a Location header" };
+      if (!isProxiableUrl(next)) return { error: "Redirect to a non-web scheme" };
+      try { await res.body?.cancel(); } catch { /* drained */ }
+      current = next;
+      continue;
+    }
+    return { res, finalUrl: current };
+  }
+  return { error: `Too many redirects (>${MAX_REDIRECTS})` };
 }
 
 function esc(s: string): string {
@@ -82,7 +120,7 @@ export async function GET(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
   }
-  if (!isProxiableUrl(rawUrl) || isInternalHost(target.hostname)) {
+  if (!isProxiableUrl(rawUrl)) {
     return NextResponse.json({ error: "URL not allowed" }, { status: 403 });
   }
 
@@ -102,41 +140,45 @@ export async function GET(request: NextRequest) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
+  let upstream: Response;
+  let finalUrl = target.toString();
   try {
-    const upstream = await fetch(target.toString(), {
-      signal: controller.signal,
-      redirect: "follow",
-      headers: {
-        "User-Agent": UA,
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-    });
+    const result = await guardedFetch(target.toString(), controller.signal);
+    if ("error" in result) {
+      clearTimeout(timeout);
+      return new NextResponse(
+        `<!DOCTYPE html><html><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;color:#5f6368"><div style="text-align:center"><div style="font-size:64px">🛡️</div><h2>Blocked</h2><p style="color:#80868b">${esc(result.error)}</p></div></body></html>`,
+        { status: 403, headers: { "Content-Type": "text/html; charset=utf-8" } }
+      );
+    }
+    upstream = result.res;
+    finalUrl = result.finalUrl;
     clearTimeout(timeout);
 
     const contentType = upstream.headers.get("content-type") || "text/html";
 
     // Non-HTML: stream through untouched (images, css, js, fonts).
     if (rawMode || !/text\/html|application\/xhtml/i.test(contentType)) {
-      const passthrough = new Headers();
-      const ct = upstream.headers.get("content-type");
-      if (ct) passthrough.set("Content-Type", ct);
-      const cl = upstream.headers.get("content-length");
-      if (cl) passthrough.set("Content-Length", cl);
+      // Strict allowlist of upstream headers — drops Set-Cookie (cookie
+      // tossing on the app origin) and any other upstream auth state.
+      const passthrough = buildPassthroughHeaders(upstream.headers);
       passthrough.set("Cache-Control", "private, max-age=300");
-      passthrough.set("X-Proxy-Url", target.toString());
+      passthrough.set("X-Proxy-Url", finalUrl);
       return new NextResponse(upstream.body, { status: upstream.status, headers: passthrough });
     }
 
-    // HTML: rewrite for same-origin framing.
+    // HTML: rewrite for same-origin framing. The exfiltration-hardened CSP
+    // for proxied pages lives in middleware.ts (same branch as frame-ancestors
+    // 'self') — middleware headers win over route headers, so it is the
+    // single source of truth.
     const html = await upstream.text();
-    const rewritten = rewriteHtml(html, target.toString());
+    const rewritten = rewriteHtml(html, finalUrl);
     return new NextResponse(rewritten, {
       status: upstream.status,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
-        "X-Proxy-Url": target.toString(),
+        "X-Proxy-Url": finalUrl,
       },
     });
   } catch (err) {
