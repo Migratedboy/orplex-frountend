@@ -1,6 +1,7 @@
 import {
   validateRequestBody,
   buildMultipartMessages,
+  fetchWithProviderRetry,
 } from "../chat-middleware";
 
 describe("chat-middleware", () => {
@@ -155,6 +156,76 @@ describe("chat-middleware", () => {
       const result = buildMultipartMessages(messages, []);
       const content = result[0].content as any[];
       expect(content).toHaveLength(4); // 1 text + 3 images
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // fetchWithProviderRetry — degenerate cold-start flood guard
+  // NVIDIA NIM cold-started reasoning models can stream dozens of
+  // single-"!" deltas; the peek must reject them so the ladder
+  // fails over (or surfaces a warming-up 503) instead of showing
+  // "!!!!!!" to the user.
+  // ---------------------------------------------------------------
+  describe("fetchWithProviderRetry stream peek", () => {
+    const sse = (deltas: Array<Record<string, unknown>>): ReadableStream<Uint8Array> => {
+      const enc = new TextEncoder();
+      const text = deltas.map((d) => `data: ${JSON.stringify({ choices: [{ delta: d }] })}\n\n`).join("") + "data: [DONE]\n\n";
+      return new ReadableStream<Uint8Array>({
+        start(c) { c.enqueue(enc.encode(text)); c.close(); },
+      });
+    };
+
+    it("rejects a degenerate single-char flood (cold-start kimi-k3)", async () => {
+      global.fetch = jest.fn().mockResolvedValue(new Response(sse(Array.from({ length: 32 }, () => ({ reasoning_content: "!" }))), { status: 200 }));
+      const result = await fetchWithProviderRetry({ name: "nvidia-test", url: "https://x/v1/chat/completions", apiKey: "k", model: "m" }, {});
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toMatch(/degenerate cold-start/);
+    });
+
+    it("rejects an in-stream provider error object", async () => {
+      const enc = new TextEncoder();
+      const text = `data: ${JSON.stringify({ error: { message: "ResourceExhausted: worker limit" } })}\n\ndata: [DONE]\n\n`;
+      global.fetch = jest.fn().mockResolvedValue(new Response(new ReadableStream<Uint8Array>({ start(c) { c.enqueue(enc.encode(text)); c.close(); } }), { status: 200 }));
+      const result = await fetchWithProviderRetry({ name: "nvidia-test", url: "https://x/v1/chat/completions", apiKey: "k", model: "m" }, {});
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toMatch(/in-stream error/);
+    });
+
+    it("passes a healthy mixed stream through untouched", async () => {
+      global.fetch = jest.fn().mockResolvedValue(new Response(sse([
+        { reasoning_content: "The" },
+        { reasoning_content: " user" },
+        { reasoning_content: " greets" },
+        { content: "Hello" },
+        { content: "!" },
+      ]), { status: 200 }));
+      const result = await fetchWithProviderRetry({ name: "nvidia-test", url: "https://x/v1/chat/completions", apiKey: "k", model: "m" }, {});
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const text = await new Response(result.stream).text();
+        // The replayed window keeps every early delta.
+        expect(text).toContain('"reasoning_content":"The"');
+        expect(text).toContain('"content":"Hello"');
+        expect(text).toContain("[DONE]");
+      }
+    });
+
+    it("replays the full peek window before the passthrough tail", async () => {
+      // Many separate chunks (simulating network chunking) — the peek reads
+      // up to 8 and must re-attach ALL of them, not only the first.
+      const enc = new TextEncoder();
+      const chunks = Array.from({ length: 12 }, (_, i) => enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: `c${i} ` } }] })}\n\n`));
+      const src = new ReadableStream<Uint8Array>({
+        start(c) { for (const ch of chunks) c.enqueue(ch); c.enqueue(enc.encode("data: [DONE]\n\n")); c.close(); },
+      });
+      global.fetch = jest.fn().mockResolvedValue(new Response(src, { status: 200 }));
+      const result = await fetchWithProviderRetry({ name: "nvidia-test", url: "https://x/v1/chat/completions", apiKey: "k", model: "m" }, {});
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const text = await new Response(result.stream).text();
+        expect(text).toContain("c0 ");
+        expect(text).toContain("c11 ");
+      }
     });
   });
 });

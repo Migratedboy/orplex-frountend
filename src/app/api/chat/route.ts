@@ -185,13 +185,17 @@ export async function POST(request: NextRequest) {
     }
 
     if (!stream) {
+      // A specific picker model that no provider could serve usually means a
+      // cold-started NVIDIA NIM deployment (degenerate warm-up output is
+      // detected and rejected by the stream peek) — say so honestly instead
+      // of the generic all-providers-down message.
+      const message = requestedModel
+        ? `The selected model (${requestedModel}) is not responding correctly right now — it may still be warming up on its provider. Pick another model or try again in a minute.`
+        : "All AI providers are currently unavailable. Please try again.";
       return Response.json(
         {
           success: false,
-          error: {
-            message:
-              "All AI providers are currently unavailable. Please try again.",
-          },
+          error: { message },
         },
         { status: 503 },
       );

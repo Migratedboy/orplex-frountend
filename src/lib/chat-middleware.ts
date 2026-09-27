@@ -426,18 +426,43 @@ export async function fetchWithProviderRetry(
  * instantly-empty chat message. Peeking lets the ladder fail over to the
  * next provider instead; a healthy first chunk is re-attached so nothing
  * is lost.
+ *
+ * Degenerate-flood guard: NVIDIA NIM's cold-started reasoning models
+ * (observed live on kimi-k3) can stream dozens of single-"!" reasoning
+ * deltas and a punctuation-only content blob — HTTP 200, no error object,
+ * pure garbage. A one-chunk peek sees a "healthy" delta, so peek a small
+ * window instead and reject when every delta so far is a single repeated
+ * punctuation char: the ladder then fails over (or surfaces a warming-up
+ * 503) instead of rendering "!!!!!!" to the user.
  */
 async function okStreamPeeked(
   providerName: string,
   upstream: ReadableStream<Uint8Array>,
 ): Promise<{ ok: true; stream: ReadableStream } | { ok: false; error: string }> {
   const reader = upstream.getReader();
-  const first = await reader.read();
-  if (first.done || !first.value) {
+
+  // Peek window: enough chunks to see past the first delta (SSE chunks don't
+  // align with deltas) but small enough to fail over in well under a second.
+  const PEEK_CHUNKS = 8;
+  const headParts: Uint8Array[] = [];
+  let headText = "";
+  let firstValue: Uint8Array | null = null;
+  let streamDone = false;
+  for (let i = 0; i < PEEK_CHUNKS; i++) {
+    const read = await reader.read();
+    if (read.done) { streamDone = true; break; }
+    if (!firstValue) firstValue = read.value;
+    headParts.push(read.value);
+    headText += new TextDecoder().decode(read.value, { stream: true });
+    if (headText.includes("[DONE]")) break;
+  }
+
+  if (!firstValue || headParts.length === 0) {
     return { ok: false, error: `${providerName}: empty response body` };
   }
-  const head = new TextDecoder().decode(first.value);
-  const errLine = head.split("\n").find((l) => l.startsWith("data:"));
+
+  // In-stream provider error object → fail over.
+  const errLine = headText.split("\n").find((l) => l.startsWith("data:"));
   if (errLine) {
     try {
       const payload = JSON.parse(errLine.slice(5).trim()) as { error?: { message?: string } };
@@ -452,9 +477,34 @@ async function okStreamPeeked(
       // Not JSON (chunk may be split mid-line, or a plain delta) — healthy.
     }
   }
+
+  // Degenerate flood: every parsed delta in the window is a single repeated
+  // punctuation character ("!" x N). Real reasoning/text is never like this.
+  const deltas: string[] = [];
+  for (const line of headText.split("\n")) {
+    if (!line.startsWith("data: ")) continue;
+    try {
+      const j = JSON.parse(line.slice(6));
+      const d = j?.choices?.[0]?.delta;
+      const piece: unknown = d?.content ?? d?.reasoning ?? d?.reasoning_content;
+      if (typeof piece === "string") deltas.push(piece);
+    } catch { /* partial line — ignore */ }
+  }
+  if (deltas.length >= 6) {
+    const chars = new Set(deltas.map((s) => s.trim()));
+    const singleChar = deltas.every((s) => s.length === 1 && /[\p{P}\p{S}]/u.test(s));
+    if (singleChar && chars.size === 1) {
+      return {
+        ok: false,
+        error: `${providerName}: degenerate cold-start output (${deltas.length}x "${[...chars][0]}" deltas) — model warming up`,
+      };
+    }
+  }
+  // Re-attach: replay the entire peeked window first so nothing is lost,
+  // then pass the rest through untouched.
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      controller.enqueue(first.value);
+      for (const part of headParts) controller.enqueue(part);
       try {
         for (;;) {
           const { done, value } = await reader.read();
