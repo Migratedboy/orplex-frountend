@@ -101,8 +101,14 @@ export default async function middleware(request: NextRequest) {
 
   // The embedded-browser proxy serves THIRD-PARTY pages — the app CSP would
   // break their fonts/styles/scripts. Proxy responses carry their own
-  // relaxed policy instead.
-  if (request.nextUrl.pathname.startsWith("/api/proxy")) {
+  // relaxed policy instead. /api/search-page is the iframe-fallback results
+  // page for the same embedded browser — it MUST stay frameable by the app,
+  // so the global frame-ancestors 'none' below would break it (broken-page
+  // icon in the tab). Both get frame-ancestors 'self'.
+  if (
+    request.nextUrl.pathname.startsWith("/api/proxy") ||
+    request.nextUrl.pathname.startsWith("/api/search-page")
+  ) {
     response.headers.set(
       "Content-Security-Policy",
       [
