@@ -28,7 +28,7 @@ function clean(s: string): string {
 /**
  * Google (no-JS endpoint). Google bot-challenges datacenter IPs aggressively —
  * when this returns a consent page or zero parseable results, the chain falls
- * through to Bing RSS (stable structured endpoint), then DuckDuckGo HTML.
+ * through to Bing RSS (the only remaining fallback).
  */
 async function searchGoogle(query: string): Promise<SearchResult[]> {
   const params = new URLSearchParams({ q: query, num: "15", hl: "en", gbv: "1" });
@@ -99,65 +99,6 @@ async function searchBing(query: string): Promise<SearchResult[]> {
   return results;
 }
 
-async function searchDuckDuckGo(query: string): Promise<SearchResult[]> {
-  const params = new URLSearchParams({ q: query, t: "h_", ia: "web" });
-  const res = await fetch(`https://html.duckduckgo.com/html/?${params}`, {
-    headers: { "User-Agent": BROWSER_UA },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) throw new Error(`Search failed: ${res.status}`);
-
-  const html = await res.text();
-  const results: SearchResult[] = [];
-
-  const resultRegex =
-    /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
-
-  let match;
-  while ((match = resultRegex.exec(html)) !== null && results.length < 10) {
-    let url = match[1];
-    const uddgMatch = url.match(/uddg=([^&]+)/);
-    if (uddgMatch) url = decodeURIComponent(uddgMatch[1]);
-
-    const title = match[2].replace(/<[^>]+>/g, "").trim();
-    const snippet = match[3].replace(/<[^>]+>/g, "").trim();
-
-    if (title && url.startsWith("http")) {
-      results.push({ title, url, snippet });
-    }
-  }
-  if (results.length === 0) throw new Error("DuckDuckGo returned no results");
-  return results;
-}
-
-/**
- * Last-resort engine: DDG's lite endpoint is a tiny static page (table rows,
- * class="result-link") that survives server fetches without JS challenges.
- * Verified live: 200 + 10 result-links where html.duckduckgo.com and Google
- * both bot-wall the request.
- */
-async function searchDuckDuckGoLite(query: string): Promise<SearchResult[]> {
-  const res = await fetch(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, {
-    headers: { "User-Agent": BROWSER_UA },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) throw new Error(`DDG-lite ${res.status}`);
-  const html = await res.text();
-
-  const results: SearchResult[] = [];
-  const linkRe = /<a[^>]*class="result-link"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
-  let m: RegExpExecArray | null;
-  while ((m = linkRe.exec(html)) !== null && results.length < 10) {
-    let url = m[1];
-    const uddg = url.match(/uddg=([^&]+)/);
-    if (uddg) url = decodeURIComponent(uddg[1]);
-    const title = m[2].replace(/<[^>]+>/g, "").trim();
-    if (title && /^https?:\/\//i.test(url)) results.push({ title, url, snippet: "" });
-  }
-  if (results.length === 0) throw new Error("DDG-lite returned no results");
-  return results;
-}
-
 export async function POST(request: NextRequest) {
   const session = await getServerSession(jwtOnlyOptions);
   if (!session?.user?.id) {
@@ -171,11 +112,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Google-first chain; report which engine answered for debugging.
+    // DuckDuckGo was removed per product decision — Google, then Bing only.
     const engines: Array<{ name: string; fn: (q: string) => Promise<SearchResult[]> }> = [
       { name: "google", fn: searchGoogle },
       { name: "bing", fn: searchBing },
-      { name: "duckduckgo", fn: searchDuckDuckGo },
-      { name: "ddg-lite", fn: searchDuckDuckGoLite },
     ];
 
     let lastError: string = "unknown";

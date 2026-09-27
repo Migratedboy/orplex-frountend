@@ -285,8 +285,8 @@ function underlyingUrl(u: string): string {
 }
 
 function displayUrl(u: string): string {
-  // Search-page URLs display as the query itself ("youtube at DuckDuckGo" →
-  // "youtube"), like a real browser shows the query in the omnibox.
+  // Search-page URLs display as the query itself ("hi — search" → "hi"),
+  // like a real browser shows the query in the omnibox.
   const sp = u.match(/^\/api\/search-page\?q=(.+)$/);
   if (sp) {
     try { return decodeURIComponent(sp[1]); } catch { return sp[1]; }

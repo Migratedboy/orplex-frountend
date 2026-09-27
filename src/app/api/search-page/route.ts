@@ -2,7 +2,7 @@
 //
 // Google-first: we parse Google's no-JS HTML endpoint server-side (works from
 // residential connections; datacenter IPs may hit a consent/challenge page, in
-// which case the chain falls back to Bing's stable RSS endpoint, then DDG).
+// which case the chain falls back to Bing's stable RSS endpoint).
 // Result links load through /api/proxy so pages stay inside the embedded
 // browser, and each hit also carries an "open in Chrome" affordance that
 // hands the real URL to the user's installed browser via /api/open-external.
@@ -101,34 +101,11 @@ async function fetchBing(query: string): Promise<SearchHit[]> {
   return hits;
 }
 
-/** Last resort: DDG lite — tiny static page, no bot-wall on server fetches. */
-async function fetchDuckDuckGoLite(query: string): Promise<SearchHit[]> {
-  const res = await fetch(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, {
-    headers: { "User-Agent": BROWSER_UA },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) throw new Error(`DDG-lite ${res.status}`);
-  const html = await res.text();
-
-  const hits: SearchHit[] = [];
-  const linkRe = /<a[^>]*class="result-link"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
-  let m: RegExpExecArray | null;
-  while ((m = linkRe.exec(html)) !== null && hits.length < 15) {
-    let url = m[1];
-    const uddg = url.match(/uddg=([^&]+)/);
-    if (uddg) url = decodeURIComponent(uddg[1]);
-    const title = m[2].replace(/<[^>]+>/g, "").trim();
-    if (title && /^https?:\/\//i.test(url)) hits.push({ title, url, snippet: "" });
-  }
-  if (hits.length === 0) throw new Error("DDG-lite returned no results");
-  return hits;
-}
-
 async function fetchResults(query: string): Promise<{ hits: SearchHit[]; engine: string }> {
+  // DuckDuckGo was removed per product decision — Google, then Bing only.
   const engines: Array<{ name: string; fn: (q: string) => Promise<SearchHit[]> }> = [
     { name: "google", fn: fetchGoogle },
     { name: "bing", fn: fetchBing },
-    { name: "ddg-lite", fn: fetchDuckDuckGoLite },
   ];
   let lastError = "unknown";
   for (const engine of engines) {

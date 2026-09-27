@@ -271,9 +271,11 @@ export function useChatSession() {
     // Restore the reasoning UI too: normalize (not strip) so an unclosed
     // [THINKING] block from the snapshot renders as the ThinkingCard, not raw text.
     const partial = snap.displayContent?.trim() ? normalizeThinkingBlocks(snap.displayContent) : "";
+    // [INTERRUPTED] marker renders as a dedicated styled banner in
+    // MessageContent (see parseContent) instead of an inline italic line.
     const assistantText = partial
-      ? `${partial}\n\n_⚠️ Interrupted — the page was reloaded mid-task. This is the partial output; send a follow-up to continue._`
-      : "_⚠️ This task was interrupted by the page reload before producing any output._";
+      ? `${partial}\n[INTERRUPTED]`
+      : "[INTERRUPTED]";
 
     // Rebuild the exchange. Guard against a duplicate when the last user
     // message is already this task's prompt (e.g. partial history overlap).

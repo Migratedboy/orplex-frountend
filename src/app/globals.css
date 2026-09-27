@@ -2150,6 +2150,26 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .tool-result-dot--error { background: #EF4444; }
 .tool-result-text { word-break: break-word; }
 
+/* ===== INTERRUPTED-TASK NOTICE (restored after a mid-task page reload) ===== */
+.interrupted-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid #FDE68A;
+  border-left: 3px solid #F59E0B;
+  border-radius: 8px;
+  background: #FFFBEB;
+  line-height: 1.45;
+}
+.interrupted-notice-icon { font-size: 14px; line-height: 1.3; flex-shrink: 0; }
+.interrupted-notice-title { font-size: 12.5px; font-weight: 600; color: #92400E; }
+.interrupted-notice-hint { font-size: 12px; color: #A16207; margin-top: 2px; }
+.dark .interrupted-notice { background: #451A0340; border-color: #78350F; border-left-color: #F59E0B; }
+.dark .interrupted-notice-title { color: #FCD34D; }
+.dark .interrupted-notice-hint { color: #F59E0B; }
+
 /* ===== BACKGROUND TASK INDICATOR ===== */
 .bg-task-dot {
   width: 8px;

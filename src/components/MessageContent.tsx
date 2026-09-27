@@ -37,7 +37,7 @@ function CollapsibleText({ content }: { content: string }) {
 // === Types ===
 
 interface ContentSegment {
-  type: "text" | "tool_call" | "tool_result" | "status" | "success" | "error" | "thinking";
+  type: "text" | "tool_call" | "tool_result" | "status" | "success" | "error" | "thinking" | "interrupted";
   content: string;
   name?: string;
   path?: string;
@@ -51,7 +51,7 @@ function parseContent(raw: string): ContentSegment[] {
   const segments: ContentSegment[] = [];
   // Thinking pattern: a closed [THINKING]...[/THINKING] block (multi-line)
   // or a still-streaming unclosed block that runs to the end of the content.
-  const pattern = /([<]tool_call[\s\S]*?[<]\/tool_call[>]|<tool_result[^>]*>[\s\S]*?<\/tool_result>|^(?:analysing|reading|writing|listing|thinking)[\s]+\[[^\]]+\]|^\[OK\]\s+.+|^\[FAIL\]\s+.+|^\[THINKING\]\n[\s\S]*?\[\/THINKING\]|^\[THINKING\][\s\S]*$)/gm;
+  const pattern = /([<]tool_call[\s\S]*?[<]\/tool_call[>]|<tool_result[^>]*>[\s\S]*?<\/tool_result>|^(?:analysing|reading|writing|listing|thinking)[\s]+\[[^\]]+\]|^\[OK\]\s+.+|^\[FAIL\]\s+.+|^\[THINKING\]\n[\s\S]*?\[\/THINKING\]|^\[THINKING\][\s\S]*$|^\[INTERRUPTED\]$)/gm;
 
   let lastIndex = 0;
   let match;
@@ -92,6 +92,8 @@ function parseContent(raw: string): ContentSegment[] {
       segments.push({ type: "success", content: line, detail: line.replace(/^\[OK\]\s*/, "").trim() });
     } else if (/^\[FAIL\]/.test(line)) {
       segments.push({ type: "error", content: line, detail: line.replace(/^\[FAIL\]\s*/, "").trim() });
+    } else if (line === "[INTERRUPTED]") {
+      segments.push({ type: "interrupted", content: line });
     }
 
     lastIndex = match.index + match[0].length;
@@ -189,6 +191,18 @@ function ResultPill({ segment, type }: { segment: ContentSegment; type: "success
   );
 }
 
+function InterruptedNotice() {
+  return (
+    <div className="interrupted-notice" role="status">
+      <span className="interrupted-notice-icon">⚠️</span>
+      <div className="interrupted-notice-body">
+        <div className="interrupted-notice-title">Interrupted — the page was reloaded mid-task</div>
+        <div className="interrupted-notice-hint">This is the partial output; send a follow-up to continue.</div>
+      </div>
+    </div>
+  );
+}
+
 // === Main component ===
 
 export default function MessageContent({ content, isThinking = false }: { content: string; isThinking?: boolean }) {
@@ -232,6 +246,8 @@ export default function MessageContent({ content, isThinking = false }: { conten
             return <ResultPill key={i} segment={segment} type="success" />;
           case "error":
             return <ResultPill key={i} segment={segment} type="error" />;
+          case "interrupted":
+            return <InterruptedNotice key={i} />;
           default:
             return null;
         }
