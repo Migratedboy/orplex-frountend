@@ -25,7 +25,10 @@ import * as m_backup from "../backup";
 const DB_URL = "postgresql://postgres:postgres@localhost:5433/orplex";
 const OLD_ENV = { ...process.env };
 
-const VENDORED = join(process.cwd(), ".localpg", "pgbin", "pg_dump.exe");
+// Platform-aware: backup.ts picks pg_dump vs pg_dump.exe by process.platform,
+// so the expected binary name must match the same check (CI runs on Linux).
+const PG_DUMP_BIN = `pg_dump${process.platform === "win32" ? ".exe" : ""}`;
+const VENDORED = join(process.cwd(), ".localpg", "pgbin", PG_DUMP_BIN);
 const EMBEDDED = join(
   process.cwd(),
   "node_modules",
@@ -33,7 +36,7 @@ const EMBEDDED = join(
   `${process.platform}-x64`,
   "native",
   "bin",
-  "pg_dump.exe",
+  PG_DUMP_BIN,
 );
 
 interface BackupMocks {
@@ -140,7 +143,7 @@ describe("pg_dump resolution precedence", () => {
 
     await m.backup.runBackup();
 
-    expect(m.spawnMock.mock.calls[0][0]).toBe(join(process.env.PG_BIN, "pg_dump.exe"));
+    expect(m.spawnMock.mock.calls[0][0]).toBe(join(process.env.PG_BIN, PG_DUMP_BIN));
   });
 
   it("uses PATH only after a successful --version probe", async () => {

@@ -173,7 +173,13 @@ export async function createIsolatedContext(rootDir: string, runId: string): Pro
         if (dirty) {
           return { merged: false, conflict: "workspace has uncommitted changes — commit or stash before merging the agent's work" };
         }
-        const out = await git(["merge", "--no-ff", "--no-edit", branch], rootDir);
+        // --no-ff always creates a merge commit, which needs a committer
+        // identity — machines without global git config (fresh CI runners,
+        // bare containers) would abort the merge without these -c flags.
+        const out = await git(
+          ["-c", "user.name=Orplex Agent", "-c", "user.email=agent@orplex.local", "merge", "--no-ff", "--no-edit", branch],
+          rootDir
+        );
         return { merged: true, output: out };
       } catch (err) {
         const msg = (err as Error).message;

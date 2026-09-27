@@ -287,6 +287,36 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .dark .rp-preview-empty-title { color:#e5e2e1; }
 .dark .rp-preview-empty-hint { color:#a0a0a0; }
 .dark .rp-preview-port-btn { background:#2a1f14; border-color:#404040; color:#ffb693; }
+
+/* ===== Frame-failure overlay (silently blocked / dead iframe loads) ===== */
+.rp-preview-error {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(2px);
+}
+.rp-preview-error-icon { font-size: 32px; margin-bottom: 10px; }
+.rp-preview-error-title { font-size: 14px; font-weight: 600; color: #1a1c1d; margin-bottom: 6px; }
+.rp-preview-error-hint { font-size: 11.5px; color: #71717a; max-width: 340px; line-height: 1.5; margin-bottom: 16px; }
+.rp-preview-error-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.rp-preview-error-btn { padding: 7px 16px; border: 1px solid #d4d4d8; border-radius: 8px; background: #fff; color: #3f3f46; font-size: 12px; font-weight: 600; cursor: pointer; transition: border-color .15s, background .15s; }
+.rp-preview-error-btn:hover { border-color: #ea580c; color: #ea580c; }
+.rp-preview-error-btn--primary { background: #ea580c; border-color: #ea580c; color: #fff; }
+.rp-preview-error-btn--primary:hover { background: #c2410c; border-color: #c2410c; color: #fff; }
+.dark .rp-preview-error { background: rgba(26, 28, 29, 0.96); }
+.dark .rp-preview-error-title { color: #e5e2e1; }
+.dark .rp-preview-error-hint { color: #a1a1aa; }
+.dark .rp-preview-error-btn { background: #26262a; border-color: #3f3f46; color: #d4d4d8; }
+.dark .rp-preview-error-btn:hover { border-color: #ea580c; color: #fbbf24; }
+.dark .rp-preview-error-btn--primary { background: #ea580c; border-color: #ea580c; color: #fff; }
+.dark .rp-preview-error-btn--primary:hover { background: #c2410c; }
 .dark .rp-preview-port-btn:hover { background:#404040; }
 
 /* ===== EMBEDDED BROWSER (Chrome-style) ===== */

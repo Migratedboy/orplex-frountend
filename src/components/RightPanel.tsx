@@ -6,6 +6,12 @@ import { useBackgroundChat } from "@/hooks/useBackgroundChat";
 import DiffView from "./DiffView";
 import { embeddableUrl } from "@/lib/embeddable";
 import { apiFetch } from "@/lib/api-base";
+import {
+  frameProbeTarget,
+  classifyFrameFailure,
+  FRAME_PROBE_TIMEOUT_MS,
+  type FrameFailure,
+} from "@/lib/frame-health";
 
 type Tab = "queue" | "changes" | "files" | "preview" | "terminal";
 
@@ -352,6 +358,10 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
   const [agentDriven, setAgentDriven] = useState(false);
   const [nextTabId, setNextTabId] = useState(2);
   const [reloadTick, setReloadTick] = useState(0);
+  // Detected iframe load failure (blank frame / refused embed). Chromium
+  // fires no onerror for failed frames, so this is derived from reachability
+  // probes + the frame error event — see frame-health.ts.
+  const [frameError, setFrameError] = useState<FrameFailure | null>(null);
   // The URL actually bound to the iframe. Only EXPLICIT navigation (omnibox,
   // back/forward, agent, reload) touches this — in-frame link clicks are
   // mirrored into history without remounting the iframe (which would reload
@@ -591,6 +601,7 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
     }));
     setLoading(true);
     loadStartedRef.current = Date.now();
+    setFrameError(null); // explicit navigation re-arms failure detection
     if (native) {
       // Native: load the REAL URL in the isolated WebContentsView. App-
       // internal paths (embedded search page) resolve against our origin.
@@ -652,15 +663,96 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
   // onLoad marks loading complete (proxy pages + same-origin = readable).
   const handleIframeLoad = () => {
     setLoading(false);
-    // Same-origin proxy lets us read the title for the tab strip.
+    // NB: Chromium fires onLoad even for its built-in error page after a
+    // failed navigation, so this does NOT clear frameError unconditionally.
+    // Clear only when the document is provably alive (same-origin readable
+    // with content); cross-origin and opaque error pages are left for the
+    // reachability probe to classify or clear.
     try {
       const doc = iframeRef.current?.contentDocument;
       const title = doc?.title?.trim();
+      const hasBody = (doc?.body?.innerText || doc?.body?.textContent || "").trim().length > 0;
+      if (title || hasBody) setFrameError(null);
       if (title) {
         setTabs(prev => prev.map(t => (t.id === activeId ? { ...t, title: title.slice(0, 40) } : t)));
       }
-    } catch {}
+    } catch {
+      // Cross-origin: aliveness is the probe's call.
+    }
   };
+
+  // === Frame failure detection ===
+  // A healthy load either signals onLoad (same-origin readable) or renders
+  // visibly (cross-origin success). Neither happens for refused/dead loads —
+  // so probe the URL's reachability and, if the frame also fired its error
+  // event, classify the failure for the viewport overlay. Cleared by any
+  // explicit navigation or successful load.
+  const frameSrcForProbe = frameSrc; // explicit navigations only; in-frame clicks settle via onLoad
+  useEffect(() => {
+    if (!frameSrcForProbe || native) {
+      setFrameError(null);
+      return;
+    }
+    setFrameError(null);
+    let alive = true;
+    let navErr = false;
+    const frameEl = iframeRef.current;
+    const onNavErr = () => { navErr = true; };
+    frameEl?.addEventListener("error", onNavErr);
+
+    const timer = window.setTimeout(async () => {
+      const probe = frameProbeTarget(frameSrcForProbe);
+      if (!probe || !alive) return;
+      try {
+        let reachable = false;
+        let detail: string | undefined;
+        if (probe.kind === "internal") {
+          // Same-origin: the status is directly readable.
+          const res = await apiFetch(probe.url, {
+            method: "HEAD",
+            signal: AbortSignal.timeout(FRAME_PROBE_TIMEOUT_MS),
+          });
+          reachable = res.ok;
+          if (!res.ok) detail = `HTTP ${res.status}`;
+        } else if (probe.kind === "localhost") {
+          // Dev-server ports: server-side TCP probe (avoids CORS entirely).
+          const res = await apiFetch("/api/localhost-probe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ports: [probe.port] }),
+            signal: AbortSignal.timeout(FRAME_PROBE_TIMEOUT_MS),
+          });
+          const data = await res.json().catch(() => null);
+          reachable = Array.isArray(data?.live) && data.live.includes(probe.port);
+        } else {
+          // Cross-origin: browser fetches are CORS-opaque — ask the server.
+          const res = await apiFetch(`/api/probe-url?url=${encodeURIComponent(probe.url)}`, {
+            signal: AbortSignal.timeout(FRAME_PROBE_TIMEOUT_MS + 2000),
+          });
+          const data = await res.json().catch(() => null);
+          reachable = data?.ok === true;
+          if (data?.error) detail = String(data.error);
+        }
+        if (!alive) return;
+        if (!reachable) {
+          setFrameError(classifyFrameFailure(probe.kind, detail));
+        } else if (!navErr) {
+          // Reachable and the frame didn't error — confirm alive.
+          setFrameError(null);
+        }
+        // reachable && navErr → loaded but threw later; not a load failure.
+      } catch {
+        if (!alive) return;
+        setFrameError(classifyFrameFailure(probe.kind));
+      }
+    }, 2500);
+
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+      frameEl?.removeEventListener("error", onNavErr);
+    };
+  }, [frameSrcForProbe, native, reloadTick]);
 
   const canBack = activeTab && activeTab.index > 0;
   const canForward = activeTab && activeTab.index < activeTab.history.length - 1;
@@ -846,18 +938,48 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
           // placeholder by the main process (positioned via preview:setBounds).
           <div className="rp-preview-native-placeholder" aria-hidden="true" />
         ) : (
-          <iframe
-            key={`${frameSrc}#${reloadTick}`}
-            ref={iframeRef}
-            // Empty src would make the iframe load the app page itself; render
-            // src-less (about:blank) instead until an explicit navigation sets it.
-            src={frameSrc || undefined}
-            className="rp-preview-iframe"
-            onLoad={handleIframeLoad}
-            sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-            title="Orplex Browser"
-          />
+          <>
+            <iframe
+              key={`${frameSrc}#${reloadTick}`}
+              ref={iframeRef}
+              // Empty src would make the iframe load the app page itself; render
+              // src-less (about:blank) instead until an explicit navigation sets it.
+              src={frameSrc || undefined}
+              className="rp-preview-iframe"
+              onLoad={handleIframeLoad}
+              sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+              title="Orplex Browser"
+            />
+            {frameError && (
+              <div className="rp-preview-error" role="alert">
+                <div className="rp-preview-error-icon">⚠️</div>
+                <div className="rp-preview-error-title">{frameError.title}</div>
+                <div className="rp-preview-error-hint">{frameError.hint}</div>
+                <div className="rp-preview-error-actions">
+                  <button
+                    className="rp-preview-error-btn rp-preview-error-btn--primary"
+                    onClick={() => {
+                      setFrameError(null);
+                      reload();
+                    }}
+                  >
+                    Retry
+                  </button>
+                  <button
+                    className="rp-preview-error-btn"
+                    onClick={() => {
+                      const real = underlyingUrl(currentUrl);
+                      if (window.orplexDesktop?.openExternal) window.orplexDesktop.openExternal(real);
+                      else window.open(real, "_blank", "noopener");
+                    }}
+                  >
+                    Open in Chrome ↗
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

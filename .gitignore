@@ -62,16 +62,20 @@ tmp/
 build/Release
 
 # Secrets & credentials (NEVER commit)
+# NB: patterns here must stay SUFFIXED — a bare `*secret*` / `backups/`
+# silently swallowed src/ files (secret-scanner-plugin.ts,
+# api/admin/backups/route.ts) and broke CI while everything passed locally.
 *.pem
 *.key
 *.cert
 *.p12
-*secret*
-*credential*
+*.secret
+*.secret.*
+*.credential
 service-account*.json
 
 # Backup files
-backups/
+/backups/
 *.bak
 *.backup
 

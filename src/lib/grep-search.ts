@@ -161,8 +161,13 @@ async function nodeScan(rootDir: string, pattern: string, isRegex: boolean): Pro
       : (await walkFiles(rootDir, 2_000, 6)).map((abs) => path.relative(rootDir, abs));
 
     const results: string[] = [];
+    let capped = false;
     for (const relPath of files) {
-      if (results.length >= MAX_SEARCH_MATCHES) break;
+      if (results.length >= MAX_SEARCH_MATCHES) {
+        // Hitting the cap means real matches were dropped downstream.
+        capped = true;
+        break;
+      }
       const abs = path.join(rootDir, relPath);
       try {
         const fs = await import("fs/promises");
@@ -172,14 +177,22 @@ async function nodeScan(rootDir: string, pattern: string, isRegex: boolean): Pro
         const lines = content.split("\n");
         let perFile = 0;
         for (let i = 0; i < lines.length && perFile < 5; i++) {
+          if (results.length >= MAX_SEARCH_MATCHES) {
+            capped = true;
+            break;
+          }
           if (regex.test(lines[i])) {
             results.push(`${relPath.replace(/\\/g, "/")}:${i + 1}: ${lines[i].slice(0, 300)}`);
             perFile++;
           }
         }
+        if (capped) break;
       } catch {
         // unreadable / binary-as-utf8-garbage — skip
       }
+    }
+    if (capped) {
+      return `${results.join("\n")}\n…[search output capped at ${MAX_SEARCH_MATCHES} matches — refine the query]`;
     }
     return results.join("\n");
   } catch {
