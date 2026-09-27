@@ -5,19 +5,35 @@ import { jwtOnlyOptions as authOptions } from "@/lib/auth";
 import { bugReportSchema, sanitize, isValidEmail } from "@/lib/validators";
 import { checkRateLimit } from "@/lib/rate-limiter";
 
-const GMAIL_USER = process.env.GMAIL_USER!;
-const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD!;
-const BUG_RECIPIENT = process.env.BUG_REPORT_RECIPIENT!;
+// NB: created LAZILY, not at module scope. Building the transporter eagerly
+// crashed `next build` on CI (no Gmail creds there): the non-null-asserted
+// env vars are undefined at page-data collection, so `.replace` on the
+// password threw during module evaluation.
+const GMAIL_USER = process.env.GMAIL_USER;
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
+const BUG_RECIPIENT = process.env.BUG_REPORT_RECIPIENT;
 
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: GMAIL_USER,
-    pass: GMAIL_APP_PASSWORD.replace(/\s/g, ""),
-  },
-  secure: true,
-  tls: { rejectUnauthorized: true },
-});
+let cachedTransporter: ReturnType<typeof nodemailer.createTransport> | null = null;
+function getTransporter(): ReturnType<typeof nodemailer.createTransport> | null {
+  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) return null;
+  if (!cachedTransporter) {
+    cachedTransporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: GMAIL_USER,
+        pass: GMAIL_APP_PASSWORD.replace(/\s/g, ""),
+      },
+      secure: true,
+      tls: { rejectUnauthorized: true },
+    });
+  }
+  return cachedTransporter;
+}
+
+function getBugRecipient(fallback: string): string | null {
+  if (BUG_RECIPIENT && BUG_RECIPIENT.trim()) return BUG_RECIPIENT.trim();
+  return GMAIL_USER?.trim() || fallback || null;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -88,9 +104,21 @@ export async function POST(request: NextRequest) {
       </div>
     `;
 
+    const transporter = getTransporter();
+    const recipient = getBugRecipient(reporterEmail);
+    if (!transporter || !recipient) {
+      // Mail not configured on this deployment (e.g. CI/preview builds) —
+      // report is logged instead of emailed.
+      console.warn("[Bug Report API] mail not configured (GMAIL_USER/GMAIL_APP_PASSWORD/BUG_REPORT_RECIPIENT missing) — report dropped");
+      return NextResponse.json(
+        { success: false, message: "Bug reporting is not configured on this deployment." },
+        { status: 503 }
+      );
+    }
+
     await transporter.sendMail({
       from: `"Orplex Tech Bug Bot" <${GMAIL_USER}>`,
-      to: BUG_RECIPIENT,
+      to: recipient,
       replyTo: reporterEmail !== "anonymous@orplex.tech" ? reporterEmail : undefined,
       subject: `${severityEmoji} [${severity.toUpperCase()}] Orplex Tech Bug: ${cleanTitle}`,
       text: `Reporter: ${reporterEmail}\nSeverity: ${severity}\nTitle: ${cleanTitle}\n\n${cleanDescription}`,
