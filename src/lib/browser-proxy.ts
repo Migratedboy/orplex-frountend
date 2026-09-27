@@ -27,6 +27,27 @@ export function proxiedUrl(raw: string): string {
   return `${PROXY_BASE}?url=${encodeURIComponent(raw)}`;
 }
 
+/**
+ * Detect Cloudflare bot-challenge interstitials ("Just a moment...").
+ * The `Cf-Mitigated: challenge` response header is the authoritative signal;
+ * body markers are the fallback for CDNs that don't send it. Checked before
+ * any HTML is rewritten, so the user gets a friendly handoff page instead of
+ * a frozen non-interactive "Just a moment..." frame.
+ */
+export function isCloudflareChallenge(
+  html: string,
+  headers?: Headers | Record<string, string>,
+): boolean {
+  const h = (name: string): string | undefined =>
+    headers instanceof Headers ? headers.get(name) ?? undefined : headers?.[name];
+  if (h("cf-mitigated")?.toLowerCase().includes("challenge")) return true;
+  // Body fallback: title + a structural marker (title alone is too generic).
+  if (/<title[^>]*>\s*just a moment[\s.]*<\/title>/i.test(html)) {
+    if (/cf_chl_opt|challenge-platform|__cf_chl|cdn-cgi\/challenge-platform/i.test(html)) return true;
+  }
+  return false;
+}
+
 /** Wrap a subresource (css/js/img) URL to stream through the proxy untouched. */
 export function proxiedResource(raw: string, base?: string): string | null {
   try {

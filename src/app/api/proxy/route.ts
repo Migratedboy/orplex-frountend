@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import * as nodeDns from "node:dns/promises";
 import { jwtOnlyOptions } from "@/lib/auth";
-import { isProxiableUrl, rewriteHtml } from "@/lib/browser-proxy";
+import { isProxiableUrl, rewriteHtml, isCloudflareChallenge } from "@/lib/browser-proxy";
 import { resolveTargetGuard, nextRedirectUrl, buildPassthroughHeaders } from "@/lib/proxy-guard";
 
 const UA =
@@ -102,6 +102,53 @@ function shortHost(u: string): string {
   try { return new URL(u).hostname.replace(/^(www|m)\./i, ""); } catch { return "this site"; }
 }
 
+/**
+ * Friendly landing for sites that answer with a Cloudflare bot-challenge
+ * ("Just a moment..."): the challenge's JS can't run to completion inside
+ * the sandboxed same-origin frame, so instead of a frozen loading page the
+ * user gets an honest explanation, a retry, and a handoff to their real
+ * browser.
+ */
+function challengeInterstitial(realUrl: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Protected page — embedded browser</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background: #1a1c1d; color: #f4f4f5; }
+  .card { max-width: 480px; text-align: center; }
+  .logo { font-size: 44px; }
+  h2 { margin: 10px 0 6px; font-size: 19px; }
+  p { margin: 0 0 16px; color: #a1a1aa; font-size: 13.5px; }
+  .row { display: flex; gap: 10px; justify-content: center; margin-top: 18px; flex-wrap: wrap; }
+  button, a.real { padding: 10px 18px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; text-decoration: none; }
+  button { border: 0; background: #ea580c; color: #fff; }
+  button:hover { background: #c2410c; }
+  a.real { border: 1px solid #3f3f46; color: #93b4ff; }
+  a.real:hover { border-color: #93b4ff; }
+  code { font: 12px ui-monospace, monospace; color: #71717a; word-break: break-all; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">🛡️</div>
+  <h2>This site has bot protection</h2>
+  <p><b>${esc(shortHost(realUrl))}</b> uses a Cloudflare security check that can't complete inside the embedded browser.</p>
+  <p>Retry in case it's a one-off — or open it in your real browser, where the check runs normally.</p>
+  <div class="row">
+    <button onclick="location.reload()">Retry here</button>
+    <a class="real" href="/api/open-external?url=${encodeURIComponent(realUrl)}" target="_blank" rel="noopener">Open in Chrome ↗</a>
+  </div>
+  <p style="margin-top:14px"><code>${esc(realUrl).slice(0, 90)}</code></p>
+</div>
+</body>
+</html>`;
+}
+
 export async function GET(request: NextRequest) {
   // Auth: same session gate as the rest of the app APIs.
   const session = await getServerSession(jwtOnlyOptions);
@@ -172,6 +219,20 @@ export async function GET(request: NextRequest) {
     // 'self') — middleware headers win over route headers, so it is the
     // single source of truth.
     const html = await upstream.text();
+
+    // Cloudflare bot-challenge pages can't complete inside the sandboxed
+    // frame — show the friendly interstitial instead of a frozen wall.
+    if (isCloudflareChallenge(html, upstream.headers)) {
+      return new NextResponse(challengeInterstitial(finalUrl), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Proxy-Url": finalUrl,
+        },
+      });
+    }
+
     const rewritten = rewriteHtml(html, finalUrl);
     return new NextResponse(rewritten, {
       status: upstream.status,
