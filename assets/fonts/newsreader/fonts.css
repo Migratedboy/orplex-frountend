@@ -1,0 +1,23 @@
+/* ---- Newsreader (vendored variable font — NOT overwritten by the generator) ----
+ * Source: assets/fonts/newsreader/ (SIL OFL 1.1 — see OFL.txt there). The two
+ * variable TTFs carry the full wght 200-800 range plus an optical-size axis
+ * (opsz 6-72), so a single face per style covers every weight and size the UI
+ * uses. font-optical-sizing:auto (set on body in globals.css) lets the browser
+ * pick display cuts at heading sizes and text cuts for body copy. Served from
+ * /fonts/ on both targets like the rest of the self-hosted set.
+ */
+@font-face {
+  font-family: 'Newsreader';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('/fonts/newsreader-variable.ttf') format('truetype-variations');
+}
+
+@font-face {
+  font-family: 'Newsreader';
+  font-style: italic;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('/fonts/newsreader-variable-italic.ttf') format('truetype-variations');
+}

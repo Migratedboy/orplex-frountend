@@ -138,6 +138,31 @@ export async function loadToolHooks(workDir: string): Promise<CompiledHooks> {
   } catch {
     // missing / unreadable / unparseable config — no hooks
   }
+
+  // Enabled LIBRARY bundles (installed via the Plugins page) contribute their
+  // deny/notify rules here. Disabled bundles contribute nothing — the toggle
+  // flips a JSON field, the skill files stay. Merged AFTER the user's own
+  // config rules; a failing state read must never break hook loading.
+  try {
+    const { loadEnabledBundleRules } = await import("./plugin-library-state");
+    const bundleRules = await loadEnabledBundleRules(workDir);
+    if (bundleRules.deny.length > 0 || bundleRules.notify.length > 0) {
+      const merged = parseToolHookConfig({
+        toolHooks: {
+          deny: [...hooks.deny.map((r) => r.source), ...bundleRules.deny],
+          notify: [...hooks.notify.map((r) => r.source), ...bundleRules.notify],
+        },
+      });
+      hooks = {
+        deny: merged.deny,
+        notify: merged.notify,
+        errors: [...hooks.errors, ...merged.errors],
+      };
+    }
+  } catch {
+    // bundle state unavailable — user config rules still apply
+  }
+
   configCache.set(workDir, { hooks, loadedAt: Date.now() });
   if (configCache.size > 100) {
     // Tiny cache; drop the oldest entries rather than grow unbounded.

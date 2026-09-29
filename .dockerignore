@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.github
+electron
+electron-dist
+docs-site
+*.log
+coverage
+dist
+.localpg
+.env
+.env.*
+*.md

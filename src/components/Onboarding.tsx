@@ -10,22 +10,22 @@ const STEPS = [
   {
     title: "Welcome to Orplex",
     description: "An AI coding assistant that can read, write, and edit your files directly.",
-    icon: "🚀",
+    icon: "rocket_launch",
   },
   {
     title: "Connect Your Workspace",
     description: "Click \"Open Folder\" in the sidebar to give the AI access to your project files.",
-    icon: "📁",
+    icon: "folder_open",
   },
   {
     title: "Ask Anything",
     description: "Describe what you want to build or fix. The AI will create a plan and execute it step by step.",
-    icon: "💬",
+    icon: "forum",
   },
   {
     title: "Review Changes",
     description: "Every file change goes through an approval dialog. You're always in control.",
-    icon: "✅",
+    icon: "verified",
   },
 ];
 
@@ -37,7 +37,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
   return (
     <div className="onboarding-overlay">
       <div className="onboarding-card">
-        <div className="onboarding-icon">{current.icon}</div>
+        <div className="onboarding-icon"><span className="ms ms-lg">{current.icon}</span></div>
         <h2 className="onboarding-title">{current.title}</h2>
         <p className="onboarding-desc">{current.description}</p>
 

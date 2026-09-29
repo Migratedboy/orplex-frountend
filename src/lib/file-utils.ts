@@ -80,33 +80,26 @@ export interface ProcessedFile {
 }
 
 export async function processFileList(fileList: FileList): Promise<ProcessedFile[]> {
-  const files: ProcessedFile[] = [];
-
-  for (const file of Array.from(fileList)) {
-    if (isImageFile(file.name)) {
-      if (file.size > MAX_IMAGE_SIZE) continue;
+  // Read every file concurrently — reads are async I/O, so a sequential loop
+  // multiplies user-visible latency by the file count. Promise.all keeps the
+  // result order stable; oversized files and read failures drop out as null.
+  const processed = await Promise.all(
+    Array.from(fileList).map(async (file): Promise<ProcessedFile | null> => {
       try {
-        const dataUrl = await readFileAsDataUrl(file);
-        files.push({ name: file.name, content: "", size: file.size, type: "image", dataUrl });
-      } catch {}
-      continue;
-    }
+        if (isImageFile(file.name)) {
+          if (file.size > MAX_IMAGE_SIZE) return null;
+          const dataUrl = await readFileAsDataUrl(file);
+          return { name: file.name, content: "", size: file.size, type: "image", dataUrl };
+        }
 
-    if (isTextFile(file.name) || file.type.startsWith("text/")) {
-      if (file.size > MAX_TEXT_SIZE) continue;
-      try {
+        if (file.size > MAX_TEXT_SIZE) return null;
         const content = await readFileAsText(file);
-        files.push({ name: file.name, content, size: file.size, type: "text" });
-      } catch {}
-      continue;
-    }
+        return { name: file.name, content, size: file.size, type: "text" };
+      } catch {
+        return null;
+      }
+    })
+  );
 
-    if (file.size > MAX_TEXT_SIZE) continue;
-    try {
-      const content = await readFileAsText(file);
-      files.push({ name: file.name, content, size: file.size, type: "text" });
-    } catch {}
-  }
-
-  return files;
+  return processed.filter((f): f is ProcessedFile => f !== null);
 }

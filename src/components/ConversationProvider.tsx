@@ -9,6 +9,8 @@ export interface Conversation {
   title: string;
   createdAt: string;
   updatedAt: string;
+  /** Workspace folder (NAME) the thread was created in; null = Ungrouped. */
+  workspaceName?: string | null;
   messages: { content: string }[];
 }
 

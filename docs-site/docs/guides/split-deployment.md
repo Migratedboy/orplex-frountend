@@ -38,7 +38,7 @@ Optional: `AUTH_COOKIE_SAMESITE=None` — **only** when frontend and API are on 
 ## How it works under the hood
 
 - **One seam**: every browser API call goes through `apiFetch`/`withApiBase` (`src/lib/api-base.ts`), which prefixes `NEXT_PUBLIC_API_BASE_URL` and sends `credentials: "include"` plus the `X-Requested-With` CSRF header. Unset base = byte-identical same-origin behavior.
-- **CORS with credentials**: `src/middleware.ts` answers preflights for `/api/*` and echoes only origins in `ALLOWED_ORIGINS`, with `Access-Control-Allow-Credentials: true`. A wildcard `*` is impossible with cookies — that's why the allowlist is exact.
+- **CORS with credentials**: `src/proxy.ts` answers preflights for `/api/*` and echoes only origins in `ALLOWED_ORIGINS`, with `Access-Control-Allow-Credentials: true`. A wildcard `*` is impossible with cookies — that's why the allowlist is exact.
 - **Auth cookie sharing**: NextAuth JWT session cookie gets `Domain` from `AUTH_COOKIE_DOMAIN` so `app.example.com` and `api.example.com` share one session. Same parent domain is the recommended topology — with unrelated domains you must add `AUTH_COOKIE_SAMESITE=None` **and** serve both origins over HTTPS, or browsers drop the cookie.
 - **Streaming**: chat/run streams are plain `fetch` + `ReadableStream` (no EventSource), so CORS headers are all they need; no proxying or buffering changes.
 

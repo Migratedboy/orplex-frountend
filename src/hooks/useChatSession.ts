@@ -12,6 +12,8 @@ import { buildWorkspaceContext } from "@/lib/client-signatures";
 import { listFilesUnderPath, parseToolCalls, replaceLastStatus } from "@/lib/tool-text";
 import { subscribeBackgroundChat, abortCurrentTask, readTaskSnapshot, clearTaskSnapshot, getCurrentTask, type BackgroundTask } from "@/lib/background-chat";
 import { normalizeThinkingBlocks } from "@/lib/stream-reader";
+import { stampFailedMessage, findFailedExchange, userTypedText } from "@/lib/message-retry";
+import { formatFileSize } from "@/lib/file-utils";
 import { useSession } from "next-auth/react";
 // Lazy-load background-worker — it's the heaviest module chain
 // Only imported when actually sending a message, not on page load
@@ -51,6 +53,8 @@ export interface QueuedPrompt {
   textFiles: AttachedFile[];
   imageFiles: { name: string; dataUrl: string; size: number }[];
   mode: AgentMode;
+  /** Reasoning effort from the prompt bar (low/medium/high) — replayed on dequeue. */
+  effort?: string;
   addedAt: number;
   /** Model id picked in the prompt bar (optional — queueing drops it) */
   model?: string;
@@ -75,10 +79,19 @@ export function useChatSession() {
   const [queue, setQueue] = useState<QueuedPrompt[]>([]);
   const queueRef = useRef<QueuedPrompt[]>([]);
   const thinkingRef = useRef(false);
+  // === Auto-retry after a model failure ===================================
+  // When a task fails, the model it ran on is recorded HERE (per conversation,
+  // most recent first). The composer consumes the list ONCE: on the next
+  // send it swaps the failed model for the next probe-verified model
+  // (pickRetryModel) and clears the entry. Cleared on success, Stop, and
+  // new task — a working conversation never carries a stale failure.
+  const [failedModels, setFailedModels] = useState<Record<string, string[]>>({});
+  const failedModelsRef = useRef<Record<string, string[]>>({});
 
   // Keep refs in sync
   useEffect(() => { queueRef.current = queue; }, [queue]);
   useEffect(() => { thinkingRef.current = thinking; }, [thinking]);
+  useEffect(() => { failedModelsRef.current = failedModels; }, [failedModels]);
   convoIdRef.current = convo.conversationId; // render-time sync — always current
   useEffect(() => { convoIdRef.current = convo.conversationId; }, [convo.conversationId]);
 
@@ -153,7 +166,64 @@ export function useChatSession() {
           const userMsg = task.userMessage || "";
           const assistantMsg = normalizeThinkingBlocks(task.displayContent);
           if (userMsg && assistantMsg) {
-            convoRef.current.saveConversation(userMsg, assistantMsg).catch(() => {});
+            convoRef.current.saveConversation(userMsg, assistantMsg, undefined, directoryNameRef.current).catch(() => {});
+          }
+        }
+
+        // A FAILED task (model died mid-response, all providers down, notice
+        // stream from the server) must still land in the bubble: write the
+        // partial/notice content into this task's own assistant placeholder.
+        // Without this the user sees an empty bubble with a dead spinner —
+        // the exact "no response and no idea why" failure being fixed.
+        // The bubble is STAMPED with [FAILED] (+ original send meta) so the
+        // renderer can offer one-click Retry on the exchange.
+        if (isCurrentConvo && task && task.status === "error" && !task.aborted && task.displayContent) {
+          const finalText = normalizeThinkingBlocks(task.displayContent);
+          msgRef.current.setMessages(prev => {
+            if (prev.length === 0) return prev;
+            const updated = [...prev];
+            for (let i = updated.length - 2; i >= 0; i--) {
+              if (updated[i].role === "user" && updated[i].content === task.userMessage) {
+                const assistantIdx = i + 1;
+                if (
+                  assistantIdx < updated.length &&
+                  updated[assistantIdx].role === "assistant" &&
+                  !updated[assistantIdx].content
+                ) {
+                  updated[assistantIdx] = {
+                    ...updated[assistantIdx],
+                    content: stampFailedMessage(finalText, {
+                      mode: task.mode,
+                      model: task.model,
+                    }),
+                  };
+                }
+                return updated;
+              }
+            }
+            return updated;
+          });
+        }
+
+        // Record / clear model failures for the auto-retry. Only REAL model
+        // failures count (not user Stops, not cancellations); any later
+        // success, stop, or new task wipes the trail so a healthy
+        // conversation never swaps the user's model without cause.
+        if (task && (task.status === "done" || task.status === "error" || !task)) {
+          const convoKey = task?.conversationId ?? convoIdRef.current ?? "";
+          if (task?.status === "error" && !task.aborted && task.model) {
+            setFailedModels(prev => {
+              const list = prev[convoKey] ?? [];
+              if (list[0] === task.model) return prev; // already recorded
+              return { ...prev, [convoKey]: [task.model!, ...list].slice(0, 4) };
+            });
+          } else if (convoKey && failedModelsRef.current[convoKey]) {
+            setFailedModels(prev => {
+              if (!(convoKey in prev)) return prev;
+              const next = { ...prev };
+              delete next[convoKey];
+              return next;
+            });
           }
         }
 
@@ -165,7 +235,7 @@ export function useChatSession() {
           const next = q[0];
           setQueue(prev => prev.slice(1));
           setTimeout(() => {
-            sendMessageRef.current(next.text, next.fullContent, next.textFiles, next.imageFiles, next.mode, undefined, next.model);
+            sendMessageRef.current(next.text, next.fullContent, next.textFiles, next.imageFiles, next.mode, next.effort, next.model);
           }, 300);
         }
       }
@@ -295,7 +365,7 @@ export function useChatSession() {
     if (snap.conversationId && !activeConvoId) {
       c.setConversationId(snap.conversationId);
     }
-    c.saveConversation(userText, assistantText, snap.conversationId || undefined).catch(() => {});
+    c.saveConversation(userText, assistantText, snap.conversationId || undefined, directoryNameRef.current).catch(() => {});
 
     t("Your previous task was interrupted by the reload — partial output restored.", "info");
     clearTaskSnapshot();
@@ -410,7 +480,7 @@ export function useChatSession() {
     if (thinkingRef.current) {
       const item: QueuedPrompt = {
         id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        text, fullContent, textFiles, imageFiles, mode, model,
+        text, fullContent, textFiles, imageFiles, mode, effort, model,
         addedAt: Date.now(),
       };
       setQueue(prev => [...prev, item]);
@@ -440,11 +510,12 @@ export function useChatSession() {
     textFiles: AttachedFile[],
     imageFiles: { name: string; dataUrl: string; size: number }[],
     mode: AgentMode = "ask",
-    model?: string
+    model?: string,
+    effort?: string
   ) => {
     const item: QueuedPrompt = {
       id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      text, fullContent, textFiles, imageFiles, mode, model,
+      text, fullContent, textFiles, imageFiles, mode, effort, model,
       addedAt: Date.now(),
     };
     setQueue(prev => [...prev, item]);
@@ -473,7 +544,10 @@ export function useChatSession() {
     loading: thinking,
     loadingConvo: convo.loadingConvo,
     agentStatus: bgTask?.statusDetail || agentStatus,
-    newChat: () => { convo.newChat(); msg.clearMessages(); setAgentStatus(""); setQueue([]); },
+    newChat: () => {
+      convo.newChat(); msg.clearMessages(); setAgentStatus(""); setQueue([]);
+      setFailedModels({}); // fresh chat → no failure trail anywhere
+    },
     sendMessage,
     stop: () => {
       // Abort the in-flight agent request FIRST and synchronously — a new
@@ -494,6 +568,9 @@ export function useChatSession() {
       setStreaming(false);
       setAgentStatus("");
       setBgTask(null);
+      // User pressed Stop — whatever failed before, THIS stop is the latest
+      // word. The auto-retry swap must not fire on the next send.
+      setFailedModels({});
     },
     agentEvents: [],
     agentRunning: (bgTask?.status === "streaming" || bgTask?.status === "tool_executing"),
@@ -511,5 +588,46 @@ export function useChatSession() {
     addToQueue,
     removeFromQueue,
     clearQueue,
+    // Auto-retry: models that failed in THIS conversation (most recent first)
+    // and a one-shot clearer the composer calls after consuming the swap.
+    failedModels: failedModels[convo.conversationId ?? ""] ?? [],
+    clearFailedModels: () => setFailedModels(prev => {
+      const key = convo.conversationId ?? "";
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    }),
+    // One-click Retry: resend a failed exchange's ORIGINAL prompt (with its
+    // stamped mode/effort/model/files). Uses the PUBLIC sendMessage so a
+    // retry while another task runs queues instead of clobbering it. The old
+    // [FAILED] bubble stays in history until the new exchange lands below it.
+    // `currentMode` covers worker-path stamps, which carry no meta.
+    retryMessage: useCallback((assistantIdx: number, currentMode?: AgentMode) => {
+      const exchange = findFailedExchange(msgRef.current.messages, assistantIdx);
+      if (!exchange) return;
+      const meta = exchange.meta ?? {};
+      const text = userTypedText(exchange.user.content);
+      // Rebuild the original fullContent: the typed text PLUS the attached
+      // file blocks, in exactly the format ChatInput's emit uses. Without
+      // this a retry silently dropped the attachments' CONTENT (the chips
+      // re-rendered, but the model never saw the file bodies again).
+      const files = (meta.files ?? []) as AttachedFile[];
+      let fullContent = text;
+      if (files.length > 0) {
+        fullContent += files
+          .map((f) => `\n\n---\n**File: \`${f.name}\`** (${formatFileSize(f.size)})\n\`\`\`\n${f.content}\n\`\`\``)
+          .join("");
+      }
+      void sendMessage(
+        text,
+        fullContent,
+        files,
+        meta.images ?? [],
+        (meta.mode as AgentMode) ?? currentMode ?? "ask",
+        meta.effort,
+        meta.model,
+      );
+    }, [sendMessage]),
   };
 }

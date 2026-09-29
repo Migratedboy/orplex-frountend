@@ -30,6 +30,8 @@ export default function ChatPage() {
   const [showPreview, setShowPreview] = useState(false);
   const [agentMode, setAgentMode] = useState<AgentMode>("ask");
   const [fastLoading, setFastLoading] = useState(false);
+  // Index of the failed bubble whose Retry is being sent (button feedback).
+  const [retryingIdx, setRetryingIdx] = useState<number | null>(null);
 
   const sendingRef = useRef(false);
   const handleSend = async (text: string, fullContent: string, textFiles: any[], imageFiles: any[], mode: AgentMode, effort?: string, model?: string) => {
@@ -39,6 +41,25 @@ export default function ChatPage() {
       await session.sendMessage(text, fullContent, textFiles, imageFiles, mode, effort, model);
     } finally {
       sendingRef.current = false;
+    }
+  };
+
+  // One-click Retry on a failed assistant bubble: resend the ORIGINAL prompt
+  // (mode/effort/model come from the failure stamp). Guarded against
+  // double-click and against retrying while something else is running.
+  const handleRetry = (assistantIdx: number) => {
+    if (retryingIdx !== null || session.agentRunning || session.isStreaming) {
+      toast("Wait for the current task to finish, then retry.", "info");
+      return;
+    }
+    setRetryingIdx(assistantIdx);
+    try {
+      session.retryMessage(assistantIdx, agentMode);
+      toast("Retrying with the same prompt…", "info");
+    } catch {
+      toast("Could not retry — the original prompt is no longer available.", "error");
+    } finally {
+      setRetryingIdx(null);
     }
   };
 
@@ -113,24 +134,35 @@ export default function ChatPage() {
           return prev;
         });
       };
+      // Partial-event buffer: network chunks don't align with SSE events — a
+      // chunk can end mid-JSON, and splitting per-chunk lines silently dropped
+      // both halves of a split event (lost answer text). Incomplete tails wait
+      // for the next chunk; the final tail is flushed when the stream ends.
+      let pending = "";
+      const processDataLine = (line: string) => {
+        if (line.startsWith("data: ")) {
+          const data = line.slice(6).trim();
+          if (data === "[DONE]") return;
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.content) {
+              content += parsed.content;
+              writeChunk(content);
+            }
+          } catch {}
+        }
+      };
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        for (const line of chunk.split("\n")) {
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6).trim();
-            if (data === "[DONE]") continue;
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.content) {
-                content += parsed.content;
-                writeChunk(content);
-              }
-            } catch {}
-          }
+        pending += decoder.decode(value, { stream: true });
+        const lines = pending.split("\n");
+        pending = lines.pop() || "";
+        for (const line of lines) {
+          processDataLine(line);
         }
       }
+      if (pending) processDataLine(pending);
       if (!content) {
         toast("Fast model returned empty response", "error");
       }
@@ -153,6 +185,8 @@ export default function ChatPage() {
               agentRunning={session.agentRunning}
               agentStatus={fastLoading ? "Fast model answering…" : session.agentStatus}
               onFastAnswer={handleFastAnswer}
+              onRetryMessage={handleRetry}
+              retryingIdx={retryingIdx}
             />
           </Suspense>
         )}
@@ -184,6 +218,12 @@ export default function ChatPage() {
           onQueueAdd={session.addToQueue}
           onQueueRemove={session.removeFromQueue}
           onQueueClear={session.clearQueue}
+          failedModels={session.failedModels}
+          clearFailedModels={session.clearFailedModels}
+          onRetryModelSwap={(nextId, failed) => {
+            const label = failed[0] ?? "the previous model";
+            toast(`Model failed — retrying with ${nextId.split("/").pop() ?? nextId} (was ${label.split("/").pop() ?? label})`, "info");
+          }}
         />
 
       {showPreview && <FilePreviewModal files={[]} onRemove={() => {}} onClose={() => setShowPreview(false)} />}

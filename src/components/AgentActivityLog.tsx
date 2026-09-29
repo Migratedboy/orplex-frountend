@@ -95,12 +95,5 @@ export default function AgentActivityLog({
 }
 
 function IconLoader({ size = 16, className }: { size?: number; className?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className}>
-      <line x1="12" y1="2" x2="12" y2="6" />
-      <line x1="12" y1="18" x2="12" y2="22" />
-      <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
-      <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
-    </svg>
-  );
+  return <span className={`ms ms-spin ${className || ""}`} style={{ fontSize: size }} aria-hidden="true">progress_activity</span>;
 }

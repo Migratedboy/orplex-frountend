@@ -1,0 +1,99 @@
+name: Agent CI (headless executor battery)
+
+# The agent that writes code is itself under CI. This battery boots the REAL
+# server executor (lease → worktree → tool loop → verify lane → commit) with
+# the model replaced by a deterministic fixture provider (AI_PROVIDER=ci-fixture),
+# runs a fixed task battery, and issues HARD verdicts: behavior checks run with
+# real exit codes against the files the loop actually produced. An LLM's
+# "looks done" never counts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Run a single battery task by name (--task)"
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths:
+      - "src/lib/server-executor/**"
+      - "src/lib/ai-providers.ts"
+      - "src/lib/tool-text.ts"
+      - "src/lib/exec-guard.ts"
+      - "src/lib/retry.ts"
+      - "src/lib/grep-search.ts"
+      - "src/lib/checkpoints.ts"
+      - "src/lib/auto-checkpoint.ts"
+      - "scripts/agent-ci-run.mjs"
+      - "prisma/schema.prisma"
+      - ".github/workflows/agent-ci.yml"
+
+concurrency:
+  group: agent-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  battery:
+    name: Executor task battery
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orplex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Deterministic gates (tsc + jest + eslint, exit codes only, no
+      # self-grading) run INSIDE scripts/agent-ci-run.mjs before the battery —
+      # one gate loop, one verdict format, impossible to skip past.
+
+      - name: Push schema (battery DB itself is throwaway — embedded PG in the runner)
+        run: npx prisma generate && npx prisma db push --skip-generate
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/orplex_test
+
+      - name: Production build (executor runs under `next start`)
+        run: npm run build
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/orplex_test
+          NEXTAUTH_SECRET: ci-secret
+          NEXTAUTH_URL: http://localhost:5000
+
+      - name: Run the agent task battery (gates + hard verdicts)
+        run: node scripts/agent-ci-run.mjs ${{ inputs.task && format('--task {0}', inputs.task) || '' }}
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/orplex_test
+          NEXTAUTH_SECRET: ci-secret
+          NEXTAUTH_URL: http://localhost:5000
+
+      - name: Upload battery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-ci-evidence
+          path: .ci-agent-pg
+          retention-days: 7
+          if-no-files-found: ignore

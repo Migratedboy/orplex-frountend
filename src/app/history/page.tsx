@@ -1,8 +1,9 @@
 "use client";
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useConversations, type Conversation } from "@/components/ConversationProvider";
 import { announceConversationOpen } from "@/lib/navigation-events";
+import { matchesWorkspaceFilter, projectLabel, workspaceFromQuery } from "@/lib/project-threads";
 import { IconSearch, IconMessage, IconTrash, IconClose } from "@/components/Icons";
 
 export default function HistoryPage() {
@@ -10,8 +11,17 @@ export default function HistoryPage() {
   const [search, setSearch] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // ?workspace=<name> (or __ungrouped__) — the Projects sidebar "Load threads"
+  // deep link. Re-read on navigation (client-side pushes don't remount).
+  const [workspace, setWorkspace] = useState<string | null>(null);
+  useEffect(() => {
+    setWorkspace(workspaceFromQuery(window.location.search));
+  }, [searchParams]);
 
-  const filtered = conversations.filter(c => c.title.toLowerCase().includes(search.toLowerCase()));
+  const filtered = conversations
+    .filter(c => c.title.toLowerCase().includes(search.toLowerCase()))
+    .filter(c => matchesWorkspaceFilter(c, workspace));
 
   const groupByDate = (convs: Conversation[]) => {
     const groups: Record<string, Conversation[]> = {};
@@ -41,7 +51,12 @@ export default function HistoryPage() {
           <div className="page-header">
             <div className="page-header-text">
               <h2 className="page-title">Session History</h2>
-              <p className="page-subtitle">Review past interactions and agent tasks.</p>
+              <p className="page-subtitle">
+                {workspace
+                  ? <>Threads in <strong>{projectLabel(workspace === "__ungrouped__" ? null : workspace)}</strong>{" — "}
+                     <button className="history-clear-filter" onClick={() => { router.push("/history"); setWorkspace(null); }}>show all</button></>
+                  : "Review past interactions and agent tasks."}
+              </p>
             </div>
             <div className="search-box">
               <IconSearch size={14} className="search-box-icon" />

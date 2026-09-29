@@ -24,6 +24,50 @@ function isTextFile(name: string): boolean {
   return TEXT_EXTENSIONS.has(ext);
 }
 
+// Hard ceiling on total text the renderer keeps in memory (~10 MB). Files
+// ALWAYS live on disk — the File System Access handles re-read them on
+// demand — so this cache is just the AI's hot working set, not a copy of the
+// workspace. Without the cap, indexing (120 × 150 KB), manual reads of huge
+// files, and unbounded AI write caching could balloon renderer memory until
+// low-RAM machines thrash or crash.
+const MAX_CACHE_BYTES = 10 * 1024 * 1024;
+
+// Oversized files are read as a bounded window from disk instead of being
+// materialized whole in a string (Blob.slice streams only that byte range).
+const READ_WINDOW_CHARS = 200_000;
+
+// Writes/edits larger than this are stored on disk but NOT admitted to the
+// in-memory hot-set — one huge entry would evict everything else.
+const MAX_CACHE_ENTRY_CHARS = 500_000;
+
+// edit_file does whole-file string replacement; refuse it above this size so
+// the operation can never spike memory proportional to a giant file.
+const MAX_EDIT_FILE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Insert a file into the cache under the byte budget, evicting the oldest
+ * entries first (JS object key order = insertion order). The inserted file is
+ * never evicted by its own insert, so a single oversized file is tolerated
+ * (it just evicts everything else). Re-inserting an existing path via
+ * delete+set makes it freshly-inserted, keeping actively-written files hot.
+ */
+function insertWithBudget(cache: Record<string, string>, path: string, text: string): Record<string, string> {
+  const next: Record<string, string> = {};
+  let total = text.length;
+  for (const [k, v] of Object.entries(cache)) {
+    if (k === path) continue;
+    next[k] = v;
+    total += v.length;
+  }
+  for (const k of Object.keys(next)) {
+    if (total <= MAX_CACHE_BYTES) break;
+    total -= next[k].length;
+    delete next[k];
+  }
+  next[path] = text;
+  return next;
+}
+
 export function useFileSystem() {
   const { toast } = useToast();
   const [directoryHandle, setDirectoryHandle] = useState<FileSystemDirectoryHandle | null>(null);
@@ -74,43 +118,77 @@ export function useFileSystem() {
   }, []);
 
   /**
-   * Bulk-read all text files in the tree into the fileContents cache.
-   * Called automatically after a folder is opened so the AI context is
-   * immediately populated without requiring the user to click files.
+   * Bulk-read was REMOVED (Freebuff model): eager indexing read up to 120
+   * files on every folder open and dominated memory on big workspaces. The
+   * AI now pulls files on demand — readFile() streams them from disk (with
+   * a ~200 KB window for oversized files) and the 10 MB budget keeps only
+   * the hot-set resident. Search runs server-side on disk via ripgrep, not
+   * over this cache.
    */
-  const readAllFiles = useCallback(async (nodes: FileNode[]): Promise<void> => {
-    const MAX_FILE_SIZE = 150 * 1024; // 150 KB limit per file
-    const MAX_TOTAL_FILES = 120;
-    let count = 0;
 
-    const readNode = async (node: FileNode): Promise<void> => {
-      if (count >= MAX_TOTAL_FILES) return;
+  /**
+   * Attach a directory handle as the ACTIVE workspace — the one shared path
+   * for both the picker (openFolder) and project re-open (reopenProject):
+   * scan tree → set state → persist handle (IndexedDB) → register the
+   * absolute path server-side (/api/agent/workspace-cwd). Returns the file
+   * count so callers can surface a toast.
+   */
+  const openFolderHandle = useCallback(async (handle: FileSystemDirectoryHandle): Promise<{ fileCount: number }> => {
+    fileHandlesRef.current.clear();
+    setFileContents({});
 
-      if (node.kind === "file" && isTextFile(node.name)) {
-        const handle = fileHandlesRef.current.get(node.path);
-        if (handle) {
-          try {
-            const file = await handle.getFile();
-            if (file.size < MAX_FILE_SIZE) {
-              const text = await file.text();
-              setFileContents(prev => ({ ...prev, [node.path]: text }));
-              count++;
-            }
-          } catch {
-            // silently skip unreadable files
-          }
-        }
-      } else if (node.kind === "directory" && node.children) {
-        for (const child of node.children) {
-          await readNode(child);
+    const tree = await scanDirectory(handle);
+    setDirectoryHandle(handle);
+    setDirectoryName(handle.name);
+    setFileTree(tree);
+
+    // NOTE (Freebuff model): no bulk read here. Files stay on disk; the AI
+    // reads what it needs on demand (read_file windows oversized files),
+    // search runs server-side on disk (ripgrep → git grep → node scan via
+    // /api/agent/grep), and the in-memory cache is only the bounded hot-set
+    // of files actually touched. Opening a huge folder is instant.
+
+    // Persist the handle so the Projects list can re-open this folder after a
+    // restart with a single permission click (project-registry.ts).
+    try {
+      const { saveProjectHandle, rememberProject: rememberRosterProject } = await import("@/lib/project-registry");
+      await saveProjectHandle(handle.name, handle);
+      rememberRosterProject(window.localStorage, handle.name);
+    } catch {}
+
+    // Register the ABSOLUTE path server-side so agent terminal commands
+    // (npm install, node server.js, …) run in THIS folder. The File System
+    // Access API never exposes paths, so derive it from an indexed file via
+    // Electron's webUtils.getPathForFile (empty outside Electron — the
+    // server then falls back to its own cwd).
+    try {
+      let absPath = "";
+      for (const fileHandle of fileHandlesRef.current.values()) {
+        const f = await fileHandle.getFile();
+        const p = await (window as any).orplexDesktop?.getPathForFile?.(f);
+        if (p) {
+          absPath = p.replace(/[\\/][^\\/]+$/, ""); // strip filename → directory
+          break;
         }
       }
-    };
+      if (absPath) {
+        // Remember the path on the roster entry (context menu → Reveal in
+        // Explorer). Electron only; harmless no-op elsewhere.
+        try {
+          const { setProjectPath } = await import("@/lib/project-registry");
+          setProjectPath(window.localStorage, handle.name, absPath);
+        } catch {}
+        const res = await apiFetch("/api/agent/workspace-cwd", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: absPath }),
+        });
+        if (res.ok) toast(`Terminal commands will run in "${absPath}"`, "success");
+      }
+    } catch {}
 
-    for (const node of nodes) {
-      await readNode(node);
-    }
-  }, []);
+    return { fileCount: fileHandlesRef.current.size };
+  }, [scanDirectory, toast]);
 
   const openFolder = useCallback(async () => {
     try {
@@ -120,54 +198,44 @@ export function useFileSystem() {
       }
 
       const handle = await (window as any).showDirectoryPicker({ mode: "readwrite" });
-
-      fileHandlesRef.current.clear();
-      setFileContents({});
-
-      const tree = await scanDirectory(handle);
-      setDirectoryHandle(handle);
-      setDirectoryName(handle.name);
-      setFileTree(tree);
-
-      toast(`Mapped "${handle.name}" — indexing files for AI context…`, "success");
-
-      // Auto-bulk-read all text files so AI can see them immediately
-      await readAllFiles(tree);
-
-      const fileCount = fileHandlesRef.current.size;
-      toast(`Indexed ${fileCount} files in "${handle.name}". AI can now read your workspace!`, "success");
-
-      // Register the ABSOLUTE path server-side so agent terminal commands
-      // (npm install, node server.js, …) run in THIS folder. The File System
-      // Access API never exposes paths, so derive it from an indexed file via
-      // Electron's webUtils.getPathForFile (empty outside Electron — the
-      // server then falls back to its own cwd).
-      try {
-        let absPath = "";
-        for (const fileHandle of fileHandlesRef.current.values()) {
-          const f = await fileHandle.getFile();
-          const p = await (window as any).orplexDesktop?.getPathForFile?.(f);
-          if (p) {
-            absPath = p.replace(/[\\/][^\\/]+$/, ""); // strip filename → directory
-            break;
-          }
-        }
-        if (absPath) {
-          const res = await apiFetch("/api/agent/workspace-cwd", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path: absPath }),
-          });
-          if (res.ok) toast(`Terminal commands will run in "${absPath}"`, "success");
-        }
-      } catch {}
+      const { fileCount } = await openFolderHandle(handle);
+      toast(`Mapped "${handle.name}" — ${fileCount} files available to the AI on demand.`, "success");
     } catch (err: any) {
       if (err.name !== "AbortError") {
         console.error(err);
         toast(`Error opening folder: ${err.message}`, "error");
       }
     }
-  }, [scanDirectory, readAllFiles, toast]);
+  }, [openFolderHandle, toast]);
+
+  /**
+   * Re-open a previously-opened project by folder NAME (Projects sidebar):
+   * load the persisted handle → silent permission query → one prompt if
+   * needed → shared openFolderHandle attach → roster touch. Never throws;
+   * returns a typed ReopenOutcome the caller can toast. Denied permission
+   * leaves the project listed and expandable.
+   */
+  const reopenProject = useCallback(async (name: string) => {
+    const { loadProjectHandle, requestHandlePermission, touchProject } = await import("@/lib/project-registry");
+    const { reopenProject: runReopen } = await import("@/lib/project-reopen");
+    const outcome = await runReopen(name, {
+      loadHandle: (n) => loadProjectHandle(n),
+      checkPermission: (h, mode, query) => requestHandlePermission(h, mode, query),
+      attach: (h) => openFolderHandle(h),
+      touch: (n) => {
+        try {
+          touchProject(window.localStorage, n);
+        } catch {}
+      },
+    });
+    if (outcome.status === "ok") {
+      toast(outcome.message, "success");
+    } else {
+      // denied / not-found / invalid / failed — informational, never fatal.
+      toast(outcome.message, outcome.status === "denied" ? "info" : "error");
+    }
+    return outcome;
+  }, [openFolderHandle, toast]);
 
   const readFile = useCallback(async (path: string): Promise<string> => {
     try {
@@ -179,8 +247,26 @@ export function useFileSystem() {
       if (!handle) return `[Error: file not found at path "${path}"]`;
 
       const file = await handle.getFile();
+
+      // Oversized files are read as a bounded WINDOW from disk (Blob slice —
+      // the browser streams only that byte range), never materialized whole.
+      // The full file stays on disk; other ranges are reachable via terminal
+      // range tools. This keeps a 100 MB log file from spiking renderer RAM.
+      if (file.size > READ_WINDOW_CHARS) {
+        let head = await file.slice(0, READ_WINDOW_CHARS).text();
+        // A byte slice can split a trailing multibyte char — drop the artifact.
+        if (head.endsWith("\uFFFD")) head = head.slice(0, -1);
+        const total = file.size;
+        const text =
+          head +
+          `\n\n[…windowed read — first ${READ_WINDOW_CHARS.toLocaleString()} of ${total.toLocaleString()} bytes. The full file stays on disk; use terminal range reads (e.g. sed -n 'X,Yp') for other sections.]`;
+        setFileContents(prev => insertWithBudget(prev, path, text));
+        return text;
+      }
+
       const text = await file.text();
-      setFileContents(prev => ({ ...prev, [path]: text }));
+      // Cache under the byte budget (evicts oldest entries when full).
+      setFileContents(prev => insertWithBudget(prev, path, text));
       return text;
     } catch (err: any) {
       toast(`Error reading file ${path}: ${err.message || err}`, "error");
@@ -210,11 +296,36 @@ export function useFileSystem() {
 
       if (!handle) throw new Error("No file handle found. Open a folder first.");
 
+      // Anti-clobber guard: oversized files are read as a ~200 KB head window,
+      // so a caller that then issues a full write_file has only seen the head.
+      // If the on-disk file is far larger than the incoming content, that
+      // overwrite would silently destroy the unseen tail — refuse it. (New
+      // files are size 0 and never trip this; same 8 MB policy as editFile.)
+      const existing = await handle.getFile();
+      if (existing.size > MAX_EDIT_FILE_BYTES && content.length < existing.size / 2) {
+        toast(
+          `Refusing to overwrite ${path}: the file on disk is ${(existing.size / 1048576).toFixed(1)} MB but the incoming content is only ${(content.length / 1024).toFixed(0)} KB — the write looks partial (windowed read) and would destroy the rest of the file. Rewrite big files with terminal streaming tools (sed -i, truncate).`,
+          "error"
+        );
+        return false;
+      }
+
       const writable = await (handle as any).createWritable();
       await writable.write(content);
       await writable.close();
 
-      setFileContents(prev => ({ ...prev, [path]: content }));
+      // Full content is written to DISK (the source of truth). Only cache the
+      // copy when it is small — admitting a huge file would evict the whole
+      // hot-set for one entry.
+      if (content.length <= MAX_CACHE_ENTRY_CHARS) {
+        setFileContents(prev => insertWithBudget(prev, path, content));
+      } else {
+        setFileContents(prev => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+      }
       return true;
     } catch (err: any) {
       console.error(err);
@@ -230,6 +341,18 @@ export function useFileSystem() {
         // Try reading from cache
         const cached = fileContents[filePath];
         if (!cached) return false;
+      }
+
+      // Refuse string-replace edits on very large files: computing them needs
+      // the whole file in one string, which is exactly the memory spike this
+      // module exists to prevent. Large-file edits should go through the
+      // terminal (sed/ed) or a full-file write instead.
+      if (handle) {
+        const stat = await handle.getFile();
+        if (stat.size > MAX_EDIT_FILE_BYTES) {
+          toast(`File too large for in-app edit (${(stat.size / 1024 / 1024).toFixed(1)} MB) — use the terminal (sed) instead.`, "error");
+          return false;
+        }
       }
 
       // Read current content
@@ -267,7 +390,8 @@ export function useFileSystem() {
       await writable.write(content);
       await writable.close();
 
-      setFileContents(prev => ({ ...prev, [filePath]: content }));
+      // Disk holds the truth; the cache copy stays under the byte budget.
+      setFileContents(prev => insertWithBudget(prev, filePath, content));
       return true;
     } catch (err: any) {
       console.error(err);
@@ -284,8 +408,9 @@ export function useFileSystem() {
     setActiveFilePath,
     fileContents,
     openFolder,
+    openFolderHandle,
+    reopenProject,
     readFile,
-    readAllFiles,
     writeFile,
     editFile,
   };

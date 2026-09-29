@@ -137,23 +137,51 @@ describe("history persistence + trend", () => {
     expect(rec.regressions).toContain("FILES, NOT FENCES: A → C");
   });
 
-  it("produces a trend report with score trajectory", () => {
-    const mk = (score: number): RubricRecord => ({
+  it("produces a trend report with verdict trajectory", () => {
+    const mk = (score: number, verdict: "PASS" | "FAIL" = "PASS"): RubricRecord => ({
       at: new Date().toISOString(),
       task: "t",
       mode: "code",
       finalStatus: "done",
       lines: [],
       score,
+      verdict,
+      verdictEvidence: verdict === "PASS" ? ["typecheck lane passed"] : ["typecheck lane failed (exit-code evidence)"],
       durationMs: 1000,
       modelCalls: 2,
       tokenSavingsPct: 50,
       regressions: [],
     });
-    const report = formatTrendReport([mk(95), mk(92), mk(78)]);
-    expect(report).toContain("3 recorded run(s)");
-    expect(report).toContain("95 → 92 → 78");
-    expect(report).toContain("Rolling 3-run average");
+    const report = formatTrendReport([mk(95), mk(92), mk(78, "FAIL")]);
+    expect(report).toContain("2/3 run(s) PASSED");
+    expect(report).toContain("FAIL");
+    expect(report).toContain("Verdict trend");
+    expect(report).toContain("Diagnostic score");
+  });
+
+  it("grades a PASS only from exit-code evidence", () => {
+    startRubricObservation("t3", "task three", "code");
+    recordToolCall("write_file", true, "c.ts");
+    recordLaneOutcome("typecheck", "pass");
+    const rec = finishRubricObservation("done", "done", { modelCalls: 1, tokenSavingsPct: 40 })!;
+    expect(rec.verdict).toBe("PASS");
+    expect(rec.verdictEvidence).toContain("typecheck lane passed");
+  });
+
+  it("grades a FAIL when the typecheck lane failed — even with a good letter score", () => {
+    startRubricObservation("t4", "task four", "code");
+    recordToolCall("write_file", true, "d.ts");
+    recordLaneOutcome("typecheck", "fail");
+    const rec = finishRubricObservation("done", "done", { modelCalls: 1, tokenSavingsPct: 40 })!;
+    expect(rec.verdict).toBe("FAIL");
+  });
+
+  it("grades a FAIL for any non-done final status regardless of lanes", () => {
+    startRubricObservation("t5", "task five", "code");
+    recordLaneOutcome("typecheck", "pass");
+    recordLaneOutcome("browser", "pass");
+    const rec = finishRubricObservation("error", "boom", { modelCalls: 1, tokenSavingsPct: null })!;
+    expect(rec.verdict).toBe("FAIL");
   });
 
   it("recording disabled by default — observation calls are no-ops", () => {

@@ -17,6 +17,7 @@ import { jwtOnlyOptions } from "@/lib/auth";
 import { isCommandAllowed } from "@/lib/exec-guard";
 import { TIMEOUTS, LIMITS } from "@/lib/constants";
 import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
+import { dispatchSandbox, isSandboxConfigured } from "@/lib/ci-sandbox";
 
 // Environment variables to strip — never pass secrets to child processes
 const BLOCKED_ENV_KEYS = [
@@ -75,6 +76,28 @@ export async function POST(request: NextRequest) {
     }
 
     if (!checkExecEnabled()) {
+      // Hard-disabled local exec. If a CI sandbox is configured, keep
+      // run_command useful WITHOUT touching this machine's filesystem: the
+      // command runs on an ephemeral GitHub Actions runner (see ci-sandbox.ts
+      // + agent-sandbox.yml). Same auth, same exec-guard screening.
+      if (isSandboxConfigured()) {
+        const { command, timeout } = await request.json().catch(() => ({}) as { command?: string; timeout?: number });
+        if (!command || typeof command !== "string") {
+          return Response.json({ error: "No command provided" }, { status: 400 });
+        }
+        if (command.length > 4000) {
+          return Response.json({ error: "Command too long" }, { status: 400 });
+        }
+        const sandboxed = await dispatchSandbox(command, {
+          timeoutMs: Math.min(typeof timeout === "number" && timeout > 0 ? timeout : TIMEOUTS.SANDBOX_EXEC, TIMEOUTS.SANDBOX_EXEC),
+        });
+        return Response.json({
+          stdout: sandboxed.stdout,
+          stderr: sandboxed.stderr,
+          exitCode: sandboxed.exitCode,
+          sandbox: true,
+        });
+      }
       return Response.json(
         {
           error:

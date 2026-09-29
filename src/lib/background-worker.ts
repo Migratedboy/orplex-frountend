@@ -13,7 +13,7 @@ import { virtualFS } from "./virtual-fs";
 import { beforeToolCall, afterToolCall, onFileWrite, onFileEdit, onTaskStart, onTaskComplete, onTaskFail } from "./plugins/registry";
 import { initializePlugins, isPluginEnabled } from "./plugins/initializer";
 import { TIMEOUTS, LIMITS, isBlockedCommand } from "./constants";
-import { readStream, deduplicateWords, replaceLastStatus, parseToolCalls, normalizeThinkingBlocks, stripRedundantFences, appendTaskAnchor, repairInterleavedReplay, type ToolCall, type StreamResult } from "./stream-reader";
+import { readStream, deduplicateWords, dedupeStreamedChunk, replaceLastStatus, parseToolCalls, normalizeThinkingBlocks, stripRedundantFences, appendTaskAnchor, repairInterleavedReplay, type ToolCall, type StreamResult } from "./stream-reader";
 import { SPARC_PLAN_DIRECTIVE, FORCE_TOOLS_DIRECTIVE, SAFETY_CONTINUE_DIRECTIVE, qualityReviewDirective, SELF_REVIEW_DIRECTIVE, verificationRepairDirective, browserRepairDirective, truncationContinue, adaptiveFailureDoctrine } from "./master-prompt";
 import { recordFailure, recordRepairAttempt, clearFailures } from "./failure-memory";
 import { startTaskMeter, recordPromptCall, formatSavingsSummary, logTaskMeter, calibratePromptSizes, computeTaskSavings } from "./prompt-meter";
@@ -23,6 +23,7 @@ import { buildSystemPrompt } from "./master-prompt";
 import { emitStatus, emitActivity, emitPreview } from "./agent-events";
 import { dispatchToolCall, type ToolContext } from "./agent/native-tools";
 import { searchCache, cacheResponse, invalidateByFileChange } from "./semantic-cache";
+import { stampFailedMessage } from "./message-retry";
 
 let _pluginsInitialized = false;
 import {
@@ -291,10 +292,12 @@ import { apiFetch } from "@/lib/api-base";
 
 const TYPECHECK_ERROR_RE = /\berror TS\d+:/;
 
-// === Deep orchestration (SPARC / ToT / Blueprint / Swarm review) ============
-// These run server-side via /api/agent/orchestrate (their transports need API
-// keys that must never reach the browser); the worker executes returned
-// tool calls through its normal audited write path.
+// === Deep orchestration (deterministic strategy router) ====================
+// Runs server-side via /api/agent/orchestrate (the transport needs API keys
+// that must never reach the browser). The route maps legacy op names onto the
+// strategy router; the worker executes returned tool calls through its normal
+// audited write path. ONE planning call per task (was up to 5 through the
+// SPARC→ToT→blueprint waterfall).
 const ORCHESTRATE_URL = `/api/agent/orchestrate`;
 
 async function runOrchestration<T = any>(op: string, payload: Record<string, unknown>): Promise<T | null> {
@@ -482,21 +485,9 @@ function listFilesUnderPath(path: string): string {
   return results.length > 0 ? results.join("\n") : "No files found at that path.";
 }
 
-function searchCode(query: string): string {
-  const results: string[] = [];
-  const maxResults = 20;
-  for (const [filePath, content] of Object.entries(_fileContents)) {
-    if (results.length >= maxResults) break;
-    const lines = content.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].toLowerCase().includes(query.toLowerCase())) {
-        results.push(`${filePath}:${i + 1}: ${lines[i].trim()}`);
-        if (results.length >= maxResults) break;
-      }
-    }
-  }
-  return results.length > 0 ? results.join("\n") : `No matches found for "${query}"`;
-}
+// searchCode over _fileContents was removed (Freebuff model): search runs
+// server-side on disk via /api/agent/grep (ripgrep → git grep → node scan),
+// dispatched from agent/native-tools.ts — not over the renderer's hot-set.
 
 // readStream is imported from stream-reader.ts
 // Tool calls are returned as part of StreamResult.toolCalls
@@ -576,35 +567,26 @@ export async function runInBackground(
   if (sparcDirective) contentWithFiles = `${sparcDirective}\n\n${contentWithFiles}`;
 
   // === Deep orchestration attempt (code/plan mode, complex tasks) ==========
-  // SPARC first; if its gates fail (or the route is unavailable), fall back to
-  // tree-of-thoughts; if both fail, continue with the plan-first directive.
+  // ONE deterministic router call: it picks scaffold | branch-compare |
+  // implement | plan from the task shape and produces write_file calls the
+  // loop below executes through the audited path. If the route is unavailable
+  // the plan-first directive stays in place and the normal loop does the work.
   let orchestrationSummary = "";
   let orchestratedToolCalls: Array<Partial<ToolCall>> = [];
   if (sparcDirective) {
-    updateTaskStatus("streaming", "Planning with SPARC…");
-    const sparc = await runOrchestration("sparc", { task: basePrompt });
-    const sparcWrites = sparc?.toolCalls?.filter((c: any) => c.name === "write_file") || [];
-    if (sparc && sparc.status === "completed" && sparcWrites.length > 0) {
-      orchestrationSummary = `[SPARC] All 5 phase gates passed — ${sparcWrites.length} file(s) planned.`;
-      contentWithFiles = `${sparc.summary}\n\n${basePrompt}`;
-      orchestratedToolCalls = sparc.toolCalls;
-    } else {
-      const tot = await runOrchestration("tot", { task: basePrompt });
-      if (tot && tot.winner && tot.toolCalls?.length > 0) {
-        orchestrationSummary = `[ToT] ${tot.winner.reason} Branches: ${tot.branches.map((b: any) => `${b.name} ${b.score}`).join(", ")}.`;
-        contentWithFiles = `${orchestrationSummary}\n\n${basePrompt}`;
-        orchestratedToolCalls = tot.toolCalls;
-      } else {
-        // Final fallback: blueprint scaffold (JSON plan → skeleton files).
-        const bp = await runOrchestration("blueprint", { task: basePrompt, context: contentWithFiles });
-        if (bp && bp.toolCalls?.length > 0) {
-          orchestrationSummary = `[Blueprint] ${bp.projectName} — ${bp.files.length} file(s) scaffolded.`;
-          contentWithFiles = `${orchestrationSummary}\n\n${basePrompt}`;
-          orchestratedToolCalls = bp.toolCalls;
-        }
-      }
+    updateTaskStatus("streaming", "Planning with the strategy router…");
+    const routed = await runOrchestration("auto", {
+      task: basePrompt,
+      context: contentWithFiles.slice(0, 20_000),
+      existingFileCount: _fileTree.reduce((n: number, node: any) => n + (node.kind === "file" ? 1 : 0), 0),
+    });
+    if (routed && Array.isArray(routed.toolCalls) && routed.toolCalls.length > 0) {
+      orchestrationSummary = `[${String(routed.strategy || "strategy").toUpperCase()}] ${routed.summary || ""}`.trim();
+      contentWithFiles = `${orchestrationSummary}\n\n${basePrompt}`;
+      orchestratedToolCalls = routed.toolCalls;
     }
-    // Both failed → keep the lightweight SPARC plan-first directive.
+    // Router unavailable/empty → the SPARC plan-first directive still gates
+    // writes until the model has planned via todo_list, so nothing is lost.
   }
 
   // If a task is still running (e.g. from a previous send), kill it properly
@@ -622,7 +604,7 @@ export async function runInBackground(
   };
 
   const allMessages = [...priorMessages, userMsg];
-  const taskId = startTask(conversationId, userMessage, allMessages, mode);
+  const taskId = startTask(conversationId, userMessage, allMessages, mode, selectedModel);
   startRubricObservation(taskId, userMessage, mode); // test-mode rubric observation (no-op unless TEST_MODE/live session)
   // Rubric/meter data captured during the run; readable from the error path too.
   let savingsPct: number | null = null;
@@ -666,6 +648,9 @@ export async function runInBackground(
 
   let lastStreamedContent = "";
   let fullDisplayContent = "";
+  // Set when the model answered empty (no text, no tool calls) — the empty
+  // bubble gets [FAILED]-stamped at finalize so Retry is offered.
+  let failedEmptyResponse = false;
 
   // === Semantic cache hint: a very similar past task is offered as context ===
   // (hint only — never auto-applied, since the workspace may have changed).
@@ -752,10 +737,54 @@ export async function runInBackground(
   let thinkingDisplay = "";
   const THINK_OPEN = "\n[THINKING]\n";
   const THINK_CLOSE = "\n[/THINKING]\n";
-  const composeDisplay = (text: string) =>
-    fullDisplayContent +
-    (thinkingDisplay ? repairInterleavedReplay(THINK_OPEN + thinkingDisplay + THINK_CLOSE) : "") +
-    text;
+  // === Bounded per-chunk display repair (UI-freeze fix) =====================
+  // The gpt-oss replay repair is a heavy regex sweep: running it over the
+  // WHOLE transcript on EVERY streamed chunk is O(n²) and — combined with the
+  // per-chunk subscriber fan-out — saturated the main thread, so every button
+  // (Stop included) froze until the agent finished. The corruption is
+  // phrase-level and ADJACENT, so repairing a bounded tail of the streamed
+  // text is behaviorally identical for LIVE display; final assembly still
+  // runs the full repair + dedupe over everything before the task persists.
+  let streamedText = "";      // full streamed answer text so far (this turn)
+  let repairedTail = "";      // cleaned tail being incrementally extended
+  let sealedClean = "";       // cleaned prefix already beyond the repair window
+  const STREAM_REPAIR_TAIL = 600;
+  // Rebuild the collapsible [THINKING] block ONLY when thinkingDisplay
+  // actually changed — never per content chunk. Live view shows the RAW
+  // reasoning: the heavy replay repair is O(n²) across a long think and ran
+  // per delta, which (with per-chunk fan-out) froze the UI. The fold sites
+  // and final assembly still run the full repair before anything persists.
+  let lastThinkingSeen: string | null = null;
+  let thinkingBlockCache = "";
+  const thinkingBlock = () => {
+    if (thinkingDisplay === lastThinkingSeen) return thinkingBlockCache;
+    lastThinkingSeen = thinkingDisplay;
+    thinkingBlockCache = thinkingDisplay ? THINK_OPEN + thinkingDisplay + THINK_CLOSE : "";
+    return thinkingBlockCache;
+  };
+  /**
+   * composeDisplay(text) — text is the FULL streamed answer so far. Only the
+   * newly added tail is repaired; everything earlier was already cleaned on
+   * a previous chunk and is spliced back verbatim. Per-chunk cost stays
+   * proportional to the chunk, not the transcript length.
+   */
+  const composeDisplay = (text: string) => {
+    if (text.length >= streamedText.length && text.startsWith(streamedText)) {
+      // Continuation of this turn's stream — clean only the new tail.
+      repairedTail = dedupeStreamedChunk(repairedTail, text.slice(streamedText.length));
+    } else {
+      // New turn (or shrunk) — restart the bounded repair from scratch.
+      sealedClean = "";
+      repairedTail = deduplicateWords(text);
+    }
+    streamedText = text;
+    const excess = repairedTail.length - STREAM_REPAIR_TAIL;
+    if (excess > 0) {
+      sealedClean += repairedTail.slice(0, excess);
+      repairedTail = repairedTail.slice(excess);
+    }
+    return fullDisplayContent + thinkingBlock() + sealedClean + repairedTail;
+  };
 
   // === Execute orchestrator-planned writes (SPARC / ToT winners) =========
   // Runs through the audited write path (file history, plugins, counters).
@@ -803,8 +832,12 @@ export async function runInBackground(
         conversationId,
         {
           onChunk: (content) => {
+            // Bounded repair + single rebuilt thinking block per turn — see
+            // composeDisplay above. Re-repairing the whole transcript per
+            // chunk used to freeze the UI mid-run.
             setDisplayContent(composeDisplay(content));
-          },            onThinking: (thinking) => {
+          },
+          onThinking: (thinking) => {
             // Display M3 thinking in real-time inside the collapsible block
             thinkingDisplay += thinking;
             setDisplayContent(composeDisplay(""));
@@ -833,9 +866,11 @@ export async function runInBackground(
       const streamedContent = streamResult.content;
       if (!streamedContent && streamResult.toolCalls.length === 0) {
         // Empty response — set minimal content so message isn't stuck on "Thinking..."
+        // and stamp [FAILED] so the renderer offers one-click Retry.
         if (!fullDisplayContent.trim()) {
           fullDisplayContent = "*No response from the model. Try again.*";
         }
+        failedEmptyResponse = true;
         break;
       }
       lastStreamedContent = streamedContent || "";
@@ -858,7 +893,7 @@ export async function runInBackground(
       // any of the turn's content below is appended, so the collapsible
       // ThinkingCard renders the full reasoning followed by the answer.
       if (thinkingDisplay) {
-        fullDisplayContent += THINK_OPEN + thinkingDisplay + THINK_CLOSE;
+        fullDisplayContent += thinkingBlock();
         thinkingDisplay = "";
       }
 
@@ -968,6 +1003,25 @@ export async function runInBackground(
           readFile: _readFile,
           writeFile: _writeFile,
           editFile: _editFile,
+          // Client lane pages from the (budgeted) cached full text — the
+          // dispatcher slices it by line; server lanes stream from disk.
+          readPage: async (p: string, offsetLine: number, limitLines: number) => {
+            if (!_readFile) return null;
+            try {
+              const full = await _readFile(p);
+              if (full.startsWith("[Error") || full === "(file not available)") return null;
+              const lines = full.endsWith("\n") ? full.slice(0, -1).split("\n") : full.split("\n");
+              const start = Math.max(1, offsetLine);
+              const slice = lines.slice(start - 1, start - 1 + limitLines);
+              return {
+                text: slice.join("\n"),
+                startLine: start,
+                endLine: start - 1 + slice.length,
+                totalLines: lines.length,
+                hasMore: start - 1 + slice.length < lines.length,
+              };
+            } catch { return null; }
+          },
           directoryName: _directoryName,
         },
         counters: {
@@ -1231,19 +1285,20 @@ export async function runInBackground(
         }
       }
 
-    // === PARALLEL LANES: kick off the swarm review probe now so it races
+    // === PARALLEL LANES: kick off the structured review probe now so it races
     // the typecheck verification instead of running after it. Wall-clock cost
-    // of post-loop quality control becomes max(typecheck, swarm), not sum.
-    // The probe reviews the pre-repair snapshot — findings are applied only
-    // AFTER verification completes, so no two repair turns ever write concurrently.
-    const swarmGateOk =
+    // of post-loop quality control becomes max(typecheck, review), not sum.
+    // ONE reviewer call with a severity contract (was a 3-agent swarm);
+    // findings are applied only AFTER verification completes, so no two
+    // repair turns ever write concurrently.
+    const reviewGateOk =
       autoVerify &&
       (mode === "code" || mode === "plan") &&
       writtenFiles.size > 0 &&
       !abortSignal?.aborted &&
       isCurrentTask(taskId);
-    const swarmProbePromise: Promise<any> = swarmGateOk
-      ? runOrchestration("swarm-review", {
+    const reviewProbePromise: Promise<any> = reviewGateOk
+      ? runOrchestration("review", {
           task: `Review these files written for: ${userMessage.slice(0, 500)}`,
           files: [...writtenFiles.entries()].slice(0, 8).map(([path, content]) => ({ path, content })),
         })
@@ -1402,16 +1457,24 @@ export async function runInBackground(
       !abortSignal?.aborted &&
       isCurrentTask(taskId)
     ) {
-      updateTaskStatus("tool_executing", "Swarm review…");
+      updateTaskStatus("tool_executing", "Code review…");
       // Started before verification as a parallel lane — by the time we get
       // here it has long finished; awaiting is instant.
-      fullDisplayContent += "\n**Swarm review:** 3 agents (coder/reviewer/tester) reviewing the changes…\n";
+      fullDisplayContent += "\n**Code review:** one structured reviewer pass over the changes…\n";
       setDisplayContent(fullDisplayContent);
 
-      const swarm = await swarmProbePromise;
+      const swarm = await reviewProbePromise;
 
       if (swarm && !swarm.consensus) {
-        const reviewText = String(swarm.review || "").slice(0, 2000);
+        // Findings arrive structured ({severity, description}[]); the legacy
+        // `review` text field carries the same content for repair prompting.
+        const reviewText = (Array.isArray(swarm.findings) && swarm.findings.length > 0
+          ? swarm.findings
+              .filter((f: any) => f?.severity !== "minor")
+              .map((f: any) => `[${f.severity}] ${f.description}`)
+              .join("\n")
+          : String(swarm.review || "")
+        ).slice(0, 2000);
         if (reviewText) {
           fullDisplayContent += "**Swarm found issues — repairing…**\n";
           setDisplayContent(fullDisplayContent);
@@ -1437,8 +1500,8 @@ export async function runInBackground(
             imageDataUrls,
             abortSignal,
             effort,
-            "compact", // swarm review turn — doctrine already in history
-            { taskId, turn: -1, why: "swarm-review" }
+            "compact", // review repair turn — doctrine already in history
+            { taskId, turn: -1, why: "review-repair" }
           );
           if (abortSignal?.aborted) throw new DOMException("Aborted", "AbortError");
           if (thinkingDisplay) {
@@ -1466,7 +1529,7 @@ export async function runInBackground(
                 setFilesChanged(totalWrites);
                 writtenFiles.set(call.path, call.content);
               }
-              fullDisplayContent = replaceLastStatus(fullDisplayContent, ok ? `[SUCCESS] Fixed \`${call.path}\` (swarm review)` : `[ERROR] Swarm fix failed for \`${call.path}\``);
+              fullDisplayContent = replaceLastStatus(fullDisplayContent, ok ? `[SUCCESS] Fixed \`${call.path}\` (code review)` : `[ERROR] Review fix failed for \`${call.path}\``);
             } else if (call.name === "edit_file" && call.path && call.old_text && call.new_text && _editFile) {
               const ok = await _editFile(call.path, call.old_text, call.new_text);
               if (ok) {
@@ -1475,19 +1538,19 @@ export async function runInBackground(
                 const after = await _readFile?.(call.path).catch(() => null);
                 if (after && !after.startsWith("[Error")) writtenFiles.set(call.path, after);
               }
-              fullDisplayContent = replaceLastStatus(fullDisplayContent, ok ? `[SUCCESS] Fixed \`${call.path}\` (swarm review)` : `[FAIL] Swarm fix failed for \`${call.path}\``);
+              fullDisplayContent = replaceLastStatus(fullDisplayContent, ok ? `[SUCCESS] Fixed \`${call.path}\` (code review)` : `[FAIL] Review fix failed for \`${call.path}\``);
             }
             setDisplayContent(fullDisplayContent);
           }
         }
       } else if (swarm) {
-        fullDisplayContent += "**Swarm review passed** — reviewer consensus reached ✓\n";
+        fullDisplayContent += "**Code review passed** — no blocking findings ✓\n";
         recordLaneOutcome("swarm", "pass");
         setDisplayContent(fullDisplayContent);
       } else {
         // Route unavailable / provider down — say so instead of vanishing
         // silently after announcing the review (LIVE-VALIDATED gap).
-        fullDisplayContent += "*Swarm review unavailable (orchestration service unreachable) — skipped.*\n";
+        fullDisplayContent += "*Code review unavailable (orchestration service unreachable) — skipped.*\n";
         setDisplayContent(fullDisplayContent);
       }
     }
@@ -1804,7 +1867,8 @@ export async function runInBackground(
     // the main answer text.
     // Final assembly re-sweeps everything (idempotent on already-repaired
     // blocks): phrase-level replay repair → word-level dedup → normalization.
-    const finalContent = normalizeThinkingBlocks(deduplicateWords(repairInterleavedReplay(cleanContent || fullDisplayContent)));
+    const rawFinalContent = normalizeThinkingBlocks(deduplicateWords(repairInterleavedReplay(cleanContent || fullDisplayContent)));
+    let finalContent = rawFinalContent;
     setDisplayContent(finalContent);
     if (isRecordingEnabled()) {
       try {
@@ -1847,6 +1911,13 @@ export async function runInBackground(
     // Stale check: don't complete if user stopped/started a new task
     if (isCurrentTask(taskId) && !abortSignal?.aborted) {
       clearPlanLatch(taskId);
+      // A model that answered empty (no text, no tools) is a failure wearing a
+      // success: stamp the bubble [FAILED] so Retry is offered. (The stamp
+      // rides the final content — failTask/completeTask content is what the
+      // subscriber writes into the placeholder.)
+      if (failedEmptyResponse) {
+        finalContent = stampFailedMessage(finalContent || "");
+      }
       completeTask(finalContent);
       // === PLUGIN HOOK: onTaskComplete ===
       onTaskComplete(userMessage, finalContent).catch(() => {});

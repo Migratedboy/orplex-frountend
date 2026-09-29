@@ -15,6 +15,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 const isDev = !app.isPackaged;
+// Backend port: Electron OWNS its internal Next.js backend — the user never
+// runs one separately. ORPLEX_PORT only overrides for special setups.
 const PORT = Number(process.env.ORPLEX_PORT || 5000);
 const APP_URL = `http://localhost:${PORT}`;
 const LOCAL_DB_PORT = Number(process.env.LOCAL_DB_PORT || 5433);
@@ -22,6 +24,23 @@ const LOCAL_DB_PORT = Number(process.env.LOCAL_DB_PORT || 5433);
 let nextProcess: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
+
+// === SINGLE INSTANCE ========================================================
+// Opening the app twice must focus the existing window, not fight over the
+// backend port (the old "kill the port listener" behavior murdered the
+// user's own dev servers AND a healthy app instance).
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const win = getMainWindow();
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
 
 // === REAL-BROWSER PREVIEW (desktop) ========================================
 // The RightPanel's iframe+proxy preview breaks on JS-heavy pages (X-Frame-
@@ -34,11 +53,25 @@ let quitting = false;
 const PREVIEW_PARTITION = "persist:orplex-preview";
 const previewViews = new Map<number, WebContentsView>(); // renderer tabId -> view
 let previewNextTabId = 1; // mirror of the renderer's tab ids (returned on create)
-// Dedicated AGENT browser view — the AI's own browsing session, separate from
-// the user's tabs (Antigravity-style). Created lazily on first agent tool use.
-let agentViewId: number | null = null;
+// Dedicated AGENT browser — the AI's own browsing session, separate from
+// the user's tabs (Antigravity-style). Created lazily on first agent tool use;
+// supports multiple agent tabs (see agent-browser:tabs).
 // Per-view console ring buffers (agent observation) — cleared on navigation.
 const consoleBuffers = new Map<number, Array<{ level: string; text: string; at: number }>>();
+// === AGENT BROWSER advanced-op state (parity with the server lane) ========
+// Agent tabs: preview view ids the agent owns (multi-tab). Refs from the last
+// browser_find (stale after navigation/tab switch). Per-view network failure
+// telemetry captured over the CDP Network domain.
+const MAX_AGENT_TABS = 4;
+const AGENT_VIEWPORTS: Record<string, { width: number; height: number }> = {
+  desktop: { width: 1280, height: 720 },
+  tablet: { width: 768, height: 1024 },
+  mobile: { width: 390, height: 844 },
+};
+const agentTabs: number[] = [];
+let agentActiveTabIdx = 0;
+let agentFindSnapshot: Array<{ selector: string; description: string }> | null = null;
+const networkBuffers = new Map<number, Array<{ url: string; method: string; status?: number; error?: string; resourceType?: string; at: number }>>();
 // Last viewport rect reported by the renderer — navigate uses this so a view
 // NEVER loads stuck at a placeholder size if the post-load bounds sync hiccups.
 let lastViewportRect = { x: 0, y: 0, width: 0, height: 0 };
@@ -87,6 +120,7 @@ function createPreviewView(): WebContentsView {
   };
   wc.on("did-navigate", (_e, url) => {
     consoleBuffers.set(viewToId(view), []); // fresh page → fresh console
+    agentFindSnapshot = null; // refs are per-page — stale after any navigation
     emit("navigated", { url });
   });
   wc.on("did-navigate-in-page", (_e, url) => emit("navigated", { url, inPage: true }));
@@ -133,15 +167,71 @@ function viewToId(view: WebContentsView): number {
 // by the agent tools over IPC. Mirrors into the preview panel when shown so
 // the user can watch the agent work live.
 
+/** The ACTIVE agent tab's view (all agent ops run against it). */
 async function getAgentView(): Promise<{ id: number; view: WebContentsView }> {
-  if (agentViewId === null || !previewViews.has(agentViewId)) {
+  if (agentTabs.length === 0) {
     const id = previewNextTabId++;
     const view = createPreviewView();
     previewViews.set(id, view);
-    agentViewId = id;
+    attachAgentNetworkCapture(id, view);
+    agentTabs.push(id);
+    agentActiveTabIdx = 0;
   }
-  const view = previewViews.get(agentViewId)!;
-  return { id: agentViewId, view };
+  const idx = Math.min(agentActiveTabIdx, agentTabs.length - 1);
+  const id = agentTabs[idx];
+  const view = previewViews.get(id)!;
+  return { id, view };
+}
+
+/** Resolve a browser_find ref ("e3") to its stored selector, main-side. */
+function resolveRefToSelector(ref: string): { selector?: string; error?: string } {
+  if (!agentFindSnapshot) return { error: `ref ${ref} is stale — run browser_find again (no find snapshot)` };
+  const idx = parseInt(ref.replace(/^e/i, ""), 10) - 1;
+  if (!Number.isInteger(idx) || idx < 0 || idx >= agentFindSnapshot.length) {
+    return { error: `unknown ref ${ref} — run browser_find again` };
+  }
+  return { selector: agentFindSnapshot[idx].selector };
+}
+
+/** CDP Network-domain capture for one agent view: 4xx/5xx + failed requests.
+ * Best-effort — if another debugger is attached, telemetry is simply absent. */
+function attachAgentNetworkCapture(viewId: number, view: WebContentsView): void {
+  const log: Array<{ url: string; method: string; status?: number; error?: string; resourceType?: string; at: number }> = [];
+  networkBuffers.set(viewId, log);
+  const pending = new Map<string, { url: string; method: string }>();
+  const push = (ev: { url: string; method: string; status?: number; error?: string; resourceType?: string; at: number }) => {
+    log.push(ev);
+    if (log.length > 60) log.splice(0, log.length - 60); // bounded ring, same cap as the server lane
+  };
+  try {
+    const dbg = view.webContents.debugger;
+    dbg.attach("1.3");
+    void dbg.sendCommand("Network.enable");
+    dbg.on("message", (_event: any, method: string, params: any) => {
+      try {
+        if (method === "Network.requestWillBeSent") {
+          pending.set(params.requestId, { url: String(params.request?.url || "").slice(0, 300), method: String(params.request?.method || "GET") });
+        } else if (method === "Network.responseReceived") {
+          const status = Number(params.response?.status || 0);
+          const req = pending.get(params.requestId);
+          pending.delete(params.requestId);
+          if (status >= 400) {
+            push({ url: String(params.response?.url || req?.url || "").slice(0, 300), method: req?.method || "GET", status, resourceType: String(params.response?.type || ""), at: Date.now() });
+          }
+        } else if (method === "Network.loadingFailed") {
+          const req = pending.get(params.requestId);
+          pending.delete(params.requestId);
+          // Skip ERR_ABORTED — cancelled subresources/redirects are noise.
+          if (req && params.errorText !== "net::ERR_ABORTED") {
+            push({ url: req.url, method: req.method, error: String(params.errorText || "request failed").slice(0, 120), resourceType: String(params.type || ""), at: Date.now() });
+          }
+        }
+      } catch {}
+    });
+    view.webContents.on("did-navigate", () => pending.clear());
+  } catch {
+    // Another debugger attached or unsupported — everything else keeps working.
+  }
 }
 
 /** Wait until the view's webContents stops loading (with timeout). */
@@ -197,7 +287,12 @@ function normalizePreviewUrl(raw: string): string | null {
   if (/^[\w-]+(\.[\w-]+)+(\/|$|:\d)/.test(trimmed)) {
     return /^localhost(:|\/|$)/.test(trimmed) ? `http://${trimmed}` : `https://${trimmed}`;
   }
-  return null; // search-engine fallback is handled by the renderer
+  // Not URL-shaped → treat as a web search. The agent browser is a real
+  // Chromium client, so Google serves the genuine results UI.
+  if (/^[\w\s+.-]{2,120}$/.test(trimmed)) {
+    return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
+  }
+  return null;
 }
 
 /** Resolve the repo root in dev / resources dir when packaged. */
@@ -352,6 +447,18 @@ function createWindow(): void {
     show: false,
     title: "Orplex Tech — starting server…",
     autoHideMenuBar: true,
+    // Orplex logo for the window + taskbar. On Windows an .ico carries the
+    // full size range (16–256) so the taskbar renders crisply; PNG elsewhere.
+    icon: (() => {
+      try {
+        const fs = require("fs") as typeof import("fs");
+        const ico = path.join(__dirname, "assets", "icon.ico");
+        const png = path.join(__dirname, "assets", "icon.png");
+        if (process.platform === "win32" && fs.existsSync(ico)) return ico;
+        if (fs.existsSync(png)) return png;
+      } catch {}
+      return undefined;
+    })(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -425,7 +532,11 @@ ipcMain.handle("preview:create-tab", () => {
 
 ipcMain.handle("preview:navigate", (_e, tabId: number, rawUrl: string) => {
   const view = previewViews.get(tabId);
-  const url = normalizePreviewUrl(rawUrl);
+  // The renderer always sends fully-formed URLs (toNavigateUrl normalizes);
+  // accept them verbatim, fall back to normalization for bare hosts.
+  const url = /^https?:\/\//i.test(rawUrl || "")
+    ? rawUrl.trim()
+    : normalizePreviewUrl(rawUrl);
   if (!view || !url) return false;
   showPreviewTab(tabId);
   // Position BEFORE load using the renderer's last-reported viewport rect so
@@ -450,6 +561,19 @@ ipcMain.handle("preview:set-bounds", (_e, tabId: number, rect: { x: number; y: n
 ipcMain.handle("preview:show-tab", (_e, tabId: number | null) => {
   showPreviewTab(tabId);
   return true;
+});
+
+/** Renderer → OS file manager: reveal a workspace folder (Projects menu).
+ * openPath opens the folder itself; the renderer only sends paths it has
+ * already registered via /api/agent/workspace-cwd (this device's folders). */
+ipcMain.handle("orplex:reveal-path", async (_e, path: string) => {
+  if (typeof path !== "string" || !/^([A-Za-z]:[\\/]|\/)/.test(path)) return false; // absolute paths only
+  try {
+    const errMsg = await shell.openPath(path);
+    return !errMsg;
+  } catch {
+    return false;
+  }
 });
 
 // DEV DIAGNOSTIC: dump native-preview state shortly after a tab is created —
@@ -504,7 +628,7 @@ ipcMain.handle("preview:screenshot", async (_e, tabId: number) => {
 
 // === AGENT BROWSER IPC — the AI drives a real browser =====================
 
-/** Show the agent's view in the panel (so the user watches it work). */
+/** Show the ACTIVE agent tab in the panel (so the user watches it work). */
 ipcMain.handle("agent-browser:show", async () => {
   const { id, view } = await getAgentView();
   showPreviewTab(id);
@@ -516,6 +640,15 @@ ipcMain.handle("agent-browser:show", async () => {
 ipcMain.handle("agent-browser:get-id", async () => {
   const { id } = await getAgentView();
   return id;
+});
+
+/** Show the agent view (id provided) as the panel's active tab. */
+ipcMain.handle("agent-browser:show-id", (_e, viewId: number) => {
+  if (!previewViews.has(viewId)) return false;
+  showPreviewTab(viewId);
+  const view = previewViews.get(viewId)!;
+  if (lastViewportRect.width > 2) applyBounds(view, lastViewportRect);
+  return true;
 });
 
 /** Navigate + wait for load. Returns final URL + title. */
@@ -598,22 +731,57 @@ ipcMain.handle("agent-browser:elements", async () => {
   }
 });
 
-/** Interact: click / type / press key / scroll, by CSS selector. */
-ipcMain.handle("agent-browser:interact", async (_e, action: { kind: string; selector?: string; text?: string; key?: string; amount?: number }) => {
+// Selector resolution injected into the page: exact CSS first, then a
+// case-insensitive text/aria-label/placeholder/name match. Shared by the
+// interact/hover/select handlers so "click the button that says Submit" works
+// without the model hunting for exact CSS.
+const RESOLVE_FN = `
+    function __orplexResolve(sel) {
+      const vis = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden'; };
+      let el = document.querySelector(sel);
+      if (el && vis(el)) return el;
+      const needle = sel.replace(/^[#.:\\[\"']|[\"'\\]]$/g, '').trim().toLowerCase();
+      const candidates = [...document.querySelectorAll('a,button,[role=button],input,textarea,select,[onclick],label,summary')].filter(vis);
+      el = candidates.find(c =>
+        (c.getAttribute('aria-label') || '').toLowerCase().includes(needle) ||
+        (c.placeholder || '').toLowerCase().includes(needle) ||
+        (c.name || c.id || '').toLowerCase().includes(needle) ||
+        ((c.innerText || c.textContent || c.value || '').trim().toLowerCase().includes(needle))
+      ) || null;
+      return el;
+    }`;
+
+ipcMain.handle("agent-browser:interact", async (_e, action: { kind: string; selector?: string; ref?: string; text?: string; key?: string; amount?: number }) => {
   const { view } = await getAgentView();
   await waitForLoad(view);
   const wc = view.webContents;
+  // Ref targeting: browser_find refs resolve to their stored CSS selector
+  // (main-side snapshot — same semantics as the server lane).
+  let selector = action.selector;
+  if (!selector && action.ref) {
+    const resolved = resolveRefToSelector(action.ref);
+    if (resolved.error) return { ok: false, error: resolved.error };
+    selector = resolved.selector;
+  }
   try {
     switch (action.kind) {
       case "click": {
-        if (!action.selector) return { ok: false, error: "selector required" };
+        if (!selector) return { ok: false, error: "selector (or ref) required" };
         const clicked = await executeJs(view, `
           (() => {
-            const el = document.querySelector(${JSON.stringify(action.selector)});
-            if (!el) return { ok: false, error: 'not found: ${action.selector.replace(/'/g, "")}' };
+            ${RESOLVE_FN}
+            const el = __orplexResolve(${JSON.stringify(selector)});
+            if (!el) return { ok: false, error: 'not found: ${String(selector).replace(/'/g, "")}' };
             el.scrollIntoView({ block: 'center' });
+            // Realistic event sequence (React/SPA frameworks listen for these)
+            const r = el.getBoundingClientRect();
+            const opts = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+            el.dispatchEvent(new PointerEvent('pointerdown', opts));
+            el.dispatchEvent(new MouseEvent('mousedown', opts));
+            el.dispatchEvent(new PointerEvent('pointerup', opts));
+            el.dispatchEvent(new MouseEvent('mouseup', opts));
             el.click();
-            return { ok: true, clicked: (el.textContent || el.tagName).toString().slice(0, 60) };
+            return { ok: true, clicked: ((el.innerText || el.textContent || el.value || el.tagName) + '').trim().slice(0, 60) };
           })()
         `);
         await new Promise((r) => setTimeout(r, 600)); // let SPA routing settle
@@ -621,16 +789,22 @@ ipcMain.handle("agent-browser:interact", async (_e, action: { kind: string; sele
         return clicked;
       }
       case "type": {
-        if (!action.selector || typeof action.text !== "string") return { ok: false, error: "selector + text required" };
+        if (!selector || typeof action.text !== "string") return { ok: false, error: "selector (or ref) + text required" };
         const typed = await executeJs(view, `
           (() => {
-            const el = document.querySelector(${JSON.stringify(action.selector)});
+            ${RESOLVE_FN}
+            const el = __orplexResolve(${JSON.stringify(selector)});
             if (!el) return { ok: false, error: 'not found' };
+            el.scrollIntoView({ block: 'center' });
             el.focus();
-            el.value = ${JSON.stringify(action.text)};
+            // Native value setter: React's controlled inputs ignore direct
+            // value assignment, but honor the prototype setter + input event.
+            const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+            setter.call(el, ${JSON.stringify(action.text)});
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
-            return { ok: true, typed: el.value.slice(0, 60) };
+            return { ok: true, typed: (el.value || '').slice(0, 60) };
           })()
         `);
         return typed;
@@ -688,6 +862,357 @@ ipcMain.handle("agent-browser:evaluate", async (_e, code: string) => {
   }
 });
 
+// === AGENT BROWSER advanced ops (parity with the server lane) ============
+
+/** Page-side discovery script: visible actionable elements with roles, names,
+ * and STABLE selectors (id / data-testid / nth-of-type path). Shared by
+ * agent-browser:find. Mirrors the server lane's findElements. */
+const FIND_SCRIPT = `
+  (() => {
+    const vis = (el) => {
+      const r = el.getBoundingClientRect();
+      const s = getComputedStyle(el);
+      return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+    };
+    const cssPath = (el) => {
+      if (el.id) return '#' + CSS.escape(el.id);
+      const dt = el.getAttribute('data-testid');
+      if (dt) return '[data-testid="' + dt + '"]';
+      const parts = [];
+      let cur = el;
+      for (let depth = 0; cur && depth < 4 && cur !== document.body; depth++) {
+        const tag = cur.tagName.toLowerCase();
+        const parent = cur.parentElement;
+        if (parent) {
+          const same = [...parent.children].filter((c) => c.tagName === cur.tagName);
+          const idx = same.indexOf(cur) + 1;
+          parts.unshift(same.length > 1 ? tag + ':nth-of-type(' + idx + ')' : tag);
+        } else parts.unshift(tag);
+        cur = parent;
+      }
+      return parts.join(' > ');
+    };
+    const roleOf = (el) => {
+      const explicit = el.getAttribute('role');
+      if (explicit) return explicit;
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'a' && el.getAttribute('href')) return 'link';
+      if (tag === 'button') return 'button';
+      if (tag === 'input' || tag === 'textarea' || el.isContentEditable) return 'textbox';
+      if (tag === 'select') return 'combobox';
+      if (tag === 'summary') return 'button';
+      if (/^h[1-6]$/.test(tag)) return 'heading';
+      return tag;
+    };
+    const nameOf = (el) => {
+      const aria = el.getAttribute('aria-label');
+      if (aria) return aria.trim();
+      const labelledby = el.getAttribute('aria-labelledby');
+      if (labelledby) {
+        const lbl = document.getElementById(labelledby);
+        if (lbl) return (lbl.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 120);
+      }
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        const labels = el.labels;
+        if (labels && labels[0]) return (labels[0].textContent || '').trim().slice(0, 120);
+        return el.placeholder || el.name || el.value || '';
+      }
+      if (el instanceof HTMLSelectElement) {
+        const labels = el.labels;
+        if (labels && labels[0]) return (labels[0].textContent || '').trim().slice(0, 120);
+        return el.name || '';
+      }
+      return (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 120);
+    };
+    const els = [...document.querySelectorAll('a[href], button, input, textarea, select, [role], summary, [contenteditable="true"], [onclick]')];
+    const out = [];
+    for (const el of els.slice(0, 400)) {
+      if (!vis(el)) continue;
+      if (out.length >= 40) break;
+      out.push({ role: roleOf(el), name: nameOf(el), selector: cssPath(el), enabled: !el.disabled });
+    }
+    return out;
+  })()`;
+
+/** Discover actionable elements; stores refs e1..eN for click/type/hover/select. */
+ipcMain.handle("agent-browser:find", async (_e, filter: { text?: string; role?: string } = {}) => {
+  const { view } = await getAgentView();
+  await waitForLoad(view);
+  try {
+    const raw = (await executeJs(view, FIND_SCRIPT)) as Array<{ role: string; name: string; selector: string; enabled: boolean }>;
+    const needle = (filter.text || "").toLowerCase();
+    const matches = raw
+      .filter((c) => (filter.role ? c.role === filter.role : true))
+      .filter((c) => (needle ? (c.name || "").toLowerCase().includes(needle) || c.selector.toLowerCase().includes(needle) : true))
+      .slice(0, 40);
+    agentFindSnapshot = matches.map((m) => ({ selector: m.selector, description: `${m.role} "${m.name}"` }));
+    return {
+      ok: true,
+      matches: matches.map((m, i) => ({ ref: `e${i + 1}`, ...m })),
+      total: raw.length,
+      hint: matches.length
+        ? "click/type/hover/select with ref=eN (or the selector). Refs come from THIS list — run find again after navigation."
+        : "no visible matches — try a shorter text filter, or browser_read to inspect the page",
+    };
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
+/** Wait for text to appear / a selector to become visible / a fixed delay. */
+ipcMain.handle("agent-browser:wait-for", async (_e, args: { text?: string; selector?: string; time?: number; timeoutMs?: number } = {}) => {
+  const { view } = await getAgentView();
+  const started = Date.now();
+  const timeout = Math.min(Math.max(Number(args.timeoutMs) || 10000, 500), 15000);
+  try {
+    if (args.selector) {
+      const ok = await executeJs(
+        view,
+        `(() => new Promise((resolve) => {
+          const sel = ${JSON.stringify(args.selector)};
+          const deadline = Date.now() + ${timeout};
+          const tick = () => {
+            const el = document.querySelector(sel);
+            if (el && el.getBoundingClientRect().width > 0) return resolve({ ok: true });
+            if (Date.now() >= deadline) return resolve({ ok: false, error: 'timeout waiting for selector' });
+            setTimeout(tick, 120);
+          };
+          tick();
+        }))()`
+      );
+      if (!ok?.ok) throw new Error(`timed out after ${timeout}ms waiting for selector "${args.selector}"`);
+    } else if (args.text !== undefined) {
+      const ok = await executeJs(
+        view,
+        `(() => new Promise((resolve) => {
+          const needle = ${JSON.stringify(String(args.text).toLowerCase())};
+          const deadline = Date.now() + ${timeout};
+          const tick = () => {
+            const hit = (document.body?.innerText || '').toLowerCase().includes(needle);
+            if (hit) return resolve({ ok: true });
+            if (Date.now() >= deadline) return resolve({ ok: false, error: 'timeout waiting for text' });
+            setTimeout(tick, 120);
+          };
+          tick();
+        }))()`
+      );
+      if (!ok?.ok) throw new Error(`timed out after ${timeout}ms waiting for text "${args.text}"`);
+    } else {
+      await new Promise((r) => setTimeout(r, Math.min(Math.max(Number(args.time) || 1000, 100), 10000)));
+    }
+    const wc = view.webContents;
+    return { ok: true, waitedMs: Date.now() - started, url: wc.getURL(), title: await wc.executeJavaScript("document.title", false).catch(() => "") };
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
+/** Hover an element (selector or find-ref) — triggers menus/tooltips. */
+ipcMain.handle("agent-browser:hover", async (_e, args: { selector?: string; ref?: string } = {}) => {
+  const { view } = await getAgentView();
+  await waitForLoad(view);
+  let selector = args.selector;
+  if (!selector && args.ref) {
+    const resolved = resolveRefToSelector(args.ref);
+    if (resolved.error) return { ok: false, error: resolved.error };
+    selector = resolved.selector;
+  }
+  if (!selector) return { ok: false, error: "selector (or ref) required" };
+  try {
+    const r = await executeJs(
+      view,
+      `(() => {
+        ${RESOLVE_FN}
+        const el = __orplexResolve(${JSON.stringify(selector)});
+        if (!el) return { ok: false, error: 'not found: ${String(selector).replace(/'/g, "")}' };
+        el.scrollIntoView({ block: 'center' });
+        const rct = el.getBoundingClientRect();
+        const opts = { bubbles: true, cancelable: true, clientX: rct.left + rct.width / 2, clientY: rct.top + rct.height / 2 };
+        el.dispatchEvent(new MouseEvent('mouseover', opts));
+        el.dispatchEvent(new MouseEvent('mouseenter', opts));
+        el.dispatchEvent(new MouseEvent('mousemove', opts));
+        return { ok: true, hovered: ((el.innerText || el.textContent || el.getAttribute('aria-label') || el.tagName) + '').trim().slice(0, 60) };
+      })()`
+    );
+    await new Promise((res) => setTimeout(res, 300)); // reveal-on-hover UI settles
+    return r;
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
+/** Select an <option> in a <select> (value or visible label). */
+ipcMain.handle("agent-browser:select", async (_e, args: { selector?: string; ref?: string; value?: string } = {}) => {
+  const { view } = await getAgentView();
+  await waitForLoad(view);
+  let selector = args.selector;
+  if (!selector && args.ref) {
+    const resolved = resolveRefToSelector(args.ref);
+    if (resolved.error) return { ok: false, error: resolved.error };
+    selector = resolved.selector;
+  }
+  if (!selector || args.value === undefined) return { ok: false, error: "value required, plus selector or ref" };
+  try {
+    const r = await executeJs(
+      view,
+      `(() => {
+        ${RESOLVE_FN}
+        const el = __orplexResolve(${JSON.stringify(selector)});
+        if (!el || el.tagName !== 'SELECT') return { ok: false, error: 'no <select> matches: ${String(selector).replace(/'/g, "")}' };
+        const want = ${JSON.stringify(args.value)};
+        let opt = [...el.options].find((o) => o.value === want) || [...el.options].find((o) => (o.textContent || '').trim().toLowerCase() === want.toLowerCase());
+        if (!opt) {
+          const partial = [...el.options].find((o) => (o.textContent || '').toLowerCase().includes(want.toLowerCase()));
+          if (partial) opt = partial;
+        }
+        if (!opt) return { ok: false, error: 'no option "' + want + '" — options: ' + [...el.options].slice(0, 10).map((o) => o.value || o.textContent).join(', ') };
+        el.value = opt.value;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return { ok: true, selected: opt.value, label: (opt.textContent || '').trim().slice(0, 80) };
+      })()`
+    );
+    return r;
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
+/** Agent tab management: list / new / switch / close (cap ${"MAX_AGENT_TABS"}).
+ * All ops act on the ACTIVE tab set; every tab has console + network capture. */
+ipcMain.handle("agent-browser:tabs", async (_e, args: { action?: string; url?: string; index?: number } = {}) => {
+  const action = args.action || "list";
+  const summarize = async () => {
+    const out: Array<{ index: number; url: string; title: string; active: boolean }> = [];
+    for (let i = 0; i < agentTabs.length; i++) {
+      const v = previewViews.get(agentTabs[i]);
+      if (!v) continue;
+      out.push({
+        index: i,
+        url: v.webContents.getURL().slice(0, 200),
+        title: await v.webContents.executeJavaScript("document.title", false).catch(() => ""),
+        active: i === agentActiveTabIdx,
+      });
+    }
+    return out;
+  };
+  try {
+    if (action === "list") {
+      return { ok: true, tabs: await summarize() };
+    }
+    if (action === "new") {
+      if (agentTabs.length >= MAX_AGENT_TABS) {
+        return { ok: false, error: `tab limit reached (${MAX_AGENT_TABS}) — close one first with tab_action "close"` };
+      }
+      const id = previewNextTabId++;
+      const view = createPreviewView();
+      previewViews.set(id, view);
+      attachAgentNetworkCapture(id, view);
+      agentTabs.push(id);
+      agentActiveTabIdx = agentTabs.length - 1;
+      agentFindSnapshot = null;
+      if (args.url) {
+        const url = normalizePreviewUrl(args.url);
+        if (!url) return { ok: false, error: `Invalid URL: ${args.url}` };
+        await view.webContents.loadURL(url).catch((err: any) => {
+          throw new Error(`navigation failed in new tab: ${String(err?.message || err).slice(0, 200)}`);
+        });
+        await waitForLoad(view);
+      }
+      return { ok: true, opened: agentActiveTabIdx, url: view.webContents.getURL(), title: await view.webContents.executeJavaScript("document.title", false).catch(() => ""), tabs: await summarize() };
+    }
+    if (action === "switch") {
+      const idx = Number(args.index);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= agentTabs.length || !previewViews.has(agentTabs[idx])) {
+        return { ok: false, error: `no agent tab at index ${idx} — call tabs (list) to see open tabs` };
+      }
+      agentActiveTabIdx = idx;
+      agentFindSnapshot = null; // refs belong to the previous tab's page
+      const view = previewViews.get(agentTabs[idx])!;
+      return { ok: true, switchedTo: idx, url: view.webContents.getURL(), title: await view.webContents.executeJavaScript("document.title", false).catch(() => ""), tabs: await summarize() };
+    }
+    if (action === "close") {
+      const idx = Number(args.index);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= agentTabs.length || !previewViews.has(agentTabs[idx])) {
+        return { ok: false, error: `no agent tab at index ${idx} — call tabs (list) to see open tabs` };
+      }
+      if (agentTabs.length <= 1) {
+        return { ok: false, error: "cannot close the last tab" };
+      }
+      const [closedId] = agentTabs.splice(idx, 1);
+      destroyPreviewTab(closedId);
+      networkBuffers.delete(closedId);
+      if (agentActiveTabIdx >= agentTabs.length) agentActiveTabIdx = agentTabs.length - 1;
+      if (agentActiveTabIdx > idx) agentActiveTabIdx--;
+      agentFindSnapshot = null;
+      return { ok: true, closed: idx, tabs: await summarize() };
+    }
+    return { ok: false, error: `unknown tab action "${action}" — use list | new | switch | close` };
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
+/** Failed requests (HTTP 4xx/5xx + aborted) since session start, active tab. */
+ipcMain.handle("agent-browser:network", async () => {
+  const { id } = await getAgentView();
+  const events = networkBuffers.get(id) ?? [];
+  return {
+    ok: true,
+    failedRequests: events.length,
+    failed4xx5xx: events.filter((e) => e.status && e.status >= 400).length,
+    aborted: events.filter((e) => e.error).length,
+    events: events.slice(-30),
+    hint: events.length
+      ? "4xx/5xx and aborted requests since session start (newest last). Investigate the failing URL or check browser_console."
+      : "No failed requests (no 4xx/5xx responses, no aborted requests).",
+  };
+});
+
+/** Screenshot with optional fullPage + named viewport (desktop/tablet/mobile). */
+ipcMain.handle("agent-browser:screenshot-advanced", async (_e, args: { fullPage?: boolean; viewpoint?: string } = {}) => {
+  const { view } = await getAgentView();
+  await waitForLoad(view, 8000);
+  const wc = view.webContents;
+  let appliedViewport: { width: number; height: number } | undefined;
+  if (args.viewpoint && AGENT_VIEWPORTS[args.viewpoint]) {
+    appliedViewport = AGENT_VIEWPORTS[args.viewpoint];
+    await wc.executeJavaScript(`window.resizeTo(${appliedViewport.width}, ${appliedViewport.height})`, false).catch(() => {});
+    // resizeTo is often ignored for WebContentsView; fall back to setBounds
+    // (the view IS the viewport) and give responsive layouts a beat to settle.
+    const b = view.getBounds();
+    if (b.width !== appliedViewport.width || b.height !== appliedViewport.height) {
+      view.setBounds({ x: b.x, y: b.y, width: appliedViewport.width, height: appliedViewport.height });
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  const image = await wc.capturePage();
+  let dataUrl = image.toDataURL();
+  if (args.fullPage) {
+    // Single-capture full page: grow the view to the full scroll height,
+    // capture once, restore. Cleaner and artifact-free vs scroll-stitching.
+    const b = view.getBounds();
+    try {
+      const dims = await wc.executeJavaScript("({ h: document.documentElement.scrollHeight, vh: window.innerHeight })", false);
+      if (dims && dims.h > dims.vh + 4 && dims.h <= 8000) {
+        view.setBounds({ x: b.x, y: b.y, width: b.width, height: dims.h });
+        await new Promise((r) => setTimeout(r, 300)); // reflow + paint
+        dataUrl = (await wc.capturePage()).toDataURL();
+      }
+    } catch {
+      // fullPage best-effort — the viewport capture above is already in hand
+    } finally {
+      view.setBounds(b); // always restore
+    }
+  }
+  return {
+    screenshot: dataUrl,
+    url: wc.getURL(),
+    fullPage: !!args.fullPage,
+    ...(appliedViewport ? { viewport: appliedViewport } : {}),
+  };
+});
+
 /** Kill whatever process is listening on the given port (Windows + POSIX). */
 async function killPortListener(port: number): Promise<void> {
   const { execSync } = await import("node:child_process");
@@ -726,6 +1251,11 @@ app.on("activate", () => {
 });
 
 app.whenReady().then(async () => {
+  // Orplex logo is wired per-window (BrowserWindow `icon` option below —
+  // Windows pulls the taskbar icon from it; .ico preferred for the best
+  // taskbar scaling). There is no app-level setIcon in Electron; on macOS
+  // the Dock icon comes from the app bundle at packaging time.
+
   // Renderer → main: open http(s) links in the OS default browser.
   ipcMain.handle("orplex:open-external", (_event, url: string) => {
     if (typeof url === "string" && /^https?:\/\//i.test(url)) {
@@ -735,11 +1265,14 @@ app.whenReady().then(async () => {
 
   try {
     // Electron owns the server lifecycle — it ALWAYS spawns its own Next
-    // instance and kills it on quit (close window = server stops). A stray
-    // server on the port is ours to take over from a crashed previous run:
-    // kill the listener, then start fresh.
+    // backend as a child process and kills it on quit (close window = backend
+    // stops). The port is OURS: the app instance lock above guarantees no
+    // second instance races us for it. If a stray/zombie server holds the
+    // port from a crashed previous run, take it over cleanly; the user's own
+    // processes on OTHER ports are never touched.
     await ensureLocalDb();
     if (await probeServer(APP_URL)) {
+      process.stdout.write(`[startup] port ${PORT} held by a stale process — taking it over\n`);
       await killPortListener(PORT);
     }
     await startNextServer();

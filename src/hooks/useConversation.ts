@@ -70,7 +70,10 @@ export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]
   const saveConversation = useCallback(async (
     userContent: string,
     assistantContent: string,
-    conversationIdOverride?: string | null
+    conversationIdOverride?: string | null,
+    // Workspace folder (NAME) the thread belongs to — stamps new conversations
+    // and refreshes existing ones so the sidebar groups threads per project.
+    workspaceName?: string | null
   ) => {
     try {
       const targetId = conversationIdOverride !== undefined ? conversationIdOverride : conversationId;
@@ -79,6 +82,10 @@ export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           conversationId: targetId,
+          // Always send the CURRENT folder when one is open (threads move with
+          // the workspace they continue in); omit entirely when none is open so
+          // an existing tag is never wiped by a folderless save.
+          ...(workspaceName ? { workspaceName } : {}),
           messages: [
             { role: "user", content: userContent },
             { role: "assistant", content: assistantContent },

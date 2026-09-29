@@ -4,14 +4,7 @@ import { useState, useEffect, useCallback, useRef, Component, type ReactNode } f
 import { useFileSystemContext } from "./FileSystemProvider";
 import { useBackgroundChat } from "@/hooks/useBackgroundChat";
 import DiffView from "./DiffView";
-import { embeddableUrl } from "@/lib/embeddable";
 import { apiFetch } from "@/lib/api-base";
-import {
-  frameProbeTarget,
-  classifyFrameFailure,
-  FRAME_PROBE_TIMEOUT_MS,
-  type FrameFailure,
-} from "@/lib/frame-health";
 
 type Tab = "queue" | "changes" | "files" | "preview" | "terminal";
 
@@ -27,7 +20,7 @@ class TabErrorBoundary extends Component<{ children: ReactNode; tab: string }, {
     if (this.state.error) {
       return (
         <div className="rp-empty" style={{ padding: 16 }}>
-          <div style={{ color: '#ef4444', marginBottom: 8, fontWeight: 600 }}>⚠️ Tab error</div>
+          <div style={{ color: '#ef4444', marginBottom: 8, fontWeight: 600 }}><span className="ms">warning</span> Tab error</div>
           <div style={{ fontSize: 12, color: '#666', marginBottom: 8, wordBreak: 'break-word' }}>{this.state.error}</div>
           {this.state.errorInfo && (
             <details style={{ fontSize: 11, color: '#999', marginBottom: 8 }}>
@@ -248,8 +241,14 @@ function FileNodeItem({ node, depth, filter, onSelect, activePath }: {
 }
 
 // === Preview Tab — embedded browser (Chrome-style) ===
-// Same-origin proxy so sites with X-Frame-Options still render. Tabs,
-// per-tab history, back/forward/reload, omnibox with search fallback.
+// NATIVE ONLY: every page renders in a real Chromium WebContentsView owned by
+// the Electron main process (isolated persist:orplex-preview profile), driven
+// over IPC. Real Chromium = real Google (with the real Google UI), real
+// sites with zero X-Frame-Options problems, working HMR websockets for
+// localhost dev servers, service workers, downloads — everything a real
+// browser does. There is deliberately NO iframe/proxy fallback: inside the
+// desktop shell it was the source of broken pages (rewriting bugs, bot-wall
+// interstitials, dead HMR) and outside it nothing works at all.
 
 interface BrowserTab {
   id: number;
@@ -261,9 +260,6 @@ interface BrowserTab {
 /** Reserved id for the agent's own browser tab (never from nextTabId). */
 const AGENT_TAB_ID = 999999;
 
-let _previewIframeEl: HTMLIFrameElement | null = null;
-export function getPreviewIframe() { return _previewIframeEl; }
-
 const HOME_SUGGESTIONS = [
   { label: "3000", url: "http://localhost:3000" },
   { label: "5173", url: "http://localhost:5173" },
@@ -273,7 +269,7 @@ const HOME_SUGGESTIONS = [
 
 function faviconFor(u: string): string {
   try {
-    const host = new URL(underlyingUrl(u)).hostname;
+    const host = new URL(u).hostname;
     if (!host || host === window.location.hostname) return "";
     return `https://www.google.com/s2/favicons?domain=${host}&sz=32`;
   } catch {
@@ -281,24 +277,9 @@ function faviconFor(u: string): string {
   }
 }
 
-/** Unwrap app-internal wrapper URLs (/api/proxy?url=…) to the real target. */
-function underlyingUrl(u: string): string {
-  const px = u.match(/^\/api\/proxy\?url=([^&]+)/);
-  if (px) {
-    try { return decodeURIComponent(px[1]); } catch { return u; }
-  }
-  return u;
-}
-
 function displayUrl(u: string): string {
-  // Search-page URLs display as the query itself ("hi — search" → "hi"),
-  // like a real browser shows the query in the omnibox.
-  const sp = u.match(/^\/api\/search-page\?q=(.+)$/);
-  if (sp) {
-    try { return decodeURIComponent(sp[1]); } catch { return sp[1]; }
-  }
   try {
-    const parsed = new URL(underlyingUrl(u));
+    const parsed = new URL(u);
     const path = parsed.pathname === "/" ? "" : parsed.pathname;
     return `${parsed.hostname}${path}${parsed.search}`;
   } catch {
@@ -307,46 +288,21 @@ function displayUrl(u: string): string {
 }
 
 /**
- * Omnipresent URL normalization: search terms → a search results page, bare
- * hosts → https. Native (Electron real-browser) mode searches Google for
- * real, exactly like Chrome's omnibox; the iframe fallback uses our
- * server-rendered results page because Google blocks framing.
+ * Omnipresent URL normalization, exactly like Chrome's omnibox: search terms
+ * → a real Google search, bare hosts → https, localhost/IP → http. The
+ * native Chromium view has real browser fingerprints, so Google serves the
+ * genuine search UI — no bot walls, no server-rendered stand-ins.
  */
-function toNavigateUrl(input: string, nativeMode = false): string {
+function toNavigateUrl(input: string): string {
   const u = input.trim();
   if (!u) return "";
   if (/^https?:\/\//i.test(u)) return u;
-  // App-internal paths (proxy wraps, search page) pass through untouched.
-  if (u.startsWith("/")) return u;
   if (/^localhost(:\d+)?(\/|$)/i.test(u) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/|$)/.test(u)) {
     return `http://${u}`;
   }
   // Looks like a domain (has a dot + valid chars) → https, else web search.
   if (/^[\w-]+(\.[\w-]+)+(\/|$)/.test(u)) return `https://${u}`;
-  if (nativeMode) {
-    // Real browser view: search Google directly (no bot-challenge — it's a
-    // genuine Chrome client with real fingerprints).
-    return `https://www.google.com/search?q=${encodeURIComponent(u)}&udm=14`;
-  }
-  // Iframe fallback: our server-rendered results page (Bing RSS-backed) —
-  // search engines bot-challenge server fetches and their JS-heavy pages
-  // don't survive the rewriting proxy.
-  return `/api/search-page?q=${encodeURIComponent(u)}`;
-}
-
-/**
- * What actually loads in the iframe:
- *  - YouTube (+ a few embed-friendly hosts) → their official embed player
- *  - localhost dev servers → direct (no proxy; proxy would break HMR websockets)
- *  - everything else → same-origin proxy (defeats X-Frame-Options)
- */
-function iframeSrcFor(url: string): string {
-  const embeddable = embeddableUrl(url);
-  if (embeddable) return embeddable;
-  if (/^http:\/\/localhost(:\d+)?/i.test(url) || /^http:\/\/127\.0\.0\.1(:\d+)?/i.test(url)) return url;
-  // Same-origin app pages (embedded search results) load directly.
-  if (url.startsWith("/")) return url;
-  return `/api/proxy?url=${encodeURIComponent(url)}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(u)}`;
 }
 
 const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
@@ -357,18 +313,9 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
   const [loading, setLoading] = useState(false);
   const [agentDriven, setAgentDriven] = useState(false);
   const [nextTabId, setNextTabId] = useState(2);
-  const [reloadTick, setReloadTick] = useState(0);
-  // Detected iframe load failure (blank frame / refused embed). Chromium
-  // fires no onerror for failed frames, so this is derived from reachability
-  // probes + the frame error event — see frame-health.ts.
-  const [frameError, setFrameError] = useState<FrameFailure | null>(null);
-  // The URL actually bound to the iframe. Only EXPLICIT navigation (omnibox,
-  // back/forward, agent, reload) touches this — in-frame link clicks are
-  // mirrored into history without remounting the iframe (which would reload
-  // the page the user just clicked).
-  const [frameSrc, setFrameSrc] = useState("");
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const loadStartedRef = useRef(0);
+  // Native load failure — surfaced by the main process's did-fail-load event
+  // (real Chromium error codes, no probing required).
+  const [loadError, setLoadError] = useState<{ title: string; hint: string } | null>(null);
   // Live local dev servers (probed server-side via TCP): the new-tab page
   // marks ports with a real listener so the user opens the REAL localhost
   // preview of the server running on their machine, not a guess.
@@ -400,10 +347,10 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
   }, []);
 
   // === NATIVE PREVIEW (Electron) ===
-  // Inside the desktop shell the "viewport" is a placeholder div: the real
-  // pixels come from a Chromium WebContentsView owned by the main process,
-  // positioned over the placeholder via IPC. Real browser = real devtools
-  // semantics, HMR websockets, service workers, no X-Frame-Options games.
+  // The "viewport" is a placeholder div: the real pixels come from a
+  // Chromium WebContentsView owned by the main process, positioned over the
+  // placeholder via IPC. Real browser = real devtools semantics, HMR
+  // websockets, service workers, no X-Frame-Options games.
   const native = typeof window !== "undefined" ? window.orplexDesktop?.preview ?? null : null;
   const nativeMapRef = useRef<Map<number, number>>(new Map()); // renderer tabId -> main view id
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -436,12 +383,6 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
 
   const activeTab = tabs.find(t => t.id === activeId) ?? tabs[0];
   const currentUrl = activeTab?.history[activeTab.index] || "";
-
-  // Register global ref for the screenshot tool.
-  useEffect(() => {
-    _previewIframeEl = iframeRef.current;
-    return () => { _previewIframeEl = null; };
-  }, []);
 
   // Omnibox mirrors the current page URL unless the user is editing it.
   useEffect(() => {
@@ -521,7 +462,16 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
         }
         case "loading":
           setLoading(Boolean(event.loading));
+          if (event.loading) setLoadError(null);
           break;
+        case "did-fail-load": {
+          // Real Chromium failure (DNS, refused connection, SSL). Map the
+          // common error codes to honest, actionable copy.
+          const code = Number(event.errorCode);
+          if (code === -3) break; // ERR_ABORTED — navigation superseded, not a failure
+          setLoadError(nativeLoadFailure(code, String(event.url || "")));
+          break;
+        }
         case "title-updated": {
           const title = String(event.title || "").slice(0, 40);
           if (title) setTabs(prev => prev.map(t => (t.id === tabId ? { ...t, title } : t)));
@@ -588,7 +538,7 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
 
   /** Core navigation: pushes onto the active tab's history (or replaces the current entry). */
   const navigateTo = useCallback((raw: string, opts: { replace?: boolean } = {}) => {
-    const target = toNavigateUrl(raw, !!native);
+    const target = toNavigateUrl(raw);
     if (!target) return;
     setTabs(prev => prev.map(t => {
       if (t.id !== activeId) return t;
@@ -600,159 +550,15 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
       return { ...t, history, index: history.length - 1, title: displayUrl(target) };
     }));
     setLoading(true);
-    loadStartedRef.current = Date.now();
-    setFrameError(null); // explicit navigation re-arms failure detection
-    if (native) {
-      // Native: load the REAL URL in the isolated WebContentsView. App-
-      // internal paths (embedded search page) resolve against our origin.
-      const absolute = target.startsWith("/") ? `${window.location.origin}${target}` : target;
-      void ensureNativeTab(activeId).then(mainId => {
-        if (mainId === null) return;
-        void native.navigate(mainId, absolute);
-        // TEMP DIAGNOSTIC: dump native view state 2s after first navigation
-        setTimeout(() => {
-          void native.diag().then(d => console.log("[native-preview-diag]", JSON.stringify(d)));
-        }, 2000);
-      });
-    } else {
-      setFrameSrc(iframeSrcFor(target));
-      setReloadTick(t => t + 1);
-    }
+    setLoadError(null); // explicit navigation re-arms failure display
+    // Native: load the REAL URL in the isolated WebContentsView.
+    if (!native) return;
+    void ensureNativeTab(activeId).then(mainId => {
+      if (mainId === null) return;
+      void native.navigate(mainId, target);
+    });
   }, [activeId, native, ensureNativeTab]);
   navigateRef.current = navigateTo;
-
-  // In-frame navigation sync: when the user clicks a link inside a page
-  // (search results, proxied sites), the iframe navigates itself — mirror it
-  // into the tab's history so back/forward, the omnibox, and the title stay
-  // truthful. Same-origin frames only; cross-origin embeds throw and are
-  // skipped. Proxied in-frame URLs are stored UNWRAPPED (the real target) so
-  // the omnibox reads like a real browser, and embeddable targets (YouTube
-  // watch pages) are upgraded to the official embed player — clicking a video
-  // in the search results must PLAY, not render a broken proxied SPA.
-  useEffect(() => {
-    const id = setInterval(() => {
-      const win = iframeRef.current?.contentWindow;
-      if (!win) return;
-      let href = "";
-      try { href = win.location.href; } catch { return; }
-      if (!href || href === "about:blank") return;
-      const origin = window.location.origin;
-      if (!href.startsWith(origin)) return;
-      const path = href.slice(origin.length) || "/";
-      const real = underlyingUrl(path);
-      const embed = real !== path ? embeddableUrl(real) : null;
-      const store = embed ?? real;
-      if (path === currentUrl || store === currentUrl) return;
-      if (embed) {
-        setLoading(true);
-        setFrameSrc(embed);
-        setReloadTick(t => t + 1);
-      }
-      setTabs(prev => prev.map(t => {
-        if (t.id !== activeId) return t;
-        const cur = t.history[t.index] || "";
-        if (store === cur || path === cur) return t;
-        const history = [...t.history.slice(0, t.index + 1), store];
-        return { ...t, history, index: history.length - 1, title: displayUrl(store) };
-      }));
-    }, 400);
-    return () => clearInterval(id);
-  }, [activeId, currentUrl]);
-
-  // The iframe's src is derived from history; changing it triggers a load.
-  // onLoad marks loading complete (proxy pages + same-origin = readable).
-  const handleIframeLoad = () => {
-    setLoading(false);
-    // NB: Chromium fires onLoad even for its built-in error page after a
-    // failed navigation, so this does NOT clear frameError unconditionally.
-    // Clear only when the document is provably alive (same-origin readable
-    // with content); cross-origin and opaque error pages are left for the
-    // reachability probe to classify or clear.
-    try {
-      const doc = iframeRef.current?.contentDocument;
-      const title = doc?.title?.trim();
-      const hasBody = (doc?.body?.innerText || doc?.body?.textContent || "").trim().length > 0;
-      if (title || hasBody) setFrameError(null);
-      if (title) {
-        setTabs(prev => prev.map(t => (t.id === activeId ? { ...t, title: title.slice(0, 40) } : t)));
-      }
-    } catch {
-      // Cross-origin: aliveness is the probe's call.
-    }
-  };
-
-  // === Frame failure detection ===
-  // A healthy load either signals onLoad (same-origin readable) or renders
-  // visibly (cross-origin success). Neither happens for refused/dead loads —
-  // so probe the URL's reachability and, if the frame also fired its error
-  // event, classify the failure for the viewport overlay. Cleared by any
-  // explicit navigation or successful load.
-  const frameSrcForProbe = frameSrc; // explicit navigations only; in-frame clicks settle via onLoad
-  useEffect(() => {
-    if (!frameSrcForProbe || native) {
-      setFrameError(null);
-      return;
-    }
-    setFrameError(null);
-    let alive = true;
-    let navErr = false;
-    const frameEl = iframeRef.current;
-    const onNavErr = () => { navErr = true; };
-    frameEl?.addEventListener("error", onNavErr);
-
-    const timer = window.setTimeout(async () => {
-      const probe = frameProbeTarget(frameSrcForProbe);
-      if (!probe || !alive) return;
-      try {
-        let reachable = false;
-        let detail: string | undefined;
-        if (probe.kind === "internal") {
-          // Same-origin: the status is directly readable.
-          const res = await apiFetch(probe.url, {
-            method: "HEAD",
-            signal: AbortSignal.timeout(FRAME_PROBE_TIMEOUT_MS),
-          });
-          reachable = res.ok;
-          if (!res.ok) detail = `HTTP ${res.status}`;
-        } else if (probe.kind === "localhost") {
-          // Dev-server ports: server-side TCP probe (avoids CORS entirely).
-          const res = await apiFetch("/api/localhost-probe", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ports: [probe.port] }),
-            signal: AbortSignal.timeout(FRAME_PROBE_TIMEOUT_MS),
-          });
-          const data = await res.json().catch(() => null);
-          reachable = Array.isArray(data?.live) && data.live.includes(probe.port);
-        } else {
-          // Cross-origin: browser fetches are CORS-opaque — ask the server.
-          const res = await apiFetch(`/api/probe-url?url=${encodeURIComponent(probe.url)}`, {
-            signal: AbortSignal.timeout(FRAME_PROBE_TIMEOUT_MS + 2000),
-          });
-          const data = await res.json().catch(() => null);
-          reachable = data?.ok === true;
-          if (data?.error) detail = String(data.error);
-        }
-        if (!alive) return;
-        if (!reachable) {
-          setFrameError(classifyFrameFailure(probe.kind, detail));
-        } else if (!navErr) {
-          // Reachable and the frame didn't error — confirm alive.
-          setFrameError(null);
-        }
-        // reachable && navErr → loaded but threw later; not a load failure.
-      } catch {
-        if (!alive) return;
-        setFrameError(classifyFrameFailure(probe.kind));
-      }
-    }, 2500);
-
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-      frameEl?.removeEventListener("error", onNavErr);
-    };
-  }, [frameSrcForProbe, native, reloadTick]);
 
   const canBack = activeTab && activeTab.index > 0;
   const canForward = activeTab && activeTab.index < activeTab.history.length - 1;
@@ -761,32 +567,19 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
     if (!activeTab) return;
     const next = activeTab.index + delta;
     if (next < 0 || next >= activeTab.history.length) return;
-    const target = activeTab.history[next];
     setTabs(prev => prev.map(t => (t.id === activeId ? { ...t, index: next } : t)));
     setLoading(true);
-    if (native) {
-      const mainId = nativeMapRef.current.get(activeId);
-      if (mainId !== undefined) void (delta < 0 ? native.goBack(mainId) : native.goForward(mainId));
-    } else {
-      setFrameSrc(iframeSrcFor(target));
-      setReloadTick(t => t + 1);
-    }
+    setLoadError(null);
+    const mainId = nativeMapRef.current.get(activeId);
+    if (mainId !== undefined && native) void (delta < 0 ? native.goBack(mainId) : native.goForward(mainId));
   };
 
   const reload = () => {
-    if (!currentUrl) return;
+    if (!currentUrl || !native) return;
     setLoading(true);
-    if (native) {
-      const mainId = nativeMapRef.current.get(activeId);
-      if (mainId !== undefined) void native.reload(mainId);
-    } else {
-      // Reload the page the user is actually ON (currentUrl may have changed
-      // via in-frame navigation even though frameSrc still holds the entry the
-      // iframe was explicitly pointed at).
-      setFrameSrc(iframeSrcFor(currentUrl));
-      // Remount the iframe via key (React-idiomatic full reload).
-      setReloadTick(t => t + 1);
-    }
+    setLoadError(null);
+    const mainId = nativeMapRef.current.get(activeId);
+    if (mainId !== undefined) void native.reload(mainId);
   };
 
   const newTab = () => {
@@ -795,7 +588,6 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
     setTabs(prev => [...prev, { id, history: [], index: -1, title: "New Tab" }]);
     setActiveId(id);
     setOmnibox("");
-    setFrameSrc("");
   };
 
   const closeTab = (id: number) => {
@@ -815,12 +607,10 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
       const rest = tabs.filter(t => t.id !== id);
       const nextId = rest[rest.length - 1]?.id ?? nextTabId;
       setActiveId(nextId);
-      const target = rest[rest.length - 1]?.history[rest[rest.length - 1]?.index] || "";
-      if (!native) setFrameSrc(target ? iframeSrcFor(target) : "");
     }
   };
 
-  const isSecure = underlyingUrl(currentUrl).startsWith("https://");
+  const isSecure = currentUrl.startsWith("https://");
   const showNewTabPage = !currentUrl;
 
   return (
@@ -836,8 +626,6 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
               onClick={() => {
                 if (t.id === activeId) return;
                 setActiveId(t.id);
-                const target = t.history[t.index] || "";
-                setFrameSrc(target ? iframeSrcFor(target) : "");
               }}
               title={t.title}
             >
@@ -867,12 +655,9 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
           className="rp-browser-btn"
           onClick={() => {
             if (!currentUrl) return;
-            // Hand the REAL page to the user's REAL browser — never the
-            // internal /api/proxy wrapper (Electron shell.openExternal;
-            // plain-browser fallback opens a new tab).
-            const real = underlyingUrl(currentUrl);
-            if (window.orplexDesktop?.openExternal) { window.orplexDesktop.openExternal(real); }
-            else window.open(real, "_blank", "noopener");
+            // Hand the REAL page to the OS default browser (shell.openExternal).
+            if (window.orplexDesktop?.openExternal) { window.orplexDesktop.openExternal(currentUrl); }
+            else window.open(currentUrl, "_blank", "noopener");
           }}
           disabled={!currentUrl}
           title="Open this page in your real browser"
@@ -915,9 +700,20 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
 
       {/* Viewport */}
       <div className="rp-preview-viewport" ref={native ? viewportRef : undefined} data-native-preview={native ? "true" : undefined}>
-        {showNewTabPage ? (
+        {!native ? (
+          // Without the desktop shell there is no real browser to embed —
+          // say so instead of silently rendering a broken iframe.
           <div className="rp-preview-empty">
-            <div className="rp-preview-empty-icon">🌐</div>
+            <div className="rp-preview-empty-icon">🖥️</div>
+            <div className="rp-preview-empty-title">Desktop app required</div>
+            <div className="rp-preview-empty-hint">
+              The embedded browser runs on real Chromium inside the Orplex desktop app.
+              Launch the app (npm run dev or the installed binary) to browse here.
+            </div>
+          </div>
+        ) : showNewTabPage ? (
+          <div className="rp-preview-empty">
+            <div className="rp-preview-empty-icon"><span className="ms ms-lg">language</span></div>
             <div className="rp-preview-empty-title">Orplex Browser</div>
             <div className="rp-preview-empty-hint">Search the web or enter a URL — or let the AI open one</div>
             <div className="rp-preview-empty-ports">
@@ -933,34 +729,21 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
               </div>
             )}
           </div>
-        ) : native ? (
-          // Native mode: the real Chromium view is layered above this
-          // placeholder by the main process (positioned via preview:setBounds).
-          <div className="rp-preview-native-placeholder" aria-hidden="true" />
         ) : (
           <>
-            <iframe
-              key={`${frameSrc}#${reloadTick}`}
-              ref={iframeRef}
-              // Empty src would make the iframe load the app page itself; render
-              // src-less (about:blank) instead until an explicit navigation sets it.
-              src={frameSrc || undefined}
-              className="rp-preview-iframe"
-              onLoad={handleIframeLoad}
-              sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-              title="Orplex Browser"
-            />
-            {frameError && (
+            {/* Native mode: the real Chromium view is layered above this
+                placeholder by the main process (positioned via setBounds). */}
+            <div className="rp-preview-native-placeholder" aria-hidden="true" />
+            {loadError && (
               <div className="rp-preview-error" role="alert">
-                <div className="rp-preview-error-icon">⚠️</div>
-                <div className="rp-preview-error-title">{frameError.title}</div>
-                <div className="rp-preview-error-hint">{frameError.hint}</div>
+                <div className="rp-preview-error-icon"><span className="ms ms-lg">warning</span></div>
+                <div className="rp-preview-error-title">{loadError.title}</div>
+                <div className="rp-preview-error-hint">{loadError.hint}</div>
                 <div className="rp-preview-error-actions">
                   <button
                     className="rp-preview-error-btn rp-preview-error-btn--primary"
                     onClick={() => {
-                      setFrameError(null);
+                      setLoadError(null);
                       reload();
                     }}
                   >
@@ -969,9 +752,8 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
                   <button
                     className="rp-preview-error-btn"
                     onClick={() => {
-                      const real = underlyingUrl(currentUrl);
-                      if (window.orplexDesktop?.openExternal) window.orplexDesktop.openExternal(real);
-                      else window.open(real, "_blank", "noopener");
+                      if (window.orplexDesktop?.openExternal) window.orplexDesktop.openExternal(currentUrl);
+                      else window.open(currentUrl, "_blank", "noopener");
                     }}
                   >
                     Open in Chrome ↗
@@ -990,6 +772,36 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
 // session), keep it mounted across tab switches so native WebContentsViews
 // survive — only their visibility toggles.
 const mountedBrowserRef = { current: false };
+
+/**
+ * Map Chromium network error codes to honest, actionable viewport copy.
+ * Only the codes users actually hit; unknown codes get a generic message.
+ */
+function nativeLoadFailure(code: number, url: string): { title: string; hint: string } {
+  const host = (() => { try { return new URL(url).hostname; } catch { return url.slice(0, 60); } })();
+  switch (code) {
+    case -2: // ERR_FAILED
+    case -7: // ERR_TIMED_OUT
+      return { title: "This site took too long to respond", hint: `${host} did not answer in time. Retry in a moment.` };
+    case -6: // ERR_FILE_NOT_FOUND
+    case -20: // ERR_ABORTED (redirect chain)
+      return { title: "This site can't be reached", hint: `${host} refused the connection — it may be down, or the address may be wrong.` };
+    case -21: // ERR_NETWORK_CHANGED
+      return { title: "Network changed during load", hint: "Your connection switched networks mid-load. Retry." };
+    case -105: // ERR_NAME_NOT_RESOLVED
+      return { title: "Site can't be found", hint: `DNS could not resolve ${host}. Check the address or your connection.` };
+    case -106: // ERR_INTERNET_DISCONNECTED
+      return { title: "You're offline", hint: "Reconnect to the internet and retry." };
+    case -109: // ERR_ADDRESS_UNREACHABLE
+      return { title: "This address is unreachable", hint: `Nothing answered at ${host}. For localhost: is your dev server running?` };
+    case -102: // ERR_CONNECTION_REFUSED
+      return { title: "Connection refused", hint: `Nothing is listening on ${host} — for localhost, is your dev server running?` };
+    case -501: // ERR_INSECURE_RESPONSE
+      return { title: "Insecure response", hint: `${host} served an invalid SSL certificate.` };
+    default:
+      return { title: "This site can't be reached", hint: `Chromium error ${code} while loading ${host}. Retry or open it in your real browser.` };
+  }
+}
 
 function BrowserPreview({ panelActive }: { panelActive: boolean }) {
   mountedBrowserRef.current = true;

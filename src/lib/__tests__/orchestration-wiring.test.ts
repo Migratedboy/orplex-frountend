@@ -1,10 +1,11 @@
 /**
- * orchestration-wiring.test.ts — Verifies the previously-dead orchestration
- * modules are actually wired into the code-mode agent loop:
+ * orchestration-wiring.test.ts — Verifies the strategy router is actually
+ * wired into the code-mode agent loop:
  *
- *  1. SPARC (via /api/agent/orchestrate) plans + writes files before the main
- *     loop, which then reviews/refines; auto-verification passes.
- *  2. Swarm review with negative consensus feeds one model repair turn.
+ *  1. A routed plan (auto op via /api/agent/orchestrate) writes files before
+ *     the main loop, which then reviews/refines; auto-verification passes.
+ *  2. The structured review lane with negative consensus feeds one model
+ *     repair turn.
  *  3. Semantic cache: a past similar task is offered as context (hint only).
  */
 import { runInBackground, setFileSystemAccess } from "../background-worker";
@@ -33,7 +34,7 @@ function streamOnce(chunks: string[]): Response {
 }
 
 const ORIGINAL_FETCH = global.fetch;
-const CLEAN_WRITE = 'export const tag = "sparc";\n';
+const CLEAN_WRITE = 'export const tag = "routed";\n';
 const store: Record<string, string> = {};
 let chatFetchCount = 0;
 let execCount = 0;
@@ -96,8 +97,9 @@ describe("orchestration wiring (code mode)", () => {
         return new Response(
           JSON.stringify({
             ok: true,
+            strategy: "scaffold",
             status: "completed",
-            summary: "## SPARC Execution: COMPLETED",
+            summary: "Goal: dashboard — 3 files planned.",
             toolCalls: [{ name: "write_file", path: "sparc-out.ts", content: CLEAN_WRITE }],
             files: ["sparc-out.ts"],
           }),
@@ -127,11 +129,11 @@ describe("orchestration wiring (code mode)", () => {
 
     const task = getCurrentTask();
     expect(task?.status).toBe("done");
-    expect(orchestrateCalls).toContain("sparc");
+    expect(orchestrateCalls).toContain("auto");
     expect(store["sparc-out.ts"]).toBe(CLEAN_WRITE);
 
     const display = task?.displayContent || "";
-    expect(display).toMatch(/\[SPARC\]/);
+    expect(display).toMatch(/\[SCAFFOLD\]/);
     expect(display).toMatch(/typecheck clean|Verification passed/);
   });
 
@@ -167,11 +169,12 @@ describe("orchestration wiring (code mode)", () => {
       if (url.includes("/api/agent/orchestrate")) {
         const body = JSON.parse(String(init?.body));
         orchestrateCalls.push(body.op);
-        if (body.op === "swarm-review") {
+        if (body.op === "review") {
           return new Response(
             JSON.stringify({
               ok: true,
               consensus: false,
+              findings: [{ severity: "critical", description: "missing error handling" }],
               review: '[{"severity":"critical","description":"missing error handling"}]',
               tests: "",
             }),
@@ -196,11 +199,11 @@ describe("orchestration wiring (code mode)", () => {
 
     const task = getCurrentTask();
     expect(task?.status).toBe("done");
-    expect(orchestrateCalls).toContain("swarm-review");
+    expect(orchestrateCalls).toContain("review");
     expect(store["swarm-file.ts"]).toBe(REWRITE);
 
     const display = task?.displayContent || "";
-    expect(display).toMatch(/Swarm review/);
+    expect(display).toMatch(/Code review/);
     expect(display).toMatch(/repairing/i);
   });
 

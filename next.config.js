@@ -23,7 +23,7 @@ const nextConfig = {
           value: "max-age=63072000; includeSubDomains; preload",
         },
         { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-        // CORS headers are now handled dynamically in middleware.ts
+        // CORS headers are now handled dynamically in src/proxy.ts
         // (static headers can't properly handle multi-origin comma-separated lists)
       ],
     },

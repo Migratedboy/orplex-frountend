@@ -16,6 +16,24 @@ export function deduplicateWords(text: string): string {
   return text;
 }
 
+/**
+ * Bounded per-chunk dedup window. Running deduplicateWords over the WHOLE
+ * accumulated answer on every streamed chunk is O(n²) across a stream — on a
+ * long reply that alone saturates the main thread and freezes every button
+ * (including Stop) while the agent works. The pathology is ADJACENT repeated
+ * words, so re-cleaning a bounded tail of the already-clean text together
+ * with the new delta is behaviorally identical: pairs inside the delta, and
+ * pairs straddling the (tail | delta) boundary, are re-examined; anything
+ * earlier was already cleaned on a previous chunk. Final assembly still runs
+ * a full dedupe before persisting, so saved output is unaffected.
+ */
+const DEDUPE_WINDOW_CHARS = 1200;
+
+export function dedupeStreamedChunk(cleanSoFar: string, rawDelta: string): string {
+  const tailStart = Math.max(0, cleanSoFar.length - DEDUPE_WINDOW_CHARS);
+  return cleanSoFar.slice(0, tailStart) + deduplicateWords(cleanSoFar.slice(tailStart) + rawDelta);
+}
+
 // === XML tool-call parsing (legacy fallback for models without native tools) ===
 
 export interface XmlToolCall {

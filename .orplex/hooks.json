@@ -1,0 +1,9 @@
+{
+  "deny": [
+    "git\\s+push\\s+.*--force",
+    "git\\s+commit\\s+.*--no-verify"
+  ],
+  "notify": [
+    "git\\s+commit"
+  ]
+}

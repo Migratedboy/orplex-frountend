@@ -28,16 +28,7 @@ export default function TodoBar({ items }: TodoBarProps) {
       >
         <div className="todo-bar-left">
           <div className={`todo-bar-icon ${allDone ? "todo-bar-icon--done" : ""}`}>
-            {allDone ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <path d="M20 6L9 17l-5-5" />
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <rect x="3" y="3" width="18" height="18" rx="3" />
-                <path d="M9 12l2 2 4-4" />
-              </svg>
-            )}
+            <span className="ms">{allDone ? "check_circle" : "check_box_outline_blank"}</span>
           </div>
           <span className="todo-bar-title">
             {allDone ? "All tasks complete" : `Task plan`}
@@ -63,11 +54,7 @@ export default function TodoBar({ items }: TodoBarProps) {
                 className={`todo-bar-item ${item.done ? "todo-bar-item--done" : ""}`}
               >
                 <div className={`todo-bar-check ${item.done ? "todo-bar-check--done" : ""}`}>
-                  {item.done && (
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                      <path d="M20 6L9 17l-5-5" />
-                    </svg>
-                  )}
+                  {item.done && <span className="ms ms-sm">check</span>}
                 </div>
                 <span className="todo-bar-text">{text}</span>
               </div>

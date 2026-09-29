@@ -70,6 +70,11 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { conversationId, messages } = body;
 
+    // Workspace folder the thread belongs to (open folder's NAME). Sanitized:
+    // null/undefined/empty → null (Ungrouped), capped length, trimmed.
+    const rawWorkspace = typeof body.workspaceName === "string" ? body.workspaceName.trim() : "";
+    const workspaceName = rawWorkspace ? rawWorkspace.slice(0, 120) : null;
+
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return NextResponse.json({ error: "Messages required" }, { status: 400 });
     }
@@ -98,6 +103,9 @@ export async function POST(request: NextRequest) {
         where: { id: conversationId, userId: session.user.id },
         data: {
           messages: { create: messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })) },
+          // Keep the workspace tag fresh when provided (a thread opened with
+          // no folder later would send null — don't wipe an existing tag then).
+          ...(body.workspaceName !== undefined ? { workspaceName } : {}),
           updatedAt: new Date(),
         },
       });
@@ -108,6 +116,7 @@ export async function POST(request: NextRequest) {
         data: {
           title,
           userId: session.user.id,
+          workspaceName,
           messages: { create: messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })) },
         },
       });

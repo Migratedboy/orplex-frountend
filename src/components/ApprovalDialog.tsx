@@ -35,22 +35,30 @@ export default function ApprovalDialog() {
 
   const current = approvals.find(a => a.id === currentId) || null;
 
-  // Poll the LOCAL store every 500ms (fast so the dialog feels instant), and
-  // merge in any server-side approvals from the API as a fallback.
+  // Poll the LOCAL store every 500ms (fast so the dialog feels instant).
+  // The /api/agent/approve server fallback runs ONLY while something is
+  // actually pending (or at most every 5s when idle) — polling it every 500ms
+  // unconditionally hammered the server with ~170 requests/minute of pure
+  // noise (dev-server log + network panel spam).
   useEffect(() => {
     let alive = true;
+    let lastServerFetch = 0;
 
     const poll = async () => {
       try {
         const local = getPendingApprovals();
         let server: PendingApproval[] = [];
-        try {
-          const res = await apiFetch("/api/agent/approve");
-          if (res.ok) {
-            const data = await res.json();
-            server = (data.approvals || []) as PendingApproval[];
-          }
-        } catch {}
+        const now = Date.now();
+        if (local.length > 0 || now - lastServerFetch >= 5_000) {
+          lastServerFetch = now;
+          try {
+            const res = await apiFetch("/api/agent/approve");
+            if (res.ok) {
+              const data = await res.json();
+              server = (data.approvals || []) as PendingApproval[];
+            }
+          } catch {}
+        }
 
         if (!alive) return;
 

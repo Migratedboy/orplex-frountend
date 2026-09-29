@@ -55,6 +55,10 @@ export interface PromptBarModel {
   tag?: string;
   /** Secondary line for model rows: context size, free/free-tier or BYOK marker. */
   detail?: string;
+  /** Probe health dot: "green" = answered a probe <24h ago, "amber" = aged out. */
+  healthDot?: "green" | "amber";
+  /** Tooltip for the health dot — last-verified time + probe latency. */
+  healthTitle?: string;
 }
 
 export interface PromptBarMode {
@@ -791,6 +795,14 @@ export default function PromptBar({
                   <span className="prompt-bar__row-name">{row.name}</span>
                   {row.description ? <span className="prompt-bar__row-desc">{row.description}</span> : null}
                   {open === "model" && row.detail ? <span className="prompt-bar__row-detail">{row.detail}</span> : null}
+                  {open === "model" && row.healthDot ? (
+                    <span
+                      className="prompt-bar__row-health"
+                      data-health={row.healthDot}
+                      title={row.healthTitle ?? (row.healthDot === "green" ? "Verified recently" : "Not re-verified in the last day")}
+                      aria-label={row.healthDot === "green" ? "Model verified recently" : "Model health aged — re-verification pending"}
+                    />
+                  ) : null}
                   {open === "model" || open === "mode" ? (
                     <>
                       <span className="prompt-bar__row-tag">{row.tag}</span>

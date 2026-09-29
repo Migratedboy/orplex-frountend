@@ -94,6 +94,32 @@ function previewOf(content: string, maxLines = 5): string {
   return lines.slice(0, maxLines).join(" ").slice(0, 80) + (lines.length > maxLines ? "…" : "");
 }
 
+// read_file returns at most this many chars per call. Files live on disk —
+// the tool surfaces a head window instead of materializing megabytes into the
+// model context AND the per-task caches. Pagination: offset/limit args let
+// the agent walk the rest natively (no sed workaround).
+const MAX_READ_CHARS = 200_000;
+const MAX_PAGE_CHARS = 200_000; // per-call ceiling for offset/limit pages too
+
+/**
+ * Slice a page out of full file content by LINES (agent-friendly: line
+ * numbers are what search results and editors speak). offset is 1-based;
+ * limit caps both line count and MAX_PAGE_CHARS so a page can never flood
+ * the context. Returns { text, startLine, endLine, totalLines }.
+ */
+function pageByLines(content: string, offsetRaw: unknown, limitRaw: unknown) {
+  // A trailing newline produces a phantom empty last element — drop it so
+  // line counts match editors/ripgrep (both count 750,000, not 750,001).
+  const lines = content.endsWith("\n") ? content.slice(0, -1).split("\n") : content.split("\n");
+  const totalLines = lines.length;
+  const offset = Math.max(1, Math.min(totalLines, Math.floor(Number(offsetRaw)) || 1));
+  const requested = Math.floor(Number(limitRaw));
+  const maxLinesByChars = Math.max(1, Math.floor(MAX_PAGE_CHARS / 120)); // ~120 chars/line heuristic
+  const limit = Math.max(1, Math.min(totalLines - offset + 1, maxLinesByChars, Number.isFinite(requested) && requested > 0 ? requested : 2000));
+  const slice = lines.slice(offset - 1, offset - 1 + limit);
+  return { text: slice.join("\n"), startLine: offset, endLine: offset - 1 + slice.length, totalLines };
+}
+
 export async function dispatchToolCall(
   call: ToolCall,
   ctx: ToolContext
@@ -124,7 +150,52 @@ export async function dispatchToolCall(
     ctx.appendDisplay(`analysing [${call.path}]\n`);
     ctx.syncDisplay();
 
-    const content = (await ctx.fs.readFile?.(call.path)) || "(file not available)";
+    // Paged read: offset (1-based line) and/or limit (line count) fetch an
+    // exact window — the native replacement for the old sed workaround.
+    // Requires a size probe so the server lane can read ONLY the page from
+    // disk instead of materializing the whole file first.
+    const wantsPage = call.offset !== undefined || call.limit !== undefined;
+    if (wantsPage && ctx.fs.readPage) {
+      try {
+        const page = await ctx.fs.readPage(call.path, Math.floor(Number(call.offset)) || 1, Math.floor(Number(call.limit)) || 2000);
+        if (page) {
+          const body =
+            page.text +
+            (page.hasMore
+              ? `\n\n[…page continues — read_file ${call.path} offset=${page.endLine + 1} for the next section; total ${page.totalLines.toLocaleString()} lines]`
+              : `\n\n[end of file — ${page.totalLines.toLocaleString()} lines total]`);
+          result(`<tool_result name="read_file" path="${call.path}" lines="${page.startLine}-${page.endLine}">\n${body}\n</tool_result>\n`);
+          ctx.readResults.set(call.path, previewOf(page.text));
+          ctx.replaceStatus(`[OK] Read \`${call.path}\` lines ${page.startLine}–${page.endLine} of ${page.totalLines.toLocaleString()}`);
+          ctx.syncDisplay();
+          return { resultXml: toolResults, blocked: false };
+        }
+      } catch {
+        // probe failed — fall through to the whole-file path below
+      }
+    }
+
+    let content = (await ctx.fs.readFile?.(call.path)) || "(file not available)";
+    if (wantsPage && content.length > 0 && !content.startsWith("[Error")) {
+      // Client lane (no readPage): full text is already in memory — slice it.
+      const { text, startLine, endLine, totalLines } = pageByLines(content, call.offset, call.limit);
+      const body =
+        text +
+        (endLine < totalLines
+          ? `\n\n[…page continues — read_file ${call.path} offset=${endLine + 1} for the next section; total ${totalLines.toLocaleString()} lines]`
+          : `\n\n[end of file — ${totalLines.toLocaleString()} lines total]`);
+      result(`<tool_result name="read_file" path="${call.path}" lines="${startLine}-${endLine}">\n${body}\n</tool_result>\n`);
+      ctx.readResults.set(call.path, previewOf(text));
+      ctx.replaceStatus(`[OK] Read \`${call.path}\` lines ${startLine}–${endLine} of ${totalLines.toLocaleString()}`);
+      ctx.syncDisplay();
+      return { resultXml: toolResults, blocked: false };
+    }
+    if (content.length > MAX_READ_CHARS) {
+      const total = content.length;
+      content =
+        content.slice(0, MAX_READ_CHARS) +
+        `\n\n[…truncated — showing first ${MAX_READ_CHARS.toLocaleString()} of ${total.toLocaleString()} chars. Use read_file with offset/limit (line numbers) to page through the rest — e.g. offset=${Math.ceil(MAX_READ_CHARS / 80)} for the next section — or grep -n to locate.]`;
+    }
     const contentLength = content.length;
     const lineCount = content.split("\n").length;
 
@@ -174,17 +245,39 @@ export async function dispatchToolCall(
     // needs user approval (with a diff). Files the agent itself created are
     // auto-approved — same contract as Claude Code's auto-accept-edits mode.
     if (!ctx.counters.writtenFiles.has(call.path)) {
+      // Anti-clobber guard (server lane): oversized files are read as a head
+      // window, so a full overwrite here would silently destroy the unseen
+      // tail. Refuse BEFORE any whole-file read — reading a 74 MB file to
+      // build an approval diff would spike memory exactly like the old
+      // eager-index build did.
+      let oversized = false;
+      try {
+        const probe = await ctx.fs.statFile?.(call.path);
+        oversized = !!probe && probe.size > 8 * 1024 * 1024;
+      } catch {}
+      if (oversized && call.content.length < 4 * 1024 * 1024) {
+        result(`<tool_result name="write_file" path="${call.path}">refused: the file on disk is far larger than this content — the write looks partial (windowed read) and would destroy the rest of the file. Rewrite big files with terminal streaming tools (sed -i, truncate) instead.</tool_result>\n`);
+        ctx.replaceStatus(`[BLOCKED] Anti-clobber: \`${call.path}\` too large for a full overwrite`);
+        ctx.syncDisplay();
+        return { resultXml: toolResults, blocked: true };
+      }
+
       const prevContent = await ctx.fs.readFile?.(call.path).catch(() => null);
       const existed = !!prevContent && !prevContent.startsWith("[Error");
       if (existed) {
         ctx.setStatus("awaiting_approval", `Waiting for approval: overwrite ${call.path}`);
         ctx.appendDisplay(`overwriting [${call.path}] — awaiting approval\n`);
         ctx.syncDisplay();
+        // Skip the diff for very large files — computing it needs the whole
+        // file in one string; a summary line is enough for approval UX.
+        const diff = (prevContent!.length <= 2_000_000)
+          ? computeDiff(prevContent!, call.content)
+          : `[file too large for diff — ${prevContent!.length.toLocaleString()} chars on disk]`;
         const approved = await requestApproval(
           "write_file",
           `Overwrite ${call.path} (${lineCount} lines)`,
           { path: call.path, existed },
-          computeDiff(prevContent!, call.content)
+          diff
         );
         if (!approved) {
           ctx.stats.rejectedAction();
@@ -243,10 +336,26 @@ export async function dispatchToolCall(
 
   // ── edit_file (risk-tiered approval) ──────────────────────────────────
   if (call.name === "edit_file" && call.path && call.old_text && call.new_text) {
+    // Size guard (server lane): whole-file string replace needs the entire
+    // file in memory — refuse for very large files, same policy as the
+    // renderer's editFile. Streamed edits go through the terminal.
+    try {
+      const probe = await ctx.fs.statFile?.(call.path);
+      if (probe && probe.size > 8 * 1024 * 1024) {
+        result(`<tool_result name="edit_file" path="${call.path}">error: file too large for in-app edit (${(probe.size / 1048576).toFixed(1)} MB) — use terminal streaming tools (sed -i) instead.</tool_result>
+`);
+        ctx.replaceStatus(`[BLOCKED] \`${call.path}\` too large for edit_file`);
+        ctx.syncDisplay();
+        return { resultXml: toolResults, blocked: true };
+      }
+    } catch {}
     const editDiff = computeDiff(call.old_text, call.new_text);
     const editRisk = classifyRisk("edit_file", { path: call.path, old_text: call.old_text, new_text: call.new_text });
+    // Files the agent already wrote this task are auto-approved on edit —
+    // same contract as the write_file gate (auto-accept-edits mode).
+    const agentOwned = ctx.counters.writtenFiles.has(call.path);
     let approved = true;
-    if (!editRisk.autoApprovable) {
+    if (!editRisk.autoApprovable && !agentOwned) {
       ctx.setStatus("awaiting_approval", `Waiting for approval: edit ${call.path}`);
       ctx.appendDisplay(`editing [${call.path}] — awaiting approval\n`);
       ctx.syncDisplay();
@@ -338,6 +447,43 @@ export async function dispatchToolCall(
     const lineCount = results ? results.split("\n").length : 0;
     result(`<tool_result name="search_code" query="${call.query}" engine="${engine}">\n${results || `No matches for "${call.query}"`}\n</tool_result>\n`);
     ctx.replaceStatus(`[OK] Search "${call.query}" [${engine}] — ${lineCount} line(s)`);
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+
+  // ── code_search (snippet mode) ────────────────────────────────────────
+  // Like search_code, but returns grouped per-file snippets with context
+  // lines and ready-made read_file offset/limit hints — locate regions
+  // without reading whole files. Server-side ripgrep via /api/agent/grep
+  // (mode=snippets); falls back to the in-memory scan with a note when no
+  // workspace folder is open.
+  if (call.name === "code_search" && call.query) {
+    ctx.setStatus("tool_executing", `Snippets for "${call.query}"…`);
+    ctx.appendDisplay(`code_search [${call.query}]\n`);
+    ctx.syncDisplay();
+
+    let results: string | null = null;
+    let engine = "cache";
+    try {
+      const res = await ctxFetch(`${base}/api/agent/grep`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pattern: call.query, mode: "snippets", context: call.context }),
+      }, ctx, 15000);
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) {
+        engine = data.engine || "grep";
+        results = data.output || "";
+      }
+    } catch {}
+    if (results === null) {
+      results =
+        searchCodeInContents(call.query, ctx.fileContents) +
+        "\n[offline fallback — open the workspace folder for context-rich ripgrep snippets]";
+    }
+    const matchCount = (results.match(/→ read_file/g) || []).length;
+    result(`<tool_result name="code_search" query="${call.query}" engine="${engine}">\n${results}\n</tool_result>\n`);
+    ctx.replaceStatus(`[OK] code_search "${call.query}" [${engine}] — ${matchCount} snippet(s)`);
     ctx.syncDisplay();
     return { resultXml: toolResults, blocked: false };
   }
@@ -776,16 +922,23 @@ export async function dispatchToolCall(
         const opMap: Record<string, { op: string; pick: (c: any) => Record<string, unknown> }> = {
           browser_navigate: { op: "navigate", pick: (c) => ({ url: c.url }) },
           browser_read: { op: "read", pick: () => ({}) },
-          browser_click: { op: "click", pick: (c) => ({ selector: c.selector }) },
-          browser_type: { op: "type", pick: (c) => ({ selector: c.selector, text: c.text }) },
+          browser_click: { op: "click", pick: (c) => ({ selector: c.selector, ref: c.ref }) },
+          browser_type: { op: "type", pick: (c) => ({ selector: c.selector, ref: c.ref, text: c.text }) },
           browser_press: { op: "press", pick: (c) => ({ key: c.key }) },
           browser_scroll: { op: "scroll", pick: (c) => ({ dy: typeof c.amount === "number" ? c.amount : 600 }) },
           browser_console: { op: "console", pick: () => ({}) },
-          browser_screenshot: { op: "screenshot", pick: () => ({}) },
+          browser_screenshot: { op: "screenshot", pick: (c) => ({ fullPage: !!c.fullPage, viewpoint: c.viewpoint }) },
+          browser_find: { op: "find", pick: (c) => ({ text: c.text, role: c.role }) },
+          browser_wait_for: { op: "wait_for", pick: (c) => ({ text: c.text, selector: c.selector, time: c.time, timeoutMs: c.timeoutMs }) },
+          browser_hover: { op: "hover", pick: (c) => ({ selector: c.selector, ref: c.ref }) },
+          browser_select: { op: "select", pick: (c) => ({ selector: c.selector, ref: c.ref, value: c.value }) },
+          browser_tabs: { op: "tabs", pick: (c) => ({ tabAction: c.action, url: c.url, index: c.index }) },
+          browser_network: { op: "network", pick: () => ({}) },
+          browser_evaluate: { op: "evaluate", pick: (c) => ({ code: c.code }) },
         };
         const mapped = opMap[String(call.name)];
         if (!mapped) {
-          result(`<tool_result name="${call.name}">error - browser_evaluate is not available in server browser mode; use browser_read or browser_screenshot instead.</tool_result>\n`);
+          result(`<tool_result name="${call.name}">error - browser op "${call.name}" is not available in server browser mode.</tool_result>\n`);
           ctx.replaceStatus(`[WARN] ${call.name} unsupported in server browser mode`);
           ctx.syncDisplay();
           return { resultXml: toolResults, blocked: false };
@@ -818,12 +971,12 @@ export async function dispatchToolCall(
             break;
           }
           case "click":
-            result(`<tool_result name="browser_click" selector="${call.selector}">success — clicked. Page now shows: "${d.title || d.url}". Use browser_read to see the result.</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Clicked`);
+            result(`<tool_result name="browser_click" selector="${d.clicked}">success — clicked "${d.clicked}". Page now shows: "${d.title || d.url}". Use browser_read to see the result.</tool_result>\n`);
+            ctx.replaceStatus(`[OK] Clicked ${d.clicked}`);
             break;
           case "type":
-            result(`<tool_result name="browser_type" selector="${call.selector}">success — typed ${d.length ?? 0} chars</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Typed`);
+            result(`<tool_result name="browser_type" selector="${d.typed}">success — typed ${d.length ?? 0} chars into "${d.typed}"</tool_result>\n`);
+            ctx.replaceStatus(`[OK] Typed ${d.length ?? 0} chars`);
             break;
           case "press":
             result(`<tool_result name="browser_press" key="${call.key}">success — key sent</tool_result>\n`);
@@ -837,9 +990,46 @@ export async function dispatchToolCall(
             ctx.replaceStatus(`[OK] Console`);
             break;
           }
-          case "screenshot":
-            result(`<tool_result name="browser_screenshot">success — screenshot captured (${d.url}). Use browser_read for the text content.</tool_result>\n`);
+          case "screenshot": {
+            const vp = d.viewport ? ` at ${d.viewport.width}x${d.viewport.height}` : "";
+            result(`<tool_result name="browser_screenshot">success — screenshot captured${d.fullPage ? " (full page)" : ""}${vp} (${d.url}). Use browser_read for the text content.</tool_result>\n`);
             ctx.replaceStatus(`[OK] Screenshot captured`);
+            break;
+          }
+          case "find": {
+            const list = (d.matches || []).slice(0, 25).map((m: any) => `${m.ref}: ${m.role} "${m.name}" [${m.selector}]${m.enabled ? "" : " (disabled)"}`).join("\n");
+            result(`<tool_result name="browser_find">\nMATCHES (${d.matches?.length ?? 0} of ${d.total} actionable elements):\n${list || "none"}\n\n${d.hint || ""}\n</tool_result>\n`);
+            ctx.replaceStatus(`[OK] Find: ${d.matches?.length ?? 0} match(es)`);
+            break;
+          }
+          case "wait_for":
+            result(`<tool_result name="browser_wait_for">success — condition met after ${d.waitedMs}ms. Now on "${d.title || d.url}".</tool_result>\n`);
+            ctx.replaceStatus(`[OK] Wait ${d.waitedMs}ms`);
+            break;
+          case "hover":
+            result(`<tool_result name="browser_hover" selector="${d.hovered}">success — hovered "${d.hovered}". Check browser_screenshot/browser_read for what appeared.</tool_result>\n`);
+            ctx.replaceStatus(`[OK] Hovered`);
+            break;
+          case "select":
+            result(`<tool_result name="browser_select" selector="${d.in}">success — selected "${d.selected}" in "${d.in}"</tool_result>\n`);
+            ctx.replaceStatus(`[OK] Selected`);
+            break;
+          case "tabs": {
+            const tabs = (d.tabs || []).map((t: any) => `${t.active ? "→" : " "} [${t.index}] ${t.title || "(untitled)"} — ${t.url}`).join("\n");
+            const head = d.opened !== undefined ? `opened tab [${d.opened}] ${d.url}` : d.switchedTo !== undefined ? `switched to tab [${d.switchedTo}]` : d.closed !== undefined ? `closed tab [${d.closed}]` : `${(d.tabs || []).length} tab(s) open`;
+            result(`<tool_result name="browser_tabs">${head}\n${tabs}</tool_result>\n`);
+            ctx.replaceStatus(`[OK] Tabs: ${(d.tabs || []).length} open`);
+            break;
+          }
+          case "network": {
+            const events = (d.events || []).map((e: any) => `${e.status ? `HTTP ${e.status}` : "ABORTED"} ${e.method} ${e.url}${e.error ? ` (${e.error})` : ""}`).join("\n");
+            result(`<tool_result name="browser_network">${events || "No failed requests (no 4xx/5xx responses, no aborted requests)."}</tool_result>\n`);
+            ctx.replaceStatus(`[OK] Network: ${d.failedRequests ?? 0} failed`);
+            break;
+          }
+          case "evaluate":
+            result(`<tool_result name="browser_evaluate">result: ${d.result}</tool_result>\n`);
+            ctx.replaceStatus(`[OK] Evaluated`);
             break;
         }
         ctx.syncDisplay();
@@ -880,21 +1070,23 @@ export async function dispatchToolCall(
         } else {
           result(`<tool_result name="browser_read">error - ${r.error || "nothing loaded yet — navigate first"}</tool_result>\n`);
         }
-      } else if (call.name === "browser_click" && call.selector) {
-        ctx.setStatus("tool_executing", `Clicking ${call.selector}…`);
-        ctx.appendDisplay(`clicking [${call.selector}]\n`);
+      } else if (call.name === "browser_click" && (call.selector || call.ref)) {
+        const target = String(call.ref || call.selector);
+        ctx.setStatus("tool_executing", `Clicking ${target}…`);
+        ctx.appendDisplay(`clicking [${target}]\n`);
         ctx.syncDisplay();
-        const r = await bridge.interact({ kind: "click", selector: String(call.selector) });
+        const r = await bridge.interact({ kind: "click", selector: call.selector ? String(call.selector) : undefined, ref: call.ref ? String(call.ref) : undefined });
         result(r.ok
-          ? `<tool_result name="browser_click" selector="${call.selector}">success — clicked "${r.clicked}". Use browser_read to see the result.</tool_result>\n`
-          : `<tool_result name="browser_click" selector="${call.selector}">error - ${r.error}</tool_result>\n`);
-        ctx.replaceStatus(r.ok ? `[OK] Clicked` : `[FAIL] Click: ${r.error}`);
-      } else if (call.name === "browser_type" && call.selector && call.text !== undefined) {
-        const r = await bridge.interact({ kind: "type", selector: String(call.selector), text: String(call.text) });
+          ? `<tool_result name="browser_click" selector="${target}">success — clicked "${r.clicked ?? target}". Use browser_read to see the result.</tool_result>\n`
+          : `<tool_result name="browser_click" selector="${target}">error - ${r.error}</tool_result>\n`);
+        ctx.replaceStatus(r.ok ? `[OK] Clicked ${target}` : `[FAIL] Click: ${r.error}`);
+      } else if (call.name === "browser_type" && (call.selector || call.ref) && call.text !== undefined) {
+        const target = String(call.ref || call.selector);
+        const r = await bridge.interact({ kind: "type", selector: call.selector ? String(call.selector) : undefined, ref: call.ref ? String(call.ref) : undefined, text: String(call.text) });
         result(r.ok
-          ? `<tool_result name="browser_type" selector="${call.selector}">success — typed "${String(call.text).slice(0, 50)}"</tool_result>\n`
-          : `<tool_result name="browser_type" selector="${call.selector}">error - ${r.error}</tool_result>\n`);
-        ctx.replaceStatus(r.ok ? `[OK] Typed` : `[FAIL] Type: ${r.error}`);
+          ? `<tool_result name="browser_type" selector="${target}">success — typed "${String(call.text).slice(0, 50)}" into "${r.typed ?? target}"</tool_result>\n`
+          : `<tool_result name="browser_type" selector="${target}">error - ${r.error}</tool_result>\n`);
+        ctx.replaceStatus(r.ok ? `[OK] Typed ${String(call.text).length} chars` : `[FAIL] Type: ${r.error}`);
       } else if (call.name === "browser_press" && call.key) {
         const r = await bridge.interact({ kind: "press", key: String(call.key) });
         result(r.ok
@@ -910,16 +1102,75 @@ export async function dispatchToolCall(
         ctx.replaceStatus(`[OK] Console: ${(r.messages || []).length} message(s)`);
       } else if (call.name === "browser_screenshot") {
         ctx.setStatus("tool_executing", "Capturing browser…");
-        await bridge.screenshot();
-        result(`<tool_result name="browser_screenshot">success — the current page is shown live in the preview panel (the user can see it). Use browser_read for the text content.</tool_result>\n`);
-        ctx.replaceStatus(`[OK] Screenshot shown in preview`);
+        ctx.syncDisplay();
+        await bridge.show().catch(() => {});
+        window.dispatchEvent(new CustomEvent("orplex:agent-browser-tab"));
+        const d = await bridge.screenshot({ fullPage: !!call.fullPage, viewpoint: call.viewpoint });
+        const vp = d?.viewport ? ` at ${d.viewport.width}x${d.viewport.height}` : "";
+        result(`<tool_result name="browser_screenshot">success — screenshot captured${d?.fullPage ? " (full page)" : ""}${vp} (${d?.url ?? ""}). The live view is shown in the preview panel; use browser_read for the text content.</tool_result>\n`);
+        ctx.replaceStatus(`[OK] Screenshot captured`);
       } else if (call.name === "browser_evaluate" && call.code) {
         const r = await bridge.evaluate(String(call.code));
         result(r.ok
           ? `<tool_result name="browser_evaluate">result: ${JSON.stringify(r.result)?.slice(0, 2000)}</tool_result>\n`
           : `<tool_result name="browser_evaluate">error - ${r.error}</tool_result>\n`);
+        ctx.replaceStatus(r.ok ? `[OK] Evaluated` : `[FAIL] Evaluate: ${r.error}`);
+      } else if (call.name === "browser_find") {
+        ctx.setStatus("tool_executing", "Finding elements…");
+        ctx.syncDisplay();
+        const r = await bridge.find({ text: call.text, role: call.role });
+        if (!r.ok) {
+          result(`<tool_result name="browser_find">error - ${r.error}</tool_result>\n`);
+          ctx.replaceStatus(`[FAIL] Find: ${r.error}`);
+        } else {
+          const list = (r.matches || []).slice(0, 25).map((m: any) => `${m.ref}: ${m.role} "${m.name}" [${m.selector}]${m.enabled ? "" : " (disabled)"}`).join("\n");
+          result(`<tool_result name="browser_find">\nMATCHES (${r.matches?.length ?? 0} of ${r.total} actionable elements):\n${list || "none"}\n\n${r.hint || ""}\n</tool_result>\n`);
+          ctx.replaceStatus(`[OK] Find: ${r.matches?.length ?? 0} match(es)`);
+        }
+      } else if (call.name === "browser_wait_for" && (call.text !== undefined || call.selector || call.time !== undefined)) {
+        ctx.setStatus("tool_executing", "Waiting…");
+        ctx.syncDisplay();
+        const r = await bridge.waitFor({ text: call.text, selector: call.selector, time: call.time, timeoutMs: call.timeoutMs });
+        result(r.ok
+          ? `<tool_result name="browser_wait_for">success — condition met after ${r.waitedMs}ms. Now on "${r.title || r.url}".</tool_result>\n`
+          : `<tool_result name="browser_wait_for">error - ${r.error}</tool_result>\n`);
+        ctx.replaceStatus(r.ok ? `[OK] Wait ${r.waitedMs}ms` : `[FAIL] Wait: ${r.error}`);
+      } else if (call.name === "browser_hover" && (call.selector || call.ref)) {
+        const r = await bridge.hover({ selector: call.selector ? String(call.selector) : undefined, ref: call.ref ? String(call.ref) : undefined });
+        result(r.ok
+          ? `<tool_result name="browser_hover" selector="${r.hovered ?? (call.ref || call.selector)}">success — hovered. Check browser_screenshot/browser_read for what appeared.</tool_result>\n`
+          : `<tool_result name="browser_hover">error - ${r.error}</tool_result>\n`);
+        ctx.replaceStatus(r.ok ? `[OK] Hovered` : `[FAIL] Hover: ${r.error}`);
+      } else if (call.name === "browser_select" && call.value !== undefined && (call.selector || call.ref)) {
+        const r = await bridge.select({ selector: call.selector ? String(call.selector) : undefined, ref: call.ref ? String(call.ref) : undefined, value: String(call.value) });
+        result(r.ok
+          ? `<tool_result name="browser_select" selector="${call.ref || call.selector}">success — selected "${r.selected}"${r.label ? ` (${r.label})` : ""}</tool_result>\n`
+          : `<tool_result name="browser_select">error - ${r.error}</tool_result>\n`);
+        ctx.replaceStatus(r.ok ? `[OK] Selected` : `[FAIL] Select: ${r.error}`);
+      } else if (call.name === "browser_tabs") {
+        ctx.setStatus("tool_executing", "Tabs…");
+        ctx.syncDisplay();
+        const r = await bridge.tabs({ action: call.action, url: call.url, index: call.index });
+        if (!r.ok) {
+          result(`<tool_result name="browser_tabs">error - ${r.error}</tool_result>\n`);
+          ctx.replaceStatus(`[FAIL] Tabs: ${r.error}`);
+        } else {
+          const tabs = (r.tabs || []).map((t: any) => `${t.active ? "→" : " "} [${t.index}] ${t.title || "(untitled)"} — ${t.url}`).join("\n");
+          const head = r.opened !== undefined ? `opened tab [${r.opened}] ${r.url}` : r.switchedTo !== undefined ? `switched to tab [${r.switchedTo}]` : r.closed !== undefined ? `closed tab [${r.closed}]` : `${(r.tabs || []).length} tab(s) open`;
+          result(`<tool_result name="browser_tabs">${head}\n${tabs}</tool_result>\n`);
+          ctx.replaceStatus(`[OK] Tabs: ${(r.tabs || []).length} open`);
+          if (r.opened !== undefined || r.switchedTo !== undefined) {
+            await bridge.show().catch(() => {});
+            window.dispatchEvent(new CustomEvent("orplex:agent-browser-tab"));
+          }
+        }
+      } else if (call.name === "browser_network") {
+        const r = await bridge.network();
+        const events = (r.events || []).map((e: any) => `${e.status ? `HTTP ${e.status}` : "ABORTED"} ${e.method} ${e.url}${e.error ? ` (${e.error})` : ""}`).join("\n");
+        result(`<tool_result name="browser_network">${events || "No failed requests (no 4xx/5xx responses, no aborted requests)."}</tool_result>\n`);
+        ctx.replaceStatus(`[OK] Network: ${r.failedRequests ?? 0} failed`);
       } else {
-        result(`<tool_result name="${call.name}">error - missing required argument (url/selector/key/code)</tool_result>\n`);
+        result(`<tool_result name="${call.name}">error - missing required argument (url/selector/ref/key/code/value)</tool_result>\n`);
       }
     } catch (err) {
       result(`<tool_result name="${call.name}">error - ${(err as Error).message}</tool_result>\n`);

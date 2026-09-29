@@ -1,0 +1,14 @@
+/* ---- Material Symbols Outlined (vendored icon font — NOT overwritten) ----
+ * Source: assets/fonts/material-symbols/ (Apache 2.0 — see OFL.txt there).
+ * The full variable font covers every icon glyph; ligature names map to
+ * icons: <span className="ms">folder</span> renders the folder icon.
+ * FILL axis defaults to 0 (outlined); font-variation-settings can flip it.
+ * Icon spans use .ms from globals.css — inline-flex, size via font-size.
+ */
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: block;
+  src: url('/fonts/material-symbols-outlined-variable.ttf') format('truetype-variations');
+}

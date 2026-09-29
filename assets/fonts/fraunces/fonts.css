@@ -1,0 +1,22 @@
+/* ---- Fraunces (vendored variable font — NOT overwritten by the generator) ----
+ * Source: assets/fonts/fraunces/ (SIL OFL 1.1 — see OFL.txt there). The two
+ * variable TTFs carry the full wght 100-900 range plus an optical-size axis
+ * (opsz 9-144) and SOFT/WONK axes. font-optical-sizing:auto (set on body in
+ * globals.css) picks display cuts at heading sizes and text cuts for body
+ * copy. Served from /fonts/ on both targets like the rest of the set.
+ */
+@font-face {
+  font-family: 'Fraunces';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/fraunces-variable.ttf') format('truetype-variations');
+}
+
+@font-face {
+  font-family: 'Fraunces';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/fraunces-variable-italic.ttf') format('truetype-variations');
+}

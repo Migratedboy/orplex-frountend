@@ -34,10 +34,11 @@ import { recordRuntimeLog } from "@/lib/runtime-log";
 import { runtimeState } from "@/lib/runtime-state";
 import { maxConcurrentRuns, parseFailoverChain } from "./executor-config";
 import { getMcpServer, ensureMcpReaper, mcpToolName, parseMcpToolName, type McpToolDef } from "../mcp-client";
-import { grepSearch } from "@/lib/grep-search";
+import { grepSearch, codeSearch } from "@/lib/grep-search";
 import type { VerifyResult } from "@/lib/browser-verification";
 import { loadToolHooks, evaluateDenyRules, matchesNotifyRules, type CompiledHooks } from "@/lib/tool-hooks";
 import { runUserHooks } from "@/lib/user-hooks";
+import { recordProviderEvent } from "@/lib/provider-uptime";
 import { acquireTokens, estimateTokensOfMessages, reportUsage } from "@/lib/tpm-pacer";
 import { createIsolatedContext, type WorktreeContext } from "./worktree";
 import type { RuntimeArtifact } from "@/lib/agent/runtime/types";
@@ -56,7 +57,8 @@ const TOOL_WHITELIST = new Set([
   "list_files",
   "search_code",
   "run_command",
-  // Browser-as-sensor: navigate/read/click/type/console/screenshot — the run
+  // Browser-as-sensor: navigate/read/click/type/console/screenshot plus the
+  // advanced ops (find/wait/hover/select/tabs/network/evaluate) — the run
   // adapts mid-task from what the page shows (SSRF-guarded session below).
   "browser_navigate",
   "browser_read",
@@ -65,6 +67,13 @@ const TOOL_WHITELIST = new Set([
   "browser_scroll",
   "browser_console",
   "browser_screenshot",
+  "browser_find",
+  "browser_wait_for",
+  "browser_hover",
+  "browser_select",
+  "browser_tabs",
+  "browser_network",
+  "browser_evaluate",
   "use_skill",
 ]);
 
@@ -92,11 +101,27 @@ export function buildNativeToolDefs(mcpTools: McpToolDef[]): NativeToolDef[] {
   const defs: NativeToolDef[] = [
     { name: "write_file", description: "Create or overwrite a file in the worktree.", parameters: obj({ path: { type: "string", description: "Relative path" }, content: { type: "string" } }, ["path", "content"]) },
     { name: "edit_file", description: "Replace an exact substring in a file.", parameters: obj({ path: { type: "string", description: "Relative path" }, old_text: { type: "string" }, new_text: { type: "string" } }, ["path", "old_text", "new_text"]) },
-    { name: "read_file", description: "Read a file from the worktree.", parameters: obj({ path: { type: "string", description: "Relative path" } }, ["path"]) },
+    { name: "read_file", description: "Read a file from the worktree. Large files: pass offset (1-based line) and limit (line count) to read an exact window without loading the whole file — page forward with offset=<last_end+1>.", parameters: obj({ path: { type: "string", description: "Relative path" }, offset: { type: "number", description: "1-based starting line (pagination)" }, limit: { type: "number", description: "Max lines to return per call (default 2000, cap 200000 chars)" } }, ["path"]) },
     { name: "list_files", description: "List files under a worktree path.", parameters: obj({ path: { type: "string", description: "Relative path, optional" } }, []) },
     { name: "search_code", description: "Search the worktree (ripgrep-backed).", parameters: obj({ query: { type: "string" } }, ["query"]) },
+    { name: "code_search", description: "Search with context: grouped per-file matching-line snippets plus a ready-made read_file offset/limit hint per match — locate regions without reading whole files.", parameters: obj({ query: { type: "string" }, context: { type: "number", description: "Context lines around each match (0-10, default 3)" } }, ["query"]) },
     { name: "use_skill", description: "Load the full instructions of a listed skill by name.", parameters: obj({ name_of_skill: { type: "string", description: "Skill name from the roster" } }, ["name_of_skill"]) },
     { name: "run_command", description: "Run a shell command in the worktree (screened; dangerous commands are refused).", parameters: obj({ command: { type: "string" } }, ["command"]) },
+    { name: "browser_navigate", description: "Open a URL in the agent's SSRF-guarded headless browser. Returns HTTP status, title, and page summary.", parameters: obj({ url: { type: "string", description: "Full URL to load" } }, ["url"]) },
+    { name: "browser_read", description: "Read the active tab: URL, title, text, headings, interactive elements with selectors.", parameters: obj({}, []) },
+    { name: "browser_find", description: "Find clickable/fillable elements with refs (e1, e2, …). Pass ref to click/type/hover/select instead of a CSS selector.", parameters: obj({ text: { type: "string", description: "Filter by name/label substring" }, role: { type: "string", description: "Filter: link, button, textbox, combobox, heading" } }, []) },
+    { name: "browser_click", description: "Click an element by selector or browser_find ref.", parameters: obj({ selector: { type: "string" }, ref: { type: "string", description: "Ref from browser_find, e.g. e3" } }, []) },
+    { name: "browser_type", description: "Type text into an input by selector or browser_find ref (clears first).", parameters: obj({ selector: { type: "string" }, ref: { type: "string", description: "Ref from browser_find" }, text: { type: "string" } }, ["text"]) },
+    { name: "browser_press", description: "Press a key (Enter, Escape, Tab) in the active tab.", parameters: obj({ key: { type: "string" } }, ["key"]) },
+    { name: "browser_scroll", description: "Scroll the page (pixels, default 600).", parameters: obj({ amount: { type: "number" } }, []) },
+    { name: "browser_wait_for", description: "Wait for text to appear, a selector to become visible, or a fixed delay (ms) — use after SPA clicks.", parameters: obj({ text: { type: "string" }, selector: { type: "string" }, time: { type: "number" }, timeoutMs: { type: "number" } }, []) },
+    { name: "browser_hover", description: "Hover an element (selector or ref) to trigger menus/tooltips.", parameters: obj({ selector: { type: "string" }, ref: { type: "string", description: "Ref from browser_find" } }, []) },
+    { name: "browser_select", description: "Pick an <option> in a <select> (value or label).", parameters: obj({ selector: { type: "string" }, ref: { type: "string", description: "Ref from browser_find" }, value: { type: "string" } }, ["value"]) },
+    { name: "browser_tabs", description: "Manage tabs: list | new (optionally url) | switch (index) | close (index). Ops act on the active tab.", parameters: obj({ action: { type: "string" }, url: { type: "string" }, index: { type: "number" } }, []) },
+    { name: "browser_console", description: "Console messages (errors/warnings/logs) since session start.", parameters: obj({}, []) },
+    { name: "browser_network", description: "Failed requests (HTTP 4xx/5xx + aborted) since session start — diagnose blank pages / missing data.", parameters: obj({}, []) },
+    { name: "browser_screenshot", description: "Capture the active tab; optionally fullPage or a named viewport (desktop/tablet/mobile) for responsive checks.", parameters: obj({ fullPage: { type: "boolean" }, viewpoint: { type: "string", description: "desktop | tablet | mobile" } }, []) },
+    { name: "browser_evaluate", description: "Run JavaScript in the page and get the JSON result (bare expression or multi-statement IIFE auto-wrapped).", parameters: obj({ code: { type: "string", description: "Expression or statements, e.g. document.title or const n = document.images.length; n" } }, ["code"]) },
   ];
   for (const t of mcpTools.slice(0, 20)) {
     const schema = t.inputSchema && typeof t.inputSchema === "object" && !Array.isArray(t.inputSchema)
@@ -131,6 +156,7 @@ function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBl
     `- read_file { "name": "read_file", "path": "..." }`,
     `- list_files { "name": "list_files", "path": "..." }`,
     `- search_code { "name": "search_code", "query": "..." }`,
+    `- code_search { "name": "code_search", "query": "..." } (grouped snippets + read_file hints — preferred for locating code)`,
     `- run_command { "name": "run_command", "command": "..." } (screened; dangerous commands are refused)`,
   ];
   if (skillRoster) {
@@ -221,6 +247,59 @@ async function readLocalFile(root: string, rel: string): Promise<string> {
   const rootR = resolve(root);
   if (p !== rootR && !p.startsWith(rootR + sep)) throw new Error("path escapes workspace");
   return readFile(p, "utf8");
+}
+
+// Paged read: stream ONLY the byte range covering the requested line window
+// (plus a small byte cap per page). A 74 MB log read at offset=700000
+// touches ~200 KB of disk, not 74 MB — the native replacement for the
+// sed -n 'X,Yp' workaround. Returns null when the file doesn't exist.
+async function readLocalFilePage(
+  root: string,
+  rel: string,
+  offsetLine: number,
+  limitLines: number
+): Promise<{ text: string; startLine: number; endLine: number; totalLines: number; hasMore: boolean } | null> {
+  const fs = await import("fs/promises");
+  const { createReadStream } = await import("fs");
+  const { createInterface } = await import("readline");
+  const { resolve, sep, isAbsolute } = await import("path");
+  const p = isAbsolute(rel) ? resolve(rel) : resolve(root, rel);
+  const rootR = resolve(root);
+  if (p !== rootR && !p.startsWith(rootR + sep)) throw new Error("path escapes workspace");
+
+  // Contained, bounded line stream: skip offset-1 lines, collect up to a
+  // byte ceiling worth of pages. Max total lines discovered is bounded too
+  // (we stop counting after the window ends — totalLines is then approximate).
+  const MAX_PAGE_BYTES = 200_000;
+  const stream = createReadStream(p, { encoding: "utf8" });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    let lineNo = 0;
+    let bytes = 0;
+    let out: string[] = [];
+    let sawEnd = false;
+    for await (const line of rl) {
+      lineNo++;
+      if (lineNo < offsetLine) continue;
+      if (out.length >= limitLines || bytes > MAX_PAGE_BYTES) { sawEnd = true; break; }
+      out.push(line);
+      bytes += line.length + 1;
+    }
+    if (!sawEnd) {
+      // consumed to EOF — lineNo is the true total
+    }
+    if (lineNo < offsetLine && out.length === 0) return null; // offset past EOF
+    return {
+      text: out.join("\n"),
+      startLine: offsetLine,
+      endLine: offsetLine - 1 + out.length,
+      totalLines: lineNo,
+      hasMore: sawEnd || lineNo > offsetLine - 1 + out.length,
+    };
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
 }
 
 async function listLocalFiles(root: string, rel = ""): Promise<string[]> {
@@ -338,7 +417,25 @@ async function executeTool(
   }
 
   if (name === "read_file" && typeof call.path === "string") {
+    // Paged path: offset (1-based line) and/or limit present → stream only
+    // that window from disk (never materializes the whole file).
+    const wantsPage = call.offset !== undefined || call.limit !== undefined;
     try {
+      if (wantsPage) {
+        const page = await readLocalFilePage(
+          ctx.worktreeDir,
+          call.path,
+          Math.max(1, Math.floor(Number(call.offset)) || 1),
+          Math.max(1, Math.min(2000, Math.floor(Number(call.limit)) || 2000))
+        );
+        if (!page) return `error: offset ${call.offset} is past end of file`;
+        const body =
+          page.text +
+          (page.hasMore
+            ? `\n\n[…page continues — read_file ${call.path} offset=${page.endLine + 1} for the next section; ${page.totalLines.toLocaleString()}+ lines total]`
+            : `\n\n[end of file — ${page.totalLines.toLocaleString()} lines total]`);
+        return body;
+      }
       return await readLocalFile(ctx.worktreeDir, call.path);
     } catch (err) {
       return `error: ${(err as Error).message}`;
@@ -359,6 +456,19 @@ async function executeTool(
       // Real tree search via the shared chain (rg → git grep → node scan).
       // The worktree is the containment boundary — no per-user cwd here.
       const result = await grepSearch(ctx.worktreeDir, call.query);
+      if (!result) throw new Error("no search engine available");
+      return result.output || `No matches for "${call.query}"`;
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
+  }
+
+  if (name === "code_search" && typeof call.query === "string") {
+    try {
+      // Snippet mode: grouped context + read_file offset/limit hints.
+      const result = await codeSearch(ctx.worktreeDir, call.query, {
+        context: typeof call.context === "number" ? call.context : undefined,
+      });
       if (!result) throw new Error("no search engine available");
       return result.output || `No matches for "${call.query}"`;
     } catch (err) {
@@ -410,11 +520,19 @@ async function executeTool(
     const opMap: Record<string, { op: string; args: Record<string, unknown> }> = {
       browser_navigate: { op: "navigate", args: { url: call.url } },
       browser_read: { op: "read", args: {} },
-      browser_click: { op: "click", args: { selector: call.selector } },
-      browser_type: { op: "type", args: { selector: call.selector, text: call.text } },
+      browser_click: { op: "click", args: { selector: call.selector, ref: call.ref } },
+      browser_type: { op: "type", args: { selector: call.selector, ref: call.ref, text: call.text } },
+      browser_press: { op: "press", args: { key: call.key } },
       browser_scroll: { op: "scroll", args: { dy: typeof call.amount === "number" ? call.amount : 600 } },
       browser_console: { op: "console", args: {} },
-      browser_screenshot: { op: "screenshot", args: {} },
+      browser_screenshot: { op: "screenshot", args: { fullPage: !!call.fullPage, viewpoint: call.viewpoint } },
+      browser_find: { op: "find", args: { text: call.text, role: call.role } },
+      browser_wait_for: { op: "wait_for", args: { text: call.text, selector: call.selector, time: call.time, timeoutMs: call.timeoutMs } },
+      browser_hover: { op: "hover", args: { selector: call.selector, ref: call.ref } },
+      browser_select: { op: "select", args: { selector: call.selector, ref: call.ref, value: call.value } },
+      browser_tabs: { op: "tabs", args: { tabAction: call.action, url: call.url, index: call.index } },
+      browser_network: { op: "network", args: {} },
+      browser_evaluate: { op: "evaluate", args: { code: call.code } },
     };
     const mapped = opMap[name];
     if (!mapped) return `error: ${name} is not supported in server runs`;
@@ -437,7 +555,29 @@ async function executeTool(
       case "click":
         return `clicked — page now "${String(d.title || d.url)}". Use browser_read to see the result.`;
       case "type":
-        return `typed ${String(d.length ?? 0)} chars into ${String(call.selector)}`;
+        return `typed ${String(d.length ?? 0)} chars into ${String(call.selector || call.ref || "")}`;
+      case "press":
+        return `key sent: ${String(call.key)}`;
+      case "find": {
+        const list = ((d.matches as any[]) || []).slice(0, 25).map((m) => `${m.ref}: ${m.role} "${m.name}" [${m.selector}]${m.enabled ? "" : " (disabled)"}`).join("\n");
+        return `MATCHES (${((d.matches as any[]) || []).length} of ${String(d.total)}):\n${list || "none"}\n\n${String(d.hint || "")}`;
+      }
+      case "wait_for":
+        return `condition met after ${String(d.waitedMs)}ms — now on "${String(d.title || d.url)}"`;
+      case "hover":
+        return `hovered ${String(d.hovered)}`;
+      case "select":
+        return `selected "${String(d.selected)}" in ${String(d.in)}`;
+      case "tabs": {
+        const tabs = ((d.tabs as any[]) || []).map((t) => `${t.active ? "→" : " "}[${t.index}] ${t.title || "(untitled)"} — ${t.url}`).join("\n");
+        return tabs || "no tabs";
+      }
+      case "network": {
+        const events = ((d.events as any[]) || []).map((e) => `${e.status ? `HTTP ${e.status}` : "ABORTED"} ${e.method} ${e.url}${e.error ? ` (${e.error})` : ""}`).join("\n");
+        return events || "No failed requests (no 4xx/5xx responses, no aborted requests).";
+      }
+      case "evaluate":
+        return `result: ${String(d.result ?? "undefined")}`;
       case "scroll":
         return `scrolled ${String(d.scrolled)}px`;
       case "console": {
@@ -626,11 +766,33 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
     // rate/quota errors (retries already exhausted inside the adapter).
     const failoverChain = parseFailoverChainEnv();
     let chainIdx = -1;
+    // Uptime telemetry: every model call is attributed to the provider that
+    // served it (or failed), so the reliability view reflects server runs.
+    const callT0 = () => Date.now();
     async function callModel<T>(invoke: (a: AIProviderAdapter) => Promise<T>): Promise<T> {
       for (;;) {
+        const t0 = callT0();
         try {
-          return await invoke(currentAdapter);
+          const out = await invoke(currentAdapter);
+          recordProviderEvent({
+            userId: run.userId,
+            lane: "server_run",
+            provider: servedProvider,
+            model: run.modelOverride || "(auto)",
+            ok: true,
+            latencyMs: Date.now() - t0,
+          });
+          return out;
         } catch (err) {
+          recordProviderEvent({
+            userId: run.userId,
+            lane: "server_run",
+            provider: servedProvider,
+            model: run.modelOverride || "(auto)",
+            ok: false,
+            errorMessage: String((err as Error).message),
+            latencyMs: Date.now() - t0,
+          });
           const next = failoverChain[chainIdx + 1];
           if (!next || !isRateLimitError(err)) throw err;
           chainIdx++;

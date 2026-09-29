@@ -29,6 +29,14 @@ export interface RubricRecord {
   lines: RubricLine[];
   /** Simple 0–100 score: A=100, B=70, C=40, F=0, averaged. */
   score: number;
+  /**
+   * THE verdict — hard pass/fail from exit codes, never from letters:
+   * PASS requires the task to have completed with a clean typecheck lane
+   * (and a clean browser lane when one ran). "Looks done" vs "is done".
+   */
+  verdict: "PASS" | "FAIL";
+  /** Which hard criteria the verdict was computed from. */
+  verdictEvidence: string[];
   durationMs: number;
   modelCalls: number;
   tokenSavingsPct: number | null;
@@ -244,6 +252,44 @@ function gradeCleanReport(finalStatus: "done" | "error" | "aborted", transcript:
 }
 
 // ---------------------------------------------------------------------------
+// HARD VERDICT — the only number that matters
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the binary verdict from platform evidence (exit codes and lane
+ * outcomes), never from the letter grades:
+ *   - finalStatus must be "done" (error/aborted → FAIL, no exceptions);
+ *   - the typecheck lane, when it ran, must be "pass" (exit code 0);
+ *   - the browser lane, when it ran, must be "pass" (zero console errors);
+ *   - the review lane (swarm slot), when it ran, must be "pass".
+ * Skipped lanes never fail a run — they mean the lane didn't apply.
+ */
+export function computeVerdict(
+  finalStatus: "done" | "error" | "aborted",
+  lanes: { typecheck: "pass" | "fail" | "skipped"; browser: "pass" | "fail" | "skipped"; swarm: "pass" | "fail" | "skipped" }
+): { verdict: "PASS" | "FAIL"; evidence: string[] } {
+  const evidence: string[] = [];
+  let pass = true;
+
+  if (finalStatus !== "done") {
+    pass = false;
+    evidence.push(`finalStatus=${finalStatus} (must be done)`);
+  }
+  for (const lane of ["typecheck", "browser", "swarm"] as const) {
+    const outcome = lanes[lane];
+    if (outcome === "fail") {
+      pass = false;
+      evidence.push(`${lane} lane failed (exit-code evidence)`);
+    } else if (outcome === "pass") {
+      evidence.push(`${lane} lane passed`);
+    }
+    // skipped → lane didn't apply; never verdict-relevant
+  }
+  if (evidence.length === 0) evidence.push("completed with no applicable verification lanes");
+  return { verdict: pass ? "PASS" : "FAIL", evidence };
+}
+
+// ---------------------------------------------------------------------------
 // History persistence + trend analysis
 // ---------------------------------------------------------------------------
 
@@ -356,6 +402,8 @@ export function finishRubricObservation(
     finalStatus,
     lines,
     score,
+    verdict: computeVerdict(finalStatus, obs.lanes).verdict,
+    verdictEvidence: computeVerdict(finalStatus, obs.lanes).evidence,
     durationMs: Date.now() - obs.startedAt,
     modelCalls: opts.modelCalls,
     tokenSavingsPct: opts.tokenSavingsPct,
@@ -370,19 +418,23 @@ export function finishRubricObservation(
 // Console-friendly trend report
 // ---------------------------------------------------------------------------
 
-/** Human-readable trend across the recorded history. */
+/** Human-readable trend across the recorded history — verdict-first. */
 export function formatTrendReport(records: RubricRecord[]): string {
   if (records.length === 0) return "No rubric history recorded yet.";
   const last = records[records.length - 1];
   const prev = records.length > 1 ? records[records.length - 2] : null;
   const arrow = (a: number, b: number) => (b > a ? " ↗" : b < a ? " ↘" : " →");
   const out: string[] = [];
-  out.push(`Rubric trend — ${records.length} recorded run(s)`);
+  const passCount = records.filter((r) => r.verdict === "PASS").length;
+  out.push(`Hard verdicts — ${passCount}/${records.length} run(s) PASSED (exit-code evidence only)`);
   out.push(
-    `Last run: score ${last.score}/100 (${last.finalStatus}) — ${prev ? `prev ${prev.score}${arrow(prev.score, last.score)}` : "first recorded run"}`
+    `Last run: ${last.verdict}${last.verdictEvidence.length ? ` (${last.verdictEvidence.join("; ")})` : ""}` +
+      (prev ? ` — prev ${prev.verdict}${prev.verdict !== last.verdict ? " (VERDICT CHANGED)" : ""}` : " — first recorded run")
   );
-  const scoreSpark = records.slice(-10).map((r) => r.score).join(" → ");
-  out.push(`Score trend (last ≤10): ${scoreSpark}`);
+  const scoreSpark = records.slice(-10).map((r) => `${r.verdict === "PASS" ? "✓" : "✗"}`).join(" ");
+  out.push(`Verdict trend (last ≤10): ${scoreSpark}`);
+  // Letter grades stay as diagnostics below the verdict.
+  out.push(`Diagnostic score: ${last.score}/100 (${last.finalStatus})${prev ? ` — prev ${prev.score}${arrow(prev.score, last.score)}` : ""}`);
   for (const l of last.lines) {
     const p = prev?.lines.find((x) => x.line === l.line);
     out.push(`  ${l.grade === "A" ? "✅" : l.grade === "B" ? "🟡" : "⚠️"} ${l.line.padEnd(32)} ${l.grade}${p && p.grade !== l.grade ? ` (was ${p.grade})` : ""}`);
@@ -391,6 +443,6 @@ export function formatTrendReport(records: RubricRecord[]): string {
     out.push(`⚠️ REGRESSIONS vs previous run: ${last.regressions.join("; ")}`);
   }
   const avgLast3 = Math.round(records.slice(-3).reduce((s, r) => s + r.score, 0) / Math.min(3, records.length));
-  out.push(`Rolling 3-run average: ${avgLast3}/100`);
+  out.push(`Rolling 3-run diagnostic average: ${avgLast3}/100`);
   return out.join("\n");
 }

@@ -58,9 +58,7 @@ export default function AgentProgress({
             className="activity-log-toggle"
             onClick={() => setShowLog(!showLog)}
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polyline points="4 17 10 11 4 5" />
-            </svg>
+            <span className="ms ms-sm">{showLog ? "expand_more" : "chevron_right"}</span>
             <span>{showLog ? "Hide" : "Show"} activity log ({activityLog.length})</span>
           </button>
           {showLog && (

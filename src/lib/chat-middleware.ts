@@ -527,6 +527,128 @@ async function okStreamPeeked(
 // Stream Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * SSE notice chunk — a client-shaped `data: {"content": …}` event the UI
+ * renders as plain text in the message bubble. Used by the fallback ladder
+ * to tell the user what happened instead of leaving an empty response.
+ */
+export function sseNoticeChunk(message: string): Uint8Array {
+  return new TextEncoder().encode(`data: ${JSON.stringify({ content: message })}\n\n`);
+}
+
+/**
+ * Watch a chosen provider stream for MID-STREAM failure — an in-stream
+ * provider error object or a degenerate single-char flood that only becomes
+ * visible after the 8-chunk peek window. Without this, a model that dies at
+ * chunk 30 leaves the user with an empty bubble (the peek obviously cannot
+ * see the whole stream).
+ *
+ * On failure the watched stream is consumed/discarded and a SYNTHETIC SSE
+ * stream is returned instead: one honest notice chunk telling the user what
+ * happened and that they can retry, followed by [DONE]. Non-fatal setups
+ * (healthy deltas seen) pass through completely untouched.
+ *
+ * This does NOT swap providers mid-flight (already-emitted reasoning can't
+ * be un-shown and the request body belongs to the dead attempt); the
+ * per-attempt ladder above is what spreads load across providers. This is
+ * the last-resort honest-notice path.
+ */
+export function watchMidStreamFailure(
+  providerName: string,
+  stream: ReadableStream<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+
+  const detectFailure = (text: string): string | null => {
+    for (const line of text.split("\n")) {
+      if (!line.startsWith("data: ")) continue;
+      const payload = line.slice(6).trim();
+      if (payload === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(payload) as {
+          error?: { message?: string } | string;
+          choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>;
+        };
+        // In-stream provider error object (NVIDIA ResourceExhausted, etc.)
+        if (parsed && typeof parsed === "object" && "error" in parsed) {
+          const msg = typeof parsed.error === "string" ? parsed.error : parsed.error?.message ?? JSON.stringify(parsed.error);
+          return String(msg).slice(0, 180);
+        }
+      } catch {
+        // partial JSON — not a failure signal
+      }
+    }
+    return null;
+  };
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let pending = "";
+      let recentDeltas: string[] = [];
+      const enqueue = (v: Uint8Array) => {
+        try { controller.enqueue(v); } catch { /* client gone */ }
+      };
+      const failOver = (reason: string) => {
+        // The failed attempt produced nothing usable — surface an honest
+        // notice IN the bubble instead of dead air.
+        enqueue(sseNoticeChunk(
+          `*The selected model (${providerName}) stopped mid-response — ${reason}. ` +
+          `Send again or pick another model.*\n`
+        ));
+        enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+        try { controller.close(); } catch { /* already closed */ }
+        reader.cancel().catch(() => {});
+      };
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          pending += decoder.decode(value, { stream: true });
+          // Keep a small tail window for the degenerate-flood check.
+          const lines = pending.split("\n");
+          pending = lines.pop() || "";
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const j = JSON.parse(line.slice(6)) as { choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }> };
+                const d = j?.choices?.[0]?.delta;
+                const piece = d?.content ?? d?.reasoning ?? d?.reasoning_content;
+                if (typeof piece === "string") {
+                  recentDeltas.push(piece);
+                  if (recentDeltas.length > 24) recentDeltas.shift();
+                }
+              } catch { /* partial line */ }
+            }
+          }
+          const failure = detectFailure(lines.join("\n"));
+          if (failure) {
+            failOver(failure);
+            return;
+          }
+          if (recentDeltas.length >= 24) {
+            const chars = new Set(recentDeltas.map((s) => s.trim()));
+            const singleChar = recentDeltas.every((s) => s.length === 1 && /[\p{P}\p{S}]/u.test(s));
+            if (singleChar && chars.size === 1) {
+              failOver(`degenerate output (${recentDeltas.length}x "${[...chars][0]}")`);
+              return;
+            }
+          }
+          enqueue(value);
+        }
+        try { controller.close(); } catch { /* already closed */ }
+      } catch {
+        // Network drop mid-stream: the browser already surfaced the abort —
+        // pass it through rather than claiming the model "stopped".
+        try { controller.close(); } catch { /* already closed */ }
+      }
+    },
+    cancel() {
+      reader.cancel().catch(() => {});
+    },
+  });
+}
+
 export function prependStatusMessage(
   stream: ReadableStream,
   message: string,

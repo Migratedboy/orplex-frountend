@@ -108,7 +108,7 @@ export default function BranchReviewPanel({
       {pending.length > 0 && (
         <div className="flex flex-col gap-2">
           <div className="text-[10px] font-label uppercase tracking-wide text-amber-600 dark:text-amber-400">
-            ⏸ Waiting for your approval ({pending.length})
+            <span className="ms ms-sm">pause_circle</span> Waiting for your approval ({pending.length})
           </div>
           {pending.map((a) => (
             <div key={a.id} className="flex items-start gap-2 text-[11px] font-mono">

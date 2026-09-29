@@ -13,7 +13,7 @@
 //   - every failure mode maps to a friendly error, never a stack trace.
 
 import { getProviderDef, type ProviderDef } from "./provider-registry";
-import { NON_CHAT_RE, probeModel } from "./model-catalog";
+import { NON_CHAT_RE, probeModel, lastProbeFailure, type ProbeFailureKind } from "./model-catalog";
 
 export interface ListedModel {
   id: string;
@@ -225,13 +225,24 @@ export interface VerifiedModelsResult {
   probedCount: number;
   verifiedCount: number;
   error?: string;
+  /**
+   * When NOTHING survived the trial: why. "invalid_key" / "no_credits" /
+   * "no_models" / "network" map to distinct user notifications; undefined
+   * means at least one model passed (or nothing was probed yet).
+   */
+  failureKind?: ProbeFailureKind;
+  /** Raw provider evidence for the failure (never contains the key). */
+  failureDetail?: string;
 }
 
 /**
- * Probe up to VERIFY_BUDGET models from the given list with the user's key,
- * spaced to respect free-tier limits. 429 counts as alive (the provider
- * confirmed the model serves). Never automatic — callers must wire this to
- * an explicit user action.
+ * Probe up to VERIFY_BUDGET models from the given list with the user's key
+ * using a GENUINE trial turn ("hi") per model, spaced to respect free-tier
+ * limits. 429 counts as alive (the provider confirmed the model serves).
+ * Never automatic — callers must wire this to an explicit user action.
+ *
+ * When ZERO models survive, `failureKind` explains why (invalid key, empty
+ * credits, dead network) so the caller can notify the user precisely.
  */
 export async function verifyProviderModels(
   providerId: string,
@@ -241,6 +252,13 @@ export async function verifyProviderModels(
   const def = getProviderDef(providerId);
   if (!def) return { ok: false, models, probedCount: 0, verifiedCount: 0, error: `Unknown provider "${providerId}".` };
   if (!apiKey) return { ok: false, models, probedCount: 0, verifiedCount: 0, error: "API key is required." };
+  if (models.length === 0) {
+    return {
+      ok: false, models, probedCount: 0, verifiedCount: 0,
+      failureKind: "no_models",
+      error: "The provider listed no chat models for this key.",
+    };
+  }
 
   // Probe priority: free models first (cheapest), then by context window —
   // the flagship models users will actually pick.
@@ -258,5 +276,21 @@ export async function verifyProviderModels(
   }
 
   const tagged = models.map((m) => (aliveIds.has(m.id) ? { ...m, verified: true } : m));
-  return { ok: true, models: tagged, probedCount: probed, verifiedCount: aliveIds.size };
+  const result: VerifiedModelsResult = { ok: true, models: tagged, probedCount: probed, verifiedCount: aliveIds.size };
+
+  if (aliveIds.size === 0 && probed > 0) {
+    // Nothing answered the trial — surface the reason the probe recorded.
+    const f = lastProbeFailure();
+    result.failureKind = f.kind ?? "dead";
+    result.failureDetail = f.detail;
+    result.error =
+      f.kind === "invalid_key"
+        ? "Every model failed the trial — the provider rejected the API key."
+        : f.kind === "no_credits"
+          ? "Every model failed the trial — no credits left on this API key."
+          : f.kind === "network"
+            ? "Every model failed the trial — the provider could not be reached."
+            : "No model answered the trial request.";
+  }
+  return result;
 }

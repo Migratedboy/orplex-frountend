@@ -3,6 +3,8 @@
 import { useState } from "react";
 import MarkdownRenderer from "./MarkdownRenderer";
 import ThinkingCard from "./ThinkingCard";
+import { IconRefresh } from "./Icons";
+import { parseContent, type ContentSegment } from "@/lib/message-content";
 
 // === Collapsible text for long content ===
 
@@ -34,78 +36,7 @@ function CollapsibleText({ content }: { content: string }) {
   );
 }
 
-// === Types ===
-
-interface ContentSegment {
-  type: "text" | "tool_call" | "tool_result" | "status" | "success" | "error" | "thinking" | "interrupted";
-  content: string;
-  name?: string;
-  path?: string;
-  action?: string;
-  detail?: string;
-}
-
-// === Parse raw content into segments ===
-
-function parseContent(raw: string): ContentSegment[] {
-  const segments: ContentSegment[] = [];
-  // Thinking pattern: a closed [THINKING]...[/THINKING] block (multi-line)
-  // or a still-streaming unclosed block that runs to the end of the content.
-  const pattern = /([<]tool_call[\s\S]*?[<]\/tool_call[>]|<tool_result[^>]*>[\s\S]*?<\/tool_result>|^(?:analysing|reading|writing|listing|thinking)[\s]+\[[^\]]+\]|^\[OK\]\s+.+|^\[FAIL\]\s+.+|^\[THINKING\]\n[\s\S]*?\[\/THINKING\]|^\[THINKING\][\s\S]*$|^\[INTERRUPTED\]$)/gm;
-
-  let lastIndex = 0;
-  let match;
-
-  while ((match = pattern.exec(raw)) !== null) {
-    if (match.index > lastIndex) {
-      const text = raw.slice(lastIndex, match.index).trim();
-      if (text) segments.push({ type: "text", content: text });
-    }
-
-    const line = match[0];
-
-    if (line.startsWith("<tool_call>")) {
-      const jsonMatch = line.match(/<tool_call>([\s\S]*?)<\/tool_call>/);
-      if (jsonMatch) {
-        try {
-          const parsed = JSON.parse(jsonMatch[1].trim());
-          segments.push({ type: "tool_call", content: jsonMatch[1].trim(), name: parsed.name, path: parsed.path });
-        } catch {
-          segments.push({ type: "tool_call", content: jsonMatch[1].trim(), name: "unknown" });
-        }
-      }
-    } else if (line.startsWith("<tool_result")) {
-      const resultMatch = line.match(/<tool_result[^>]*>([\s\S]*?)<\/tool_result>/);
-      if (resultMatch) segments.push({ type: "tool_result", content: resultMatch[1].trim().slice(0, 500) });
-    } else if (/^(analysing|reading|writing|listing|thinking)/.test(line)) {
-      const statusMatch = line.match(/^(\w+[\s]+)\[([^\]]+)\]/);
-      if (statusMatch) segments.push({ type: "status", content: line, action: statusMatch[1].trim(), path: statusMatch[2] });
-    } else if (line.startsWith("[THINKING]")) {
-      // M3/reasoning-model thinking — multi-line, optionally closed with
-      // [/THINKING] once the turn's answer text has been appended.
-      const thinkingText = line
-        .replace(/^\[THINKING\]\s*/, "")
-        .replace(/\s*\[\/THINKING\]$/, "")
-        .trim();
-      if (thinkingText) segments.push({ type: "thinking", content: thinkingText });
-    } else if (/^\[OK\]/.test(line)) {
-      segments.push({ type: "success", content: line, detail: line.replace(/^\[OK\]\s*/, "").trim() });
-    } else if (/^\[FAIL\]/.test(line)) {
-      segments.push({ type: "error", content: line, detail: line.replace(/^\[FAIL\]\s*/, "").trim() });
-    } else if (line === "[INTERRUPTED]") {
-      segments.push({ type: "interrupted", content: line });
-    }
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < raw.length) {
-    const text = raw.slice(lastIndex).trim();
-    if (text) segments.push({ type: "text", content: text });
-  }
-
-  return segments;
-}
+// === Types & parser live in @/lib/message-content (pure, unit-testable) ===
 
 // === Tool config ===
 
@@ -194,7 +125,7 @@ function ResultPill({ segment, type }: { segment: ContentSegment; type: "success
 function InterruptedNotice() {
   return (
     <div className="interrupted-notice" role="status">
-      <span className="interrupted-notice-icon">⚠️</span>
+      <span className="interrupted-notice-icon"><span className="ms">warning</span></span>
       <div className="interrupted-notice-body">
         <div className="interrupted-notice-title">Interrupted — the page was reloaded mid-task</div>
         <div className="interrupted-notice-hint">This is the partial output; send a follow-up to continue.</div>
@@ -203,9 +134,26 @@ function InterruptedNotice() {
   );
 }
 
+function FailedNotice({ onRetry, retrying }: { onRetry?: () => void; retrying?: boolean }) {
+  return (
+    <div className="failed-notice" role="status">
+      <span className="failed-notice-icon"><span className="ms">error</span></span>
+      <div className="failed-notice-body">
+        <div className="failed-notice-title">This response failed</div>
+        <div className="failed-notice-hint">The model stopped before finishing — nothing was lost.</div>
+      </div>
+      {onRetry && (
+        <button className="failed-retry-btn" onClick={onRetry} disabled={retrying} title="Resend the same prompt">
+          <IconRefresh size={13} /> {retrying ? "Retrying…" : "Retry"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // === Main component ===
 
-export default function MessageContent({ content, isThinking = false }: { content: string; isThinking?: boolean }) {
+export default function MessageContent({ content, isThinking = false, onRetry, retrying = false }: { content: string; isThinking?: boolean; onRetry?: () => void; retrying?: boolean }) {
   const segments = parseContent(content);
 
   // If no segments but thinking is active, show empty thinking pill
@@ -248,6 +196,8 @@ export default function MessageContent({ content, isThinking = false }: { conten
             return <ResultPill key={i} segment={segment} type="error" />;
           case "interrupted":
             return <InterruptedNotice key={i} />;
+          case "failed":
+            return <FailedNotice key={i} onRetry={onRetry} retrying={retrying} />;
           default:
             return null;
         }

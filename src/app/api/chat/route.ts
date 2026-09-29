@@ -9,6 +9,8 @@ import {
   prependStatusMessage,
   buildMultipartMessages,
   modelVariants,
+  watchMidStreamFailure,
+  sseNoticeChunk,
 } from "@/lib/chat-middleware";
 import { sseTransform } from "@/lib/ai-providers";
 import { isMockAiEnabled, createMockProviderStream } from "@/lib/mock-ai";
@@ -16,6 +18,7 @@ import { M3_TOOL_DEFINITIONS } from "@/lib/tool-definitions";
 import { buildSystemPrompt } from "@/lib/master-prompt";
 import { routeToModel } from "@/lib/model-router";
 import { preprocessMessages } from "@/lib/vision-preprocessor";
+import { recordProviderEvent } from "@/lib/provider-uptime";
 
 export async function POST(request: NextRequest) {
   try {
@@ -42,15 +45,18 @@ export async function POST(request: NextRequest) {
     const burst = await enforceBurstLimit(userId);
     if (!burst.ok) return burst.response;
 
-    // --- Step 3: Daily quota ---
-    const quota = await enforceDailyQuota(userId);
-    if (!quota.ok) return quota.response;
-
-    // --- Step 4: Validate request body ---
+    // --- Step 3: Validate request body BEFORE the daily quota ---
+    // A malformed body (400) must never consume the user's daily request:
+    // the quota increment happens inside enforceDailyQuota, so validating
+    // first means only requests that actually reach a provider count.
     const body = await request.json();
     const validated = validateRequestBody(body);
     if (!validated.ok) return validated.response;
     const { data: parsed } = validated;
+
+    // --- Step 4: Daily quota ---
+    const quota = await enforceDailyQuota(userId);
+    if (!quota.ok) return quota.response;
 
     const mode = parsed.mode || "ask";
 
@@ -129,6 +135,7 @@ export async function POST(request: NextRequest) {
 
     let stream: ReadableStream | null = null;
     let lastError = "";
+    let attemptsMade = 0;
 
     // Reasoning effort from the prompt bar (low/medium/high). Medium is the
     // model default — only sent for models that support reasoning_effort.
@@ -138,6 +145,9 @@ export async function POST(request: NextRequest) {
       if (effort && effort !== "medium") {
         console.log(`[chat] effort=${effort} → ${provider.model}`);
       }
+      // Round-trip clock for this attempt (telemetry) — loop-local so
+      // concurrent requests never share it.
+      const attemptT0 = Date.now();
       // Groq's free tier enforces a tight tokens-per-minute cap per model
       // (~8k TPM); the full master prompt + tool definitions alone exceed it
       // and every request dies with HTTP 413. The compact profile + reduced
@@ -176,22 +186,63 @@ export async function POST(request: NextRequest) {
       };
 
       const result = await fetchWithProviderRetry(provider, requestBody);
+      attemptsMade++;
       if (result.ok) {
-        stream = result.stream;
+        // Uptime telemetry: the provider answered (HTTP ok + healthy peek).
+        recordProviderEvent({
+          userId,
+          lane: "chat",
+          provider: provider.name,
+          model: provider.model,
+          ok: true,
+          latencyMs: Date.now() - attemptT0,
+        });
+        // Watch for MID-STREAM failure (in-stream error objects / degenerate
+        // floods beyond the peek window). On failure the watcher replaces the
+        // stream with an honest notice so the bubble is never left empty.
+        stream = watchMidStreamFailure(provider.name, result.stream);
         break;
       }
+      // Uptime telemetry: every attempted-and-failed provider feeds the
+      // reliability view (the classifier buckets rate limits, auth, …).
+      recordProviderEvent({
+        userId,
+        lane: "chat",
+        provider: provider.name,
+        model: provider.model,
+        ok: false,
+        errorMessage: result.error,
+        latencyMs: Date.now() - attemptT0,
+      });
       lastError = result.error;
       console.warn(`[chat] provider "${provider.name}" failed: ${result.error}`);
     }
 
     if (!stream) {
-      // A specific picker model that no provider could serve usually means a
-      // cold-started NVIDIA NIM deployment (degenerate warm-up output is
-      // detected and rejected by the stream peek) — say so honestly instead
-      // of the generic all-providers-down message.
+      // No provider served the request. When at least one real provider was
+      // ATTEMPTED, return an SSE stream carrying an honest notice instead of
+      // a 503: the client's stream reader treats non-2xx as a thrown error
+      // ("Fast answer failed: HTTP 503"), which historically left the chat
+      // bubble empty with the spinner running. A notice stream renders as
+      // text in the bubble and ends cleanly.
       const message = requestedModel
-        ? `The selected model (${requestedModel}) is not responding correctly right now — it may still be warming up on its provider. Pick another model or try again in a minute.`
+        ? `The selected model (${requestedModel}) is not responding right now — it may still be warming up on its provider. Send again in a minute or pick another model.`
         : "All AI providers are currently unavailable. Please try again.";
+      if (attemptsMade > 0) {
+        console.warn(`[chat] all providers failed for "${requestedModel || "auto"}" — returning notice stream: ${lastError}`);
+        const enc = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(sseNoticeChunk(`*${message}*\n`));
+              c.enqueue(enc.encode("data: [DONE]\n\n"));
+              c.close();
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" } },
+        );
+      }
+      // Nothing was attempted (config error) — a real error is correct.
       return Response.json(
         {
           success: false,

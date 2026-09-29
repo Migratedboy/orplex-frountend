@@ -28,15 +28,15 @@ export default function Header({ onBugReport }: HeaderProps) {
         {/* Nav Links */}
         <nav className="hidden md:flex gap-6 font-label text-[11px]">
           <a className="text-primary-container font-bold flex items-center gap-1 hover:text-primary transition-colors" href="#">
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg>
+            <span className="ms">code</span>
             IDE/Dashboard
           </a>
           <a className="text-on-surface-variant flex items-center gap-1 hover:text-primary-container transition-colors" href="#">
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" /></svg>
+            <span className="ms">account_tree</span>
             Workflows
           </a>
           <a className="text-on-surface-variant flex items-center gap-1 hover:text-primary-container transition-colors" href="#">
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" /><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" /><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" /><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" /></svg>
+            <span className="ms">rocket_launch</span>
             Deploy
           </a>
         </nav>

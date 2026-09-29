@@ -9,7 +9,8 @@ export const maxDuration = 60;
 /**
  * POST /api/agent/browser — Server-backed browser_* tools.
  *
- * Body: { op, url?, selector?, text?, key?, dx?, dy?, sessionId? }
+ * Body: { op, url?, selector?, ref?, text?, value?, key?, dx?, dy?, time?,
+ *         timeoutMs?, role?, action?, index?, fullPage?, viewpoint?, code?, sessionId? }
  * Same result shapes the Electron agent-browser bridge produces, so the
  * model sees one identical tool contract whether the browser lives in the
  * desktop shell or on the server. Navigation is SSRF-guarded server-side;
@@ -29,10 +30,20 @@ export async function POST(request: NextRequest) {
   const result = await runBrowserOp(session.user.id, body.op, {
     url: typeof body.url === "string" ? body.url : undefined,
     selector: typeof body.selector === "string" ? body.selector : undefined,
+    ref: typeof body.ref === "string" ? body.ref : undefined,
     text: typeof body.text === "string" ? body.text : undefined,
+    value: typeof body.value === "string" ? body.value : undefined,
     key: typeof body.key === "string" ? body.key : undefined,
     dx: typeof body.dx === "number" ? body.dx : undefined,
     dy: typeof body.dy === "number" ? body.dy : undefined,
+    time: typeof body.time === "number" ? body.time : undefined,
+    timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
+    role: typeof body.role === "string" ? body.role : undefined,
+    tabAction: typeof body.action === "string" ? body.action : undefined,
+    index: typeof body.index === "number" ? body.index : undefined,
+    fullPage: typeof body.fullPage === "boolean" ? body.fullPage : undefined,
+    viewpoint: typeof body.viewpoint === "string" ? body.viewpoint : undefined,
+    code: typeof body.code === "string" ? body.code : undefined,
     sessionId: typeof body.sessionId === "string" ? body.sessionId.slice(0, 64) : undefined,
   });
 

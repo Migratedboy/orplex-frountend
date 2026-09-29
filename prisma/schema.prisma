@@ -77,9 +77,14 @@ model Conversation {
   userId    String
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages  Message[]
+  // Workspace folder this thread was created in (folder NAME, e.g. "orplex").
+  // Groups threads under their project in the sidebar; null = Ungrouped.
+  // Name (not path) on purpose: paths are device-specific, names group fine.
+  workspaceName String?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
+  @@index([userId, workspaceName])
   @@map("conversations")
 }
 
@@ -320,6 +325,46 @@ model Comment {
 
   @@index([artifactId])
   @@map("comments")
+}
+
+// Durable notification center. Every user-facing system event worth
+// surfacing (model-trial failures, run outcomes, approvals) lands here once:
+// the UI toasts it briefly, then it lives behind the bell icon with an
+// unread count until the user opens/clears it.
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String   @default("info") // info | success | error | warning
+  title     String
+  message   String   @db.Text
+  source    String   @default("system") // models | runs | approvals | system
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+// Provider uptime telemetry — one row per provider attempt (success or
+// error) so the Settings → Provider & Cost tab can show a 7-day reliability
+// view per provider/model. Written best-effort by /api/chat's provider
+// ladder and the server executor's failover loop; a telemetry failure must
+// never affect the request that produced it.
+model ProviderEvent {
+  id        String   @id @default(cuid())
+  userId    String
+  lane      String   // "chat" | "server_run"
+  provider  String   // registry/config provider name ("nvidia", "openrouter", …)
+  model     String   // model id the attempt targeted
+  outcome   String   // "ok" | "error"
+  errorKind String?  // rate_limit | auth | server | network | bad_request | error
+  httpStatus Int?
+  latencyMs Int?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([provider, createdAt])
+  @@map("provider_events")
 }
 
 // Sync hub mailbox: entries peers have pushed, delivered cursor-based to
@@ -566,6 +611,7 @@ model WorkspaceMemory {
   contentHash  String // stable identity of `content` (unique per workspace/kind)
   evidence     Json? // files, lanes, task text that produced it
   files        Json? // file paths this learning relates to (retrieval key)
+  embedding    Json? // MiniLM 384-dim vector (Float32Array → number[]); null until first embed pass
   count        Int      @default(1) // times re-observed
   firstSeenAt  DateTime @default(now())
   lastSeenAt   DateTime @updatedAt
@@ -573,4 +619,22 @@ model WorkspaceMemory {
   @@unique([workspaceKey, kind, contentHash])
   @@index([workspaceKey, lastSeenAt])
   @@map("workspace_memories")
+}
+
+// Projects sidebar roster: the workspace folders a user has opened, synced
+// across their machines (folder NAMES — handles/paths stay device-bound, so
+// a synced-but-unbound project renders as a ghost row until the folder is
+// located locally). One row per (user, name); machines merge by lastOpenedAt.
+model ProjectRecord {
+  id            String   @id @default(cuid())
+  userId        String
+  name          String // folder name — the join key to Conversation.workspaceName
+  displayName   String? // user-set alias (rename), falls back to name
+  lastOpenedAt  DateTime @default(now()) // newest wins when machines merge
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, name])
+  @@index([userId, lastOpenedAt])
+  @@map("project_records")
 }

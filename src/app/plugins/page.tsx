@@ -2,9 +2,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "@/lib/api-base";
 
-interface Plugin { name: string; category: string; description: string; enabled: boolean; }
-
-// Real workspace bundle (skills + hooks + MCP as one installable unit)
 interface BundleInfo {
   name: string;
   version: string | null;
@@ -16,43 +13,33 @@ interface BundleInfo {
   warnings: string[];
 }
 
-const COLORS: Record<string, string> = { core: "#f97316", quality: "#22c55e", intelligence: "#3b82f6", security: "#ef4444", devops: "#a855f7", domain: "#06b6d4" };
-const ICONS: Record<string, string> = { core: "C", quality: "Q", intelligence: "I", security: "S", devops: "D", domain: "M" };
+interface LibraryEntry {
+  slug: string;
+  name: string;
+  category: string;
+  version: string;
+  description: string;
+  skillCount: number;
+  hasHooks: boolean;
+  hasMcp: boolean;
+  installed: boolean;
+  /** null = not installed; true/false = hook enforcement on/off. */
+  enabled: boolean | null;
+}
 
-const DEFAULT_PLUGINS: Plugin[] = [
-  { name: "logger", category: "core", description: "Logs all tool calls and tracks usage statistics", enabled: true },
-  { name: "memory-sync", category: "core", description: "Persists learning memory across sessions", enabled: true },
-  { name: "cost-tracker", category: "core", description: "Tracks API costs by tier", enabled: true },
-  { name: "model-router-config", category: "core", description: "Configurable tier routing", enabled: false },
-  { name: "task-queue", category: "core", description: "Queues tasks when rate-limited", enabled: false },
-  { name: "export-manager", category: "core", description: "Enhanced .zip export with gitignore", enabled: false },
-  { name: "testgen", category: "quality", description: "Auto-generates test file stubs", enabled: true },
-  { name: "linter", category: "quality", description: "Checks code quality on file writes", enabled: true },
-  { name: "type-checker", category: "quality", description: "Reports TypeScript type issues", enabled: true },
-  { name: "doc-gen", category: "quality", description: "Auto-generates JSDoc documentation", enabled: false },
-  { name: "code-review", category: "quality", description: "Reviews code quality on every file write", enabled: false },
-  { name: "prompt-enhancer", category: "intelligence", description: "Enriches vague prompts with best practices", enabled: false },
-  { name: "response-cache", category: "intelligence", description: "Caches identical prompts", enabled: false },
-  { name: "pattern-learner", category: "intelligence", description: "Records successful tool sequences", enabled: false },
-  { name: "complexity-estimator", category: "intelligence", description: "Pre-computes task complexity", enabled: false },
-  { name: "secret-scanner", category: "security", description: "Blocks hardcoded API keys and passwords", enabled: true },
-  { name: "path-traversal", category: "security", description: "Prevents writes outside workspace", enabled: false },
-  { name: "input-sanitizer", category: "security", description: "Sanitizes shell command arguments", enabled: true },
-  { name: "git-auto-commit", category: "devops", description: "Auto-commits file changes", enabled: false },
-  { name: "build-watcher", category: "devops", description: "Runs build after file changes", enabled: false },
-  { name: "dep-updater", category: "devops", description: "Checks for outdated dependencies", enabled: false },
-  { name: "docker-scaffold", category: "devops", description: "Auto-generates Dockerfile", enabled: false },
-  { name: "ui-components", category: "domain", description: "Generates Tailwind/shadcn components", enabled: false },
-  { name: "api-scaffold", category: "domain", description: "Generates REST/GraphQL API routes", enabled: false },
-  { name: "db-migration", category: "domain", description: "Generates Prisma migrations", enabled: false },
-];
+const ICONS: Record<string, string> = { quality: "Q", intelligence: "I", security: "S", devops: "D", domain: "M" };
+const CATEGORY_ORDER = ["quality", "security", "devops", "domain", "intelligence"];
 
 export default function PluginsPage() {
-  const [plugins, setPlugins] = useState<Plugin[]>(DEFAULT_PLUGINS);
   const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
   const [bundles, setBundles] = useState<BundleInfo[]>([]);
+  const [library, setLibrary] = useState<LibraryEntry[]>([]);
+  const [workspaceOpen, setWorkspaceOpen] = useState(true);
   const [bundleBusy, setBundleBusy] = useState("");
   const [bundleMsg, setBundleMsg] = useState("");
+  const [libBusy, setLibBusy] = useState("");
+  const [libMsg, setLibMsg] = useState<{ slug: string; text: string; ok: boolean } | null>(null);
 
   const loadBundles = useCallback(() => {
     apiFetch("/api/agent/plugins")
@@ -61,9 +48,20 @@ export default function PluginsPage() {
       .catch(() => setBundles([]));
   }, []);
 
+  const loadLibrary = useCallback(() => {
+    apiFetch("/api/agent/plugin-library")
+      .then((r) => r.json())
+      .then((d) => {
+        setLibrary(d.library || []);
+        setWorkspaceOpen(d.workspaceOpen !== false);
+      })
+      .catch(() => setLibrary([]));
+  }, []);
+
   useEffect(() => {
     loadBundles();
-  }, [loadBundles]);
+    loadLibrary();
+  }, [loadBundles, loadLibrary]);
 
   const installBundle = async (dir: string | null) => {
     setBundleBusy(dir || "all");
@@ -92,64 +90,215 @@ export default function PluginsPage() {
     }
   };
 
-  const toggle = (name: string) => {
-    setPlugins(prev => prev.map(p => p.name === name ? { ...p, enabled: !p.enabled } : p));
+  const toggleBundle = async (slug: string, enabled: boolean) => {
+    setLibBusy(slug);
+    setLibMsg(null);
+    try {
+      const res = await apiFetch("/api/agent/plugin-library", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, enabled }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setLibMsg({ slug, text: data.error || "Toggle failed", ok: false });
+      } else {
+        setLibMsg({
+          slug,
+          text: enabled ? "Hook rules active" : "Hook rules paused (skill files kept)",
+          ok: true,
+        });
+        loadLibrary();
+      }
+    } catch {
+      setLibMsg({ slug, text: "Toggle failed", ok: false });
+    } finally {
+      setLibBusy("");
+    }
   };
 
-  const filtered = filter === "all" ? plugins : plugins.filter(p => p.category === filter);
-  const categories = [...new Set(plugins.map(p => p.category))];
-  const enabledCount = plugins.filter(p => p.enabled).length;
+  const installLibraryBundle = async (slug: string) => {
+    setLibBusy(slug);
+    setLibMsg(null);
+    try {
+      const res = await apiFetch("/api/agent/plugin-library", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setLibMsg({ slug, text: data.error || "Install failed", ok: false });
+      } else {
+        const r = data.installed || {};
+        setLibMsg({
+          slug,
+          text: `Installed — ${r.installedSkills?.length || 0} skill(s), ${r.mergedHooks || 0} hook(s) into .orplex/`,
+          ok: true,
+        });
+        loadLibrary();
+      }
+    } catch {
+      setLibMsg({ slug, text: "Install failed", ok: false });
+    } finally {
+      setLibBusy("");
+    }
+  };
+
+  const q = search.trim().toLowerCase();
+  const filtered = library.filter(
+    (p) =>
+      (filter === "all" || p.category === filter) &&
+      (!q || p.name.includes(q) || p.description.toLowerCase().includes(q))
+  );
+  const categories = CATEGORY_ORDER.filter((c) => library.some((p) => p.category === c));
+  const installedCount = library.filter((p) => p.installed).length;
 
   return (
     <div className="page-content" style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
       <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: "#1a1a1a", marginBottom: 4 }}>Plugins</h1>
-        <p style={{ color: "#666", fontSize: 14 }}>{enabledCount} of {plugins.length} plugins enabled</p>
+        <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>Plugins</h1>
+        <p className="plugins-subtle" style={{ fontSize: 14 }}>
+          {workspaceOpen
+            ? `${installedCount} of ${library.length} built-ins installed · ${bundles.length} workspace bundle(s) found`
+            : "Open a workspace folder to install plugins into it."}
+        </p>
       </div>
 
-      {/* Workspace bundles — real skills+hooks+MCP installable units */}
-      <div style={{ marginBottom: 28, padding: 16, borderRadius: 10, border: "1px dashed #d4d4d8", background: "#fafafa" }}>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>Built-in library</div>
+          <div className="plugins-subtle" style={{ fontSize: 12, marginTop: 2 }}>
+            Skills + guardrail hooks, installed into <code>.orplex/</code> in the open workspace. Existing files are never overwritten.
+          </div>
+        </div>
+        {!workspaceOpen ? (
+          <div className="empty-state" style={{ padding: "32px 0" }}>
+            <p className="empty-state-title">No workspace open</p>
+            <p className="empty-state-text">Open a folder in the app, then come back — plugins install into that workspace.</p>
+          </div>
+        ) : (
+          <>
+            <div className="plugins-chips-row">
+              <input
+                className="plugin-search"
+                placeholder="Search 40 built-ins…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <button onClick={() => setFilter("all")} className="plugin-chip" data-selected={filter === "all" ? "true" : "false"}>
+                All ({library.length})
+              </button>
+              {categories.map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => setFilter(cat)}
+                  className="plugin-chip plugin-chip-cat"
+                  data-cat={cat}
+                  data-selected={filter === cat ? "true" : "false"}
+                >
+                  {cat} ({library.filter((p) => p.category === cat).length})
+                </button>
+              ))}
+            </div>
+            <div className="plugin-list">
+              {filtered.map((entry) => (
+                <div key={entry.slug} className="plugin-card">
+                  <div className="plugin-icon" data-cat={entry.category}>{ICONS[entry.category] || "?"}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="plugin-name">
+                      {entry.name}
+                      <span className="plugin-meta">v{entry.version}</span>
+                      <span className="plugin-cat-tag" data-cat={entry.category}>{entry.category}</span>
+                    </div>
+                    <div className="plugins-subtle" style={{ fontSize: 12, marginTop: 2 }}>{entry.description}</div>
+                    <div className="plugin-meta" style={{ marginTop: 3 }}>
+                      {entry.skillCount} skill{entry.skillCount === 1 ? "" : "s"}
+                      {entry.hasHooks ? " · hooks" : ""}
+                      {entry.hasMcp ? " · mcp" : ""}
+                      {libMsg?.slug === entry.slug ? (
+                        <span className="plugin-flash" data-ok={libMsg.ok ? "true" : "false"}>{libMsg.text}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  {entry.installed ? (
+                    <div className="plugin-installed-group">
+                      <span className="plugin-installed" title="First skill of this bundle exists in .orplex/skills/ — reinstall is safe (existing files win)">✓ Installed</span>
+                      {entry.hasHooks && (
+                        <button
+                          onClick={() => toggleBundle(entry.slug, entry.enabled === false)}
+                          disabled={libBusy !== ""}
+                          className={`plugin-toggle ${entry.enabled === false ? "off" : ""}`}
+                          data-state={entry.enabled === false ? "off" : "on"}
+                          title={
+                            entry.enabled === false
+                              ? "Hook rules paused — click to re-enable deny/notify enforcement"
+                              : "Hook rules active — click to pause enforcement (skill files stay)"
+                          }
+                        >
+                          {entry.enabled === false ? "hooks off" : "hooks on"}
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => installLibraryBundle(entry.slug)}
+                      disabled={libBusy !== ""}
+                      className="plugin-install-btn"
+                    >
+                      {libBusy === entry.slug ? "Installing…" : "Install"}
+                    </button>
+                  )}
+                </div>
+              ))}
+              {filtered.length === 0 && (
+                <div className="plugins-subtle" style={{ fontSize: 13, padding: "12px 0" }}>No built-ins in this category yet.</div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="plugins-workspace-box">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
           <div>
-            <div style={{ fontWeight: 700, fontSize: 15, color: "#1a1a1a" }}>Workspace bundles</div>
-            <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
-              Drop a folder with <code style={{ fontSize: 11 }}>orplex-plugin.json</code> (+ skills/, hooks.json, mcp.json) into the workspace, then install. Existing files are never overwritten.
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Workspace bundles</div>
+            <div className="plugins-subtle" style={{ fontSize: 12, marginTop: 2 }}>
+              Drop a folder with <code>orplex-plugin.json</code> (+ skills/, hooks.json, mcp.json) into the workspace, then install. Existing files are never overwritten.
             </div>
           </div>
           {bundles.length > 0 && (
             <button
               onClick={() => installBundle(null)}
               disabled={bundleBusy !== ""}
-              style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: "#f97316", color: "#fff", fontWeight: 600, fontSize: 13, cursor: bundleBusy ? "default" : "pointer", opacity: bundleBusy ? 0.6 : 1 }}
+              className="plugin-primary-btn"
             >
-              {bundleBusy === "all" ? "Installing…" : `Install all (${bundles.length})`}
+              {bundleBusy === "all" ? "Install all…" : `Install all (${bundles.length})`}
             </button>
           )}
         </div>
-        {bundleMsg && <div style={{ marginTop: 8, fontSize: 12, color: "#2f7d4f", fontWeight: 600 }}>{bundleMsg}</div>}
+        {bundleMsg && <div className="plugins-ok-msg">{bundleMsg}</div>}
         {bundles.length === 0 ? (
-          <div style={{ marginTop: 10, fontSize: 12, color: "#a0a0a0" }}>No bundles found in this workspace.</div>
+          <div className="plugins-subtle" style={{ marginTop: 10, fontSize: 12 }}>No bundles found in this workspace.</div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+          <div className="plugin-list" style={{ marginTop: 12 }}>
             {bundles.map((b) => (
-              <div key={b.dir} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", borderRadius: 8, border: "1px solid #e5e5e5", background: "#fff" }}>
+              <div key={b.dir} className="plugin-card" data-compact="true">
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14, color: "#1a1a1a" }}>
+                  <div className="plugin-name">
                     {b.name}
-                    {b.version ? <span style={{ fontSize: 11, color: "#888", marginLeft: 6 }}>v{b.version}</span> : null}
+                    {b.version ? <span className="plugin-meta">v{b.version}</span> : null}
                   </div>
-                  <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
+                  <div className="plugins-subtle" style={{ fontSize: 12, marginTop: 2 }}>
                     {b.description || "No description"} · {b.skillCount} skill{b.skillCount === 1 ? "" : "s"}
                     {b.hasHooks ? " · hooks" : ""}{b.hasMcp ? " · mcp" : ""}
+                    {b.warnings.length > 0 && <span className="plugin-warning"> · {b.warnings.join(" · ")}</span>}
                   </div>
-                  {b.warnings.length > 0 && (
-                    <div style={{ fontSize: 11, color: "#b3362c", marginTop: 2 }}>{b.warnings.join(" · ")}</div>
-                  )}
                 </div>
                 <button
                   onClick={() => installBundle(b.dir)}
                   disabled={bundleBusy !== ""}
-                  style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #e5e5e5", background: "#fff", fontSize: 12, fontWeight: 600, cursor: bundleBusy ? "default" : "pointer", color: "#1a1a1a" }}
+                  className="plugin-install-btn"
                 >
                   {bundleBusy === b.dir ? "Installing…" : "Install"}
                 </button>
@@ -157,26 +306,6 @@ export default function PluginsPage() {
             ))}
           </div>
         )}
-      </div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-        <button onClick={() => setFilter("all")} style={{ padding: "6px 14px", borderRadius: 20, fontSize: 13, fontWeight: 500, cursor: "pointer", border: "none", background: filter === "all" ? "#1a1a1a" : "#f0f0f0", color: filter === "all" ? "#fff" : "#666" }}>All ({plugins.length})</button>
-        {categories.map(cat => (
-          <button key={cat} onClick={() => setFilter(cat)} style={{ padding: "6px 14px", borderRadius: 20, fontSize: 13, fontWeight: 500, cursor: "pointer", border: "none", background: filter === cat ? (COLORS[cat] || "#666") : "#f0f0f0", color: filter === cat ? "#fff" : "#666", textTransform: "capitalize" }}>{cat} ({plugins.filter(p => p.category === cat).length})</button>
-        ))}
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {filtered.map(plugin => (
-          <div key={plugin.name} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", borderRadius: 10, border: "1px solid #e5e5e5", background: "#fff" }}>
-            <div style={{ width: 36, height: 36, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", background: (COLORS[plugin.category] || "#666") + "15", color: COLORS[plugin.category] || "#666", fontWeight: 700, fontSize: 14, flexShrink: 0 }}>{ICONS[plugin.category] || "?"}</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600, fontSize: 14, color: "#1a1a1a" }}>{plugin.name}</div>
-              <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{plugin.description}</div>
-            </div>
-            <button onClick={() => toggle(plugin.name)} style={{ width: 44, height: 24, borderRadius: 12, border: "none", cursor: "pointer", position: "relative", background: plugin.enabled ? "#f97316" : "#d1d5db", transition: "background 0.2s", flexShrink: 0 }}>
-              <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: plugin.enabled ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-            </button>
-          </div>
-        ))}
       </div>
     </div>
   );

@@ -318,7 +318,7 @@ function TimelineView({
     <div className="artifact-timeline">
       <div className="artifact-timeline-url" title={url}>
         {url} · {steps.length} step{steps.length > 1 ? "s" : ""} ·{" "}
-        {totalErrors === 0 ? "✓ no console errors" : `❌ ${totalErrors} console error(s)`}
+        {totalErrors === 0 ? <><span className="ms ms-sm">check</span> no console errors</> : <><span className="ms ms-sm">error</span> {totalErrors} console error(s)</>}
       </div>
       <ol className="artifact-timeline-steps">
         {steps.map((s, i) => (
@@ -334,7 +334,7 @@ function TimelineView({
             <span className="artifact-timeline-step-action">{s.action}</span>
             {s.detail && <span className="artifact-timeline-step-detail">{String(s.detail).slice(0, 60)}</span>}
             <span className="artifact-timeline-step-errors">
-              {s.consoleErrorsAtStep > 0 ? `⚠ ${s.consoleErrorsAtStep}` : "✓"}
+              {s.consoleErrorsAtStep > 0 ? <><span className="ms ms-sm">warning</span> {s.consoleErrorsAtStep}</> : <span className="ms ms-sm">check</span>}
             </span>
             <span className="artifact-timeline-step-time">+{(s.atMs / 1000).toFixed(1)}s</span>
           </li>
@@ -436,7 +436,7 @@ function WalkthroughView({ content }: { content: string }) {
     <div className="artifact-walkthrough">
       {/* Header */}
       <div className="artifact-timeline-url" title={wt?.url || undefined}>
-        {wt?.success === false ? "❌" : "✅"} {wt?.url || "verification session"} ·{" "}
+        <span className="ms ms-sm">{wt?.success === false ? "cancel" : "check_circle"}</span> {wt?.url || "verification session"} ·{" "}
         {frames.length} step{frames.length > 1 ? "s" : ""} ·{" "}
         {(wt?.durationMs ?? 0) >= 1000 ? `${((wt?.durationMs ?? 0) / 1000).toFixed(1)}s` : `${wt?.durationMs ?? 0}ms`}
         {(wt?.consoleErrors?.length ?? 0) > 0 && ` · ${wt!.consoleErrors!.length} console error(s)`}
@@ -504,7 +504,7 @@ function WalkthroughView({ content }: { content: string }) {
           onClick={play}
           title="Replay from the start"
         >
-          {playing ? "⏸ Stop" : "▶ Replay"}
+          {playing ? <><span className="ms ms-sm">pause</span> Stop</> : <><span className="ms ms-sm">play_arrow</span> Replay</>}
         </button>
       </div>
 
@@ -531,7 +531,7 @@ function WalkthroughView({ content }: { content: string }) {
             <span className="artifact-timeline-step-action">{f.action}</span>
             {f.detail && <span className="artifact-timeline-step-detail">{String(f.detail).slice(0, 60)}</span>}
             <span className="artifact-timeline-step-errors">
-              {f.newErrors > 0 ? `⚠ +${f.newErrors}` : f.errorsAtStep > 0 ? `⚠ ${f.errorsAtStep}` : "✓"}
+              {f.newErrors > 0 ? <><span className="ms ms-sm">warning</span> +{f.newErrors}</> : f.errorsAtStep > 0 ? <><span className="ms ms-sm">warning</span> {f.errorsAtStep}</> : <span className="ms ms-sm">check</span>}
             </span>
             <span className="artifact-timeline-step-time">+{(f.atMs / 1000).toFixed(1)}s</span>
           </li>

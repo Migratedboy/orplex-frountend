@@ -233,6 +233,8 @@ export interface RetrievedMemory {
   kind: MemoryKind;
   content: string;
   score: number;
+  /** True when the MiniLM cosine term contributed (false = lexical-only fallback). */
+  semantic?: boolean;
 }
 
 /**
@@ -254,42 +256,94 @@ export async function retrieveWorkspaceMemories(
 
   if (rows.length === 0) return [];
 
+  // Semantic term (free, local, ~20ms warm): MiniLM cosine between the task
+  // and each memory's own embedding. The embedding is computed lazily from
+  // the row's own text on first retrieval and persisted (embedding Json?) so
+  // later runs skip the compute entirely. No model, no vector → weight 0 and
+  // the lexical scorer carries retrieval (graceful degradation, never a stall).
+  const { embedText, cosineSimilarity, EMBED_DIM } = await import("./embeddings");
+  const taskVec = await embedText(task);
+  let semanticHits = 0;
+
   const now = Date.now();
   const taskLower = task.toLowerCase();
   const taskTokens = new Set(
     taskLower.split(/[^a-z0-9]+/).filter((t) => t.length > 3)
   );
 
-  const scored = rows
-    .filter((r) => {
-      // Pinned facts (user /remember) are never stale-evicted.
-      const pinned = !!(r.evidence as { pinned?: boolean } | null)?.pinned;
-      return pinned || now - r.lastSeenAt.getTime() < STALE_MS;
-    })
-    .map((r) => {
-      let score = 0;
-      const pinned = !!(r.evidence as { pinned?: boolean } | null)?.pinned;
-      const ageDays = (now - r.lastSeenAt.getTime()) / 86_400_000;
-      score += Math.max(0, 2 - ageDays / 7); // fresh for ~2 weeks, decays after
-      score += Math.min(2, Math.log2(1 + r.count)); // reinforced entries rank up
-      if (pinned) score += 3; // user-pinned facts outrank statistics
-      if (r.kind === "decision" || r.kind === "pitfall") score += 2; // user intent outweighs statistics
-      const contentLower = r.content.toLowerCase();
-      for (const t of taskTokens) {
-        if (contentLower.includes(t)) score += 0.5;
+  let backfillBudget = 25;
+  const backfills: Array<{ id: string; vector: Float32Array }> = [];
+  const fresh = rows.filter((r) => {
+    // Pinned facts (user /remember) are never stale-evicted.
+    const pinned = !!(r.evidence as { pinned?: boolean } | null)?.pinned;
+    return pinned || now - r.lastSeenAt.getTime() < STALE_MS;
+  });
+  const scored: RetrievedMemory[] = [];
+  for (const r of fresh) {
+    let score = 0;
+    const pinned = !!(r.evidence as { pinned?: boolean } | null)?.pinned;
+    const ageDays = (now - r.lastSeenAt.getTime()) / 86_400_000;
+    score += Math.max(0, 2 - ageDays / 7); // fresh for ~2 weeks, decays after
+    score += Math.min(2, Math.log2(1 + r.count)); // reinforced entries rank up
+    if (pinned) score += 3; // user-pinned facts outrank statistics
+    if (r.kind === "decision" || r.kind === "pitfall") score += 2; // user intent outweighs statistics
+    const contentLower = r.content.toLowerCase();
+    for (const t of taskTokens) {
+      if (contentLower.includes(t)) score += 0.5;
+    }
+    const files = Array.isArray(r.files) ? (r.files as string[]) : [];
+    for (const f of files) {
+      const base = String(f).split("/").pop()?.toLowerCase() || "";
+      if (base && taskLower.includes(base)) score += 1;
+    }
+    // Semantic term: cosine · 0.7. Backfill: on the first semantic pass a
+    // row without a stored vector is embedded from its own text (capped,
+    // bounded — a failure maps it to null so the weight is simply 0).
+    let semantic = false;
+    if (taskVec) {
+      const stored = (r as { embedding?: unknown }).embedding;
+      if (Array.isArray(stored) && stored.length === EMBED_DIM) {
+        const sim = cosineSimilarity(taskVec, stored as number[]);
+        if (sim > 0.25) {
+          score += sim * 0.7;
+          semantic = true;
+        }
+      } else if (backfillBudget > 0) {
+        backfillBudget--;
+        const vec = await embedText(r.content);
+        if (vec) {
+          const sim = cosineSimilarity(taskVec, vec);
+          if (sim > 0.25) {
+            score += sim * 0.7;
+            semantic = true;
+          }
+          backfills.push({ id: r.id, vector: vec });
+        }
       }
-      const files = Array.isArray(r.files) ? (r.files as string[]) : [];
-      for (const f of files) {
-        const base = String(f).split("/").pop()?.toLowerCase() || "";
-        if (base && taskLower.includes(base)) score += 1;
-      }
-      return { kind: r.kind as MemoryKind, content: r.content, score };
-    })
+    }
+    if (semantic) semanticHits++;
+    scored.push({ kind: r.kind as MemoryKind, content: r.content, score, semantic });
+  }
+
+  const top = scored
     .filter((r) => r.score > 0.5)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 
-  return scored;
+  // Persist backfilled vectors (fire-and-forget; a failure is invisible here
+  // and simply re-derives on the next retrieval).
+  if (backfills.length > 0) {
+    for (const b of backfills) {
+      void prisma.workspaceMemory
+        .update({ where: { id: b.id }, data: { embedding: Array.from(b.vector) } })
+        .catch(() => {});
+    }
+  }
+  if (semanticHits > 0 && process.env.ORPLEX_DEBUG_MEM === "1") {
+    console.log(`[workspace-memory] semantic term contributed for ${semanticHits}/${rows.length} row(s)`);
+  }
+
+  return top;
 }
 
 /** Render memories for injection into the agent's system prompt. */

@@ -18,10 +18,19 @@ import { TARGETS } from "./font-targets.mjs";
 
 const [a, b] = TARGETS;
 
+// Vendored (repo-committed, non-generated) font files ship alongside the
+// downloaded woff2 set and are covered by the same drift check — a ttf that
+// differs between the two targets is drift just like a woff2 would be.
+const VENDORED_EXTENSIONS = new Set([".ttf"]);
+
+function isVendored(file) {
+  return VENDORED_EXTENSIONS.has(file.slice(file.lastIndexOf(".")));
+}
+
 async function listWoff2(target) {
   return readdir(target.fontsDir)
     .catch(() => [])
-    .then((files) => files.filter((f) => f.endsWith(".woff2")).sort());
+    .then((files) => files.filter((f) => f.endsWith(".woff2") || isVendored(f)).sort());
 }
 
 async function sha256(file) {
@@ -71,4 +80,4 @@ if (aFiles.length === 0 && bFiles.length === 0 && cssA === null && cssB === null
   process.exit(0);
 }
 
-console.log(`✓ Font targets in sync: ${aFiles.length} woff2 files identical across ${a.label} + ${b.label}, fonts.css byte-identical.`);
+console.log(`✓ Font targets in sync: ${aFiles.length} font files (woff2 + vendored ttf) identical across ${a.label} + ${b.label}, fonts.css byte-identical.`);

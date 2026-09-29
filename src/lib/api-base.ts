@@ -6,7 +6,7 @@
 // Split mode: set NEXT_PUBLIC_API_BASE_URL at FRONTEND BUILD time (e.g.
 // "https://api.example.com") and every client call goes to the server origin
 // with credentials so the NextAuth session cookie flows (server must
-// allowlist the frontend origin in ALLOWED_ORIGINS — see middleware.ts).
+// allowlist the frontend origin in ALLOWED_ORIGINS — see src/proxy.ts).
 //
 // Browser-only by design: server-internal callers (executor, route-to-route)
 // must keep relative paths — they run where the API lives.

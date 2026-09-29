@@ -5,7 +5,10 @@ import {
   spendAggregates,
   spendRunCostUsd,
   splitIsPartial,
+  summarizeUptime,
+  uptimeHealth,
   SpendRun,
+  UptimeEvent,
 } from "../spend-format";
 
 function run(overrides: Partial<SpendRun> = {}): SpendRun {
@@ -136,5 +139,107 @@ describe("chartScale", () => {
   it("is flat-safe: all-zero or empty data yields height 0, never NaN", () => {
     expect(chartScale([], 100).heightFor(50)).toBe(0);
     expect(chartScale([{ tokens: 0 }], 100).heightFor(0)).toBe(0);
+  });
+});
+
+describe("summarizeUptime", () => {
+  const NOW = Date.parse("2026-09-29T12:00:00Z");
+
+  function ev(overrides: Partial<UptimeEvent> = {}): UptimeEvent {
+    return {
+      lane: "chat",
+      provider: "nvidia",
+      model: "nvidia/m1",
+      outcome: "ok",
+      errorKind: null,
+      createdAt: "2026-09-29T10:00:00Z",
+      ...overrides,
+    };
+  }
+
+  it("aggregates per provider and per model with success rate", () => {
+    const s = summarizeUptime(
+      [
+        ev(),
+        ev({ outcome: "error", errorKind: "rate_limit", model: "nvidia/m2" }),
+        ev({ model: "nvidia/m2" }),
+        ev({ provider: "openrouter", model: "or/x:free", lane: "server_run" }),
+      ],
+      7,
+      NOW,
+    );
+    const nvidia = s.providers.find((p) => p.provider === "nvidia");
+    expect(nvidia).toBeDefined();
+    expect(nvidia!.ok).toBe(2);
+    expect(nvidia!.errors).toBe(1);
+    expect(nvidia!.successPct).toBe(67);
+    const m2 = nvidia!.models.find((m) => m.model === "nvidia/m2");
+    expect(m2).toMatchObject({ ok: 1, errors: 1, errorKinds: { rate_limit: 1 } });
+    expect(s.totalOk).toBe(3);
+    expect(s.totalErrors).toBe(1);
+  });
+
+  it("drops events older than the window and malformed timestamps", () => {
+    const s = summarizeUptime(
+      [
+        ev({ createdAt: "2026-09-01T10:00:00Z" }), // 28 days old
+        ev({ createdAt: "garbage" }),
+        ev({ createdAt: "2026-09-28T10:00:00Z" }), // in window
+      ],
+      7,
+      NOW,
+    );
+    expect(s.providers).toHaveLength(1);
+    expect(s.totalOk).toBe(1);
+    expect(s.totalErrors).toBe(0);
+  });
+
+  it("counts error kinds with the most frequent first", () => {
+    const s = summarizeUptime(
+      [
+        ev({ outcome: "error", errorKind: "server" }),
+        ev({ outcome: "error", errorKind: "rate_limit" }),
+        ev({ outcome: "error", errorKind: "rate_limit" }),
+        ev({ outcome: "error", errorKind: null }), // falls back to "error"
+      ],
+      7,
+      NOW,
+    );
+    const kinds = Object.keys(s.providers[0].models[0].errorKinds);
+    expect(kinds).toEqual(["rate_limit", "server", "error"]);
+    expect(s.providers[0].successPct).toBe(0);
+  });
+
+  it("sorts providers healthiest-first (fewest errors, then busiest, then name)", () => {
+    const s = summarizeUptime(
+      [
+        ev({ provider: "zeta" }),
+        ev({ provider: "alpha", outcome: "error" }),
+        ev({ provider: "mid", outcome: "error" }),
+        ev({ provider: "mid" }),
+        ev({ provider: "mid" }),
+      ],
+      7,
+      NOW,
+    );
+    expect(s.providers.map((p) => p.provider)).toEqual(["zeta", "mid", "alpha"]);
+  });
+
+  it("handles empty and all-outside-window input", () => {
+    expect(summarizeUptime([], 7, NOW)).toEqual({ providers: [], windowDays: 7, totalOk: 0, totalErrors: 0 });
+    const s = summarizeUptime([ev({ createdAt: "2020-01-01T00:00:00Z" })], 7, NOW);
+    expect(s.providers).toEqual([]);
+  });
+});
+
+describe("uptimeHealth", () => {
+  it("maps success rates to traffic lights", () => {
+    expect(uptimeHealth(100)).toBe("green");
+    expect(uptimeHealth(95)).toBe("green");
+    expect(uptimeHealth(94)).toBe("amber");
+    expect(uptimeHealth(80)).toBe("amber");
+    expect(uptimeHealth(79)).toBe("red");
+    expect(uptimeHealth(0)).toBe("red");
+    expect(uptimeHealth(null)).toBe("none");
   });
 });

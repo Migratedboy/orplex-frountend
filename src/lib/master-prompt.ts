@@ -26,7 +26,7 @@ import { buildFailureDoctrineContext } from "./failure-memory";
 export function buildToolRoster(): string {
   const byCategory = new Map<string, string[]>();
   const categories: Array<[RegExp, string]> = [
-    [/^(read_file|list_files|search_code)$/, "Inspect"],
+    [/^(read_file|list_files|search_code|code_search)$/, "Inspect"],
     [/^(write_file|write_file_chunk|edit_file|batch_edit)$/, "Create & edit"],
     [/^(todo_list|ask_question)$/, "Plan & interact"],
     [/^(run_command|run_in_sandbox)$/, "Execute — prefer run_command; run_in_sandbox is for contained one-shot work, NEVER for starting servers"],
@@ -89,7 +89,7 @@ If you cannot meet the contract (environment blocked, verification impossible), 
 const TOOL_DOCTRINE = `## TOOL DOCTRINE
 | Situation | Use | Remember |
 |---|---|---|
-| Understand code | read_file, list_files, search_code | Batch independent reads in one turn; search beats listing huge trees |
+| Understand code | code_search, read_file, list_files | code_search FIRST — grouped snippets with context + a ready-made read_file offset/limit hint per match; follow its hints to read exactly the matching region. Large files: read_file accepts offset (1-based line) + limit — page natively instead of shelling out to sed |
 | Create/modify | write_file, write_file_chunk, edit_file, batch_edit | edit_file for surgical changes; chunk files >200 lines; batch_edit for atomic multi-file changes |
 | Plan / update plan | todo_list | Create first, complete items as you go — the plan-first gate blocks writes without it on complex tasks |
 | Need user-only data | ask_question | ONLY for personal data you cannot invent (name, API keys). Everything else: pick the best default and build |
@@ -98,7 +98,7 @@ const TOOL_DOCTRINE = `## TOOL DOCTRINE
 | Prove a web app works | verify_app | Starts server + loads real browser + reports console errors. Fix → re-verify until PASS |
 | Look things up | web_search | For current docs, versions, APIs you're not certain of |
 | See the app's UI | take_screenshot, preview_browser | Screenshot the running app; preview loads a URL into the panel |
-| Use a real browser | browser_navigate, browser_read, browser_click, browser_type, browser_press, browser_scroll, browser_console, browser_screenshot, browser_evaluate | Your own visible browser: test like a user — navigate, click flows, fill forms, check console for JS errors. Always browser_read after navigating (gives selectors). The user watches it live |`;
+| Use a real browser | browser_navigate, browser_find, browser_click, browser_type, browser_select, browser_hover, browser_press, browser_scroll, browser_wait_for, browser_tabs, browser_read, browser_console, browser_network, browser_screenshot, browser_evaluate | Your own visible browser: test like a user. After navigating, call browser_find — click/type/hover/select with its refs (e1, e2, …) instead of guessing CSS selectors. Use browser_wait_for after clicks that trigger async loads; browser_network when a page loads blank (shows failing 4xx/5xx requests); browser_tabs for multi-tab flows; browser_screenshot with viewpoint=mobile to check responsive layouts. The user watches it live |`;
 
 // ============================================================
 // §5 WORKFLOW — state machine + turn economy
@@ -189,7 +189,7 @@ You are producing a plan and a design, not an implementation.
 /** Complex-task plan-first seed — pushed as the opening directive. */
 export const SPARC_PLAN_DIRECTIVE = `[SPARC] Multi-part build detected. Order is strict:
 1. todo_list — every file you will create, dependency order.
-2. Inspect existing code first (read_file/list_files/search_code) before changing anything.
+2. Inspect existing code first (code_search to locate regions via snippets, then read_file offset/limit on the hinted ranges) before changing anything.
 3. TYPES first — interfaces/types before implementations.
 4. Build utilities → components/pages, one write_file per file.
 5. VERIFY — re-read what you wrote, fix issues, then report per the Output Contract.

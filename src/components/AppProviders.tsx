@@ -1,6 +1,7 @@
 "use client";
 
 import { FileSystemProvider } from "./FileSystemProvider";
+import { WorkspaceProvider } from "./WorkspaceProvider";
 import HunkDecisionProvider from "./HunkDecisionProvider";
 import { ConversationProvider } from "./ConversationProvider";
 import { QueueRunnerProvider } from "./QueueRunnerProvider";
@@ -14,11 +15,13 @@ import { QueueRunnerProvider } from "./QueueRunnerProvider";
 export default function AppProviders({ children }: { children: React.ReactNode }) {
   return (
     <FileSystemProvider>
-      <HunkDecisionProvider>
-        <ConversationProvider>
-          <QueueRunnerProvider>{children}</QueueRunnerProvider>
-        </ConversationProvider>
-      </HunkDecisionProvider>
+      <WorkspaceProvider>
+        <HunkDecisionProvider>
+          <ConversationProvider>
+            <QueueRunnerProvider>{children}</QueueRunnerProvider>
+          </ConversationProvider>
+        </HunkDecisionProvider>
+      </WorkspaceProvider>
     </FileSystemProvider>
   );
 }

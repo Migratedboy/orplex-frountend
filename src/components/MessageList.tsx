@@ -8,6 +8,7 @@ import ToolCallDisplay from "./ToolCallDisplay";
 import { MessageSkeleton } from "./Skeleton";
 import { Message } from "@/hooks/useMessages";
 import { AgentEvent, isToolCallEvent, isToolResultEvent } from "@/lib/types";
+import { isFailedMessage } from "@/lib/message-retry";
 import { downloadAsMarkdown } from "@/lib/file-download";
 import { formatFileSize, getFileIcon } from "@/lib/file-utils";
 import { IconDownload } from "./Icons";
@@ -39,6 +40,10 @@ interface MessageListProps {
   agentRunning: boolean;
   agentStatus?: string;
   onFastAnswer?: (userMessage: string) => void;
+  /** One-click Retry on a failed assistant bubble (resends the original prompt). */
+  onRetryMessage?: (assistantIdx: number) => void;
+  /** Index of the bubble whose retry is currently being sent (shows "Retrying…"). */
+  retryingIdx?: number | null;
 }
 
 /** Estimate height based on content length */
@@ -55,7 +60,7 @@ function estimateMessageHeight(item: RenderableItem): number {
   return Math.min(h, 600);
 }
 
-export default function MessageList({ messages, agentEvents, agentRunning, agentStatus, onFastAnswer }: MessageListProps) {
+export default function MessageList({ messages, agentEvents, agentRunning, agentStatus, onFastAnswer, onRetryMessage, retryingIdx = null }: MessageListProps) {
   // Merge messages + agent events into a single ordered list
   const items: RenderableItem[] = [];
   messages.forEach((msg, i) => {
@@ -86,6 +91,8 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
               item={item}
               agentRunning={agentRunning}
               isLast={item.kind === "message" && item.index === messages.length - 1}
+              onRetryMessage={onRetryMessage}
+              retryingIdx={retryingIdx}
             />
           )}
         />
@@ -103,6 +110,8 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
             index={i}
             agentRunning={agentRunning}
             isLast={i === messages.length - 1}
+            onRetryMessage={onRetryMessage}
+            retryingIdx={retryingIdx}
           />
         ))}
 
@@ -137,11 +146,13 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
 
 // === Individual row components ===
 
-function MessageRow({ msg, index, agentRunning, isLast }: {
+function MessageRow({ msg, index, agentRunning, isLast, onRetryMessage, retryingIdx = null }: {
   msg: Message;
   index: number;
   agentRunning: boolean;
   isLast: boolean;
+  onRetryMessage?: (assistantIdx: number) => void;
+  retryingIdx?: number | null;
 }) {
   return (
     <div className={msg.role === "user" ? "msg-user" : "msg-assistant"}>
@@ -169,7 +180,16 @@ function MessageRow({ msg, index, agentRunning, isLast }: {
             <img src="/logo.png" alt="Orplex" className="msg-avatar" width={28} height={28} />
             <div className="msg-content-text">
               {msg.content ? (
-                <MessageContent content={msg.content} isThinking={agentRunning && isLast} />
+                <MessageContent
+                  content={msg.content}
+                  isThinking={agentRunning && isLast}
+                  onRetry={
+                    isFailedMessage(msg.content) && onRetryMessage
+                      ? () => onRetryMessage(index)
+                      : undefined
+                  }
+                  retrying={retryingIdx === index}
+                />
               ) : agentRunning && isLast ? (
                 <ThinkingCard content="" isThinking={true} />
               ) : null}
@@ -197,10 +217,12 @@ function MessageRow({ msg, index, agentRunning, isLast }: {
 }
 
 /** Wrapper that renders a RenderableItem — used by the virtual list */
-function RenderableItem({ item, agentRunning, isLast }: {
+function RenderableItem({ item, agentRunning, isLast, onRetryMessage, retryingIdx = null }: {
   item: RenderableItem;
   agentRunning: boolean;
   isLast: boolean;
+  onRetryMessage?: (assistantIdx: number) => void;
+  retryingIdx?: number | null;
 }) {
   if (item.kind === "event") {
     const event = item.event;
@@ -218,6 +240,8 @@ function RenderableItem({ item, agentRunning, isLast }: {
       index={item.index}
       agentRunning={agentRunning}
       isLast={isLast}
+      onRetryMessage={onRetryMessage}
+      retryingIdx={retryingIdx}
     />
   );
 }

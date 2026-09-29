@@ -45,14 +45,14 @@ interface Notification {
 // === Status Meta ===
 
 const RUN_STATUS: Record<string, { label: string; color: string; bg: string; icon: string }> = {
-  pending: { label: "Pending", color: "#71717a", bg: "#f4f4f5", icon: "⏳" },
-  planning: { label: "Planning", color: "#2563eb", bg: "#dbeafe", icon: "📋" },
-  executing: { label: "Executing", color: "#ea580c", bg: "#ffedd5", icon: "⚡" },
-  verifying: { label: "Verifying", color: "#7c3aed", bg: "#ede9fe", icon: "🔍" },
-  waiting_approval: { label: "Needs Review", color: "#b45309", bg: "#fef3c7", icon: "👁️" },
-  completed: { label: "Done", color: "#15803d", bg: "#dcfce7", icon: "✅" },
-  failed: { label: "Failed", color: "#b91c1c", bg: "#fee2e2", icon: "❌" },
-  cancelled: { label: "Cancelled", color: "#71717a", bg: "#f4f4f5", icon: "⏹️" },
+  pending: { label: "Pending", color: "#71717a", bg: "#f4f4f5", icon: "schedule" },
+  planning: { label: "Planning", color: "#2563eb", bg: "#dbeafe", icon: "checklist" },
+  executing: { label: "Executing", color: "#ea580c", bg: "#ffedd5", icon: "bolt" },
+  verifying: { label: "Verifying", color: "#7c3aed", bg: "#ede9fe", icon: "search" },
+  waiting_approval: { label: "Needs Review", color: "#b45309", bg: "#fef3c7", icon: "visibility" },
+  completed: { label: "Done", color: "#15803d", bg: "#dcfce7", icon: "check_circle" },
+  failed: { label: "Failed", color: "#b91c1c", bg: "#fee2e2", icon: "cancel" },
+  cancelled: { label: "Cancelled", color: "#71717a", bg: "#f4f4f5", icon: "stop_circle" },
 };
 
 const TASK_STATUS: Record<string, { label: string; color: string }> = {
@@ -66,12 +66,12 @@ const TASK_STATUS: Record<string, { label: string; color: string }> = {
 };
 
 const ROLE_META: Record<string, { icon: string; label: string }> = {
-  architect: { icon: "🏗️", label: "Architect" },
-  developer: { icon: "💻", label: "Developer" },
-  reviewer: { icon: "🔍", label: "Reviewer" },
-  verifier: { icon: "✅", label: "Verifier" },
-  browser: { icon: "🌐", label: "Browser" },
-  researcher: { icon: "📚", label: "Researcher" },
+  architect: { icon: "architecture", label: "Architect" },
+  developer: { icon: "code", label: "Developer" },
+  reviewer: { icon: "search", label: "Reviewer" },
+  verifier: { icon: "check_circle", label: "Verifier" },
+  browser: { icon: "language", label: "Browser" },
+  researcher: { icon: "menu_book", label: "Researcher" },
 };
 
 function timeAgo(iso: string): string {
@@ -109,8 +109,8 @@ function SpawnDialog({ onSpawn, onClose }: { onSpawn: (prompt: string, mode: str
     <div className="manager-spawn-overlay" onClick={onClose}>
       <div className="manager-spawn-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="manager-spawn-header">
-          <h3>🚀 Spawn Agent</h3>
-          <button className="manager-spawn-close" onClick={onClose}>✕</button>
+          <h3><span className="ms">rocket_launch</span> Spawn Agent</h3>
+          <button className="manager-spawn-close" onClick={onClose}><span className="ms">close</span></button>
         </div>
 
         <textarea
@@ -135,7 +135,7 @@ function SpawnDialog({ onSpawn, onClose }: { onSpawn: (prompt: string, mode: str
                   className={`manager-spawn-chip ${mode === m ? "active" : ""}`}
                   onClick={() => setMode(m)}
                 >
-                  {m === "ask" ? "💬 Ask" : m === "plan" ? "📋 Plan" : "⚡ Code"}
+                  {m === "ask" ? (<><span className="ms">forum</span> Ask</>) : m === "plan" ? (<><span className="ms">checklist</span> Plan</>) : (<><span className="ms">bolt</span> Code</>)}
                 </button>
               ))}
             </div>
@@ -174,14 +174,14 @@ function SpawnDialog({ onSpawn, onClose }: { onSpawn: (prompt: string, mode: str
                 className={`manager-spawn-chip ${schedule === "now" ? "active" : ""}`}
                 onClick={() => setSchedule("now")}
               >
-                ⚡ Now
+                <span className="ms ms-sm">bolt</span> Now
               </button>
               <button
                 className={`manager-spawn-chip ${schedule === "tonight" ? "active" : ""}`}
                 onClick={() => setSchedule("tonight")}
                 title="Run overnight at 02:00 — the morning PR queue"
               >
-                🌙 Tonight (02:00)
+                <span className="ms ms-sm">dark_mode</span> Tonight (02:00)
               </button>
             </div>
           </div>
@@ -217,11 +217,12 @@ function AgentCard({ run, onSelect, onKill }: {
   return (
     <div
       className={`manager-card ${run.isActive ? "manager-card-active" : ""}`}
+      data-active={run.isActive ? "true" : "false"}
       onClick={() => onSelect(run.id)}
     >
       {/* Status Bar */}
       <div className="manager-card-status" style={{ background: status.bg }}>
-        <span className="manager-card-status-icon">{status.icon}</span>
+        <span className="manager-card-status-icon"><span className="ms">{status.icon}</span></span>
         <span className="manager-card-status-label" style={{ color: status.color }}>
           {status.label}
         </span>
@@ -257,13 +258,13 @@ function AgentCard({ run, onSelect, onKill }: {
         <div className="manager-card-tasks">
           {tasks.slice(0, 4).map((task) => {
             const taskMeta = TASK_STATUS[task.status] || TASK_STATUS.pending;
-            const roleMeta = ROLE_META[task.role] || { icon: "📄", label: task.role };
+            const roleMeta = ROLE_META[task.role] || { icon: "description", label: task.role };
             return (
               <div key={task.id} className="manager-card-task-row">
-                <span className="manager-card-task-role">{roleMeta.icon}</span>
+                <span className="manager-card-task-role"><span className="ms ms-sm">{roleMeta.icon}</span></span>
                 <span className="manager-card-task-title">{task.title.slice(0, 40)}</span>
                 <span className="manager-card-task-status" style={{ color: taskMeta.color }}>
-                  {task.status === "running" ? "◉" : task.status === "completed" ? "✓" : "○"}
+                  {task.status === "running" ? <span className="ms ms-sm ms-spin">progress_activity</span> : task.status === "completed" ? <span className="ms ms-sm">check</span> : <span className="ms ms-sm">radio_button_unchecked</span>}
                 </span>
               </div>
             );
@@ -282,7 +283,7 @@ function AgentCard({ run, onSelect, onKill }: {
         {run.artifactCount > 0 && (
           <>
             <span>•</span>
-            <span>📦 {run.artifactCount}</span>
+            <span><span className="ms">inventory_2</span> {run.artifactCount}</span>
           </>
         )}
       </div>
@@ -335,7 +336,7 @@ function InboxPanel({ notifications, onMarkRead, onNavigate }: {
               }}
             >
               <div className="manager-inbox-item-icon">
-                {n.type === "completed" ? "✅" : n.type === "failed" ? "❌" : n.type === "approval" ? "👁️" : "📦"}
+                <span className="ms">{n.type === "completed" ? "check_circle" : n.type === "failed" ? "cancel" : n.type === "approval" ? "visibility" : "inventory_2"}</span>
               </div>
               <div className="manager-inbox-item-content">
                 <div className="manager-inbox-item-message">{n.message}</div>
@@ -552,7 +553,7 @@ export default function AgentManager() {
           </div>
         ) : filteredRuns.length === 0 ? (
           <div className="manager-empty">
-            <div className="manager-empty-icon">🚀</div>
+            <div className="manager-empty-icon"><span className="ms ms-lg">rocket_launch</span></div>
             <h3>No agents {filter === "active" ? "working" : filter === "completed" ? "completed" : ""}</h3>
             <p>
               {filter === "active"

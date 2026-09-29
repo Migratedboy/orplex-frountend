@@ -70,13 +70,38 @@ export function startGracefulShutdown(): void {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 
-  // Handle uncaught errors — log but don't crash
+  // Handle uncaught errors — log but don't crash.
+  // Client-side aborts (user navigates away / a poll is superseded / the dev
+  // HMR websocket re-connects) surface as `Error: aborted` / ECONNRESET from
+  // Node's HTTP internals. They are routine noise, not defects: log them ONCE
+  // per burst at a single line instead of a full stack each time — Next's dev
+  // overlay was flooding with ⨯ uncaughtException on every one.
+  let connAbortLogAt = 0;
+  const isConnAbort = (err: unknown): boolean => {
+    const e = err as { code?: string; message?: string };
+    return e?.code === "ECONNRESET" || e?.code === "EPIPE" ||
+      /aborted|ECONNRESET|EPIPE/i.test(e?.message || "");
+  };
+  const logConnAbort = () => {
+    const now = Date.now();
+    if (now - connAbortLogAt < 60_000) return; // max one line per minute
+    connAbortLogAt = now;
+    console.log("[net] client disconnected mid-request (aborted/ECONNRESET) — routine");
+  };
+
   process.on("uncaughtException", (err) => {
+    if (isConnAbort(err)) {
+      logConnAbort();
+      return; // Don't exit — let the process recover if possible
+    }
     console.error("[shutdown] Uncaught exception:", err);
-    // Don't exit — let the process recover if possible
   });
 
   process.on("unhandledRejection", (reason) => {
+    if (isConnAbort(reason)) {
+      logConnAbort();
+      return;
+    }
     console.error("[shutdown] Unhandled rejection:", reason);
   });
 }

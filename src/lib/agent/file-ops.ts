@@ -12,6 +12,13 @@ export interface FileOpsFs {
   readFile: ((path: string) => Promise<string>) | null;
   writeFile: ((path: string, content: string) => Promise<boolean>) | null;
   editFile: ((path: string, oldText: string, newText: string) => Promise<boolean>) | null;
+  /** Optional size probe so guards can refuse without whole-file reads */
+  statFile?: ((path: string) => Promise<{ size: number } | null>) | null;
+  /** Paged read: fetch ONLY a line window from disk (server lane). Returns
+   *  null when unsupported; the dispatcher then falls back to whole-file. */
+  readPage?: ((path: string, offsetLine: number, limitLines: number) => Promise<{
+    text: string; startLine: number; endLine: number; totalLines: number; hasMore: boolean;
+  } | null>) | null;
   directoryName: string;
 }
 

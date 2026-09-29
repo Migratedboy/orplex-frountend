@@ -1,23 +1,26 @@
-// /api/agent/orchestrate — server-side entry point for the deep orchestration
-// modules (SPARC, tree-of-thoughts, blueprint, swarm). These run on the
-// server because their transports (blueprint →
-// provider adapter) need API keys that must never reach the browser.
+// /api/agent/orchestrate — server-side entry for the deterministic strategy
+// router (src/lib/strategy-router.ts), which replaced the five former
+// orchestration modules (SPARC / ToT / blueprint / swarm / m3-client).
 //
 // The route NEVER touches the filesystem — it returns model output. The
 // client-side background worker owns every write, so approvals, file history,
 // and undo keep working unchanged.
 //
-// POST body: { op: "sparc" | "tot" | "blueprint" | "swarm-review" | "plan", task, context?, files? }
+// POST body: { op: "plan" | "implement" | "branch-compare" | "scaffold" |
+//              "review" | "auto", task, context?, files?, existingFileCount?, model? }
 // Responses:
-//   sparc         → { ok, status, summary, toolCalls: ToolCall[] }
-//   tot           → { ok, winner: { name, score, reason }, toolCalls, branches: [{name, score}] }
-//   blueprint     → { ok, projectName, toolCalls }
-//   swarm-review  → { ok, review, tests, consensus }
-//   plan          → { ok, plan: ExecutionPlan }
+//   plan / implement / branch-compare / scaffold → { ok, strategy, summary, toolCalls, files }
+//   review        → { ok, consensus, review, findings }
+//   auto          → the router picks the strategy from task shape
+//
+// Legacy op names ("sparc", "tot", "blueprint", "swarm-review") map onto the
+// closest new strategy so any queued client keeps working during the window
+// a deployed frontend lags the backend.
 
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
+import { runStrategy, strategyReview } from "@/lib/strategy-router";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -32,6 +35,13 @@ function clamp(s: string | undefined, max: number): string {
   return t.length < (s || "").length ? t + "\n…[truncated]" : t;
 }
 
+const LEGACY_OP_MAP: Record<string, string> = {
+  sparc: "auto", // SPARC's job (plan + write) is what the router decides anyway
+  tot: "branch-compare",
+  blueprint: "scaffold",
+  "swarm-review": "review",
+};
+
 export async function POST(request: NextRequest) {
   const session = await getServerSession(jwtOnlyOptions);
   if (!session?.user?.id) {
@@ -39,109 +49,71 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json().catch(() => ({}));
-  const op = String(body.op || "");
+  const rawOp = String(body.op || "");
+  const op = LEGACY_OP_MAP[rawOp] ?? rawOp;
   const task = clamp(body.task, MAX_TASK_CHARS);
   if (!op || !task) {
     return NextResponse.json({ ok: false, error: "op and task are required" }, { status: 400 });
   }
   const context = clamp(body.context, MAX_CONTEXT_CHARS);
+  const model = typeof body.model === "string" ? body.model : null;
 
   try {
     switch (op) {
-      case "sparc": {
-        const { runSPARC, getSPARCSummary } = await import("@/lib/sparc");
-        const sparcTask = await runSPARC(task);
-        // The refinement phase's raw model output carries <tool_call> JSON —
-        // surface it so the worker can execute the writes itself.
-        const refinePhase = sparcTask.phases.find(p => p.phase === "refinement");
-        const toolCalls =
-          refinePhase && refinePhase.success
-            ? (await import("@/lib/stream-reader")).parseToolCalls(refinePhase.output)
-            : [];
-        const files = toolCalls
-          .filter(tc => tc.name === "write_file" && tc.path)
-          .map(tc => tc.path!);
-        return NextResponse.json({
-          ok: true,
-          status: sparcTask.status,
-          summary: getSPARCSummary(sparcTask),
-          toolCalls,
-          files,
-        });
-      }
-
-      case "tot": {
-        const { runTreeOfThoughts } = await import("@/lib/tree-of-thoughts");
-        const result = await runTreeOfThoughts(
-          task,
-          async (messages) => {
-            const { createProviderAdapter } = await import("@/lib/ai-providers");
-            return createProviderAdapter().complete(messages);
+      case "auto":
+      case "plan":
+      case "implement":
+      case "branch-compare":
+      case "scaffold": {
+        const result = await runStrategy(
+          {
+            task,
+            context: context || undefined,
+            existingFileCount: typeof body.existingFileCount === "number" ? body.existingFileCount : undefined,
+            modelOverride: model,
           },
-          3
+          op === "auto" ? undefined : (op as "plan" | "implement" | "branch-compare" | "scaffold"),
         );
-        // Convert the winning branch's files into write_file tool calls so the
-        // worker executes them through its normal audited path.
-        const toolCalls = result.winner.files.map(f => ({
-          name: "write_file",
-          path: f.path,
-          content: f.content,
-        }));
         return NextResponse.json({
-          ok: true,
-          winner: { name: result.winner.name, score: result.winner.score, reason: result.reason },
-          toolCalls,
-          branches: result.branches.map(b => ({ name: b.name, score: b.score })),
+          ok: result.ok,
+          strategy: result.strategy,
+          status: result.ok ? "completed" : "failed", // legacy sparc consumers read `status`
+          summary: result.summary,
+          toolCalls: result.toolCalls,
+          files: result.files,
+          error: result.error,
         });
       }
 
-      case "blueprint": {
-        const bp = await import("@/lib/blueprint-pattern");
-        const blueprint = await bp.generateBlueprint(task, context);
-        const skeletons = await bp.generateSkeletons(blueprint, context);
-        // Files that got real implementations become write_file calls;
-        // unresolved skeletons are skipped (the worker continues in normal mode).
-        const toolCalls = skeletons
-          .filter(s => s.content && s.content.trim().length > 0 && !s.content.startsWith("// TODO"))
-          .slice(0, MAX_FILES)
-          .map(s => ({ name: "write_file", path: s.path, content: s.content }));
-        return NextResponse.json({
-          ok: true,
-          projectName: blueprint.projectName,
-          description: blueprint.description,
-          toolCalls,
-          files: toolCalls.map(tc => tc.path),
-        });
-      }
-
-      case "swarm-review": {
+      case "review": {
         const files = Array.isArray(body.files) ? body.files.slice(0, MAX_FILES) : [];
         if (files.length === 0) {
-          return NextResponse.json({ ok: false, error: "files[] required for swarm-review" }, { status: 400 });
+          return NextResponse.json({ ok: false, error: "files[] required for review" }, { status: 400 });
         }
-        const fileContext = files
-          .map((f: { path: string; content: string }) =>
-            `--- ${f.path} ---\n${clamp(f.content, MAX_FILE_CHARS)}`)
-          .join("\n\n");
-        const { swarmCodeAndReview } = await import("@/lib/swarm");
-        const out = await swarmCodeAndReview(task, fileContext);
+        const out = await strategyReview(
+          files.map((f: { path: string; content: string }) => ({ path: f.path, content: clamp(f.content, MAX_FILE_CHARS) })),
+          task,
+          model,
+        );
         return NextResponse.json({
-          ok: true,
-          review: clamp(out.review, MAX_FILE_CHARS),
-          tests: clamp(out.tests, MAX_FILE_CHARS),
+          ok: out.ok,
           consensus: out.consensus,
+          review: JSON.stringify(out.findings ?? []), // legacy shape: review text
+          findings: out.findings,
+          tests: "",
+          summary: out.summary,
+          error: out.error,
         });
       }
 
-      case "plan": {
-        // The langchain-orchestrator behind this op was removed (aspirational
-        // module — its plans referenced tools that never executed). Planning
-        // is the worker's SPARC plan-first directive now.
+      case "plan-legacy":
+        // The old langchain "plan" op was removed long ago (its plans
+        // referenced tools that never executed). Kept as an explicit 410 so
+        // stale clients get a clear answer instead of a generic 400.
         return NextResponse.json(
-          { ok: false, error: "op 'plan' removed — use the worker's built-in plan-first flow" },
+          { ok: false, error: "op 'plan-legacy' removed — the strategy router's 'plan' op replaces it" },
           { status: 410 }
         );
-      }
 
       default:
         return NextResponse.json({ ok: false, error: `Unknown op: ${op}` }, { status: 400 });

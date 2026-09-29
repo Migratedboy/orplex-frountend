@@ -83,7 +83,7 @@ export default function SignInPage() {
   const hasGitHub = !!availableProviders["github"];
 
   return (
-    <div className="bg-[#f9f9fa] min-h-screen flex font-['Lexend',sans-serif] text-[#1a1c1d] antialiased">
+    <div className="bg-[#f9f9fa] min-h-screen flex font-['Fraunces',serif] text-[#1a1c1d] antialiased">
       {/* Left Panel - Branding (desktop only) */}
       <div className="hidden md:flex md:w-1/2 relative bg-[#dadadb] items-end justify-start p-[64px]">
         {/* Background gradient overlay */}

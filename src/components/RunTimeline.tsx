@@ -23,36 +23,36 @@ export interface TimelineEvent {
 }
 
 const EVENT_STYLE: Record<string, { icon: string; tone: string }> = {
-  run_created: { icon: "◈", tone: "text-on-surface-variant" },
-  spawned: { icon: "◈", tone: "text-on-surface-variant" },
-  claimed: { icon: "▶", tone: "text-blue-500" },
-  "worktree-created": { icon: "⑂", tone: "text-purple-500" },
-  "approval-requested": { icon: "⏸", tone: "text-amber-500" },
-  "approval-granted": { icon: "▷", tone: "text-emerald-500" },
-  "approval-denied": { icon: "⃠", tone: "text-red-400" },
-  "run-finished": { icon: "■", tone: "text-emerald-500" },
-  "run-failed": { icon: "■", tone: "text-red-500" },
-  "branch-pushed": { icon: "↑", tone: "text-cyan-600" },
-  "pr-opened": { icon: "⑃", tone: "text-cyan-500" },
-  usage: { icon: "Σ", tone: "text-on-surface-variant" },
-  "usage-total": { icon: "Σ", tone: "text-emerald-600" },
-  "provider-failover": { icon: "⇄", tone: "text-amber-600" },
-  "native-tools-unsupported": { icon: "⌁", tone: "text-amber-500" },
-  "requeued-after-restart": { icon: "↻", tone: "text-amber-500" },
-  compacted: { icon: "⊟", tone: "text-on-surface-variant" },
-  "mcp-tools-loaded": { icon: "⊕", tone: "text-purple-500" },
-  "mcp-server-error": { icon: "⊘", tone: "text-red-400" },
-  "tool-denied": { icon: "⊘", tone: "text-red-400" },
-  "tool-notify": { icon: "⚐", tone: "text-amber-500" },
-  "verify-repaired": { icon: "⚒", tone: "text-amber-500" },
-  "checkpoint-created": { icon: "⏱", tone: "text-cyan-600" },
-  "checkpoint-restored": { icon: "⏮", tone: "text-amber-600" },
-  "artifact-review": { icon: "☑", tone: "text-emerald-600" },
-  "artifact-chain-approved": { icon: "✓✓", tone: "text-emerald-500" },
-  task: { icon: "◇", tone: "text-on-surface-variant" },
-  plan: { icon: "≡", tone: "text-blue-400" },
-  verify: { icon: "◎", tone: "text-cyan-500" },
-  default: { icon: "•", tone: "text-on-surface-variant" },
+  run_created: { icon: "play_circle", tone: "text-on-surface-variant" },
+  spawned: { icon: "play_circle", tone: "text-on-surface-variant" },
+  claimed: { icon: "play_arrow", tone: "text-blue-500" },
+  "worktree-created": { icon: "call_split", tone: "text-purple-500" },
+  "approval-requested": { icon: "pause_circle", tone: "text-amber-500" },
+  "approval-granted": { icon: "check_circle", tone: "text-emerald-500" },
+  "approval-denied": { icon: "block", tone: "text-red-400" },
+  "run-finished": { icon: "stop_circle", tone: "text-emerald-500" },
+  "run-failed": { icon: "stop_circle", tone: "text-red-500" },
+  "branch-pushed": { icon: "north", tone: "text-cyan-600" },
+  "pr-opened": { icon: "merge", tone: "text-cyan-500" },
+  usage: { icon: "functions", tone: "text-on-surface-variant" },
+  "usage-total": { icon: "functions", tone: "text-emerald-600" },
+  "provider-failover": { icon: "swap_horiz", tone: "text-amber-600" },
+  "native-tools-unsupported": { icon: "warning", tone: "text-amber-500" },
+  "requeued-after-restart": { icon: "restart_alt", tone: "text-amber-500" },
+  compacted: { icon: "compress", tone: "text-on-surface-variant" },
+  "mcp-tools-loaded": { icon: "extension", tone: "text-purple-500" },
+  "mcp-server-error": { icon: "error", tone: "text-red-400" },
+  "tool-denied": { icon: "block", tone: "text-red-400" },
+  "tool-notify": { icon: "notifications", tone: "text-amber-500" },
+  "verify-repaired": { icon: "build", tone: "text-amber-500" },
+  "checkpoint-created": { icon: "history", tone: "text-cyan-600" },
+  "checkpoint-restored": { icon: "restore", tone: "text-amber-600" },
+  "artifact-review": { icon: "fact_check", tone: "text-emerald-600" },
+  "artifact-chain-approved": { icon: "done_all", tone: "text-emerald-500" },
+  task: { icon: "radio_button_unchecked", tone: "text-on-surface-variant" },
+  plan: { icon: "format_list_bulleted", tone: "text-blue-400" },
+  verify: { icon: "verified", tone: "text-cyan-500" },
+  default: { icon: "circle", tone: "text-on-surface-variant" },
 };
 
 function eventStyle(type: string) {
@@ -138,7 +138,7 @@ export default function RunTimeline({
                 ? new Date(first.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                 : `+${delta}s`}
             </span>
-            <span className={`shrink-0 ${tone}`}>{icon}</span>
+            <span className={`shrink-0 ${tone}`}><span className="ms ms-sm">{icon}</span></span>
             <span className="text-on-surface-variant shrink-0">{ev.type}</span>
             {(() => {
               // Prefer a derived human label from the raw payload (executor

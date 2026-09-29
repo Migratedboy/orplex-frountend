@@ -1,0 +1,38 @@
+# Orplex backend — API-only deployment image (frontend served elsewhere).
+#
+# Build:  docker build -f Dockerfile.backend -t orplex-backend .
+# Run:    docker run --env-file .env.backend -p 8080:8080 orplex-backend
+# Health: GET /api/health
+
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY prisma ./prisma
+RUN npm ci
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+# Build-time marker: the container serves the API only (pages get a JSON stub).
+# NOTE: NEXT_PUBLIC_* vars are build-time for the browser bundle — a backend
+# image must NOT have a frontend origin baked in.
+ENV BACKEND_ONLY=1
+RUN npx prisma generate && npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV HOSTNAME=0.0.0.0
+RUN addgroup -S orplex && adduser -S orplex -G orplex
+COPY --from=builder /app/package.json /app/package-lock.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/next.config.js ./next.config.js
+USER orplex
+EXPOSE 8080
+# Fresh deploys get the schema (additive migrations only — never a reset).
+CMD ["sh", "-c", "npx prisma migrate deploy && npm run start"]

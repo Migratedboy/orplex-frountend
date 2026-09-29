@@ -192,6 +192,23 @@
   font-size: 11px;
 }
 
+/* Probe-health dot: green = answered a probe <24h ago; amber = proof of
+   life aged out (model stays listed but is due re-verification). */
+.prompt-bar__row-health {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.prompt-bar__row-health[data-health="green"] {
+  background: #22c55e;
+  box-shadow: 0 0 4px rgba(34, 197, 94, 0.55);
+}
+.prompt-bar__row-health[data-health="amber"] {
+  background: #d97706;
+  box-shadow: 0 0 4px rgba(217, 119, 6, 0.45);
+}
+
 .prompt-bar__row-check {
   display: inline-flex;
   flex: none;

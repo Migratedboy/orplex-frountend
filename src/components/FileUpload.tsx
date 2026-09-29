@@ -213,20 +213,7 @@ export default function FileUpload({
         title="Attach files, images, or use skills"
         aria-label="Open attach menu"
       >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 16 16"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          <path
-            d="M8 3v10M3 8h10"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-          />
-        </svg>
+        <span className="ms">add</span>
       </button>
 
       {/* Popup Menu */}
@@ -238,7 +225,7 @@ export default function FileUpload({
               className="attach-popup-item"
               onClick={() => fileInputRef.current?.click()}
             >
-              <span className="attach-popup-icon">📁</span>
+              <span className="attach-popup-icon"><span className="ms">description</span></span>
               <span className="attach-popup-label">File</span>
               <span className="attach-popup-hint">Text, code, docs</span>
             </button>
@@ -247,7 +234,7 @@ export default function FileUpload({
               className="attach-popup-item"
               onClick={() => imageInputRef.current?.click()}
             >
-              <span className="attach-popup-icon">🖼️</span>
+              <span className="attach-popup-icon"><span className="ms">image</span></span>
               <span className="attach-popup-label">Image</span>
               <span className="attach-popup-hint">or Ctrl+V to paste</span>
             </button>
@@ -270,7 +257,7 @@ export default function FileUpload({
                 }, 150);
               }}
             >
-              <span className="attach-popup-icon">⚡</span>
+              <span className="attach-popup-icon"><span className="ms">bolt</span></span>
               <span className="attach-popup-label">Skills</span>
               <span className="attach-popup-arrow">›</span>
             </button>
@@ -289,7 +276,7 @@ export default function FileUpload({
                 }, 150);
               }}
             >
-              <div className="attach-skills-header">⚡ Skills</div>
+              <div className="attach-skills-header"><span className="ms">bolt</span> Skills</div>
               <div className="attach-skills-list">
                 {SKILL_CATEGORIES.map((cat) => (
                   <SkillCategorySection

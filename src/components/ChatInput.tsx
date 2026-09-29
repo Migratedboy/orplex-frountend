@@ -7,6 +7,7 @@ import { SKILL_CATEGORIES, type Skill } from "@/lib/skills";
 import type { AttachedFile } from "@/hooks/useFileProcessor";
 import { Attachment01Icon, SparklesIcon } from "@hugeicons/core-free-icons";
 import QuotaIndicator from "./QuotaIndicator";
+import WorkspaceSwitcher from "./WorkspaceSwitcher";
 import type { AgentMode } from "./ModeSelector";
 import { listProviderDefs } from "@/lib/provider-registry";
 
@@ -22,11 +23,17 @@ interface ChatInputProps {
   onFastAnswer?: (userMessage: string) => void;
   lastUserMessage?: string;
   queue?: { id: string; text: string; addedAt: number; model?: string }[];
-  onQueueAdd?: (text: string, fullContent: string, textFiles: any[], imageFiles: any[], mode: AgentMode, model?: string) => void;
+  onQueueAdd?: (text: string, fullContent: string, textFiles: any[], imageFiles: any[], mode: AgentMode, model?: string, effort?: string) => void;
   onQueueRemove?: (id: string) => void;
   onQueueClear?: () => void;
   /** Active conversation id — scopes picker persistence per chat */
   conversationId?: string | null;
+  /** Models that failed in THIS conversation (most recent first) — arms the one-shot auto-retry swap. */
+  failedModels?: string[];
+  /** Clears the failure trail after the composer consumed it (one-shot). */
+  clearFailedModels?: () => void;
+  /** Re-arms the picker with the swapped model (persists per conversation). */
+  onRetryModelSwap?: (nextModelId: string, failedModelIds: string[]) => void;
 }
 
 const MODES: (PromptBarMode & { agentMode: AgentMode })[] = [
@@ -35,12 +42,14 @@ const MODES: (PromptBarMode & { agentMode: AgentMode })[] = [
   { key: "code", name: "Code", description: "Edit files, run commands", agentMode: "code" },
 ];
 
-// Fallback trio shown only if the live catalog can't be fetched. All three
-// are probed-live ids (server refuses unverified models anyway).
+// Fallback trio shown only if the live catalog can't be fetched. Tagged
+// "checking" — NOT verified: these ride the server's failover chain rather
+// than a passed probe, and a throttled free tier can leave them silent.
+// Honesty beats a pretty picker: once the catalog lands these are replaced.
 const FALLBACK_MODELS: PromptBarModel[] = [
-  { key: "openai/gpt-oss-120b", name: "GPT-OSS 120B", tag: "Groq", detail: "default" },
-  { key: "qwen/qwen3.8-27b:free", name: "Qwen 3.8 27B", tag: "OpenRouter", detail: "free" },
-  { key: "nvidia/nemotron-3-super-120b-a12b:free", name: "Nemotron Super", tag: "OpenRouter", detail: "free" },
+  { key: "openai/gpt-oss-120b", name: "GPT-OSS 120B", tag: "Groq", detail: "checking availability…" },
+  { key: "qwen/qwen3.8-27b:free", name: "Qwen 3.8 27B", tag: "OpenRouter", detail: "checking availability…" },
+  { key: "nvidia/nemotron-3-super-120b-a12b:free", name: "Nemotron Super", tag: "OpenRouter", detail: "checking availability…" },
 ];
 
 // Registry labels as picker tags, so a new registry provider shows up here
@@ -134,13 +143,12 @@ function savePickers(conversationId: string | null | undefined, state: PickerSta
   }
 }
 
-export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId }: ChatInputProps) {
+export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, failedModels, clearFailedModels, onRetryModelSwap }: ChatInputProps) {
   const files = useFileProcessor();
   const [busy, setBusy] = useState(false);
   const clearRef = useRef<(() => void) | null>(null);
   const controlsRef = useRef<{ clear: () => void; setText: (t: string) => void } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
   // === Verified model catalog (fetched when the model menu opens) + recents ===
   const [catalogModels, setCatalogModels] = useState<PromptBarModel[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -167,24 +175,42 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
         .then((j: {
           success?: boolean;
           models?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
+          health?: Record<string, { health?: "green" | "amber"; lastVerifiedAt?: string; probeLatencyMs?: number }>;
           coldModelIds?: string[];
-          throttledModels?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
           userModels?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
           keysRev?: string;
         }) => {
+          // Picker contract: ONLY models proven to answer are rendered.
+          //  - throttledModels are never sent by the picker endpoint anymore
+          //    (they never replied to a probe — the old "throttled" tag rows
+          //    were exactly the dead-feeling picks being reported);
+          //  - cold models (probe timed out on NVIDIA build.farm warm-up) are
+          //    hidden here and woken by the background engine — once a wake
+          //    probe answers, the model lands here WITHOUT the cold flag and
+          //    appears on the next fetch.
           const coldIds = new Set(j.coldModelIds ?? []);
-          const list = (j.models ?? []).map((m) => ({
-            key: m.id,
-            name: m.name || m.id,
-            tag: PROVIDER_TAG[m.provider] || m.provider,
-            detail: [
-              coldIds.has(m.id) ? "❄ cold" : undefined,
-              m.free ? "free" : undefined,
-              m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : undefined,
-            ]
-              .filter(Boolean)
-              .join(" · ") || undefined,
-          }));
+          const health = j.health ?? {};
+          const list = (j.models ?? [])
+            .filter((m) => !coldIds.has(m.id))
+            .map((m) => ({
+              key: m.id,
+              name: m.name || m.id,
+              tag: PROVIDER_TAG[m.provider] || m.provider,
+              // Probe health dot: green = answered <24h ago; amber = proof of
+              // life has aged out. Latency (when known) rides in the tooltip.
+              healthDot: health[m.id]?.health ?? "amber",
+              healthTitle: health[m.id]?.lastVerifiedAt
+                ? `Last verified ${new Date(health[m.id].lastVerifiedAt!).toLocaleString()}${
+                    health[m.id].probeLatencyMs ? ` · probe ${(health[m.id].probeLatencyMs! / 1000).toFixed(1)}s` : ""
+                  }`
+                : undefined,
+              detail: [
+                m.free ? "free" : undefined,
+                m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : undefined,
+              ]
+                .filter(Boolean)
+                .join(" · ") || undefined,
+            }));
           const userList = (j.userModels ?? []).map((m) => ({
             key: m.id,
             name: m.name || m.id,
@@ -201,29 +227,18 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             userModelsRef.current = userList;
           }
           if (list.length > 0) {
-            // Throttled models (verified listing, probe rate-limited) ride at
-            // the end with a visible tag — the picker stays full even when a
-            // free tier is mid-sweep, and selecting one still works (the
-            // server's failover chain may serve it fine).
-            const throttledList = (j.throttledModels ?? [])
-              .filter((m) => !list.some((x) => x.key === m.id))
-              .map((m) => ({
-                key: m.id,
-                name: m.name || m.id,
-                tag: PROVIDER_TAG[m.provider] || m.provider,
-                detail: ["throttled", m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : undefined]
-                  .filter(Boolean)
-                  .join(" · "),
-              }));
-            setCatalogModels([...list, ...throttledList]);
+            setCatalogModels(list);
             finish();
             return;
           }
           // The server answers instantly but returns an empty list while its
           // probe sweep runs in the background — keep polling until the real
-          // catalog lands (a full sweep can take ~10 minutes).
-          if (attempt < 120) window.setTimeout(() => tryFetch(attempt + 1), 5000);
-          else finish();
+          // catalog lands (a full sweep can take ~10 minutes). Every poll
+          // re-kicks the sweep in case the server cold-started without one.
+          if (attempt < 120) {
+            apiFetch("/api/models/warm", { method: "POST" }).catch(() => {});
+            window.setTimeout(() => tryFetch(attempt + 1), 5000);
+          } else finish();
         })
         .catch(() => {
           // Network/auth hiccup: a few retries, then keep the fallback list.
@@ -281,13 +296,53 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     return draft + fileBlocks;
   };
 
-  const metaToSend = (text: string, meta: { mode?: PromptBarMode; effort?: string; model?: PromptBarModel }) => {
+  // === One-shot auto-retry model swap ===================================
+  // A failed conversation carries its failed-model ids (useChatSession
+  // records them per conversation, most recent first). The swap arms only
+  // when the model about to be sent IS the one that failed (bare-id match:
+  // "vendor/x" ≡ "vendor/x:free") — a model the user deliberately re-picked
+  // is never overridden. It fires ONCE: the trail is cleared immediately,
+  // and any later failure re-arms it with that model. With no catalog
+  // (offline / still sweeping) the swap silently doesn't happen; the
+  // server's sibling-id failover still applies.
+  const pendingFailed = failedModels ?? [];
+  const consumeFailure = useRef(false);
+  const bareKey = (s: string) => s.replace(/:free$/, "");
+  if (pendingFailed.length > 0) {
+    const armed = pickerState.modelKey;
+    consumeFailure.current = !!armed && bareKey(armed) === bareKey(pendingFailed[0]);
+  }
+  const swapForRetry = async (picked: PromptBarModel | undefined): Promise<PromptBarModel | undefined> => {
+    if (!consumeFailure.current || pendingFailed.length === 0) return picked;
+    consumeFailure.current = false;
+    clearFailedModels?.();
+    const currentKey = picked?.key ?? pickerState.modelKey;
+    try {
+      const { pickRetryModel } = await import("@/lib/model-catalog");
+      const nextId = await pickRetryModel(pendingFailed, currentKey);
+      if (!nextId) return picked; // nothing verified beyond the failed set — keep the pick
+      const next = models.find((m) => m.key === nextId);
+      if (!next) return picked;
+      // Re-arm the picker + persist per conversation so the WHOLE task runs
+      // on the replacement (a mid-run provider swap isn't possible).
+      setPickerState({ ...pickerState, modelKey: next.key });
+      savePickers(conversationId, { ...pickerState, modelKey: next.key });
+      setRecents(pushRecent(next.key));
+      onRetryModelSwap?.(next.key, pendingFailed);
+      return next;
+    } catch {
+      return picked;
+    }
+  };
+
+  const metaToSend = async (text: string, meta: { mode?: PromptBarMode; effort?: string; model?: PromptBarModel }) => {
     const msg = text.trim();
     const textFiles = files.getTextFiles();
     const imageFiles = files.getImageFiles().map((f) => ({ name: f.name, dataUrl: f.dataUrl!, size: f.size }));
     if (!msg && textFiles.length === 0 && imageFiles.length === 0) return;
     const mode: AgentMode = (MODES.find((m) => m.key === meta.mode?.key)?.agentMode ?? agentMode);
-    emit(msg, textFiles, imageFiles, mode, meta.effort?.toLowerCase(), meta.model?.key);
+    const model = await swapForRetry(meta.model);
+    emit(msg, textFiles, imageFiles, mode, meta.effort?.toLowerCase(), model?.key);
     files.clearFiles();
     clearRef.current?.();
   };
@@ -299,7 +354,9 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     const imageFiles = files.getImageFiles().map((f) => ({ name: f.name, dataUrl: f.dataUrl!, size: f.size }));
     if (!draft && !files.hasFiles) return;
 
-    onQueueAdd(draft, buildContent(draft, textFiles), textFiles, imageFiles, agentMode, pickerState.modelKey);
+    // Effort rides along so the replayed prompt runs at the level the user
+    // picked (it used to be silently dropped on dequeue).
+    onQueueAdd(draft, buildContent(draft, textFiles), textFiles, imageFiles, agentMode, pickerState.modelKey, pickerState.effort);
     files.clearFiles();
     clearRef.current?.();
   };
@@ -343,6 +400,9 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   return (
     <div className="chat-input-bar">
       <div className="chat-input-inner">
+        <div className="ws-switcher-row">
+          <WorkspaceSwitcher />
+        </div>
         {files.hasFiles && (
           <div className="file-chips">
             {files.attachedFiles.map((f, i) => (
@@ -427,7 +487,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
         {queue.length > 0 && (
           <div className="queue-indicator">
             <div className="queue-header">
-              <span className="queue-count">📋 Queue ({queue.length})</span>
+              <span className="queue-count"><span className="ms ms-sm">format_list_bulleted</span> Queue ({queue.length})</span>
               <button className="queue-clear-btn" onClick={onQueueClear}>Clear all</button>
             </div>
             <div className="queue-list">

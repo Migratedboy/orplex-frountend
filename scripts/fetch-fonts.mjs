@@ -29,9 +29,51 @@
 // targets and exits 0, so a docs build never fails because of fonts. Set
 // ORPLEX_FONTS_SKIP_NETWORK=1 to force that path without even trying the
 // network (guaranteed-offline builds).
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { TARGETS } from "./font-targets.mjs";
+import { TARGETS, VENDORED_FONT_DIRS } from "./font-targets.mjs";
+
+// First line of the hand-maintained vendored @font-face block. Anything from
+// this marker to EOF in a target's fonts.css is replaced on regeneration, so
+// hand-editing the vendored block means editing assets/fonts/<family>/fonts.css,
+// never the generated output.
+const VENDORED_MARKER = "/* ---- ";
+
+// Copy vendored (non-Google) faces into a target and append their @font-face
+// blocks below the generated section. Every assets/fonts/<family>/ dir with
+// .ttf files + a fonts.css ships (newsreader, fraunces, material-symbols).
+// Vendored faces live in the repo, need no network, and are excluded from
+// the woff2 cleanup above on purpose — they are .ttf and not derived from
+// the fetch. Idempotent: safe on every run and in offline fallbacks.
+async function shipVendoredFonts(target) {
+  const copied = [];
+  const cssBlocks = [];
+  for (const dir of VENDORED_FONT_DIRS) {
+    let entries;
+    try {
+      entries = await readdir(dir);
+    } catch {
+      continue;
+    }
+    const fontFiles = entries.filter((f) => f.endsWith(".ttf"));
+    const hasCss = entries.includes("fonts.css");
+    if (fontFiles.length === 0 || !hasCss) continue;
+
+    await mkdir(target.fontsDir, { recursive: true });
+    for (const f of fontFiles) {
+      await copyFile(join(dir, f), join(target.fontsDir, f));
+      copied.push(f);
+    }
+    cssBlocks.push((await readFile(join(dir, "fonts.css"), "utf8")).trimEnd());
+  }
+  if (cssBlocks.length === 0) return;
+
+  const current = await readFile(target.cssOut, "utf8");
+  const vendoredStart = current.indexOf(VENDORED_MARKER);
+  const base = vendoredStart === -1 ? current.replace(/\s+$/, "") + "\n" : current.slice(0, vendoredStart).replace(/\s+$/, "") + "\n";
+  await writeFile(target.cssOut, base + "\n" + cssBlocks.join("\n") + "\n");
+  console.log(`shipped vendored fonts to ${target.label}: ${copied.length} file(s) across ${cssBlocks.length} families`);
+}
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const KEEP_SUBSETS = new Set(["latin", "latin-ext"]);
@@ -170,14 +212,17 @@ async function fetchAll() {
     }
     await writeFile(target.cssOut, cssBody);
     console.log(`wrote ${target.label}: ${target.cssOut} (${faces.length} faces)`);
+    await shipVendoredFonts(target);
   }
 }
 
 if (SKIP_NETWORK) {
   // Explicit offline mode (ORPLEX_FONTS_SKIP_NETWORK=1): never touch the
-  // network; keep the committed fonts.
+  // network; keep the committed fonts. Vendored faces ship regardless —
+  // they are local files, not downloads.
   if (await existingAssetsComplete()) {
     console.warn("ORPLEX_FONTS_SKIP_NETWORK=1 — keeping the fonts already on disk (no network fetch).");
+    for (const target of TARGETS) await shipVendoredFonts(target);
     process.exit(0);
   }
   console.error("ORPLEX_FONTS_SKIP_NETWORK=1 but no fonts are on disk — nothing to ship. Run once with network access.");
@@ -191,6 +236,7 @@ try {
   // the docs build. Only hard-fail when there is genuinely nothing on disk.
   if (await existingAssetsComplete()) {
     console.warn(`font fetch failed (${err.message}) — keeping the fonts already on disk; build continues.`);
+    for (const target of TARGETS) await shipVendoredFonts(target);
     process.exit(0);
   }
   console.error("font fetch failed and no local fonts exist:", err);

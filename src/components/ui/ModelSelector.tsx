@@ -66,7 +66,7 @@ export default function ModelSelector({ currentModel, onModelChange }: ModelSele
       >
         <span className="w-2 h-2 rounded-full bg-green-500" />
         <span className="text-gray-700 dark:text-gray-300">{selected.name}</span>
-        <span className="text-xs text-gray-500">{open ? "▲" : "▼"}</span>
+        <span className="text-xs text-gray-500"><span className="ms ms-sm">{open ? "keyboard_arrow_up" : "keyboard_arrow_down"}</span></span>
       </button>
       {open && (
         <div

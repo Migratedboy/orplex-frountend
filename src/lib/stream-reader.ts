@@ -1,10 +1,10 @@
 // stream-reader.ts — SSE stream reader for LLM responses
 // Handles both legacy XML tool calls and M3 native tool_calls + thinking content
 
-import { deduplicateWords as dedupeWords, parseToolCalls as parseXmlToolCalls, replaceLastStatus } from "./tool-text";
+import { deduplicateWords as dedupeWords, dedupeStreamedChunk, parseToolCalls as parseXmlToolCalls, replaceLastStatus } from "./tool-text";
 import { apiFetch } from "@/lib/api-base";
 
-export { deduplicateWords, replaceLastStatus };
+export { deduplicateWords, dedupeStreamedChunk, replaceLastStatus };
 
 /** Word-level dedup — implementation lives in tool-text.ts (shared). */
 function deduplicateWords(text: string): string {
@@ -347,6 +347,11 @@ export interface ToolCall {
   content?: string;
   old_text?: string;
   new_text?: string;
+  // read_file pagination — 1-based line offset + line-count limit
+  offset?: number;
+  limit?: number;
+  // code_search — context lines around each match (0-10, default 3)
+  context?: number;
   query?: string;
   command?: string;
   url?: string;
@@ -364,10 +369,19 @@ export interface ToolCall {
   interactions?: { action: string; selector?: string; value?: string }[];
   // agent browser tools
   selector?: string;
+  ref?: string; // element ref from browser_find (e1, e2, …)
   text?: string;
   key?: string;
   amount?: number;
   code?: string;
+  // browser_find / browser_wait_for / browser_select / browser_tabs / browser_screenshot
+  role?: string;
+  value?: string;
+  time?: number;
+  timeoutMs?: number;
+  index?: number; // browser_tabs switch/close target
+  fullPage?: boolean;
+  viewpoint?: string;
 }
 
 // (deduplicateWords, parseToolCalls and replaceLastStatus moved to
@@ -438,7 +452,15 @@ export async function readStream(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let streamedContent = "";
+  let cleanStreamed = ""; // incrementally deduped view handed to onChunk
   let thinkingContent = "";
+  // Partial-event buffer: network chunks do NOT align with SSE events. A
+  // chunk can end mid-JSON ("data: {\"content\":\"hel"), and processing
+  // per-chunk lines silently dropped both halves — the delta vanished and
+  // truncated native tool_call fragments never reassembled (the model's work
+  // was discarded as an "empty response"). Incomplete tails wait here for
+  // the next chunk, exactly like the server-side sseTransform reader.
+  let pending = "";
   const accumulatorMap = new Map<number, NativeToolCallAccumulator>();
   const TIMEOUT_MS = 300_000; // 300s — Kimi K3 needs time to think
 
@@ -456,6 +478,46 @@ export async function readStream(
   };
   signal?.addEventListener("abort", onAbort, { once: true });
 
+  // One event-line processor, shared by the chunk loop and the final flush.
+  const processDataLine = (line: string) => {
+    if (!line.startsWith("data: ")) return;
+    const data = line.slice(6).trim();
+    if (data === "[DONE]") return;
+    try {
+      const parsed = JSON.parse(data);
+
+      // 1. Regular text content
+      if (parsed.content) {
+        streamedContent += parsed.content;
+        // Bounded-window dedupe — NEVER re-scan the whole text per chunk
+        // (O(n²) per stream froze the UI while the agent ran).
+        cleanStreamed = dedupeStreamedChunk(cleanStreamed, parsed.content);
+        onChunk(cleanStreamed);
+      }
+
+      // 2. Thinking/reasoning content
+      const reasoningText = parsed.thinking || parsed.reasoning_content;
+      if (reasoningText) {
+        thinkingContent += reasoningText;
+        onThinking?.(reasoningText);
+      }
+
+      // 3. M3 native tool calls — accumulate fragments by index
+      if (parsed.tool_calls && Array.isArray(parsed.tool_calls)) {
+        for (const tc of parsed.tool_calls) {
+          const idx = tc.index ?? 0;
+          if (!accumulatorMap.has(idx)) {
+            accumulatorMap.set(idx, { index: idx, arguments: "" });
+          }
+          const acc = accumulatorMap.get(idx)!;
+          if (tc.id) acc.id = tc.id;
+          if (tc.function?.name) acc.name = tc.function.name;
+          if (tc.function?.arguments) acc.arguments += tc.function.arguments;
+        }
+      }
+    } catch {}
+  };
+
   try {
     while (true) {
       if (isAborted()) {
@@ -467,45 +529,17 @@ export async function readStream(
         idleTimer = null;
       }
       if (result.done) break;
-    const chunk = decoder.decode(result.value, { stream: true });
-    const lines = chunk.split("\n");
-    for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") continue;
-        try {
-          const parsed = JSON.parse(data);
-
-          // 1. Regular text content
-          if (parsed.content) {
-            streamedContent += parsed.content;
-            onChunk(deduplicateWords(streamedContent));
-          }
-
-          // 2. Thinking/reasoning content
-          const reasoningText = parsed.thinking || parsed.reasoning_content;
-          if (reasoningText) {
-            thinkingContent += reasoningText;
-            onThinking?.(reasoningText);
-          }
-
-          // 3. M3 native tool calls — accumulate fragments by index
-          if (parsed.tool_calls && Array.isArray(parsed.tool_calls)) {
-            for (const tc of parsed.tool_calls) {
-              const idx = tc.index ?? 0;
-              if (!accumulatorMap.has(idx)) {
-                accumulatorMap.set(idx, { index: idx, arguments: "" });
-              }
-              const acc = accumulatorMap.get(idx)!;
-              if (tc.id) acc.id = tc.id;
-              if (tc.function?.name) acc.name = tc.function.name;
-              if (tc.function?.arguments) acc.arguments += tc.function.arguments;
-            }
-          }
-        } catch {}
+      const chunk = decoder.decode(result.value, { stream: true });
+      pending += chunk;
+      const lines = pending.split("\n");
+      pending = lines.pop() || ""; // incomplete tail — held for the next chunk
+      for (const line of lines) {
+        processDataLine(line);
       }
     }
-  }
+    // Stream ended — process any final complete event that lacked its
+    // trailing newline (a last chunk cut right after the JSON).
+    if (pending) processDataLine(pending);
   } finally {
     if (idleTimer) {
       clearTimeout(idleTimer);

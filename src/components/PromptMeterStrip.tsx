@@ -10,15 +10,7 @@
 import { parseMeterLine } from "@/lib/prompt-meter";
 
 function GaugeIcon() {
-  return (
-    <svg className="prompt-meter-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {/* semicircle gauge */}
-      <path d="M4 14a8 8 0 0 1 16 0" />
-      <path d="M12 14 15.5 9.5" />
-      <circle cx="12" cy="14" r="1" fill="currentColor" stroke="none" />
-      <path d="M2 20h20" />
-    </svg>
-  );
+  return <span className="ms prompt-meter-icon" style={{ fontSize: 13 }} aria-hidden="true">speed</span>;
 }
 
 export default function PromptMeterStrip({ line }: { line: string }) {
@@ -55,7 +47,7 @@ export default function PromptMeterStrip({ line }: { line: string }) {
 
       {data.savedTokens != null && data.savedTokens > 0 && (
         <span className="prompt-meter-chip prompt-meter-chip-saved">
-          ↓ {fmt(data.savedTokens)} saved{data.savedPct != null ? ` (${data.savedPct}%)` : ""}
+          <span className="ms ms-sm">south</span> {fmt(data.savedTokens)} saved{data.savedPct != null ? ` (${data.savedPct}%)` : ""}
         </span>
       )}
 

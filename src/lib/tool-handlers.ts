@@ -7,7 +7,7 @@
 // Context types are defined here to avoid circular imports.
 
 import { TIMEOUTS, LIMITS, isBlockedCommand } from "./constants";
-import { replaceLastStatus, searchCodeInContents } from "./tool-text";
+import { replaceLastStatus } from "./tool-text";
 
 export interface ToolHandlerContext {
   /** Update the task status display */
@@ -44,30 +44,6 @@ export interface ToolCall {
 export interface ToolResult {
   xml: string;
   displayUpdate: string;
-}
-
-/**
- * Handle a search_code tool call.
- */
-export function handleSearchCode(
-  call: ToolCall,
-  searchCode: (query: string) => string,
-  ctx: ToolHandlerContext
-): ToolResult {
-  const query = String(call.query || "");
-  ctx.updateStatus("tool_executing", `Searching "${query}"…`);
-  ctx.appendDisplay(`searching [${query}]\n`);
-
-  const results = searchCodeInContents(query, ctx.fileContents);
-  const matchCount = results.split("\n").length;
-
-  return {
-    xml: `<tool_result name="search_code" query="${query}">\n${results}\n</tool_result>\n`,
-    displayUpdate: ctx.replaceLastStatus(
-      ctx.getDisplayContent(),
-      `[OK] Search "${query}" — ${matchCount} match(es)`
-    ),
-  };
 }
 
 /**

@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
 import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
-import { grepSearch } from "@/lib/grep-search";
+import { grepSearch, codeSearch } from "@/lib/grep-search";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
 
-  let body: { pattern?: unknown; isRegex?: unknown };
+  let body: { pattern?: unknown; isRegex?: unknown; mode?: unknown; context?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -40,7 +40,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const result = await grepSearch(cwd, pattern, { isRegex: body.isRegex === true });
+  // mode=snippets → code_search: grouped context snippets + read_file hints.
+  const result =
+    body.mode === "snippets"
+      ? await codeSearch(cwd, pattern, {
+          isRegex: body.isRegex === true,
+          context: typeof body.context === "number" ? body.context : undefined,
+        })
+      : await grepSearch(cwd, pattern, { isRegex: body.isRegex === true });
   if (!result) {
     return NextResponse.json({ success: false, error: "No search engine available" }, { status: 500 });
   }

@@ -1,0 +1,68 @@
+name: CI sandbox exec
+
+# Sandboxed command execution for hosted Orplex deployments (used by
+# src/lib/ci-sandbox.ts when local exec is disabled). The command runs on an
+# EPHEMERAL GitHub runner — never on any user's machine or the app server.
+#
+# Correlation: run-name embeds the caller's random token so the dispatcher can
+# find exactly its own run among concurrent dispatches. The exec step ALWAYS
+# succeeds (exit 0) so the result artifact is uploaded even when the command
+# fails; the real exit code travels inside the artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Shell command to execute in the sandbox"
+        required: true
+      ref:
+        description: "Checkout ref for the sandbox workspace"
+        required: false
+        default: "main"
+      run_token:
+        description: "Correlation token (set by the dispatcher)"
+        required: true
+
+run-name: "ci-sandbox ${{ inputs.run_token }}"
+
+concurrency:
+  group: ci-sandbox-${{ inputs.run_token }}
+  cancel-in-progress: false
+
+jobs:
+  exec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Execute
+        id: exec
+        shell: bash
+        env:
+          SANDBOX_COMMAND: ${{ inputs.command }}
+        run: |
+          mkdir -p sandbox-result
+          set +e
+          bash -lc "$SANDBOX_COMMAND" > sandbox-result/stdout.txt 2> sandbox-result/stderr.txt
+          code=$?
+          set -e
+          echo "$code" > sandbox-result/exit-code.txt
+          # Always succeed the step so the artifact uploads; the real exit
+          # code rides inside the artifact.
+          exit 0
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-result
+          path: sandbox-result/
+          retention-days: 1
+          if-no-files-found: error

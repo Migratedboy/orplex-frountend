@@ -2,14 +2,18 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useConversations } from "./ConversationProvider";
 import { IconChat, IconHistory, IconPlugins, IconSettings, IconEdit, IconTrash, IconClose, IconMenu, IconAgent } from "./Icons";
-import { useFileSystemContext, FileNode } from "./FileSystemProvider";
+import { useFileSystemContext } from "./FileSystemProvider";
 import { useBackgroundChat } from "@/hooks/useBackgroundChat";
 import { announceConversationOpen } from "@/lib/navigation-events";
 import { useActiveRunCount } from "@/hooks/useActiveRunCount";
-import { virtualFS, VirtualFileNode } from "@/lib/virtual-fs";
+import { nextConfirmState, type ConfirmState, type ProjectMenuItemId } from "@/lib/project-menu";
+import { threadsForProject, ungroupedThreads, type ThreadLike } from "@/lib/project-threads";
+import { useWorkspace } from "./WorkspaceProvider";
+import { ProjectContextMenu, ProjectRow } from "./ProjectSidebarParts";
+import type { ProjectEntry } from "@/lib/project-registry";
 
 const NAV_ITEMS = [
   { href: "/history", label: "History", Icon: IconHistory },
@@ -19,145 +23,103 @@ const NAV_ITEMS = [
   { href: "/settings", label: "Settings", Icon: IconSettings },
 ];
 
-function FileTreeItem({ node, depth = 0 }: { node: FileNode; depth: number }) {
-  const { activeFilePath, setActiveFilePath, readFile } = useFileSystemContext();
-  const [collapsed, setCollapsed] = useState(true);
-
-  const handleClick = async () => {
-    if (node.kind === "directory") {
-      setCollapsed(!collapsed);
-    } else {
-      setActiveFilePath(node.path);
-      await readFile(node.path);
-    }
-  };
-
-  return (
-    <div>
-      <div
-        onClick={handleClick}
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
-        className={`flex items-center gap-2 py-1 px-2 rounded cursor-pointer text-[12px] transition-colors ${
-          activeFilePath === node.path
-            ? "bg-[#FFF7ED] text-[#a04100] font-bold"
-            : "hover:bg-[#f3f3f4] text-[#5f5e5e]"
-        }`}
-      >
-        <span className="sidebar-file-icon">{node.kind === "directory" ? (collapsed ? ">" : "v") : "-"}</span>
-        <span className="truncate flex-1">{node.name}</span>
-      </div>
-      {node.kind === "directory" && !collapsed && node.children && (
-        <div className="flex flex-col">
-          {node.children.map((child: FileNode) => (
-            <FileTreeItem key={child.path} node={child} depth={depth + 1} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Virtual file tree for AI-created files (when no folder is open)
-function VirtualFileItem({ node, depth = 0 }: { node: VirtualFileNode; depth: number }) {
-  const [collapsed, setCollapsed] = useState(true);
-  const isDir = node.kind === "directory";
-
-  return (
-    <div>
-      <div
-        className={`sidebar-file-item flex items-center gap-1 cursor-pointer hover:bg-gray-100 rounded px-1 py-0.5 text-[11px]`}
-        style={{ paddingLeft: `${depth * 12 + 4}px` }}
-        onClick={() => isDir ? setCollapsed(!collapsed) : null}
-      >
-        <span className="sidebar-file-icon text-[10px] text-gray-400" style={{ width: 12 }}>
-          {isDir ? (collapsed ? ">" : "v") : "-"}
-        </span>
-        <span className="truncate flex-1 text-gray-700 font-mono">{node.name}</span>
-      </div>
-      {isDir && !collapsed && node.children && (
-        <div className="flex flex-col">
-          {node.children.map((child) => (
-            <VirtualFileItem key={child.path} node={child} depth={depth + 1} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function handleExportZip() {
-  virtualFS.toZip().then((blob) => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "orplex-project.zip";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  });
-}
-
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { data: session } = useSession();
-  const { conversations, renameConversation, deleteConversation } = useConversations();
-  const { openFolder, directoryName, fileTree, readFile } = useFileSystemContext();
+  const { conversations, renameConversation, deleteConversation: removeConversation } = useConversations();
+  const { directoryName, reopenProject } = useFileSystemContext();
   const { activeRuns, pendingApprovals } = useActiveRunCount();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
-  const [virtualTree, setVirtualTree] = useState<VirtualFileNode[]>([]);
-  const [virtualCount, setVirtualCount] = useState(0);
+  // === Projects section ===
+  // useProjects (via WorkspaceProvider) owns the roster + sync; the sidebar
+  // only tracks which rows are expanded and which project's menu/confirm is open.
+  const { projects, forget: forgetProjectEverywhere, alias: setAlias, touch } = useWorkspace();
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const [reopening, setReopening] = useState<string | null>(null);
+  // Context menu state: which project, where, and the destructive-confirm FSM.
+  const [menuProject, setMenuProject] = useState<ProjectEntry | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [menuConfirm, setMenuConfirm] = useState<ConfirmState>("idle");
 
-  // Subscribe to virtual FS changes
-  useEffect(() => {
-    const update = () => {
-      setVirtualTree(virtualFS.getTree());
-      setVirtualCount(virtualFS.getFileCount());
-    };
-    update();
-    return virtualFS.subscribe(update);
+  const toggleProject = useCallback((name: string) => {
+    setExpandedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
   }, []);
 
-  const handleExportZipClick = useCallback(async () => {
-    // If we have a real folder open, export those files
-    if (directoryName && fileTree.length > 0) {
+  const handleReopenProject = useCallback(
+    async (name: string) => {
+      if (reopening) return; // one permission prompt at a time
+      setReopening(name);
       try {
-        const JSZip = (await import("jszip")).default;
-        const zip = new JSZip();
-        const walkAndZip = async (nodes: FileNode[]) => {
-          for (const node of nodes) {
-            if (node.kind === "file") {
-              try {
-                const content = await readFile(node.path);
-                zip.file(node.path, content);
-              } catch {}
-            }
-            if (node.kind === "directory" && node.children) {
-              await walkAndZip(node.children);
-            }
-          }
-        };
-        await walkAndZip(fileTree);
-        const blob = await zip.generateAsync({ type: "blob" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${directoryName || "orplex-project"}.zip`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      } catch (err) {
-        console.error("Export failed:", err);
+        const outcome = await reopenProject(name);
+        if (outcome.status === "ok") {
+          setExpandedProjects((prev) => new Set(prev).add(name));
+          touch(name); // roster re-read + sync (active/ghost flags may have changed)
+        }
+      } finally {
+        setReopening(null);
       }
-    } else {
-      // Export virtual FS files
-      handleExportZip();
-    }
-  }, [directoryName, fileTree, readFile]);
+    },
+    [reopenProject, reopening, touch]
+  );
+
+  // === Context menu actions — mutators live on useProjects ===
+  const handleMenuAction = useCallback(
+    async (id: ProjectMenuItemId, project: ProjectEntry) => {
+      const name = project.name;
+      if (id === "remove-and-delete") {
+        // Two-step confirm: first click arms (the item re-renders as
+        // "Really delete threads?"), second click executes. Anything else
+        // (dismiss, other item, re-right-click) cancels via nextConfirmState.
+        const next = nextConfirmState(menuConfirm, "remove-and-delete");
+        if (next !== "executed") {
+          setMenuConfirm(next);
+          return;
+        }
+        // Delete the project's tagged threads, then forget the project
+        // (locally AND server-side, so sync can't resurrect it as a ghost).
+        const tagged = conversations.filter((c) => c.workspaceName === name);
+        for (const c of tagged) {
+          await removeConversation(c.id).catch(() => {});
+        }
+        forgetProjectEverywhere(name);
+        setMenuConfirm("idle");
+        setMenuProject(null);
+        setExpandedProjects((prev) => {
+          const n = new Set(prev);
+          n.delete(name);
+          return n;
+        });
+        return;
+      }
+      // Any non-destructive action cancels an armed confirm.
+      setMenuConfirm("idle");
+      if (id === "remove") {
+        // Forgets locally (roster + handle) + remote tombstone. Files/threads
+        // untouched — threads keep their workspaceName tag and reappear if
+        // the folder is opened again.
+        forgetProjectEverywhere(name);
+        setMenuProject(null);
+      } else if (id === "rename") {
+        // The inline editor commits through here with the new alias on the
+        // project object (onCommit builds it); no prompt() dialog.
+        setAlias(name, project.displayName ?? null);
+      } else if (id === "reveal") {
+        if (project.lastPath) {
+          window.orplexDesktop?.revealPath?.(project.lastPath).catch(() => {});
+        }
+        setMenuProject(null);
+      }
+    },
+    [menuConfirm, conversations, removeConversation, forgetProjectEverywhere, setAlias]
+  );
 
   const loadConversation = (id: string) => {
     router.push(`/?c=${id}`);
@@ -173,7 +135,7 @@ export default function Sidebar() {
   };
 
   const handleDelete = async (id: string) => {
-    await deleteConversation(id);
+    await removeConversation(id);
   };
 
   const navContent = (
@@ -223,78 +185,48 @@ export default function Sidebar() {
 
         <BackgroundTaskIndicator />
 
-        <div className="border-t border-[#E4E4E7] my-4 pt-4 shrink-0">
-          <div className="conv-section-label flex justify-between items-center mb-2">
-            <span>Local Workspace</span>
-            <div className="flex gap-1">
-              {(virtualCount > 0 || fileTree.length > 0) && (
-                <button
-                  onClick={handleExportZipClick}
-                  className="text-[10px] bg-[#FF6B00] text-white border border-[#E05500] rounded px-2 py-0.5 hover:bg-[#E05500] transition-colors font-semibold"
-                  title="Download all files as .zip"
-                >
-                  Export .zip
-                </button>
-              )}
-              <button
-                onClick={openFolder}
-                className="text-[10px] bg-[#FFF7ED] text-[#a04100] border border-[#a04100]/20 rounded px-2 py-0.5 hover:bg-[#a04100]/10 transition-colors"
-              >
-                {directoryName ? "Change" : "Open"}
-              </button>
-            </div>
-          </div>
-          {directoryName ? (
-            <div className="font-code text-[11px] max-h-[300px] overflow-y-auto border border-[#E4E4E7] rounded p-1 bg-gray-50">
-              <div className="flex flex-col gap-0.5">
-                {fileTree.map((node) => (
-                  <FileTreeItem key={node.path} node={node} depth={0} />
-                ))}
-              </div>
-            </div>
-          ) : virtualCount > 0 ? (
-            <div className="font-code text-[11px] max-h-[300px] overflow-y-auto border border-[#E4E4E7] rounded p-1 bg-gray-50">
-              <div className="text-[10px] text-[#FF6B00] font-semibold px-1 py-0.5 mb-1">
-                {virtualCount} file(s) created by AI
-              </div>
-              <div className="flex flex-col gap-0.5">
-                {virtualTree.map((node) => (
-                  <VirtualFileItem key={node.path} node={node} depth={0} />
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="text-center py-4 text-[12px] text-on-surface-variant italic">
-              No folder opened. AI will create files here.
-            </div>
-          )}
-        </div>
-
-        {conversations.length > 0 && (
+        {projects.length > 0 && (
           <div className="conv-section">
-            <div className="conv-section-label">Recent Chats</div>
-            {conversations.slice(0, 5).map((conv) => (
-              <div key={conv.id} className="conv-item">
-                {editingId === conv.id ? (
-                  <input className="form-input conv-edit-input" value={editTitle}
-                    onChange={(e) => setEditTitle(e.target.value)}
-                    onBlur={() => handleRename(conv.id)}
-                    onKeyDown={(e) => e.key === "Enter" && handleRename(conv.id)} autoFocus />
-                ) : (
-                  <button className="conv-item-title" onClick={() => loadConversation(conv.id)}>{conv.title}</button>
-                )}
-                <div className="conv-item-actions">
-                  <button className="conv-action-btn" onClick={() => { setEditingId(conv.id); setEditTitle(conv.title); }} title="Rename" aria-label="Rename conversation">
-                    <IconEdit size={12} />
-                  </button>
-                  <button className="conv-action-btn" onClick={() => handleDelete(conv.id)} title="Delete" aria-label="Delete conversation">
-                    <IconTrash size={12} />
-                  </button>
-                </div>
-              </div>
+            <div className="conv-section-label">Projects</div>
+            {projects.map((project) => (
+              <ProjectRow
+                key={project.name}
+                project={project}
+                active={directoryName === project.name}
+                expanded={expandedProjects.has(project.name)}
+                onToggle={() => toggleProject(project.name)}
+                onReopen={() => handleReopenProject(project.name)}
+                onOpenThread={loadConversation}
+                threads={threadsForProject(conversations, project.name)}
+                onContextMenu={(anchor) => {
+                  setMenuConfirm("idle"); // re-right-click cancels an armed confirm
+                  setMenuAnchor(anchor);
+                  setMenuProject(project);
+                }}
+              />
             ))}
           </div>
         )}
+
+        {(() => {
+          const orphans = ungroupedThreads(conversations);
+          if (orphans.length === 0) return null;
+          return (
+            <div className="conv-section">
+              <div className="conv-section-label">Chats</div>
+              <ProjectRow
+                project={{ name: "", lastOpenedAt: 0 }}
+                active={false}
+                expanded={expandedProjects.has("__ungrouped__")}
+                onToggle={() => toggleProject("__ungrouped__")}
+                onReopen={() => toggleProject("__ungrouped__")}
+                onOpenThread={loadConversation}
+                threads={orphans}
+                onContextMenu={() => {}} // unused — Ungrouped skips the menu
+              />
+            </div>
+          );
+        })()}
       </div>
       <div className="sidebar-user">
         <div className="sidebar-user-info">
@@ -318,6 +250,19 @@ export default function Sidebar() {
 
   return (
     <>
+      {menuProject && (
+        <ProjectContextMenu
+          project={menuProject}
+          anchor={menuAnchor}
+          isActive={directoryName === menuProject.name}
+          confirmState={menuConfirm}
+          onAction={handleMenuAction}
+          onDismiss={() => {
+            setMenuConfirm("idle");
+            setMenuProject(null);
+          }}
+        />
+      )}
       <button onClick={() => setMobileOpen(true)} className="mobile-hamburger" aria-label="Open menu">
         <IconMenu size={20} />
       </button>
@@ -334,6 +279,7 @@ export default function Sidebar() {
     </>
   );
 }
+
 
 function BackgroundTaskIndicator() {
   const { task, isRunning } = useBackgroundChat();

@@ -46,7 +46,7 @@ function TreeNode({ node, depth, onFileClick }: { node: FileNode; depth: number;
           className="flex items-center gap-1.5 w-full px-2 py-0.5 text-sm hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
           style={{ paddingLeft: `${depth * 12 + 8}px` }}
         >
-          <span className="text-xs text-gray-400 w-3">{expanded ? "▼" : "▶"}</span>
+          <span className="text-xs text-gray-400 w-3"><span className="ms ms-sm">{expanded ? "expand_more" : "chevron_right"}</span></span>
           <FileIcon node={node} />
           <span className="text-gray-700 dark:text-gray-300">{node.name}</span>
         </button>

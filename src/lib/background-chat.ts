@@ -34,6 +34,12 @@ export interface BackgroundTask {
   stats: TaskStats;
   /** Chat mode this task ran under ("ask" | "code" | "plan") — gates run persistence */
   mode: string;
+  /**
+   * Model id this task was sent to (prompt-bar pick), if any. Feeds the
+   * auto-retry: after a model failure the picker swaps to the next verified
+   * model once — it needs to know WHICH model failed.
+   */
+  model?: string;
 }
 
 export interface TaskStats {
@@ -93,6 +99,7 @@ export interface TaskSnapshot {
   statusDetail: string;
   startedAt: number;
   mode: string;
+  model?: string;
 }
 
 const SNAPSHOT_KEY = "orplex:bg-task-snapshot";
@@ -140,6 +147,7 @@ export function persistTaskSnapshot(force = false): void {
       statusDetail: currentTask.statusDetail,
       startedAt: currentTask.startedAt,
       mode: currentTask.mode,
+      model: currentTask.model,
     };
     window.sessionStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snap));
   } catch {
@@ -197,8 +205,42 @@ function notify() {
   for (const listener of listeners) {
     listener(snapshot);
   }
+  lastNotifiedDisplay = currentTask?.displayContent ?? "";
   // Keep the reload snapshot fresh while a task is running (throttled writes)
   persistTaskSnapshot();
+}
+
+// === Display-content render coalescing (UI-freeze fix) ======================
+// Streaming fires hundreds of notify() calls per task; each one synchronously
+// ran setState in EVERY subscriber, and each React render re-parsed +
+// re-highlighted the whole growing message. Combined with the per-chunk text
+// repair passes that saturated the main thread — every button (Stop included)
+// froze until the agent finished. The fix: display-content-only updates are
+// coalesced to ~8 frames. State mutations stay SYNCHRONOUS (getCurrentTask,
+// tests, and the Stop path are unaffected); only the subscriber fan-out is
+// batched. Anything that changes task identity/status (start, complete,
+// fail, cancel) notifies immediately so Stop never waits for a frame.
+const NOTIFY_FRAME_MS = 125;
+let notifyScheduled = false;
+let lastNotifiedDisplay = "";
+
+function notifyThrottled() {
+  if (!currentTask) return;
+  if (currentTask.displayContent === lastNotifiedDisplay) return;
+  if (notifyScheduled) return;
+  notifyScheduled = true;
+  const frame = () => {
+    notifyScheduled = false;
+    // Only fan out if another (immediate) notify hasn't already delivered a
+    // newer displayContent — and the task is still the one being streamed.
+    if (currentTask && currentTask.displayContent !== lastNotifiedDisplay) {
+      notify();
+    }
+  };
+  // Plain timer (not rAF): rAF pauses in background tabs, which would stall
+  // display updates; a timer keeps coalescing at the same cadence. unref so
+  // browser-task housekeeping never holds a Node process/Jest worker open.
+  setTimeout(frame, NOTIFY_FRAME_MS).unref?.();
 }
 
 // === Stats tracking (for actionable notifications) ===
@@ -242,7 +284,9 @@ export function startTask(
   conversationId: string | null,
   userMessage: string,
   initialMessages: ChatMessage[],
-  mode: string = "code"
+  mode: string = "code",
+  /** Model id the task is sent to (prompt-bar pick) — feeds auto-retry. */
+  model?: string
 ): string {
   const id = `bg-${++taskIdCounter}`;
   generationCounter++;
@@ -260,8 +304,13 @@ export function startTask(
     todos: [],
     question: null,
     mode,
+    ...(model ? { model } : {}),
     stats: { filesChanged: 0, commandsRun: 0, toolCalls: 0, rejectedActions: 0, failedSteps: 0 },
   };
+  // New task — notify immediately and reset the coalescing state so stale
+  // bookkeeping from a previous task can never swallow this task's updates.
+  notifyScheduled = false;
+  lastNotifiedDisplay = "";
   notify();
   // Mirror this task into a durable AgentRun row (browser only, best-effort)
   trackTaskStart(currentTask);
@@ -326,13 +375,13 @@ export function answerQuestion(answer: string) {
 export function appendToDisplayContent(text: string) {
   if (!currentTask) return;
   currentTask.displayContent += text;
-  notify();
+  notifyThrottled();
 }
 
 export function setDisplayContent(content: string) {
   if (!currentTask) return;
   currentTask.displayContent = content;
-  notify();
+  notifyThrottled();
 }
 
 export function addAssistantMessage(content: string) {
@@ -355,13 +404,27 @@ export function completeTask(finalContent?: string) {
   currentTask.completedAt = Date.now();
   const completedId = currentTask.id;
   const completedTask = currentTask;
+  // Status change — flush any pending display update IMMEDIATELY so the
+  // final answer lands in one render and the UI unblocks at once.
+  notifyScheduled = false;
   notify();
 
   // Persist the terminal state to the run record (best-effort, browser only)
   trackTaskEnd(completedTask).catch(() => {});
 
-  // Actionable notification: lead with what happened, not just "done"
-  sendNotification("Orplex Agent", buildCompletionSummary(currentTask));
+  // Actionable notification: lead with what happened, not just "done".
+  // Both surfaces fire: the OS notification (when granted) and the durable
+  // bell inbox (3s toast on arrival, then stored with an unread badge).
+  const summary = buildCompletionSummary(completedTask);
+  sendNotification("Orplex Agent", summary);
+  void import("./notify-client").then(({ notifyUser }) =>
+    notifyUser({
+      type: "success",
+      title: "Agent task completed",
+      message: `${completedTask.userMessage.slice(0, 80)} — ${summary}`,
+      source: "runs",
+    })
+  );
 
   // Clear task after a delay — but only if no new task has started.
   // unref so browser-task housekeeping never holds a Node process/Jest worker open.
@@ -385,6 +448,8 @@ export function failTask(error: string) {
   currentTask.completedAt = Date.now();
   const failedId = currentTask.id;
   const failedTask = currentTask;
+  // Status change — flush any pending display update IMMEDIATELY.
+  notifyScheduled = false;
   notify();
 
   // Persist the terminal state to the run record (best-effort, browser only)
@@ -395,6 +460,16 @@ export function failTask(error: string) {
     ? ` (${filesChanged} file(s) changed, ${commandsRun} command(s) run before failure — check the Changes panel)`
     : "";
   sendNotification("Orplex Agent", `Task failed: ${error}${progress}`);
+  // Durable bell notification for the failure too — same 3s-toast-then-badge
+  // flow as completions, so run outcomes are always visible in the inbox.
+  void import("./notify-client").then(({ notifyUser }) =>
+    notifyUser({
+      type: "error",
+      title: "Agent task failed",
+      message: `${failedTask.userMessage.slice(0, 80)} — ${error.slice(0, 200)}${progress}`,
+      source: "runs",
+    })
+  );
 
   const failCleanupTimer = setTimeout(() => {
     if (currentTask && currentTask.id === failedId && currentTask.status === "error") {
@@ -426,6 +501,9 @@ export function cancelTask(options: { abort?: boolean } = {}) {
   currentTask.displayContent = normalizeThinkingBlocks(currentTask.displayContent);
   currentTask.completedAt = Date.now();
   const cancelledTask = currentTask;
+  // Status change (user pressed Stop) — flush IMMEDIATELY, never on a timer:
+  // the UI must react to Stop in the same tick.
+  notifyScheduled = false;
   notify();
 
   // Persist the cancelled state to the run record (best-effort, browser only)

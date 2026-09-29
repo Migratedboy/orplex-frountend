@@ -26,6 +26,9 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
     chrome: process.versions.chrome || "",
     node: process.versions.node || "",
   },
+  /** Reveal a workspace folder in the OS file manager (Projects menu). */
+  revealPath: (path: string) =>
+    ipcRenderer.invoke("orplex:reveal-path", path) as Promise<boolean>,
   /**
    * REAL-BROWSER PREVIEW: the main process renders preview tabs as genuine
    * Chromium WebContentsViews layered above this window (isolated
@@ -68,6 +71,7 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
    */
   agentBrowser: {
     show: () => ipcRenderer.invoke("agent-browser:show") as Promise<number>,
+    showId: (viewId: number) => ipcRenderer.invoke("agent-browser:show-id", viewId) as Promise<boolean>,
     getId: () => ipcRenderer.invoke("agent-browser:get-id") as Promise<number>,
     navigate: (url: string) =>
       ipcRenderer.invoke("agent-browser:navigate", url) as Promise<{ ok: boolean; url?: string; title?: string; error?: string }>,
@@ -75,12 +79,24 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
       ipcRenderer.invoke("agent-browser:read") as Promise<Record<string, unknown>>,
     elements: () =>
       ipcRenderer.invoke("agent-browser:elements") as Promise<Record<string, unknown>>,
-    interact: (action: { kind: string; selector?: string; text?: string; key?: string; amount?: number }) =>
+    interact: (action: { kind: string; selector?: string; ref?: string; text?: string; key?: string; amount?: number }) =>
       ipcRenderer.invoke("agent-browser:interact", action) as Promise<Record<string, unknown>>,
     console: () =>
       ipcRenderer.invoke("agent-browser:console") as Promise<{ ok: boolean; messages: Array<{ level: string; text: string; at: number }> }>,
-    screenshot: () => ipcRenderer.invoke("agent-browser:screenshot") as Promise<string>,
+    screenshot: (opts?: { fullPage?: boolean; viewpoint?: string }) =>
+      ipcRenderer.invoke("agent-browser:screenshot-advanced", opts ?? {}) as Promise<Record<string, unknown>>,
     evaluate: (code: string) =>
       ipcRenderer.invoke("agent-browser:evaluate", code) as Promise<{ ok: boolean; result?: unknown; error?: string }>,
+    find: (filter?: { text?: string; role?: string }) =>
+      ipcRenderer.invoke("agent-browser:find", filter ?? {}) as Promise<Record<string, unknown>>,
+    waitFor: (args: { text?: string; selector?: string; time?: number; timeoutMs?: number }) =>
+      ipcRenderer.invoke("agent-browser:wait-for", args) as Promise<Record<string, unknown>>,
+    hover: (args: { selector?: string; ref?: string }) =>
+      ipcRenderer.invoke("agent-browser:hover", args) as Promise<Record<string, unknown>>,
+    select: (args: { selector?: string; ref?: string; value: string }) =>
+      ipcRenderer.invoke("agent-browser:select", args) as Promise<Record<string, unknown>>,
+    tabs: (args: { action?: string; url?: string; index?: number }) =>
+      ipcRenderer.invoke("agent-browser:tabs", args) as Promise<Record<string, unknown>>,
+    network: () => ipcRenderer.invoke("agent-browser:network") as Promise<Record<string, unknown>>,
   },
 });

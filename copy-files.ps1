@@ -60,7 +60,7 @@ $files = @(
     "src/components/ModeSelector.tsx",
     "src/components/ToolCallDisplay.tsx",
     "src/components/AgentProgress.tsx",
-    "src/middleware.ts",
+    "src/proxy.ts",
     "next.config.js",
     "jest.config.js",
     "tsconfig.json",

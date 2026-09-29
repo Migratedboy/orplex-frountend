@@ -281,7 +281,7 @@ export const M3_TOOL_DEFINITIONS = [
     type: "function",
     function: {
       name: "browser_read",
-      description: "Read what is currently shown in YOUR browser: page URL, title, visible text, headings, and interactive elements (links, buttons, inputs with selectors you can use for browser_click/browser_type). Call this after navigating to understand the page.",
+      description: "Read what is currently shown in YOUR browser: page URL, title, visible text, headings, and interactive elements (links, buttons, inputs with selectors you can use for browser_click/browser_type). Call this after navigating to understand the page. For precise targeting use browser_find instead — it returns click-ready refs.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -289,13 +289,13 @@ export const M3_TOOL_DEFINITIONS = [
     type: "function",
     function: {
       name: "browser_click",
-      description: "Click an element in YOUR browser by CSS selector. The element is scrolled into view first. Use browser_read/browser_elements to find selectors. Returns what was clicked; waits for any resulting navigation.",
+      description: "Click an element in YOUR browser by CSS selector, or by ref from browser_find (ref=e3). The element is scrolled into view first. Returns what was clicked; waits for any resulting navigation.",
       parameters: {
         type: "object",
         properties: {
           selector: { type: "string", description: "CSS selector, e.g. \"#submit-btn\", \"a[href='/pricing']\"" },
+          ref: { type: "string", description: "Element ref from browser_find (e.g. \"e3\") — use INSTEAD of selector" },
         },
-        required: ["selector"],
       },
     },
   },
@@ -303,14 +303,15 @@ export const M3_TOOL_DEFINITIONS = [
     type: "function",
     function: {
       name: "browser_type",
-      description: "Type text into an input/textarea in YOUR browser (clears existing value first, fires input/change events so frameworks notice).",
+      description: "Type text into an input/textarea in YOUR browser (clears existing value first, fires input/change events so frameworks notice). Target by selector or by ref from browser_find.",
       parameters: {
         type: "object",
         properties: {
           selector: { type: "string", description: "CSS selector of the input element" },
+          ref: { type: "string", description: "Element ref from browser_find (e.g. \"e3\") — use INSTEAD of selector" },
           text: { type: "string", description: "Text to enter" },
         },
-        required: ["selector", "text"],
+        required: ["text"],
       },
     },
   },
@@ -353,7 +354,96 @@ export const M3_TOOL_DEFINITIONS = [
     type: "function",
     function: {
       name: "browser_screenshot",
-      description: "Capture what YOUR browser is showing right now. The user sees it live in the preview panel; you get confirmation plus the live page state. Prefer browser_read for extracting text content.",
+      description: "Capture what YOUR browser is showing right now. The user sees it live in the preview panel; you get confirmation plus the live page state. Prefer browser_read for extracting text content. Optionally capture the full scrollable page or a specific viewport size to check responsive layouts.",
+      parameters: {
+        type: "object",
+        properties: {
+          fullPage: { type: "boolean", description: "Capture the entire scrollable page, not just the viewport (default false)" },
+          viewpoint: { type: "string", description: "Resize to a named viewport before capturing: desktop (1280x720), tablet (768x1024), or mobile (390x844) — use to verify responsive layouts" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_find",
+      description: "Find actionable elements on the current page (links, buttons, inputs, selects) with accessibility roles, labels, and STABLE selectors. Returns refs (e1, e2, …) you can pass to browser_click/browser_type/browser_hover/browser_select instead of guessing CSS selectors. Filter by role (link/button/textbox/combobox/heading) and/or text. Re-run after navigation — refs go stale.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "Case-insensitive substring to match against element name/label/selector" },
+          role: { type: "string", description: "ARIA-ish role filter: link, button, textbox, combobox, heading, …" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_wait_for",
+      description: "Wait for a condition before continuing: text to appear, a selector to become visible, or a fixed delay. Use after clicks that trigger async loads/SPA transitions instead of blind browser_read retries.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "Text to wait for (use this OR selector OR time)" },
+          selector: { type: "string", description: "CSS selector to wait until visible (use this OR text OR time)" },
+          time: { type: "number", description: "Milliseconds to wait (use this OR text OR selector; capped at 10s)" },
+          timeoutMs: { type: "number", description: "Max time to wait for text/selector (default 10000, capped 15s)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_hover",
+      description: "Hover over an element in YOUR browser (by selector or browser_find ref) — triggers hover menus, tooltips, and reveal-on-hover UI. Wait ~300ms is built in; browser_read or browser_screenshot afterwards to see what appeared.",
+      parameters: {
+        type: "object",
+        properties: {
+          selector: { type: "string", description: "CSS selector of the element" },
+          ref: { type: "string", description: "Element ref from browser_find (e.g. \"e3\") — use INSTEAD of selector" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_select",
+      description: "Choose an <option> in a <select> dropdown in YOUR browser (by value, or visible label for common cases). Target by selector or browser_find ref.",
+      parameters: {
+        type: "object",
+        properties: {
+          selector: { type: "string", description: "CSS selector of the <select> element" },
+          ref: { type: "string", description: "Element ref from browser_find (e.g. \"e3\") — use INSTEAD of selector" },
+          value: { type: "string", description: "Option value (or visible label) to select" },
+        },
+        required: ["value"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_tabs",
+      description: "Manage browser tabs: list open tabs, open a new tab (optionally navigating immediately), switch the active tab by index, or close one. Ops run against the ACTIVE tab — switch first, then navigate/click/read.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", description: "list (default) | new | switch | close" },
+          url: { type: "string", description: "For action=new: URL to open in the new tab (optional)" },
+          index: { type: "number", description: "For action=switch/close: tab index from the last list" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_network",
+      description: "Show failed network requests from YOUR browser: HTTP 4xx/5xx responses and aborted requests since the session started. Essential when a page loads blank or data is missing — the failing URL and status tell you whether it's your app or its API.",
       parameters: { type: "object", properties: {} },
     },
   },

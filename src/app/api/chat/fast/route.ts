@@ -84,8 +84,12 @@ export async function POST(request: NextRequest) {
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "unknown");
+      // Surface the provider's own message (quota exhausted, model EOL…) —
+      // the bare status code left "Fast answer failed: HTTP 502" with no
+      // hint at the actual cause.
+      console.warn(`[chat/fast] ${provider.name} HTTP ${res.status}: ${errText.slice(0, 200)}`);
       return new Response(
-        JSON.stringify({ success: false, error: { message: `Fast model error: ${res.status}` } }),
+        JSON.stringify({ success: false, error: { message: `Fast model error: ${res.status}${errText ? ` — ${errText.slice(0, 160)}` : ""}` } }),
         { status: 502, headers: { "Content-Type": "application/json" } }
       );
     }

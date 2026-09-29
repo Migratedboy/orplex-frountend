@@ -37,7 +37,7 @@ const config: Config = {
       borderRadius: { DEFAULT: "0.125rem", lg: "0.25rem", xl: "0.5rem", full: "0.75rem" },
       spacing: { unit: "4px", gutter: "24px", "margin-sm": "16px", "margin-md": "32px", "margin-lg": "64px", "container-max": "1280px" },
       fontFamily: {
-        display: ["Lexend", "sans-serif"], body: ["Lexend", "sans-serif"], headline: ["Lexend", "sans-serif"],
+        display: ["Fraunces", "Lexend", "serif"], body: ["Fraunces", "Lexend", "serif"], headline: ["Fraunces", "Lexend", "serif"],
         code: ["JetBrains Mono", "monospace"], label: ["JetBrains Mono", "monospace"],
       },
       fontSize: {

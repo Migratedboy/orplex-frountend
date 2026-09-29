@@ -23,11 +23,16 @@ let timer: ReturnType<typeof setInterval> | null = null;
 const lastActive = new Set<string>();
 
 function iconPath(): string {
-  // Ship a 16x16 png at electron/assets/tray.png; fall back to an empty
-  // image (Electron then uses a default) rather than crashing.
-  const p = join(__dirname, "assets", "tray.png");
+  // Orplex logo in the tray/system area. Prefer the 32px render (crisper on
+  // HiDPI taskbars than the old 16px), fall back to the 16px, then to an
+  // empty image (Electron uses its default) rather than crashing.
+  const fs = require("fs");
   try {
-    return require("fs").existsSync(p) ? p : "";
+    for (const name of ["icon32.png", "tray.png"]) {
+      const p = join(__dirname, "assets", name);
+      if (fs.existsSync(p)) return p;
+    }
+    return "";
   } catch {
     return "";
   }

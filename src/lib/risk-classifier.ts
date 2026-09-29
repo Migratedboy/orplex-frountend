@@ -22,6 +22,7 @@ const LOW_RISK_TOOLS = new Set([
   "read_file",
   "list_files",
   "search_code",
+  "code_search",
   "web_search",
   "todo_list",
   "undo_last_change",

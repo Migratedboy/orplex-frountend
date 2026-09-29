@@ -42,14 +42,44 @@ export interface CatalogModel {
    * the picker renders it tagged "cold" instead of pretending it verified.
    */
   cold?: boolean;
+  /**
+   * ISO timestamp of the last probe that actually ANSWERED ("ok"). The
+   * picker's health dot is green while this is under FRESH_VERIFIED_MS and
+   * amber once it ages past it — proof-of-life decays, listings don't.
+   */
+  lastVerifiedAt?: string;
+  /** Round-trip ms of the most recent answering probe — relative speed signal. */
+  probeLatencyMs?: number;
 }
 
-interface CatalogResult {
+export interface CatalogResult {
   models: CatalogModel[];
   /** Confirmed-live models that only answered 429 — reported but not listed. */
   throttledModels: CatalogModel[];
   probedAt: string;
   providers: string[];
+}
+
+/** A model verified more recently than this is green and skips re-probing. */
+export const FRESH_VERIFIED_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * True when the model's last ANSWERING probe is younger than a day —
+ * health is fresh, no new probe needed this sweep.
+ */
+export function isFreshlyVerified(m: CatalogModel, nowMs: number = Date.now()): boolean {
+  if (!m.lastVerifiedAt) return false;
+  const t = new Date(m.lastVerifiedAt).getTime();
+  return Number.isFinite(t) && nowMs - t < FRESH_VERIFIED_MS;
+}
+
+/**
+ * Picker health dot: "green" = answered a probe within the last day,
+ * "amber" = listed and once-verified but proof of life has aged out (or
+ * predates health tracking). Exported for tests + the picker payload.
+ */
+export function modelHealth(m: CatalogModel, nowMs: number = Date.now()): "green" | "amber" {
+  return isFreshlyVerified(m, nowMs) ? "green" : "amber";
 }
 
 const MEM_TTL_MS = 5 * 60 * 1000;
@@ -60,6 +90,54 @@ const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_CONCURRENCY = 6;
 const OPENROUTER_PAID_SAMPLE = 12;
 const DISK_CACHE = ".model-catalog-cache.json";
+
+// === Cold-start wake engine ================================================
+// NVIDIA build.farm cold-loads a model's function on first invocation: the
+// first request can hang for minutes, then the model works fine forever
+// (kimi-k3 did exactly this). A probe-timeout therefore does NOT mean dead —
+// but per the picker's contract (only models PROVEN to answer are listed)
+// a still-cold model must not appear either. This engine RE-PROBES cold
+// models in the background with generous warm-up timeouts until they answer,
+// then promotes them into the verified catalog.
+/** Warm-up attempts per model per wake cycle. */
+const WAKE_ATTEMPTS = 3;
+/** First attempt timeout — the cold-load itself can take minutes. */
+const WAKE_TIMEOUT_MS = [120_000, 90_000, 60_000] as const;
+/** Gap between wake attempts on the same model. */
+const WAKE_RETRY_GAP_MS = 5_000;
+/** Gap between different models' wake jobs (NVIDIA free tier pacing). */
+const WAKE_SPACING_MS = 2_000;
+/** Max models woken per cycle — wake jobs are cheap but bounded anyway. */
+const WAKE_MAX_MODELS = 8;
+/** How long a wake-cycle result is trusted before models may need re-waking. */
+const WAKE_COOLDOWN_MS = 60 * 60 * 1000;
+
+let wakeInFlight: Promise<void> | null = null;
+let lastWakeAt = 0;
+
+// === Live wake progress (Settings "Warm models" card) ======================
+// The wake cycle runs for many minutes (a single cold-load probe can take
+// 2 minutes), so the UI polls this state instead of guessing. `attempt`
+// counts 1-based within WAKE_ATTEMPTS; `done` models keep their final
+// outcome after the cycle ends so the card can show the last run's result.
+export interface WakeModelState {
+  id: string;
+  /** "waking" = attempt in progress, "woke" = answered, "dead" = HTTP error, "failed" = all attempts exhausted. */
+  state: "waking" | "woke" | "dead" | "failed";
+  attempt: number;
+  totalAttempts: number;
+}
+export interface WakeProgress {
+  running: boolean;
+  startedAt: number | null;
+  models: WakeModelState[];
+}
+let wakeProgress: WakeProgress = { running: false, startedAt: null, models: [] };
+
+/** Live (or last-run) wake-cycle progress, for the Settings warm card. */
+export function getWakeProgress(): WakeProgress {
+  return { ...wakeProgress, models: wakeProgress.models.map((m) => ({ ...m })) };
+}
 
 let memCache: { at: number; data: CatalogResult } | null = null;
 
@@ -106,8 +184,7 @@ type DiskLibs = { fs: typeof import("fs"); path: typeof import("path") } | null;
 function diskLibs(): DiskLibs {
   if (typeof window !== "undefined") return null;
   try {
-    // eslint-disable-next-line no-eval
-    const req = eval("typeof require === 'function' ? require : null") as ((id: string) => unknown) | null;
+    const req = eval("typeof require === 'function' ? require : null") as ((id: string) => unknown) | null; // eval: bundler-proof require access
     if (!req) return null;
     return { fs: req("fs") as typeof import("fs"), path: req("path") as typeof import("path") };
   } catch {
@@ -244,7 +321,7 @@ async function listProviderModelsRaw(def: ProviderDef): Promise<RawModel[] | nul
     }
     return out;
   } catch (err) {
-    console.warn(`[model-catalog] ${def.id} listing failed:`, err instanceof Error ? err.message : err);
+    console.warn(`[model-catalog] ${def.id} listing failed: ${err instanceof Error ? err.message : err}`);
     return null;
   }
 }
@@ -256,11 +333,62 @@ async function listProviderModelsRaw(def: ProviderDef): Promise<RawModel[] | nul
 /** Probe verdict per model. */
 type ProbeVerdict = "ok" | "rate_limited" | "cold_start" | "dead";
 
+/**
+ * Why a probe failed — the user-facing triage. "dead" hides the model from
+ * the picker; the other kinds surface a notification (invalid key, empty
+ * credits, no models at all) so the user knows WHY nothing showed up.
+ */
+export type ProbeFailureKind = "invalid_key" | "no_credits" | "no_models" | "network" | "dead";
+
+/** Classify an HTTP status / provider error into the user-facing kind. */
+function classifyFailure(status: number, message: string): ProbeFailureKind {
+  // Key identity problems: provider refused auth or the key lacks scope.
+  if (status === 401 || status === 403) return "invalid_key";
+  // Money problems: 402 Payment Required is the canonical "no credits";
+  // many providers also emit explicit quota/billing messages.
+  if (status === 402) return "no_credits";
+  if (/insufficient (?:credits?|funds|quota|balance)|out of credits|credit balance|exceeded your (?:quota|billing)|billing|payment required|no active subscription/i.test(message)) {
+    return "no_credits";
+  }
+  if (/invalid.{0,20}api.?key|invalid.{0,20}token|unauthorized|authentication|api key (?:not|is) (?:valid|invalid|recognized)/i.test(message)) {
+    return "invalid_key";
+  }
+  if (status === 404 || status === 400) return "dead";
+  if (status === 0 || status >= 500) return "network";
+  return "dead";
+}
+
+/**
+ * A genuine human-style trial message — exactly what a user would type.
+ * Providers' bot-detection and content filters treat degenerate probes
+ * ("OK", empty) differently from real turns; this is a real turn.
+ */
+const TRIAL_MESSAGES = ["hi", "hello", "hey there", "hi!", "Hello!"];
+function trialMessage(): string {
+  return TRIAL_MESSAGES[Math.floor(Math.random() * TRIAL_MESSAGES.length)];
+}
+
 /** Probe one model with a minimal completion. True iff it answers with content. */
+/**
+ * Failure detail from the MOST RECENT probe — module-level because a failing
+ * key (bad key, no credits, dead network) fails EVERY probe identically, so
+ * the first failure's classification is the answer for the whole batch.
+ * Read by verifyProviderModels after its run to explain a 0-survivor result.
+ */
+let lastFailureKind: ProbeFailureKind | null = null;
+let lastFailureDetail = "";
+
+/** Test/inspection hook. */
+export function lastProbeFailure(): { kind: ProbeFailureKind | null; detail: string } {
+  return { kind: lastFailureKind, detail: lastFailureDetail };
+}
+
 export async function probeModel(
   provider: string,
   modelId: string,
-  apiKey: string
+  apiKey: string,
+  /** Custom timeout — the wake engine passes generous cold-load windows. */
+  timeoutMs: number = PROBE_TIMEOUT_MS
 ): Promise<ProbeVerdict> {
   const def = getProviderDef(provider);
   const url = def
@@ -274,14 +402,23 @@ export async function probeModel(
     headers["Authorization"] = `Bearer ${apiKey}`;
     if (def?.extraHeaders) Object.assign(headers, def.extraHeaders);
   }
-  const { signal, done, cancel } = withTimeout(PROBE_TIMEOUT_MS);
+  const { signal, done, cancel } = withTimeout(timeoutMs);
+  // Routine provider rejections (402 no-credits, 403/404 unknown model,
+  // AbortError timeouts) are EXPECTED during a sweep of hundreds of models —
+  // log them once per provider as a tally instead of one console line each
+  // (the dev log was drowning: ~670 catalog lines per session).
+  const tally = sweepTally.get(provider) ?? { dead: 0, other: 0 };
+  sweepTally.set(provider, tally);
   try {
     const res = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify({
         model: modelId,
-        messages: [{ role: "user", content: "Reply with the single word: OK" }],
+        // The genuine trial: a real human-style turn ("hi"), like a user's
+        // first message. Proves the model ANSWERS, not just that the route
+        // exists.
+        messages: [{ role: "user", content: trialMessage() }],
         max_tokens: 16,
         stream: false,
       }),
@@ -289,14 +426,17 @@ export async function probeModel(
     });
     if (res.status === 429) return "rate_limited"; // busy ≠ dead: the provider acknowledged the model
     if (!res.ok) {
-      console.warn(
-        `[model-catalog] probe ${provider}/${modelId}: HTTP ${res.status}`
-      );
+      const detail = await res.text().catch(() => "").then((t) => t.slice(0, 300));
+      lastFailureKind = classifyFailure(res.status, detail);
+      if (lastFailureKind === "invalid_key" || lastFailureKind === "no_credits" || lastFailureKind === "network") {
+        lastFailureDetail = `HTTP ${res.status}${detail ? `: ${detail.slice(0, 160)}` : ""}`;
+      }
+      tally.dead++;
       return "dead";
     }
     const ct = res.headers.get("content-type") || "";
     if (!ct.includes("application/json")) {
-      console.warn(`[model-catalog] probe ${provider}/${modelId}: non-JSON response (${ct})`);
+      tally.other++;
       return "dead";
     }
     const json = (await res.json()) as {
@@ -306,8 +446,14 @@ export async function probeModel(
     // Some providers answer 200 with an embedded error object
     if (json.error) {
       const code = Number(json.error.code ?? 0);
-      if (code !== 429) console.warn(`[model-catalog] probe ${provider}/${modelId}: embedded error ${JSON.stringify(json.error).slice(0, 160)}`);
-      return code === 429 ? "rate_limited" : "dead";
+      const msg = String(json.error.message || "");
+      if (code === 429) return "rate_limited";
+      lastFailureKind = classifyFailure(code, msg);
+      if (lastFailureKind === "invalid_key" || lastFailureKind === "no_credits" || lastFailureKind === "network") {
+        lastFailureDetail = `${code ? `code ${code}` : "error"}${msg ? `: ${msg.slice(0, 160)}` : ""}`;
+      }
+      tally.dead++;
+      return "dead";
     }
     // 200 + a choices array = the model served a chat completion. Reasoning
     // models can return empty `content` (their budget went to hidden
@@ -326,12 +472,17 @@ export async function probeModel(
     // probe-verified rows. Only the HTTP-error paths below return "dead".
     const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError" || /timeout|abort/i.test(err.message));
     if (timedOut && provider === "nvidia") {
-      console.warn(`[model-catalog] probe ${provider}/${modelId}: timeout — build.farm cold-start, keeping as cold_start`);
+      tally.other++;
       return "cold_start";
     }
-    console.warn(
-      `[model-catalog] probe ${provider}/${modelId}: ${err instanceof Error ? err.name + ": " + err.message : String(err)}`
-    );
+    if (timedOut) {
+      lastFailureKind = "network";
+      lastFailureDetail = "trial request timed out";
+    } else {
+      lastFailureKind = "network";
+      lastFailureDetail = String((err as Error)?.message || "network error").slice(0, 160);
+    }
+    tally.dead++;
     return "dead";
   } finally {
     cancel();
@@ -353,10 +504,16 @@ type ProbeJob = { provider: string; id: string; key: string };
  */
 const jobKey = (j: Pick<ProbeJob, "provider" | "id">) => `${j.provider}::${j.id}`;
 
+/** Latency of the most recent probeAll, per job key (health telemetry). */
+const latenciesByJob = new Map<string, number>();
+
 async function probeAll(
   jobs: ProbeJob[],
 ): Promise<Map<string, ProbeVerdict>> {
   const verdicts = new Map<string, ProbeVerdict>();
+  // Round-trip ms per job — health telemetry (picker's green/amber dot and
+  // the relative speed signal), not used for verdicts.
+  latenciesByJob.clear();
 
   const spacingFor = (provider: string): number =>
     getProviderDef(provider)?.probeSpacingMs ?? 0;
@@ -366,6 +523,13 @@ async function probeAll(
 
   // One serial lane per paced provider; lanes and the shared pool all run
   // concurrently and are awaited together.
+  const timed = async (job: ProbeJob): Promise<ProbeVerdict> => {
+    const t0 = Date.now();
+    const v = await probeModel(job.provider, job.id, job.key);
+    latenciesByJob.set(jobKey(job), Date.now() - t0);
+    return v;
+  };
+
   const pacedLanes: Promise<void>[] = [];
   for (const p of [...new Set(paced.map((j) => j.provider))]) {
     const pJobs = paced.filter((j) => j.provider === p);
@@ -373,7 +537,7 @@ async function probeAll(
     const lane = async () => {
       for (let i = 0; i < pJobs.length; i++) {
         const job = pJobs[i];
-        verdicts.set(jobKey(job), await probeModel(job.provider, job.id, job.key));
+        verdicts.set(jobKey(job), await timed(job));
         if (i < pJobs.length - 1) await new Promise((r) => setTimeout(r, gap));
       }
     };
@@ -384,7 +548,7 @@ async function probeAll(
   const worker = async () => {
     while (next < otherJobs.length) {
       const job = otherJobs[next++];
-      verdicts.set(jobKey(job), await probeModel(job.provider, job.id, job.key));
+      verdicts.set(jobKey(job), await timed(job));
     }
   };
 
@@ -449,10 +613,22 @@ export async function getVerifiedModels(
   return sweepCatalog();
 }
 
+/** Per-provider dead/other tallies for the current sweep — probeModel logs once per provider instead of per model. */
+const sweepTally = new Map<string, { dead: number; other: number }>();
+
 /** The full listing + probe sweep. Only ever runs via ensureCatalogRefresh(). */
 async function sweepCatalog(): Promise<CatalogResult> {
+  sweepTally.clear();
   // Registry-driven: every platform key present in .env joins the sweep.
   const defs = listProviderDefs().filter((d) => (process.env[d.keyEnvVar] || "").trim() !== "");
+
+  // Previous catalog — health carry-forward. A model verified under a day
+  // ago (green dot) SKIPS probing entirely: its proof of life is fresh, and
+  // re-probing hundreds of models every sweep burns free-tier quota for no
+  // information. Freshness rides the (provider, id) pair like verdicts do.
+  const prev = memCache?.data ?? readDiskCache();
+  const prevHealth = new Map<string, CatalogModel>();
+  for (const m of prev?.models ?? []) prevHealth.set(`${m.provider}::${m.id}`, m);
 
   const listing: Array<{ provider: string; raw: RawModel[]; key: string }> = [];
   const providers: string[] = [];
@@ -489,8 +665,14 @@ async function sweepCatalog(): Promise<CatalogResult> {
         .slice(0, OPENROUTER_PAID_SAMPLE);
       models = [...free, ...paid];
     }
-    for (const m of models) jobs.push({ provider: l.provider, id: m.id, key: l.key });
+    for (const m of models) {
+      const prior = prevHealth.get(`${l.provider}::${m.id}`);
+      if (prior && isFreshlyVerified(prior)) continue; // green — skip re-probe
+      jobs.push({ provider: l.provider, id: m.id, key: l.key });
+    }
   }
+  const freshSkipped = (prev?.models ?? []).filter((m) => isFreshlyVerified(m)).length;
+  if (freshSkipped > 0) console.log(`[model-catalog] sweep: ${freshSkipped} model(s) verified <24h ago — skipping their probes`);
 
   let verdicts = await probeAll(jobs);
   // Retry pass: busy free tiers (Groq especially) rate-limit bursts; models
@@ -541,6 +723,14 @@ async function sweepCatalog(): Promise<CatalogResult> {
   for (const l of listing) {
     for (const m of l.raw) {
       if (seenIds.has(m.id)) continue;
+      const prior = prevHealth.get(`${l.provider}::${m.id}`);
+      // Fresh-verified models were never probed this sweep (no verdict):
+      // carry their last health forward untouched so the dot stays green.
+      if (prior && isFreshlyVerified(prior)) {
+        seenIds.add(m.id);
+        out.push({ ...prior, name: m.name || prior.name, contextWindow: m.contextWindow });
+        continue;
+      }
       const v = best(m.id);
       if (v === "dead" || v === undefined) continue; // only live models listed
       seenIds.add(m.id);
@@ -553,9 +743,19 @@ async function sweepCatalog(): Promise<CatalogResult> {
         free: l.provider === "openrouter" ? m.id.endsWith(":free") : undefined,
         ...(v === "rate_limited" ? { throttled: true } : {}),
       };
-      if (v === "rate_limited") throttledOut.push(entry);
-      else {
-        if (v === "cold_start") entry.cold = true;
+      if (v === "rate_limited") {
+        throttledOut.push(entry);
+      } else {
+        if (v === "cold_start") {
+          entry.cold = true;
+        } else {
+          // Actually answered ("ok") — stamp proof of life + latency. A
+          // previously-cold model keeps its historical lastVerifiedAt only
+          // via the carry-forward path above; a fresh "ok" overwrites.
+          entry.lastVerifiedAt = new Date().toISOString();
+          const lat = latenciesByJob.get(`${l.provider}::${m.id}`);
+          if (Number.isFinite(lat)) entry.probeLatencyMs = lat;
+        }
         out.push(entry);
       }
     }
@@ -571,7 +771,267 @@ async function sweepCatalog(): Promise<CatalogResult> {
     probedAt: new Date().toISOString(),
     providers,
   };
+  // One summary line per sweep replaces the old per-model warning flood.
+  const tallyLine = [...sweepTally.entries()]
+    .filter(([, t]) => t.dead > 0 || t.other > 0)
+    .map(([p, t]) => `${p}: ${t.dead} dead${t.other ? `/${t.other} other` : ""}`)
+    .join(", ");
+  if (tallyLine) {
+    console.log(
+      `[model-catalog] sweep done — ${out.length} live, ${throttledOut.length} throttled (${tallyLine})`
+    );
+  }
   memCache = { at: Date.now(), data };
   writeDiskCache(data);
+  // Cold models must not wait for the next sweep (~30 min): kick the wake
+  // engine right away so they join the picker as soon as they answer.
+  if (out.some((m) => m.cold)) wakeColdModels();
   return data;
 }
+
+// ---------------------------------------------------------------------------
+// Cold-start wake engine — turn "probe timed out" into "verified" over time
+// ---------------------------------------------------------------------------
+
+/**
+ * Durable bell notification when a cold model answers and joins the picker.
+ * The wake engine runs SERVER-side, so the row goes straight through
+ * notify() (Prisma, 60s dedup) — the same durable surface the
+ * task-completed flow lands in; TopBar's polling feed turns fresh rows into
+ * the 3s toast + unread badge on every open client. (POST
+ * /api/notifications needs a session cookie, so the client helper is
+ * useless from here.) Lazily imported and fire-and-forget:
+ *  - The module also loads IN THE BROWSER (ChatInput dynamically imports it
+ *    for pickRetryModel), where there is no server → skip.
+ *  - Under Jest there is no server DB → skip (tests inject a spy instead).
+ *  - A broken notification path must never break the wake cycle.
+ */
+function notifyWakePromotion(modelId: string): void {
+  try {
+    if (typeof window !== "undefined") return; // browser — nothing to notify
+    if (process.env.JEST_WORKER_ID || process.env.NODE_ENV === "test") return; // tests
+    void (async () => {
+      const [{ getServerSession }, { jwtOnlyOptions }] = await Promise.all([
+        import("next-auth"),
+        import("./auth"), // jwtOnlyOptions keeps @prisma/client out of the wake path
+      ]);
+      const session = await getServerSession(jwtOnlyOptions);
+      let userId = session?.user?.id ?? "";
+      if (!userId) {
+        // Wake cycles run outside any request (sweep kicks, cooldown retries).
+        // Same default-owner convention as mcp-gateway: single-user app, the
+        // earliest-created user owns platform-level notifications.
+        const { prisma } = await import("./prisma");
+        const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
+        userId = user?.id ?? "";
+      }
+      if (!userId) return;
+      const { notify } = await import("./notify");
+      const shortId = modelId.split("/").pop() || modelId;
+      await notify(userId, {
+        type: "success",
+        title: "Cold model woke up",
+        message: `${shortId} answered its availability probe and joined the model picker.`,
+        source: "models",
+      });
+    })().catch(() => {});
+  } catch {
+    // Notifications are cosmetic — never break the wake cycle.
+  }
+}
+
+/** Probe function shape — dependency-injectable for tests. */
+export type WakeProbeFn = (provider: string, modelId: string, apiKey: string, timeoutMs: number) => Promise<ProbeVerdict>;
+/**
+ * Re-probe every currently-cold model with progressively generous warm-up
+ * timeouts. A model that ANSWERS is promoted to a fully-verified catalog
+ * entry (cold flag dropped) and the catalog is re-published to the disk
+ * cache so the next picker fetch shows it with no tag. A model that still
+ * never answers after the full cycle stays out of the verified list (it
+ * remains cold-flagged in the catalog data for observability, but the picker
+ * never renders it).
+ *
+ * Runs entirely in the background; one cycle at a time; safe to call
+ * repeatedly (concurrent kicks collapse). HTTP-error verdicts from the
+ * wake probes are honest: a model 404ing under wake is genuinely dead and
+ * is REMOVED from the catalog rather than kept cold.
+ */
+export function wakeColdModels(
+  /** Injected probe (tests). Default: the real probeModel. */
+  opts: {
+    probe?: WakeProbeFn;
+    /** Override the retry/spacing gaps (tests: 0ms). Defaults are the real pacing. */
+    retryGapMs?: number;
+    spacingMs?: number;
+    /**
+     * Called after each cold model is promoted to verified (default: durable
+     * bell notification — same flow as task-completed). Tests inject a spy
+     * to avoid the Prisma path. Fire-and-forget: notification failures must
+     * never break the wake cycle.
+     */
+    onPromoted?: (modelId: string) => void;
+  } = {}
+): Promise<void> {
+  if (wakeInFlight) return wakeInFlight;
+  // Cheap rate-limit: at most one cycle per cooldown, unless forced by a
+  // manual warm request.
+  if (Date.now() - lastWakeAt < WAKE_COOLDOWN_MS) return Promise.resolve();
+  const probeFn: WakeProbeFn = opts.probe ?? ((p, id, key, t) => probeModel(p, id, key, t));
+  const onPromoted = opts.onPromoted ?? notifyWakePromotion;
+  const retryGapMs = opts.retryGapMs ?? WAKE_RETRY_GAP_MS;
+  const spacingMs = opts.spacingMs ?? WAKE_SPACING_MS;
+  // Latency of the most recent wake probe (health telemetry on promotion).
+  let lastProbeMs = 0;
+  wakeInFlight = (async () => {
+    lastWakeAt = Date.now();
+    const data = memCache?.data ?? readDiskCache();
+    if (!data) return;
+    const cold = data.models.filter((m) => m.cold && !isFreshlyVerified(m)).slice(0, WAKE_MAX_MODELS);
+    if (cold.length === 0) return;
+    console.log(`[model-catalog] waking ${cold.length} cold model(s): ${cold.map((m) => m.id).join(", ")}`);
+    wakeProgress = {
+      running: true,
+      startedAt: Date.now(),
+      models: cold.map((m) => ({ id: m.id, state: "waking" as const, attempt: 0, totalAttempts: WAKE_ATTEMPTS })),
+    };
+    for (const m of cold) {
+      // Per-model key lookup — cold models can theoretically span providers.
+      const def = getProviderDef(m.provider);
+      const key = def ? (process.env[def.keyEnvVar] || "").trim() : "";
+      if (!key) {
+        const st = wakeProgress.models.find((x) => x.id === m.id);
+        if (st) st.state = "failed"; // no platform key for this provider
+        continue;
+      }
+      const st = wakeProgress.models.find((x) => x.id === m.id);
+      let alive = false;
+      let confirmedDead = false;
+      for (let attempt = 0; attempt < WAKE_ATTEMPTS && !alive; attempt++) {
+        if (st) st.attempt = attempt + 1;
+        const t0 = Date.now();
+        const verdict = await probeFn(m.provider, m.id, key, WAKE_TIMEOUT_MS[attempt]);
+        lastProbeMs = Date.now() - t0;
+        if (verdict === "ok" || verdict === "rate_limited") {
+          // 429 after warm-up still proves the deployment serves.
+          alive = true;
+        } else if (verdict === "dead") {
+          confirmedDead = true;
+          break; // HTTP error under generous timeout — genuinely dead
+        }
+        if (!alive && attempt < WAKE_ATTEMPTS - 1) {
+          await new Promise((r) => setTimeout(r, retryGapMs));
+        }
+      }
+      if (alive) {
+        delete m.cold;
+        // Promotion = a real answered probe → stamp proof of life so the
+        // picker's dot goes green and the next sweep skips re-probing it.
+        m.lastVerifiedAt = new Date().toISOString();
+        if (Number.isFinite(lastProbeMs)) m.probeLatencyMs = lastProbeMs;
+        if (st) st.state = "woke";
+        console.log(`[model-catalog] woke ${m.id} — promoted to verified`);
+        onPromoted(m.id);
+      } else {
+        if (st) st.state = confirmedDead ? "dead" : "failed";
+        console.log(`[model-catalog] ${m.id} still not answering after ${WAKE_ATTEMPTS} warm-up attempts`);
+      }
+      await new Promise((r) => setTimeout(r, spacingMs));
+    }
+    // A model that 404s/400s under a GENEROUS warm-up window is not cold —
+    // it is gone. Remove it from the catalog so it can never reappear via a
+    // stale cache; the next sweep re-lists it only if the provider offers it
+    // again (and it would then have to pass a fresh probe).
+    const deadDuringWake = wakeProgress.models.filter((x) => x.state === "dead").map((x) => x.id);
+    if (deadDuringWake.length > 0) {
+      const deadSet = new Set(deadDuringWake);
+      data.models = data.models.filter((m) => !deadSet.has(m.id));
+      console.log(`[model-catalog] removed ${deadDuringWake.length} dead model(s) confirmed during wake: ${deadDuringWake.join(", ")}`);
+    }
+    const stillCold = data.models.filter((x) => x.cold).length;
+    memCache = { at: Date.now(), data };
+    writeDiskCache(data);
+    wakeProgress = { ...wakeProgress, running: false };
+    console.log(`[model-catalog] wake cycle done — ${stillCold} still cold`);
+  })()
+    .catch((err) => {
+      wakeProgress = { ...wakeProgress, running: false };
+      console.error("[model-catalog] wake cycle failed:", err);
+    })
+    .finally(() => {
+      wakeInFlight = null;
+    });
+  return wakeInFlight;
+}
+
+/** Force a wake cycle NOW, ignoring the cooldown (manual warm button). */
+export function forceWakeColdModels(
+  opts: { probe?: WakeProbeFn; retryGapMs?: number; spacingMs?: number } = {}
+): Promise<void> {
+  lastWakeAt = 0;
+  return wakeColdModels(opts);
+}
+
+/** Test hook: seed the catalog cache directly (bypasses listing/probing). */
+export function seedCatalogForTests(data: CatalogResult): void {
+  memCache = { at: Date.now(), data };
+}
+
+/** Test hook: read the in-memory catalog (null when never populated). */
+export function getCatalogForTests(): CatalogResult | null {
+  return memCache?.data ?? null;
+}
+
+/** Test hook: reset wake bookkeeping (in-flight gate, cooldown, progress). */
+export function resetWakeStateForTests(): void {
+  if (wakeInFlight) return; // never stomp a live cycle
+  lastWakeAt = 0;
+  wakeProgress = { running: false, startedAt: null, models: [] };
+}
+
+/**
+ * Test hook: run the real listing+probe sweep NOW against the current cache
+ * state (getVerifiedModels short-circuits on fresh caches, which hides the
+ * sweep's health carry-forward from tests). Mock fetch to keep it hermetic.
+ */
+export function runSweepForTests(): Promise<CatalogResult> {
+  return sweepCatalog();
+}
+
+/**
+ * Pick the next verified model after a failure (auto-retry helper).
+ *
+ * @param failedModels ids that already failed this conversation (most recent first)
+ * @param currentModel the model that just failed — always excluded, even when
+ *   the failed list omits it (a retry never lands on the same row)
+ * Everything probe-verified is eligible except the failed set — cross-provider
+ * failover is the point (a dead provider's whole list is skipped by exclusion,
+ * not by proximity). Ordered green (freshly verified) first, then stable
+ * catalog order. Returns null when the catalog has nothing beyond the failed
+ * set — the caller keeps the user's pick rather than inventing a model.
+ */
+export async function pickRetryModel(
+  failedModels: string[],
+  currentModel?: string | null
+): Promise<string | null> {
+  try {
+    const { models } = await getVerifiedModels();
+    if (models.length === 0) return null;
+    // Bare-id comparison: the picker's saved key and the failure trail may
+    // carry either form ("vendor/x" vs "vendor/x:free") while the catalog
+    // lists only one. Exact matching would exclude the WRONG form and hand
+    // back the very model that just failed.
+    const bare = (s: string) => s.replace(/:free$/, "");
+    const failed = new Set(failedModels.filter(Boolean).map(bare));
+    if (currentModel) failed.add(bare(currentModel));
+    const candidates = models.filter((m) => !failed.has(bare(m.id)));
+    if (candidates.length === 0) return null;
+    // Stable sort: green (freshly verified) before amber (proof of life aged
+    // out), catalog order preserved within each group.
+    candidates.sort((a, b) => (isFreshlyVerified(a) ? 0 : 1) - (isFreshlyVerified(b) ? 0 : 1));
+    return candidates[0].id;
+  } catch {
+    return null;
+  }
+}
+
+

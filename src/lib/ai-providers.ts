@@ -404,6 +404,69 @@ export const PROVIDER_KEY_ENV: Record<string, string> = {
   custom: "AI_API_KEY",
 };
 
+// === CI fixture adapter (headless CI only) ===
+
+export interface CiFixtureTurn {
+  text?: string;
+  toolCalls?: NativeToolCall[];
+}
+
+function createCiFixtureAdapter(modelOverride?: string): AIProviderAdapter {
+  // Per-run scripts ride in modelOverride as {"__ciFixtureTurns": [...]} (the
+  // CI runner seeds one AgentRun per battery task); a whole-battery env
+  // script (AI_FIXTURE_TURNS) is the fallback for single-run harnesses.
+  let script: CiFixtureTurn[] = [];
+  const raw = modelOverride?.trim();
+  if (raw && raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw) as { __ciFixtureTurns?: CiFixtureTurn[] };
+      if (Array.isArray(parsed.__ciFixtureTurns)) script = parsed.__ciFixtureTurns;
+    } catch {
+      // fall through to the env script
+    }
+  }
+  if (script.length === 0) {
+    try {
+      const envScript = JSON.parse(process.env.AI_FIXTURE_TURNS || "");
+      if (Array.isArray(envScript)) script = envScript;
+    } catch {
+      // reported below
+    }
+  }
+  if (script.length === 0) {
+    throw new Error(
+      "AI_PROVIDER=ci-fixture requires a fixture script: AgentRun.modelOverride {__ciFixtureTurns} or AI_FIXTURE_TURNS (JSON array of {text?, toolCalls?} turns)"
+    );
+  }
+  const queue = [...script];
+  const finalText =
+    script.filter((t) => !t.toolCalls || t.toolCalls.length === 0).map((t) => t.text || "").join(" ") ||
+    "CI fixture run complete.";
+  return {
+    name: "ci-fixture",
+    async stream() {
+      const encoder = new TextEncoder();
+      return new ReadableStream({
+        start(c) {
+          c.enqueue(encoder.encode(`data: ${JSON.stringify({ content: finalText })}\n\n`));
+          c.enqueue(encoder.encode("data: [DONE]\n\n"));
+          c.close();
+        },
+      });
+    },
+    async complete() {
+      const turn = queue.shift();
+      if (!turn) return finalText;
+      return turn.toolCalls && turn.toolCalls.length > 0 ? turn.text || "" : turn.text || finalText;
+    },
+    async completeWithTools() {
+      const turn = queue.shift();
+      if (!turn) return { text: finalText, toolCalls: [] };
+      return { text: turn.text || "", toolCalls: turn.toolCalls || [] };
+    },
+  };
+}
+
 /**
  * Build a provider adapter by name — the seam the failover chain uses.
  * Historic adapters keep their tuned subclasses; any other REGISTRY provider
@@ -413,6 +476,13 @@ export const PROVIDER_KEY_ENV: Record<string, string> = {
 export function createAdapterForProvider(provider: string, modelOverride?: string | null): AIProviderAdapter {
   const override = modelOverride?.trim() || undefined;
   switch (provider) {
+    case "ci-fixture":
+      // Deterministic headless-CI provider: the turn script rides in
+      // modelOverride ({"__ciFixtureTurns": [...]}) or AI_FIXTURE_TURNS and
+      // plays the model turn-by-turn; an exhausted script returns the final
+      // text so the loop ends cleanly. No network. A missing/malformed script
+      // fails loudly instead of drifting into a network call.
+      return createCiFixtureAdapter(override);
     case "openrouter":
       return new OpenRouterAdapter(process.env.OPENROUTER_API_KEY, override);
     case "groq":

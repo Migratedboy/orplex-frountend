@@ -211,7 +211,7 @@ export default function ArtifactPanel({ open, runId, onClose }: ArtifactPanelPro
                     {task.title.slice(0, 20)}
                   </span>
                   <span className={`artifact-panel-tab-status ${STATUS_COLORS[task.status] || ""}`}>
-                    {task.status === "done" ? "✓" : task.status === "failed" ? "✗" : task.status === "running" ? "○" : "·"}
+                    {task.status === "done" ? <span className="ms ms-sm">check</span> : task.status === "failed" ? <span className="ms ms-sm">close</span> : task.status === "running" ? <span className="ms ms-sm ms-spin">progress_activity</span> : <span className="ms ms-sm">circle</span>}
                   </span>
                 </button>
               ))}

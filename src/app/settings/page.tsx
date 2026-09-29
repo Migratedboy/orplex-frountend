@@ -1,12 +1,12 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useToast } from "@/components/Toast";
 import { IconCheck } from "@/components/Icons";
 import { formatTokens } from "@/lib/board-format";
 import { estimateCostFromTotal, formatCost } from "@/lib/cost-estimator";
-import { chartScale, dailySpendBars, splitIsPartial } from "@/lib/spend-format";
-import type { SpendAggregates, SpendRun } from "@/lib/spend-format";
+import { chartScale, dailySpendBars, splitIsPartial, uptimeHealth } from "@/lib/spend-format";
+import type { SpendAggregates, SpendRun, UptimeSummary } from "@/lib/spend-format";
 import { listProviderDefs, type ProviderDef } from "@/lib/provider-registry";
 import type { ListedModel } from "@/lib/provider-models";
 
@@ -26,6 +26,126 @@ interface UserKey {
 }
 
 const PROVIDER_DEFS = listProviderDefs();
+
+// === Warm models (cold-start wake engine) card =============================
+// NVIDIA build.farm cold-loads a model's function on first invocation: the
+// first request can hang for minutes, then the model works fine forever.
+// Cold models are hidden from the picker until the wake engine proves them —
+// this card makes that invisible process visible and manually kickable.
+
+interface WakeModelStateUI {
+  id: string;
+  state: "waking" | "woke" | "dead" | "failed";
+  attempt: number;
+  totalAttempts: number;
+}
+
+const WAKE_STATE_STYLE: Record<WakeModelStateUI["state"], { label: string; color: string; bg: string }> = {
+  waking: { label: "waking", color: "#d97706", bg: "rgba(217,119,6,.12)" },
+  woke: { label: "✓ woke", color: "#10b981", bg: "rgba(16,185,129,.15)" },
+  dead: { label: "unreachable", color: "#ef4444", bg: "rgba(239,68,68,.12)" },
+  failed: { label: "no answer", color: "#9ca3af", bg: "rgba(156,163,175,.15)" },
+};
+
+function WarmModelsCard({ toast }: { toast: (msg: string, type?: "info" | "error" | "success") => void }) {
+  const [running, setRunning] = useState(false);
+  const [coldCount, setColdCount] = useState(0);
+  const [models, setModels] = useState<WakeModelStateUI[]>([]);
+  const [starting, setStarting] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const poll = useCallback(async (force = false) => {
+    try {
+      const res = await fetch("/api/models/warm", {
+        method: force ? "POST" : "GET",
+        headers: force ? { "Content-Type": "application/json" } : undefined,
+        body: force ? JSON.stringify({ force: true }) : undefined,
+      });
+      const j = await res.json();
+      if (!j.success) return;
+      setRunning(!!j.running);
+      setColdCount(Array.isArray(j.coldModels) ? j.coldModels.length : 0);
+      setModels(Array.isArray(j.models) ? j.models : []);
+    } catch {
+      /* transient — the next poll retries */
+    }
+  }, []);
+
+  useEffect(() => {
+    poll();
+    // Poll every 5s while the card is mounted: cheap, and progress updates
+    // (attempt N/3 → woke/failed) arrive within one interval.
+    timerRef.current = setInterval(() => { poll(); }, 5000);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [poll]);
+
+  const warmNow = async () => {
+    setStarting(true);
+    await poll(true);
+    setStarting(false);
+    toast("Warming started — cold models are being probed in the background", "info");
+  };
+
+  const wokeCount = models.filter((m) => m.state === "woke").length;
+  const settled = models.length > 0 && models.every((m) => m.state !== "waking");
+
+  return (
+    <div className="settings-card" style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <div>
+          <p style={{ fontSize: 13, fontWeight: 600 }}>Warm models</p>
+          <p className="settings-hint" style={{ marginTop: 2 }}>
+            {coldCount > 0
+              ? `${coldCount} model${coldCount > 1 ? "s" : ""} still warming up on their provider (first request can take minutes). They appear in the picker automatically once they answer.`
+              : settled && models.length > 0
+                ? `Last wake run: ${wokeCount}/${models.length} model(s) now answer. All verified models are in the picker.`
+                : "Every verified model is live — nothing to warm."}
+          </p>
+        </div>
+        <button
+          onClick={warmNow}
+          disabled={starting || running}
+          className="settings-save-btn"
+          style={running ? { background: "#f3f4f6", color: "#6b7280" } : undefined}
+          title="Probe every cold model now with generous warm-up timeouts — models that answer join the picker immediately"
+        >
+          {running ? "Warming…" : starting ? "Starting…" : "Warm models"}
+        </button>
+      </div>
+
+      {models.length > 0 && (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+          {models.map((m) => {
+            const s = WAKE_STATE_STYLE[m.state];
+            return (
+              <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6, background: "#f9f9fa", border: "1px solid #f0f0f1" }}>
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                    background: m.state === "waking" ? "#d97706" : m.state === "woke" ? "#10b981" : "#9ca3af",
+                    animation: m.state === "waking" ? "settings-pulse 1.4s ease-in-out infinite" : undefined,
+                  }}
+                />
+                <span className="spend-table-mono" style={{ fontSize: 11, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.id}>
+                  {m.id}
+                </span>
+                {m.state === "waking" && (
+                  <span style={{ fontSize: 10, color: "#6b7280", flexShrink: 0 }}>
+                    attempt {m.attempt}/{m.totalAttempts}
+                  </span>
+                )}
+                <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 4, color: s.color, background: s.bg, flexShrink: 0 }}>
+                  {s.label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function tierBadge(def: ProviderDef) {
   return def.free ? (
@@ -144,6 +264,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
         <h2 className="settings-section-title">API Keys</h2>
         <p className="settings-section-desc">Add your own API keys for unlimited requests. Without personal keys, you use the platform shared quota (50 requests/day).</p>
       </div>
+      <WarmModelsCard toast={toast} />
       <div className="settings-card">
         {loading ? (
           <p className="settings-hint">Loading keys...</p>
@@ -379,10 +500,80 @@ interface SpendData {
   provider: SpendProviderInfo;
 }
 
+// === Provider reliability (7-day uptime telemetry) card ====================
+// Rendered from the pure summarizeUptime aggregation served by
+// /api/agent/uptime. Traffic-light per provider, per-model breakdown with
+// dominant error kinds — so a degraded free tier is visible before it eats
+// an afternoon.
+
+const UPTIME_DOT: Record<ReturnType<typeof uptimeHealth>, { color: string; bg: string }> = {
+  green: { color: "#10b981", bg: "rgba(16,185,129,.15)" },
+  amber: { color: "#d97706", bg: "rgba(217,119,6,.12)" },
+  red: { color: "#ef4444", bg: "rgba(239,68,68,.12)" },
+  none: { color: "#9ca3af", bg: "rgba(156,163,175,.15)" },
+};
+
+function ReliabilityCard({ uptime }: { uptime: UptimeSummary | null }) {
+  if (!uptime || uptime.providers.length === 0) return null;
+  return (
+    <div className="settings-card" style={{ marginTop: 16 }}>
+      <div className="spend-table">
+        <div className="spend-table-row spend-table-head">
+          <span>Provider</span><span>Models</span><span style={{ textAlign: "right" }}>OK / Errors</span><span style={{ textAlign: "right" }}>Success</span>
+        </div>
+        {uptime.providers.map((p) => {
+          const health = uptimeHealth(p.successPct);
+          const dot = UPTIME_DOT[health];
+          return (
+            <div key={p.provider} className="spend-table-row">
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span
+                  aria-hidden
+                  title={`${health === "none" ? "no attempts" : `${p.successPct}% success`} over ${uptime.windowDays} days`}
+                  style={{ width: 8, height: 8, borderRadius: "50%", background: dot.color, boxShadow: `0 0 0 3px ${dot.bg}`, flex: "0 0 auto" }}
+                />
+                {p.provider}
+              </span>
+              <span className="spend-table-mono" style={{ fontSize: 12 }}>
+                {p.models.map((m) => {
+                  const total = m.ok + m.errors;
+                  const pct = total > 0 ? Math.round((m.ok / total) * 100) : 0;
+                  const topErrors = Object.entries(m.errorKinds).slice(0, 2)
+                    .map(([k, c]) => `${k} ×${c}`).join(", ");
+                  return (
+                    <div key={m.model} title={topErrors ? `top errors: ${topErrors}` : "no errors recorded"}>
+                      {m.model.split("/").pop()} — {pct}%{m.errors > 0 && topErrors ? ` (${topErrors})` : ""}
+                    </div>
+                  );
+                })}
+              </span>
+              <span style={{ textAlign: "right" }} className="spend-table-mono">{p.ok} / {p.errors}</span>
+              <span style={{ textAlign: "right" }}>
+                <span style={{
+                  color: dot.color,
+                  background: dot.bg,
+                  borderRadius: 6,
+                  padding: "2px 8px",
+                  fontWeight: 600,
+                }}>{p.successPct == null ? "—" : `${p.successPct}%`}</span>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="settings-hint" style={{ marginTop: 10 }}>
+        Attempts recorded over the last {uptime.windowDays} days ({uptime.totalOk} ok, {uptime.totalErrors} failed). Health: ≥95% green, ≥80% amber, below red.
+      </p>
+    </div>
+  );
+}
+
 function SettingsCostTab() {
   const [data, setData] = useState<SpendData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // 7-day provider reliability (uptime telemetry from provider_events).
+  const [uptime, setUptime] = useState<UptimeSummary | null>(null);
 
   const fetchSpend = async () => {
     try {
@@ -400,7 +591,17 @@ function SettingsCostTab() {
     setLoading(false);
   };
 
-  useEffect(() => { fetchSpend(); }, []);
+  const fetchUptime = async () => {
+    try {
+      const res = await fetch("/api/agent/uptime");
+      const json = await res.json();
+      if (res.ok && json.success) setUptime(json.summary as UptimeSummary);
+    } catch {
+      // Reliability view is best-effort; the spend tab works without it.
+    }
+  };
+
+  useEffect(() => { fetchSpend(); fetchUptime(); }, []);
 
   const bars = data ? dailySpendBars(data.history) : [];
   const scale = chartScale(bars, 96);
@@ -439,6 +640,8 @@ function SettingsCostTab() {
           <p className="settings-hint">Provider info unavailable.</p>
         )}
       </div>
+
+      <ReliabilityCard uptime={uptime} />
 
       <div className="settings-card" style={{ marginTop: 16 }}>
         {loading ? (

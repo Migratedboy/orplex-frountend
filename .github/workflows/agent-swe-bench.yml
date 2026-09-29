@@ -1,0 +1,141 @@
+name: SWE-bench Lite (Orplex harness)
+
+# Benchmark harness (scripts/swe-bench/): fetches instances from the
+# Hugging Face datasets-server, shards them across matrix jobs, clones each
+# repo at its base commit, verifies the FAIL_TO_PASS tests are red, applies
+# a patch (gold = harness smoke test, agent = command hook), verifies green.
+#
+# This is a MEASUREMENT workflow, not a gate — the merge step reports the
+# resolution rate and never fails the run.
+#
+# Compute: EVERYTHING runs on GitHub's free ubuntu-latest minutes — the
+# datasets-server fetch, the clones, pytest, and any agent command. No local
+# machine involvement. The default (no secrets) runs the gold-patch smoke
+# test, which needs only public network access.
+#
+# Agent mode needs a repo secret ORPLEX_SWE_AGENT_CMD: a shell command that
+# reads ORPLEX_SWE_REPO_DIR + ORPLEX_SWE_PROMPT_FILE from its environment and
+# leaves its edits in that repo's working tree (e.g. a CLI wrapper around the
+# Orplex executor).
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "Instances to evaluate"
+        required: false
+        default: "10"
+      shards:
+        description: "Parallel shards (2-10)"
+        required: false
+        default: "2"
+      offset:
+        description: "Dataset row offset (resume/skip)"
+        required: false
+        default: "0"
+      source:
+        description: "patch = gold patch smoke test; agent = ORPLEX_SWE_AGENT_CMD"
+        required: false
+        default: "patch"
+
+concurrency:
+  group: swe-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
+      shards: ${{ steps.mk.outputs.shards }}
+    steps:
+      - id: mk
+        run: |
+          n=$(echo "${{ inputs.shards }}" | grep -Eo '^[0-9]+$' || echo 2)
+          n=$(( n < 1 ? 1 : (n > 10 ? 10 : n) ))
+          list=$(seq 0 $((n-1)) | jq -s '.')
+          echo "shards=$n" >> "$GITHUB_OUTPUT"
+          echo "matrix={\"shard\":$list}" >> "$GITHUB_OUTPUT"
+
+  eval:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: Fetch instances
+        run: node scripts/swe-bench/fetch-instances.mjs --count ${{ inputs.count }} --offset ${{ inputs.offset }} --out instances.json
+
+      - name: Run shard ${{ matrix.shard }}
+        run: node scripts/swe-bench/run-shard.mjs --instances instances.json --shard ${{ matrix.shard }} --shards ${{ needs.plan.outputs.shards }} --source ${{ inputs.source }} --out-dir results
+        env:
+          ORPLEX_SWE_AGENT_CMD: ${{ secrets.ORPLEX_SWE_AGENT_CMD || '' }}
+          ORPLEX_SWE_TIMEOUT_MS: "1200000"
+          # Instance clones cache inside the job's workdir (ephemeral, like
+          # everything else — zero local disk touched).
+          ORPLEX_SWE_WORK_DIR: ${{ github.workspace }}/.swe-bench-work
+
+      - name: Upload shard results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swe-bench-shard-${{ matrix.shard }}
+          path: results/
+          retention-days: 14
+          if-no-files-found: error
+
+  merge:
+    needs: [plan, eval]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: swe-bench-shard-*
+          merge-multiple: true
+          path: results
+
+      - name: Merge + report
+        run: |
+          node scripts/swe-bench/merge-results.mjs --results-dir results | tee bench-summary.txt
+          node scripts/swe-bench/merge-results.mjs --results-dir results --json > bench-results.json
+          {
+            echo "### SWE-bench Lite (Orplex harness)"
+            echo '```'
+            cat bench-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload merged report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swe-bench-report
+          path: |
+            bench-summary.txt
+            bench-results.json
+          retention-days: 30

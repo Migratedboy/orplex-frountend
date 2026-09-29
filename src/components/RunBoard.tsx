@@ -107,7 +107,8 @@ function TaskCard({ task }: { task: BoardTask }) {
   return (
     <div
       className={`board-task-card ${isWaiting ? "board-task-waiting" : ""} ${isFailed ? "board-task-failed" : ""}`}
-      title={task.error || task.title}
+      data-status={task.status}
+      title={task.error || `${task.title} — ${meta.label}`}
     >
       <div className="board-task-top">
         <span className="board-task-role">{ROLE_LABEL[task.role] || task.role.toUpperCase()}</span>
@@ -130,10 +131,18 @@ function RunLane({ run, onOpen, onDecide, decidingId }: { run: BoardRun; onOpen:
   const approvals = run.pendingApprovals || [];
 
   return (
-    <div className="board-lane">
+    <div
+      className={`board-lane ${run.isActive ? "board-lane-enter" : ""}`}
+      data-state={run.isActive ? "active" : "idle"}
+    >
       <div className="board-lane-header" onClick={() => onOpen(run.id)} role="button" tabIndex={0}>
         <div className="board-lane-title-row">
-          <span className="board-lane-status-dot" style={{ background: runMeta.color }} />
+          <span
+            className="board-lane-status-dot"
+            data-active={run.isActive ? "true" : "false"}
+            style={{ background: runMeta.color }}
+            title={runMeta.label}
+          />
           <span className="board-lane-prompt">{run.prompt.slice(0, 70)}{run.prompt.length > 70 ? "..." : ""}</span>
           {run.pendingApprovalCount > 0 && (
             <span className="board-lane-approval-badge">{run.pendingApprovalCount} approval{run.pendingApprovalCount > 1 ? "s" : ""}</span>
@@ -158,7 +167,7 @@ function RunLane({ run, onOpen, onDecide, decidingId }: { run: BoardRun; onOpen:
           {run.notBefore && scheduledLabel(run.notBefore) && (
             <>
               <span className="board-lane-sep">|</span>
-              <span className="board-chip board-chip-scheduled" title={`Queued for ${new Date(run.notBefore).toLocaleString()}`}>🌙 {scheduledLabel(run.notBefore)}</span>
+              <span className="board-chip board-chip-scheduled" title={`Queued for ${new Date(run.notBefore).toLocaleString()}`}><span className="ms ms-sm">schedule</span> {scheduledLabel(run.notBefore)}</span>
             </>
           )}
           {run.modelOverride && (
@@ -190,7 +199,7 @@ function RunLane({ run, onOpen, onDecide, decidingId }: { run: BoardRun; onOpen:
           {approvals.map(a => (
             <div key={a.id} className="board-approval-card">
               <div className="board-approval-main">
-                <span className="board-approval-icon">⏸</span>
+                <span className="board-approval-icon"><span className="ms">pause_circle</span></span>
                 <span className="board-approval-action" title={a.action}>{a.action}</span>
               </div>
               <div className="board-approval-buttons">

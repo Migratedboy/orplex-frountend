@@ -148,3 +148,113 @@ export function chartScale(bars: { tokens: number }[], peakHeight: number): Char
     },
   };
 }
+
+// === Provider uptime telemetry (7-day reliability view) =====================
+
+/** One recorded provider attempt (raw event row, as returned by /api/agent/uptime). */
+export interface UptimeEvent {
+  lane: string;
+  provider: string;
+  model: string;
+  outcome: "ok" | "error";
+  errorKind: string | null;
+  createdAt: string;
+}
+
+export interface UptimeModelRow {
+  model: string;
+  ok: number;
+  errors: number;
+  /** Error-kind → count, most frequent first ("rate_limit", "auth", …). */
+  errorKinds: Record<string, number>;
+}
+
+export interface UptimeProviderRow {
+  provider: string;
+  models: UptimeModelRow[];
+  ok: number;
+  errors: number;
+  /** Success rate 0–100 over ok+errors; null when the provider has no attempts. */
+  successPct: number | null;
+}
+
+export interface UptimeSummary {
+  providers: UptimeProviderRow[];
+  windowDays: number;
+  totalOk: number;
+  totalErrors: number;
+}
+
+/**
+ * Aggregate raw provider-attempt events into the reliability view: per
+ * provider (and per model under it) attempt counts, success rate, and the
+ * dominant error kinds. Events outside the window (default 7 days) are
+ * dropped; malformed timestamps are dropped rather than guessed. Rows sort
+ * healthiest-first (fewest errors, then busiest, then name) so the provider
+ * you should look at is at the bottom.
+ */
+export function summarizeUptime(events: UptimeEvent[], windowDays = 7, nowMs: number = Date.now()): UptimeSummary {
+  const cutoff = nowMs - windowDays * 24 * 60 * 60 * 1000;
+  const byProvider = new Map<string, { models: Map<string, UptimeModelRow>; ok: number; errors: number }>();
+  for (const e of events) {
+    const t = new Date(e.createdAt).getTime();
+    if (!Number.isFinite(t) || t < cutoff) continue;
+    const provider = e.provider || "unknown";
+    let p = byProvider.get(provider);
+    if (!p) {
+      p = { models: new Map(), ok: 0, errors: 0 };
+      byProvider.set(provider, p);
+    }
+    const modelKey = e.model || "unknown";
+    let m = p.models.get(modelKey);
+    if (!m) {
+      m = { model: modelKey, ok: 0, errors: 0, errorKinds: {} };
+      p.models.set(modelKey, m);
+    }
+    if (e.outcome === "error") {
+      p.errors += 1;
+      m.errors += 1;
+      const kind = e.errorKind || "error";
+      m.errorKinds[kind] = (m.errorKinds[kind] ?? 0) + 1;
+    } else {
+      p.ok += 1;
+      m.ok += 1;
+    }
+  }
+  const providers: UptimeProviderRow[] = [...byProvider.entries()]
+    .map(([provider, p]) => {
+      const models: UptimeModelRow[] = [...p.models.values()]
+        .map((m) => ({
+          model: m.model,
+          ok: m.ok,
+          errors: m.errors,
+          errorKinds: Object.fromEntries(
+            Object.entries(m.errorKinds).sort((a, b) => b[1] - a[1])
+          ),
+        }))
+        .sort((a, b) => a.errors - b.errors || b.ok - a.ok || a.model.localeCompare(b.model));
+      const total = p.ok + p.errors;
+      return {
+        provider,
+        models,
+        ok: p.ok,
+        errors: p.errors,
+        successPct: total > 0 ? Math.round((p.ok / total) * 100) : null,
+      };
+    })
+    .sort((a, b) => a.errors - b.errors || b.ok - a.ok || a.provider.localeCompare(b.provider));
+  return {
+    providers,
+    windowDays,
+    totalOk: providers.reduce((s, p) => s + p.ok, 0),
+    totalErrors: providers.reduce((s, p) => s + p.errors, 0),
+  };
+}
+
+/** Traffic-light for a provider row: ≥95 green, ≥80 amber, else red; no data → none. */
+export function uptimeHealth(successPct: number | null): "green" | "amber" | "red" | "none" {
+  if (successPct == null) return "none";
+  if (successPct >= 95) return "green";
+  if (successPct >= 80) return "amber";
+  return "red";
+}

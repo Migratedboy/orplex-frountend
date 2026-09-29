@@ -43,10 +43,7 @@ export default function Terminal() {
       {/* Terminal Header */}
       <div className="h-8 border-b border-border-glass flex items-center px-4 justify-between bg-surface-container-lowest shrink-0">
         <div className="font-label text-[10px] uppercase tracking-[0.15em] text-on-surface flex items-center gap-2">
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polyline points="4 17 10 11 4 5" />
-            <line x1="12" y1="19" x2="20" y2="19" />
-          </svg>
+          <span className="ms ms-sm">terminal</span>
           Terminal
         </div>
         <div className="flex gap-2">
@@ -54,7 +51,7 @@ export default function Terminal() {
             onClick={() => setCollapsed(!collapsed)}
             className="text-on-surface-variant cursor-pointer hover:text-white text-[14px]"
           >
-            {collapsed ? "▲" : "▼"}
+            <span className="ms ms-sm">{collapsed ? "keyboard_arrow_up" : "keyboard_arrow_down"}</span>
           </button>
         </div>
       </div>

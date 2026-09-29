@@ -35,6 +35,18 @@ export async function register(): Promise<void> {
     console.error("[hardware] watchdog failed to start:", (err as Error).message);
   }
 
+  // Model catalog: if the disk cache is stale/missing, kick a verification
+  // sweep at boot (fire-and-forget — a full sweep takes minutes) so the
+  // picker has a real list by the time the user opens it, and any cold
+  // (probe-timed-out) models start waking immediately. A fresh cache makes
+  // this a no-op.
+  try {
+    const { getVerifiedModels } = await import("@/lib/model-catalog");
+    void getVerifiedModels({ background: true }).catch(() => {});
+  } catch {
+    /* catalog is best-effort; the picker re-kicks on fetch */
+  }
+
   const enabled = process.env.ORPLEX_SERVER_EXECUTOR === "1" || process.env.ORPLEX_SERVER_EXECUTOR === "true";
   if (!enabled) {
     console.log("[executor] disabled (set ORPLEX_SERVER_EXECUTOR=1 to enable server-side run execution)");
