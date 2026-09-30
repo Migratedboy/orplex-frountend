@@ -17,16 +17,18 @@ on:
   push:
     branches: [main]
     paths:
-      - "src/lib/server-executor/**"
-      - "src/lib/ai-providers.ts"
+      - "backend/src/lib/server-executor/**"
+      - "backend/src/lib/ai-providers.ts"
       - "src/lib/tool-text.ts"
-      - "src/lib/exec-guard.ts"
+      - "backend/src/lib/tool-text.ts"
+      - "backend/src/lib/exec-guard.ts"
       - "src/lib/retry.ts"
-      - "src/lib/grep-search.ts"
-      - "src/lib/checkpoints.ts"
-      - "src/lib/auto-checkpoint.ts"
+      - "backend/src/lib/retry.ts"
+      - "backend/src/lib/grep-search.ts"
+      - "backend/src/lib/checkpoints.ts"
+      - "backend/src/lib/auto-checkpoint.ts"
       - "scripts/agent-ci-run.mjs"
-      - "prisma/schema.prisma"
+      - "backend/prisma/schema.prisma"
       - ".github/workflows/agent-ci.yml"
 
 concurrency:
@@ -70,12 +72,19 @@ jobs:
       # self-grading) run INSIDE scripts/agent-ci-run.mjs before the battery —
       # one gate loop, one verdict format, impossible to skip past.
 
+      # Physical split: prisma + executor live in the backend app now.
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
       - name: Push schema (battery DB itself is throwaway — embedded PG in the runner)
+        working-directory: backend
         run: npx prisma generate && npx prisma db push --skip-generate
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/orplex_test
 
       - name: Production build (executor runs under `next start`)
+        working-directory: backend
         run: npm run build
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/orplex_test

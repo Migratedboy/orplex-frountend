@@ -7,13 +7,10 @@ import AppLayout from "@/components/AppLayout";
 import AppProviders from "@/components/AppProviders";
 import ThemeInit from "@/components/ThemeInit";
 
-// Start daily reset cron on server startup (lazy-loaded to avoid blocking)
-if (typeof window === "undefined") {
-  import("@/lib/cron-reset").then(m => m.startDailyResetCron()).catch(() => {});
-  import("@/lib/graceful-shutdown").then(m => m.startGracefulShutdown()).catch(() => {});
-  import("@/lib/error-tracking").then(m => m.initErrorTracking()).catch(() => {});
-  import("@/lib/backup").then(m => m.startBackupCron()).catch(() => {});
-}
+// Start app-level services on server startup (lazy-loaded to avoid blocking).
+// Physical split: cron jobs, graceful shutdown, error tracking and backups are
+// backend responsibilities — the frontend renders UI only, so those imports
+// live in backend/src/app/layout.tsx. The frontend keeps its own boot hooks.
 
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 

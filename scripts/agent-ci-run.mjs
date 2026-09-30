@@ -39,6 +39,8 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+// Physical split: prisma, the executor and its server live in the backend app.
+const BACKEND = path.join(ROOT, "backend");
 
 // ── CLI ────────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -258,6 +260,8 @@ try {
     { name: "typecheck", cmd: "npx tsc --noEmit" },
     { name: "tests", cmd: "npx jest --silent --forceExit" },
     { name: "lint", cmd: "npx eslint . --max-warnings 0" },
+    { name: "backend-typecheck", cmd: "npx tsc --noEmit", cwd: BACKEND },
+    { name: "backend-tests", cmd: "npx jest --silent --forceExit", cwd: BACKEND },
   ];
   if (SKIP_GATES) {
     console.log("[agent-ci] ⚠ deterministic gates SKIPPED (--skip-gates) — local iteration only");
@@ -266,7 +270,7 @@ try {
     const gateResults = [];
     for (const gate of GATES) {
       const t0 = Date.now();
-      const code = await run(gate.cmd, { quiet: false });
+      const code = await run(gate.cmd, { quiet: false, cwd: gate.cwd });
       gateResults.push({ name: gate.name, exit: code, ms: Date.now() - t0 });
       if (code !== 0) {
         console.log(`\n=== Deterministic gates — HARD FAIL ===`);
@@ -283,11 +287,13 @@ try {
   }
 
   // ── 2. Push schema + mint the CI principal ──────────────────────────
-  log("pushing prisma schema");
-  if ((await run(`npx prisma db push --skip-generate`, { quiet: true })) !== 0) {
+  log("pushing prisma schema (backend app)");
+  if ((await run(`npx prisma db push --skip-generate`, { quiet: true, cwd: BACKEND })) !== 0) {
     throw new Error("prisma db push failed");
   }
-  const { PrismaClient } = require("@prisma/client");
+  // @prisma/client resolves from the BACKEND's node_modules (the frontend no
+  // longer depends on it after the split).
+  const { PrismaClient } = require(path.join(BACKEND, "node_modules", "@prisma/client"));
   const prisma = new PrismaClient({ datasources: { db: { url: DATABASE_URL } } });
   const user = await prisma.user.create({
     data: {
@@ -301,12 +307,12 @@ try {
 
   // ── 3. Start the Next server with the fixture provider + executor on ────
   const PORT = 5411 + (process.pid % 40);
-  if (!fs.existsSync(path.join(ROOT, ".next", "BUILD_ID"))) {
-    throw new Error("No production build found — run `npm run build` before agent CI (the executor runs under `next start`).");
+  if (!fs.existsSync(path.join(BACKEND, ".next", "BUILD_ID"))) {
+    throw new Error("No backend production build found — run `npm run build:api` before agent CI (the executor runs under the backend's `next start`).");
   }
   log(`starting next server on :${PORT} (ORPLEX_SERVER_EXECUTOR=1, AI_PROVIDER=ci-fixture)`);
-  server = spawn(process.execPath, [path.join(ROOT, "node_modules", "next", "dist", "bin", "next"), "start", "-p", String(PORT)], {
-    cwd: ROOT,
+  server = spawn(process.execPath, [path.join(BACKEND, "node_modules", "next", "dist", "bin", "next"), "start", "-p", String(PORT)], {
+    cwd: BACKEND,
     env: {
       ...process.env,
       DATABASE_URL,

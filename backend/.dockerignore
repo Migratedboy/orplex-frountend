@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.github
+docs-site
+*.log
+coverage
+dist
+.localpg
+.env
+.env.*
+*.md
+lib
+src-tauri
+electron
+electron-dist

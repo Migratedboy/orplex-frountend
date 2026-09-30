@@ -795,49 +795,16 @@ async function sweepCatalog(): Promise<CatalogResult> {
 
 /**
  * Durable bell notification when a cold model answers and joins the picker.
- * The wake engine runs SERVER-side, so the row goes straight through
- * notify() (Prisma, 60s dedup) — the same durable surface the
- * task-completed flow lands in; TopBar's polling feed turns fresh rows into
- * the 3s toast + unread badge on every open client. (POST
- * /api/notifications needs a session cookie, so the client helper is
- * useless from here.) Lazily imported and fire-and-forget:
- *  - The module also loads IN THE BROWSER (ChatInput dynamically imports it
- *    for pickRetryModel), where there is no server → skip.
- *  - Under Jest there is no server DB → skip (tests inject a spy instead).
- *  - A broken notification path must never break the wake cycle.
+ * Physical split: this row is delivered by the BACKEND copy of the wake
+ * engine (backend/src/lib/model-catalog.ts), which owns the session
+ * (next-auth), the database (prisma) and the durable notify() surface. The
+ * frontend copy is a deliberate no-op so next-auth and @prisma/client never
+ * enter the UI bundle.
  */
 function notifyWakePromotion(modelId: string): void {
-  try {
-    if (typeof window !== "undefined") return; // browser — nothing to notify
-    if (process.env.JEST_WORKER_ID || process.env.NODE_ENV === "test") return; // tests
-    void (async () => {
-      const [{ getServerSession }, { jwtOnlyOptions }] = await Promise.all([
-        import("next-auth"),
-        import("./auth"), // jwtOnlyOptions keeps @prisma/client out of the wake path
-      ]);
-      const session = await getServerSession(jwtOnlyOptions);
-      let userId = session?.user?.id ?? "";
-      if (!userId) {
-        // Wake cycles run outside any request (sweep kicks, cooldown retries).
-        // Same default-owner convention as mcp-gateway: single-user app, the
-        // earliest-created user owns platform-level notifications.
-        const { prisma } = await import("./prisma");
-        const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
-        userId = user?.id ?? "";
-      }
-      if (!userId) return;
-      const { notify } = await import("./notify");
-      const shortId = modelId.split("/").pop() || modelId;
-      await notify(userId, {
-        type: "success",
-        title: "Cold model woke up",
-        message: `${shortId} answered its availability probe and joined the model picker.`,
-        source: "models",
-      });
-    })().catch(() => {});
-  } catch {
-    // Notifications are cosmetic — never break the wake cycle.
-  }
+  if (!modelId) return; // signature parity with the backend copy
+  // Frontend: notifications arrive via the normal /api/notifications poll —
+  // nothing to do locally.
 }
 
 /** Probe function shape — dependency-injectable for tests. */

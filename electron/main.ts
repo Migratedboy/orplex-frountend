@@ -1,11 +1,14 @@
 /**
- * electron/main.ts — Electron main process for Orplex.
+ * electron/main.ts — Electron main process for Orplex (physical split).
  *
- * Architecture: Electron is a native shell around the REAL Next.js server.
- * The main process spawns `next start` (packaged) or `next dev` (dev) as a
- * child process, waits for it to answer HTTP, then opens a BrowserWindow
- * pointing at http://localhost:PORT. API routes, next-auth, Prisma, SSE and
- * the embedded browser all work unchanged.
+ * Architecture: Electron is a native shell around TWO Next.js processes.
+ * The UI app (repo root) renders only — zero API routes. The API app
+ * (backend/) owns every route handler, next-auth, Prisma and all processing.
+ * The main process spawns both (`next start`/`next dev`), waits for each to
+ * answer HTTP, then opens a BrowserWindow pointing at the UI origin. The UI
+ * reaches the API via NEXT_PUBLIC_API_BASE_URL (same machine = localhost);
+ * set that var to a cloud URL instead and the same UI talks to a hosted
+ * backend with no rebuild.
  */
 import { app, BrowserWindow, shell, Menu, dialog, ipcMain, WebContentsView, session } from "electron";
 import { spawn, ChildProcess } from "node:child_process";
@@ -15,13 +18,15 @@ import fs from "node:fs";
 import path from "node:path";
 
 const isDev = !app.isPackaged;
-// Backend port: Electron OWNS its internal Next.js backend — the user never
-// runs one separately. ORPLEX_PORT only overrides for special setups.
-const PORT = Number(process.env.ORPLEX_PORT || 5000);
-const APP_URL = `http://localhost:${PORT}`;
+// Electron OWNS both Next.js processes — the user never runs one separately.
+// ORPLEX_PORT / ORPLEX_API_PORT only override for special setups.
+const UI_PORT = Number(process.env.ORPLEX_PORT || 5000);
+const API_PORT = Number(process.env.ORPLEX_API_PORT || 5010);
+const APP_URL = `http://localhost:${UI_PORT}`;
 const LOCAL_DB_PORT = Number(process.env.LOCAL_DB_PORT || 5433);
 
 let nextProcess: ChildProcess | null = null;
+let apiProcess: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
 
@@ -335,23 +340,40 @@ function probeServer(url: string, timeoutMs = 2500): Promise<boolean> {
   });
 }
 
-/** Start the Next.js server as a child process. */
-async function startNextServer(): Promise<void> {
+/**
+ * Spawn one Next.js app ("ui" | "api") as a child process.
+ *
+ * Local mode (default): the API child runs from backend/ with its own
+ * node_modules and its own .env — no rebuild ties it to localhost. Cloud
+ * mode: ORPLEX_API_URL (or NEXT_PUBLIC_API_BASE_URL in the UI env) points at
+ * a hosted backend and NO API child is spawned at all — the desktop app is
+ * then a pure shell around a remote Orplex.
+ */
+function startNextServer(which: "ui" | "api"): void {
   const runAsNode = {
     ...process.env,
     ELECTRON: "1",
     ELECTRON_RUN_AS_NODE: "1", // make electron.exe behave as plain node for the child
+    // UI process: the split-API origin must be a build-time constant
+    // (NEXT_PUBLIC_*), so it rides on the spawn env.
+    NEXT_PUBLIC_API_BASE_URL:
+      process.env.ORPLEX_API_URL ||
+      process.env.NEXT_PUBLIC_API_BASE_URL ||
+      `http://localhost:${API_PORT}`,
   } as NodeJS.ProcessEnv;
 
+  const tag = which === "ui" ? "[ui]" : "[api]";
+  const port = which === "ui" ? UI_PORT : API_PORT;
+
   const wireChild = (child: ChildProcess) => {
-    child.stdout?.on("data", (d: Buffer) => process.stdout.write(`[next] ${d}`));
-    child.stderr?.on("data", (d: Buffer) => process.stderr.write(`[next] ${d}`));
+    child.stdout?.on("data", (d: Buffer) => process.stdout.write(`${tag} ${d}`));
+    child.stderr?.on("data", (d: Buffer) => process.stderr.write(`${tag} ${d}`));
     // A spawn failure (ENOENT, EINVAL, permissions) must never kill the main
     // process silently — surface it and exit cleanly.
     child.on("error", (err) => {
-      process.stderr.write(`[next] spawn error: ${err?.message || err}\n`);
+      process.stderr.write(`${tag} spawn error: ${err?.message || err}\n`);
       if (!quitting) {
-        dialog.showErrorBox("Orplex server failed", `Could not launch the internal server: ${err?.message || err}`);
+        dialog.showErrorBox("Orplex server failed", `Could not launch the ${which} server: ${err?.message || err}`);
         app.exit(1);
       }
     });
@@ -359,7 +381,7 @@ async function startNextServer(): Promise<void> {
       if (!quitting) {
         dialog.showErrorBox(
           "Orplex server exited",
-          `The internal server exited unexpectedly (code ${code ?? "?"}).`
+          `The ${which} server exited unexpectedly (code ${code ?? "?"}).`
         );
         app.quit();
       }
@@ -369,27 +391,35 @@ async function startNextServer(): Promise<void> {
   if (isDev) {
     // Dev: run `next dev` directly with node — no npm.cmd wrapper (spawning
     // .cmd/.bat without a shell is blocked on modern Node and crashes us).
-    const nextBin = path.join(projectRoot(), "node_modules", "next", "dist", "bin", "next");
-    nextProcess = spawn(process.execPath, [nextBin, "dev", "-p", String(PORT)], {
-      cwd: projectRoot(),
+    const root = projectRoot();
+    const nextBin = path.join(root, "node_modules", "next", "dist", "bin", "next");
+    const cwd = which === "ui" ? root : path.join(root, "backend");
+    const child = spawn(process.execPath, [nextBin, "dev", "-p", String(port)], {
+      cwd,
       env: runAsNode,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
+    if (which === "ui") nextProcess = child;
+    else apiProcess = child;
+    wireChild(child);
   } else {
     // Packaged: run Next's server entry with Electron's bundled Node via
-    // ELECTRON_RUN_AS_NODE (no separate node.exe needs to ship).
+    // ELECTRON_RUN_AS_NODE (no separate node.exe needs to ship). The pack
+    // ships `app/` (the standalone UI) and `app/backend/` (standalone API).
     const root = projectRoot();
-    const nextBin = path.join(root, "app", "node_modules", "next", "dist", "bin", "next");
-    nextProcess = spawn(process.execPath, [nextBin, "start", "-p", String(PORT)], {
-      cwd: path.join(root, "app"),
+    const appRoot = which === "ui" ? path.join(root, "app") : path.join(root, "app", "backend");
+    const nextBin = path.join(appRoot, "node_modules", "next", "dist", "bin", "next");
+    const child = spawn(process.execPath, [nextBin, "start", "-p", String(port)], {
+      cwd: appRoot,
       env: { ...runAsNode, NODE_ENV: "production" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
+    if (which === "ui") nextProcess = child;
+    else apiProcess = child;
+    wireChild(child);
   }
-
-  wireChild(nextProcess);
 }
 
 /** Single TCP probe: resolves true if something accepts on 127.0.0.1:port. */
@@ -1230,15 +1260,17 @@ async function killPortListener(port: number): Promise<void> {
 }
 
 app.on("will-quit", () => {
-  // Kill the Next.js child so no orphaned node process holds the port.
-  if (nextProcess && !nextProcess.killed) {
-    try {
-      if (process.platform === "win32") {
-        spawn("taskkill", ["/pid", String(nextProcess.pid), "/T", "/F"]);
-      } else {
-        nextProcess.kill("SIGTERM");
-      }
-    } catch {}
+  // Kill both Next.js children so no orphaned node process holds the ports.
+  for (const child of [nextProcess, apiProcess]) {
+    if (child && !child.killed) {
+      try {
+        if (process.platform === "win32") {
+          spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
+        } else {
+          child.kill("SIGTERM");
+        }
+      } catch {}
+    }
   }
 });
 
@@ -1264,19 +1296,31 @@ app.whenReady().then(async () => {
   });
 
   try {
-    // Electron owns the server lifecycle — it ALWAYS spawns its own Next
-    // backend as a child process and kills it on quit (close window = backend
-    // stops). The port is OURS: the app instance lock above guarantees no
-    // second instance races us for it. If a stray/zombie server holds the
-    // port from a crashed previous run, take it over cleanly; the user's own
-    // processes on OTHER ports are never touched.
+    // Electron owns BOTH server lifecycles — it always spawns its own Next
+    // children and kills them on quit (close window = servers stop). The
+    // ports are OURS: the app instance lock above guarantees no second
+    // instance races us for them. If a stray/zombie server holds a port from
+    // a crashed previous run, take it over cleanly; the user's own processes
+    // on OTHER ports are never touched.
+    const cloudApi = process.env.ORPLEX_API_URL || "";
     await ensureLocalDb();
-    if (await probeServer(APP_URL)) {
-      process.stdout.write(`[startup] port ${PORT} held by a stale process — taking it over\n`);
-      await killPortListener(PORT);
+    for (const [which, port] of [
+      ["ui", UI_PORT],
+      ["api", API_PORT],
+    ] as const) {
+      if (await probeServer(`http://localhost:${port}`)) {
+        process.stdout.write(`[startup] port ${port} (${which}) held by a stale process — taking it over\n`);
+        await killPortListener(port);
+      }
     }
-    await startNextServer();
+    await startNextServer("ui");
+    if (!cloudApi) await startNextServer("api");
     await waitForServer(APP_URL);
+    if (!cloudApi) {
+      await waitForServer(`http://localhost:${API_PORT}`);
+    } else {
+      process.stdout.write(`[startup] cloud mode: UI points at ${cloudApi} — no local API spawned\n`);
+    }
     // Real-browser preview sessions persist cookies/storage in userData —
     // clear the special-page restriction so the isolated partition behaves
     // like a normal browser profile.
