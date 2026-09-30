@@ -1,5 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Serverless bundlers strip non-.js files from node_modules; Playwright
+  // CANNOT launch without playwright-core/browsers.json (its browser
+  // registry). This pins the whole package into every traced route bundle.
+  outputFileTracingIncludes: {
+    '/api/agent/browser': ['./node_modules/playwright-core/**'],
+    '/api/agent/verify': ['./node_modules/playwright-core/**'],
+  },
   poweredByHeader: false,
   reactStrictMode: true,
   compress: true,
