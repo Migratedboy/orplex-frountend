@@ -61,11 +61,14 @@ function isOriginAllowed(request: NextRequest): boolean {
   return allowed.includes(origin);
 }
 
-// Human-facing page routes: this backend serves none of them. next-auth's own
-// endpoints (/api/auth/*) must flow through untouched, as must static assets
-// (they don't exist here, but excluding them keeps the matcher cheap).
+// Human-facing page routes: this backend serves none of them — EXCEPT the
+// sign-in page (src/app/auth/signin), which is backend-owned on purpose: the
+// frontend proxy rewrites /auth/signin here so the OAuth dance renders on the
+// origin that actually holds the next-auth routes. next-auth's own endpoints
+// (/api/auth/*) flow through untouched, as do static assets.
 function isPageRequest(pathname: string): boolean {
   if (pathname.startsWith("/api/")) return false;
+  if (pathname.startsWith("/auth")) return false; // backend-owned sign-in page
   if (pathname.startsWith("/_next") || pathname === "/favicon.ico") return false;
   if (/[^/]+\.[^/]+$/.test(pathname)) return false; // has a file extension
   return true;

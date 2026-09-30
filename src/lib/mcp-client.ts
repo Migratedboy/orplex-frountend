@@ -15,6 +15,7 @@
 //   - processes die with the parent (detached: false)
 
 import { spawn } from "child_process";
+import { createHash } from "crypto";
 
 const MAX_SERVERS = 2;
 const CALL_TIMEOUT_MS = 120_000;
@@ -105,6 +106,11 @@ class StdioMcpServer implements McpServerHandle {
   private tools: McpToolDef[] | null = null;
   private exited = false;
 
+  /** True while a live child process is attached. */
+  get alive(): boolean {
+    return !!this.proc && !this.exited;
+  }
+
   constructor(server: string) {
     this.server = server;
   }
@@ -119,13 +125,32 @@ class StdioMcpServer implements McpServerHandle {
       throw new Error(`MCP server limit reached (${MAX_SERVERS}) — disable a server in orplex.config.json to add another`);
     }
 
-    this.proc = spawn(cfg.command, cfg.args ?? [], {
+    // Windows: npx/uvx are .cmd shims — spawn needs a shell to resolve them
+    // (bare spawn("npx") dies instantly with ENOENT → EPIPE on first write).
+    // Absolute .exe paths skip the shim. On POSIX the direct spawn is right.
+    const useShell = process.platform === "win32" && !/\.exe$/i.test(cfg.command);
+    const command = useShell ? "cmd" : cfg.command;
+    const args = useShell ? ["/d", "/s", "/c", cfg.command, ...(cfg.args ?? [])] : (cfg.args ?? []);
+
+    this.proc = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...(cfg.env ?? {}) },
       windowsHide: true,
       detached: false,
     });
     this.exited = false;
+
+    // Spawn failures (command not found, permission denied) arrive as an
+    // 'error' event — unhandled, it would crash the server process.
+    this.proc.on("error", () => {
+      this.exited = true;
+      this.proc = null;
+      for (const [, p] of this.pending) {
+        clearTimeout(p.timer);
+        p.reject(new Error(`MCP server "${this.server}" failed to start (is the command installed and on PATH?)`));
+      }
+      this.pending.clear();
+    });
 
     this.proc.stdout!.setEncoding("utf8");
     this.proc.stdout!.on("data", (chunk: string) => {
@@ -236,8 +261,12 @@ class StdioMcpServer implements McpServerHandle {
 export async function getMcpServer(server: string): Promise<McpServerHandle> {
   const cached = sessions.get(server);
   if (cached) {
-    cached.lastUsed = Date.now();
-    return cached.handle;
+    if ((cached.handle as unknown as { alive?: boolean }).alive === false) {
+      sessions.delete(server);
+    } else {
+      cached.lastUsed = Date.now();
+      return cached.handle;
+    }
   }
   const cfg = loadMcpConfig(process.cwd());
   const serverCfg = cfg[server];
@@ -247,6 +276,45 @@ export async function getMcpServer(server: string): Promise<McpServerHandle> {
   const handle = new StdioMcpServer(server);
   await (handle as unknown as { ensureProc(cfg: McpServerConfig): Promise<void> }).ensureProc(serverCfg);
   sessions.set(server, { handle, lastUsed: Date.now() });
+  return handle;
+}
+
+// ── Per-run (account) sessions ─────────────────────────────────────────────
+
+/** Sessions for account-connected servers are keyed by resolved config, so
+ *  two users connecting the same server name never share a process, while
+ *  the same user's identical config across runs IS reused. */
+function accountSessionKey(server: string, cfg: McpServerConfig): string {
+  return `acct:${server}:${createHash("sha1").update(JSON.stringify(cfg)).digest("hex").slice(0, 12)}`;
+}
+
+/**
+ * Session accessor for run-supplied configs (user connectors merged with
+ * workspace orplex.config.json). Fails honestly when the server is absent
+ * from the supplied map — the executor always passes the run's merged map.
+ */
+export async function getMcpServerForRun(
+  server: string,
+  runConfigs: Record<string, McpServerConfig>
+): Promise<McpServerHandle> {
+  const cfg = runConfigs[server];
+  if (!cfg) {
+    throw new Error(`MCP server "${server}" is not connected for this account (manage connectors in the app)`);
+  }
+  const key = accountSessionKey(server, cfg);
+  const cached = sessions.get(key);
+  if (cached) {
+    // A dead session (crashed child / failed probe) must not be reused.
+    if ((cached.handle as unknown as { alive?: boolean }).alive === false) {
+      sessions.delete(key);
+    } else {
+      cached.lastUsed = Date.now();
+      return cached.handle;
+    }
+  }
+  const handle = new StdioMcpServer(server);
+  await (handle as unknown as { ensureProc(cfg: McpServerConfig): Promise<void> }).ensureProc(cfg);
+  sessions.set(key, { handle, lastUsed: Date.now() });
   return handle;
 }
 

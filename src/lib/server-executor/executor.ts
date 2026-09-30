@@ -33,7 +33,10 @@ import { loadUserSkills, renderSkillRoster, skillBody } from "@/lib/user-skills"
 import { recordRuntimeLog } from "@/lib/runtime-log";
 import { runtimeState } from "@/lib/runtime-state";
 import { maxConcurrentRuns, parseFailoverChain } from "./executor-config";
-import { getMcpServer, ensureMcpReaper, mcpToolName, parseMcpToolName, type McpToolDef } from "../mcp-client";
+import { getMcpServerForRun, ensureMcpReaper, mcpToolName, parseMcpToolName, type McpToolDef, type McpServerConfig as McpRunConfig } from "../mcp-client";
+import { collectMcpServerConfigs, MAX_MCP_SERVERS_PER_RUN } from "../mcp-accounts";
+import { getMcpCatalogEntry } from "../mcp-catalog";
+import { mcpUsageBlock, mcpServerSummaries } from "../mcp-prompt";
 import { grepSearch, codeSearch } from "@/lib/grep-search";
 import type { VerifyResult } from "@/lib/browser-verification";
 import { loadToolHooks, evaluateDenyRules, matchesNotifyRules, type CompiledHooks } from "@/lib/tool-hooks";
@@ -145,7 +148,7 @@ function parseFailoverChainEnv(): string[] {
   return parseFailoverChain(process.env.AI_FAILOVER, process.env.AI_PROVIDER || "nvidia", process.env);
 }
 
-function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBlock = "", skillRoster = ""): string {
+function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBlock = "", skillRoster = "", mcpServers?: Array<{ name: string; description: string; toolCount: number }>): string {
   const lines = [
     `You are the Orplex Server Agent, executing a task in an isolated git worktree of the user's workspace.`,
     nativeMode
@@ -170,6 +173,10 @@ function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBl
     for (const t of mcpTools.slice(0, 20)) {
       lines.push(`- ${mcpToolName(t.server, t.name)} — ${t.description.slice(0, 160)}`);
     }
+    if (mcpServers && mcpServers.length > 0) {
+      lines.push(``, `Connected MCP services:`, mcpServerSummaries(mcpServers));
+    }
+    lines.push(``, mcpUsageBlock(mcpTools.length));
   }
   lines.push(
     ``,
@@ -336,7 +343,8 @@ async function executeTool(
   runId: string,
   writtenFiles?: Set<string>,
   hooks?: CompiledHooks,
-  autoCp?: AutoCheckpointState
+  autoCp?: AutoCheckpointState,
+  mcpRunConfigs?: Record<string, McpRunConfig>
 ): Promise<string> {
   const name = call.name;
 
@@ -402,8 +410,11 @@ async function executeTool(
   if (name.startsWith("mcp__")) {
     const parsed = parseMcpToolName(name);
     if (!parsed) return `error: malformed MCP tool name "${name.slice(0, 80)}"`;
+    if (!mcpRunConfigs || Object.keys(mcpRunConfigs).length === 0) {
+      return `error: no MCP servers are connected for this run — the user can add connectors in Settings → Connectors`;
+    }
     try {
-      const handle = await getMcpServer(parsed.server);
+      const handle = await getMcpServerForRun(parsed.server, mcpRunConfigs);
       return await handle.callTool(parsed.tool, call as Record<string, unknown>);
     } catch (err) {
       return `error: ${(err as Error).message.slice(0, 500)}`;
@@ -718,24 +729,34 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
     // Config-driven tool hooks from the workspace's orplex.config.json.
     const hooks = await loadToolHooks(workDir);
 
-    // MCP tools: start configured servers (cap 2, idle-reaped) and merge their
-    // tools into the roster. Gated by the same tool-hooks deny/notify rules.
+    // MCP tools: merge the user's account connectors with any workspace
+    // orplex.config.json mcpServers (workspace wins on name conflicts), cap
+    // at MAX_MCP_SERVERS_PER_RUN, and load their tools into the roster.
     let mcpTools: McpToolDef[] = [];
+    const mcpRunConfigs: Record<string, McpRunConfig> = {};
     try {
       const mcp = await import("../mcp-client");
-      const cfg = mcp.loadMcpConfig(workDir);
-      if (Object.keys(cfg).length > 0) {
+      const workspaceCfg = mcp.loadMcpConfig(workDir);
+      const accountCfg = await collectMcpServerConfigs(run.userId);
+      const merged = { ...accountCfg, ...workspaceCfg };
+      const serverNames = Object.keys(merged).slice(0, MAX_MCP_SERVERS_PER_RUN);
+      for (const serverName of serverNames) {
+        mcpRunConfigs[serverName] = merged[serverName];
+      }
+      if (Object.keys(mcpRunConfigs).length > 0) {
         ensureMcpReaper();
-        for (const serverName of Object.keys(cfg).slice(0, 2)) {
+        for (const serverName of Object.keys(mcpRunConfigs)) {
           try {
-            const handle = await getMcpServer(serverName);
+            const handle = await getMcpServerForRun(serverName, mcpRunConfigs);
             const tools = await handle.listTools();
             mcpTools = mcpTools.concat(tools);
           } catch (err) {
             await emit(run.id, "mcp-server-error", { server: serverName, error: (err as Error).message.slice(0, 300) }).catch(() => {});
           }
         }
-        if (mcpTools.length > 0) await emit(run.id, "mcp-tools-loaded", { count: mcpTools.length, servers: Object.keys(cfg) });
+        if (mcpTools.length > 0) {
+          await emit(run.id, "mcp-tools-loaded", { count: mcpTools.length, servers: Object.keys(mcpRunConfigs) });
+        }
       }
     } catch {}
 
@@ -826,7 +847,17 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       // the rest of the run instead of failing the run.
       const nativeMode = typeof adapter.completeWithTools === "function" && !nativeBroken;
       const messages = [
-        { role: "system", content: buildSystemPrompt(mcpTools, nativeMode, memoryBlock, skillRoster) },
+        { role: "system", content: buildSystemPrompt(
+          mcpTools,
+          nativeMode,
+          memoryBlock,
+          skillRoster,
+          Object.keys(mcpRunConfigs).map((serverId) => ({
+            name: getMcpCatalogEntry(serverId)?.name ?? serverId,
+            description: getMcpCatalogEntry(serverId)?.description ?? "user-connected MCP server",
+            toolCount: mcpTools.filter((t) => t.server === serverId).length,
+          }))
+        ) },
         ...(transcript as Array<{ role: "user" | "assistant"; content: string }>),
       ] as never;
       // Global TPM pacing: one account-wide bucket across ALL runs so two
@@ -886,7 +917,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         if (String(call.name) === "use_skill") {
           (call as Record<string, unknown>).__skillBody = skillBody(skills, String((call as Record<string, unknown>).name_of_skill ?? "")) ?? "";
         }
-        const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp);
+        const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs);
         results.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
       }
       transcript.push({ role: "user", content: results.join("\n") });
@@ -1047,7 +1078,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         const repairCalls = parseToolCalls(repairText).filter((c) => String(c.name) === "write_file");
         const repairResults: string[] = [];
         for (const call of repairCalls) {
-          const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp);
+          const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs);
           repairResults.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
         }
         if (repairCalls.length > 0) {

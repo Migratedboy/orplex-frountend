@@ -27,8 +27,9 @@ model User {
   // Durable copy of the in-memory registry (workspace-cwd.ts) so runs and
   // merges survive a server restart.
   workspacePath    String?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
+  mcpServers       McpServerConfig[]
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   @@map("users")
 }
@@ -637,4 +638,30 @@ model ProjectRecord {
   @@unique([userId, name])
   @@index([userId, lastOpenedAt])
   @@map("project_records")
+}
+
+// ── MCP connectors ─────────────────────────────────────────────────────────
+
+// A user's connected MCP server (one row per user per catalog entry).
+// Config is stored in the Claude Code wire shape (command/args/env) so it can
+// be handed straight to the executor's stdio client; env secrets (API tokens
+// etc.) are encrypted at rest with the same AES-256-GCM key used for BYOK.
+model McpServerConfig {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serverId    String // catalog id (slug), e.g. "supabase" — not unique per user
+  label       String? // user-editable alias
+  command     String
+  args        Json     @default("[]")
+  env         Json     @default("{}") // values may be ciphertext — never sent raw to the FE
+  enabled     Boolean  @default(true)
+  lastTestAt  DateTime?
+  lastTestOk  Boolean?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, serverId])
+  @@index([userId, enabled])
+  @@map("mcp_server_configs")
 }
