@@ -141,6 +141,16 @@ export function getWakeProgress(): WakeProgress {
 
 let memCache: { at: number; data: CatalogResult } | null = null;
 
+/**
+ * Publish `data` as the catalog: memory cache + disk. Single choke point so
+ * every mutation path (sweep, wake promotion, dead-removal) reaches the
+ * picker endpoint at the same moment its side effects become visible.
+ */
+function republishCatalog(data: CatalogResult): void {
+  memCache = { at: Date.now(), data };
+  writeDiskCache(data);
+}
+
 /** One sweep at a time; a kick during a sweep queues exactly one more. */
 let refreshInFlight: Promise<void> | null = null;
 let refreshWanted = false;
@@ -755,6 +765,12 @@ async function sweepCatalog(): Promise<CatalogResult> {
           entry.lastVerifiedAt = new Date().toISOString();
           const lat = latenciesByJob.get(`${l.provider}::${m.id}`);
           if (Number.isFinite(lat)) entry.probeLatencyMs = lat;
+          // A still-cold model whose SHORT sweep probe answers is warm by
+          // definition. Never re-flag it cold: a wake cycle running
+          // concurrently already promoted (and notified) it, and a sweep
+          // landing mid-cycle would otherwise erase that promotion until the
+          // cycle's own republish put it back — the classic desync window.
+          if (prior?.cold) delete entry.cold;
         }
         out.push(entry);
       }
@@ -930,6 +946,13 @@ export function wakeColdModels(
         if (Number.isFinite(lastProbeMs)) m.probeLatencyMs = lastProbeMs;
         if (st) st.state = "woke";
         console.log(`[model-catalog] woke ${m.id} — promoted to verified`);
+        // REPUBLISH NOW, not at cycle end: the promotion notification fires
+        // this instant, so /api/models/available must already list the model
+        // unflagged — otherwise the picker says "cold" while the bell says
+        // "joined the model picker" (a desync that persisted for the rest of
+        // a cycle that can run 30+ minutes). Later promotions and the
+        // dead-removal below keep republishing the same object.
+        republishCatalog(data);
         onPromoted(m.id);
       } else {
         if (st) st.state = confirmedDead ? "dead" : "failed";
@@ -948,8 +971,10 @@ export function wakeColdModels(
       console.log(`[model-catalog] removed ${deadDuringWake.length} dead model(s) confirmed during wake: ${deadDuringWake.join(", ")}`);
     }
     const stillCold = data.models.filter((x) => x.cold).length;
-    memCache = { at: Date.now(), data };
-    writeDiskCache(data);
+    // Final publish: dead models removed + the last model's outcome is now
+    // durable even when the cycle's final act was a removal (nothing new was
+    // promoted, so the per-promotion republish never ran).
+    republishCatalog(data);
     wakeProgress = { ...wakeProgress, running: false };
     console.log(`[model-catalog] wake cycle done — ${stillCold} still cold`);
   })()

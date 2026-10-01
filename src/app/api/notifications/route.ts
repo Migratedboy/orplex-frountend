@@ -6,14 +6,37 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 
 /**
+ * Parse a `?since=` value into a Date, or null when unusable.
+ * Accepts ISO-8601 and bare epoch-ms (clients commonly store Date.now() as
+ * their last-poll marker). An unparseable value returns null → the filter is
+ * omitted entirely. NEVER let it throw or produce an Invalid Date: feeding
+ * one to Prisma throws, and the old catch-all answered that with an empty
+ * 200 list — indistinguishable from a wiped history.
+ */
+function parseSince(raw: string | null): Date | null {
+  if (!raw) return null;
+  const s = raw.trim();
+  if (!s) return null;
+  if (/^\d+$/.test(s)) {
+    const n = Number(s);
+    return Number.isFinite(n) ? new Date(n) : null;
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
  * GET /api/notifications — The durable notification center feed.
  *
  * Returns the user's stored notifications (newest first, capped), the unread
  * count for the bell badge, and `now` so the client can compute "fresh"
  * items (created within the last 15s → toast for 3s on arrival).
  *
- * ?unreadOnly=1 — badge poller variant (cheap: count only).
- * ?since=<ISO>  — pollers fetch only new rows (toasts for fresh arrivals).
+ * ?since=<ISO|epoch-ms> — pollers fetch only new rows (toasts for fresh
+ *                 arrivals). Malformed values are IGNORED and the full
+ *                 history is served — a bad `since` must never collapse the
+ *                 feed into an empty list (that once read as a "wiped"
+ *                 notification history right after the bell's mark-all-read).
  */
 export async function GET(request: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -22,14 +45,14 @@ export async function GET(request: NextRequest) {
   }
   const userId = session.user.id;
   const limit = Math.min(parseInt(request.nextUrl.searchParams.get("limit") || "30", 10) || 30, 100);
-  const sinceRaw = request.nextUrl.searchParams.get("since");
+  const since = parseSince(request.nextUrl.searchParams.get("since"));
 
   try {
     const [notifications, unread] = await Promise.all([
       prisma.notification.findMany({
         where: {
           userId,
-          ...(sinceRaw ? { createdAt: { gt: new Date(sinceRaw) } } : {}),
+          ...(since ? { createdAt: { gt: since } } : {}),
         },
         orderBy: { createdAt: "desc" },
         take: limit,
@@ -51,8 +74,12 @@ export async function GET(request: NextRequest) {
       unread,
       now: new Date().toISOString(),
     });
-  } catch {
-    return NextResponse.json({ success: false, notifications: [], unread: 0 });
+  } catch (err) {
+    // A backend hiccup must NOT present as an empty history (clients render
+    // "0 notifications" and it reads as a wipe) — fail loudly instead so
+    // the client's error path keeps whatever it already had on screen.
+    console.error("[notifications] GET failed:", (err as Error)?.message || err);
+    return NextResponse.json({ success: false, notifications: [], unread: 0 }, { status: 503 });
   }
 }
 

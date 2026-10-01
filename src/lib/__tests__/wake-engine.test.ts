@@ -117,6 +117,45 @@ describe("wake engine — promotion", () => {
     expect((listed as { cold?: boolean }).cold).toBeUndefined();
   });
 
+  it("the picker sees the promotion DURING the cycle (no notify/re-publish lag)", async () => {
+    // THE desync: the bell fires "X joined the model picker" the moment a
+    // wake probe answers, while /api/models/available still listed X as cold
+    // until the whole cycle finished (each remaining warm-up probe can run
+    // 120s — the picker lagged the notification by many minutes).
+    // The promotion must be published to the cache IMMEDIATELY, and the
+    // notification must not fire before that publish.
+    seed([coldModel("nvidia/sleepy-model"), coldModel("nvidia/slow-follower")]);
+    const probe = makeProbe((id) =>
+      id === "nvidia/sleepy-model"
+        ? Promise.resolve(VERDICT_OK)
+        : new Promise((r) => setTimeout(() => r(VERDICT_OK), 250)) // keeps the cycle running while the assertions below fire
+    );
+    const notifyTimes: number[] = [];
+    const onPromoted = jest.fn(() => void notifyTimes.push(Date.now()));
+
+    const cycle = wakeColdModels({ probe, onPromoted, ...FAST });
+    // Let the first model's probe settle and its promotion run, while the
+    // cycle is still busy on the second model.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // DURING the cycle: the picker endpoint's view (fresh cache read, NOT
+    // served from the pre-cycle snapshot) is already unflagged…
+    const { models } = await getVerifiedModels({ background: true });
+    const listed = models.find((x) => x.id === "nvidia/sleepy-model") as { cold?: boolean } | undefined;
+    expect(listed).toBeDefined();
+    expect(listed?.cold).toBeUndefined();
+    expect(getWakeProgress().running).toBe(true); // cycle still running
+
+    // …and the notification fired only AFTER the promotion was published.
+    expect(onPromoted).toHaveBeenCalledTimes(1);
+    const publishedAt = new Date(getCatalogForTests()!.models.find((x) => x.id === "nvidia/sleepy-model")!.lastVerifiedAt!).getTime();
+    expect(notifyTimes[0]).toBeGreaterThanOrEqual(publishedAt);
+
+    await cycle; // second model promotes ~250ms later; the cycle ends cleanly
+  });
+
   it("keeps trying across attempts and promotes on a later attempt", async () => {
     seed([coldModel("nvidia/slow-warmup")]);
     // Attempts 1-2 time out (cold load), attempt 3 answers.
