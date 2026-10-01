@@ -2,6 +2,8 @@
 module.exports = {
   preset: "ts-jest",
   testEnvironment: "node",
+  // Runs before test modules load — keeps tests hermetic against host env.
+  setupFiles: ["<rootDir>/jest.setup.ts"],
   roots: ["<rootDir>/src"],
   testMatch: ["**/__tests__/**/*.test.ts"],
   moduleNameMapper: {
