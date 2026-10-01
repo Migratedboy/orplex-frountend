@@ -115,8 +115,14 @@ export default async function proxy(request: NextRequest) {
     response.headers.set(key, value);
   }
 
+  // next-auth's own endpoints (/api/auth/*) are form-encoded POSTs — HTML form
+  // navigations can never set custom headers — and carry next-auth's own CSRF
+  // protection (csrf-token cookie + csrfToken body field + SameSite cookies),
+  // so this header check would 403 every sign-in flow. Exempt them.
+  const NEXT_AUTH_PATH = /^\/api\/auth(\/|$)/;
+
   // CSRF Protection: State-changing requests must include Content-Type or X-Requested-With header.
-  if (STATE_CHANGING_METHODS.has(request.method)) {
+  if (STATE_CHANGING_METHODS.has(request.method) && !NEXT_AUTH_PATH.test(request.nextUrl.pathname)) {
     const contentType = request.headers.get("content-type");
     const xhrHeader = request.headers.get("x-requested-with");
 
