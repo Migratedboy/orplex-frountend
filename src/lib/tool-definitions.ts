@@ -121,6 +121,21 @@ export const M3_TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "code_search",
+      description: "Search with context FIRST before reading files: grouped per-file matching-line snippets plus a ready-made read_file offset/limit hint per match — locate regions without reading whole files. Prefer this over search_code when you need to see the surrounding code.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search term or pattern" },
+          context: { type: "number", description: "Context lines around each match (0-10, default 3)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "run_command",
       description: "Execute a shell command. Use for running tests, builds, linters, etc.",
       parameters: {
@@ -517,6 +532,8 @@ export const GROQ_TOOL_NAMES = [
   "todo_list",
   "ask_question",
   "web_search",
+  "search_code",
+  "code_search",
   "browser_navigate",
   "browser_read",
   "browser_find",

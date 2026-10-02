@@ -1231,7 +1231,7 @@ export async function dispatchToolCall(
   }
 
   // ── Unknown / not-implemented tool ────────────────────────────────────
-  result(`<tool_result name="${call.name || "unknown"}">error — this tool is not available in this environment. Use one of: read_file, list_files, write_file, write_file_chunk, edit_file, batch_edit, search_code, run_command, run_in_sandbox, undo_last_change, take_screenshot, todo_list, ask_question, preview_browser, verify_app, web_search, or browser_* tools.</tool_result>\n`);
+  result(`<tool_result name="${call.name || "unknown"}">error — this tool is not available in this environment. Use one of: read_file, list_files, write_file, write_file_chunk, edit_file, batch_edit, search_code, code_search, run_command, run_in_sandbox, undo_last_change, take_screenshot, todo_list, ask_question, preview_browser, verify_app, web_search, or browser_* tools.</tool_result>\n`);
   ctx.replaceStatus(`[WARN] Tool "${call.name}" is not available here`);
   ctx.syncDisplay();
   return { resultXml: toolResults, blocked: false };

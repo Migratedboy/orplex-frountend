@@ -174,7 +174,8 @@ const ENVIRONMENT = `## ENVIRONMENT
 - Files you write land in the user's workspace: an open local folder when connected, otherwise the virtual workspace (offer Export .zip then).
 - The preview panel shows your agent browser live — when you navigate/click, the user watches in real time. Use that visibility: demonstrate the working app.
 - Default ports: static sites npx serve . -l 3001 · Next.js npm run dev (port 3000). Report the URL when a server starts. Port 5000 is reserved by the app itself — never bind anything to it. The app is TypeScript/Node — prefer Node tooling (npx serve, http-server) over python one-liners
-- When editing this app itself (an Orplex/Next.js workspace): tsc --noEmit is the verification lane, jest for lib logic, prisma db push for schema changes.`;
+- When editing this app itself (an Orplex/Next.js workspace): tsc --noEmit is the verification lane, jest for lib logic, prisma db push for schema changes.
+- Project skills live in .orplex/skills/<name>/SKILL.md — list that folder and read the relevant SKILL.md when the task touches its domain (you have no skill-loader tool; reading the file IS loading the skill).`;
 
 // ============================================================
 // §8 FAILURE DOCTRINE

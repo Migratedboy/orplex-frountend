@@ -152,10 +152,19 @@ describe("tool rosters advertise the advanced browser ops", () => {
     for (const n of ["browser_navigate", "browser_read", "browser_find", "browser_click", "browser_type", "browser_wait_for", "browser_screenshot"]) {
       expect(names).toContain(n);
     }
-    // Core build/lookup verbs must survive too.
-    for (const n of ["read_file", "write_file", "run_command", "web_search", "todo_list", "ask_question"]) {
+    // Core build/lookup/search verbs must survive too.
+    for (const n of ["read_file", "write_file", "run_command", "web_search", "todo_list", "ask_question", "search_code", "code_search"]) {
       expect(names).toContain(n);
     }
+  });
+
+  it("code_search is offered (dispatcher handles it; doctrine orders it FIRST)", () => {
+    const m3 = M3_TOOL_DEFINITIONS.map((t: any) => t.function?.name);
+    expect(m3).toContain("code_search");
+    const groq = GROQ_TOOL_DEFINITIONS.map((t: any) => t.function?.name);
+    expect(groq).toContain("code_search");
+    const def = M3_TOOL_DEFINITIONS.find((t: any) => t.function?.name === "code_search");
+    expect(def?.function?.parameters?.required).toContain("query");
   });
 
   it("usesCompactTools covers every provider incl. BYOK keys (unknown defaults to lean)", () => {
