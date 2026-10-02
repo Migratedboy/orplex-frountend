@@ -261,6 +261,29 @@ export default function SignInPage() {
                   Cancel — I closed the browser window
                 </button>
               )}
+              <div className="mt-2 flex gap-2">
+                <input
+                  id="desktop-code-input"
+                  placeholder="Or paste the code from the browser here"
+                  className="flex-1 min-w-0 text-[11px] font-['JetBrains_Mono',monospace] border border-[#ff6b00]/30 rounded px-2 py-1.5 bg-white text-[#1a1c1d] placeholder:text-[#8a8a8a]"
+                />
+                <button
+                  onClick={() => {
+                    const el = document.getElementById("desktop-code-input") as HTMLInputElement | null;
+                    const code = (el?.value || "").trim();
+                    if (!code) {
+                      setError("Paste the code shown in your browser first.");
+                      return;
+                    }
+                    setLoading(true);
+                    setError("");
+                    void exchangeDesktopCode({ code });
+                  }}
+                  className="text-[11px] font-bold text-white bg-[#ff6b00] hover:bg-[#e55f00] rounded px-3 py-1.5 font-['JetBrains_Mono',monospace]"
+                >
+                  Use code
+                </button>
+              </div>
             </div>
           )}
 
