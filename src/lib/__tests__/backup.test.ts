@@ -190,12 +190,16 @@ describe("runBackup invocation shape", () => {
     expect(result).not.toBeNull();
     expect(result!.size).toBe(2048);
 
-    const [cmd, args, opts] = m.spawnMock.mock.calls[0] as [string, string[], { windowsHide: boolean }];
+    const [cmd, args, opts] = m.spawnMock.mock.calls[0] as [string, string[], { windowsHide: boolean; env?: NodeJS.ProcessEnv }];
     expect(cmd).toBe(VENDORED);
     expect(args[0]).toBe("--file");
     expect(args[1]).toMatch(/backups[\\/]orplex-backup-.*\.dump$/);
     expect(args).toContain("--compress=gzip:6");
-    expect(args[args.length - 1]).toBe(DB_URL);
+    // SECURITY: the DB password must never appear in argv (process-list
+    // visible) — it travels via PGPASSWORD, and the URL is stripped.
+    expect(args[args.length - 1]).toBe("postgresql://postgres@localhost:5433/orplex");
+    expect(args.join(" ")).not.toContain("postgres:postgres");
+    expect(opts.env?.PGPASSWORD).toBe("postgres");
     // Pipe syntax would only survive inside a shell string — there is none.
     expect(args.join(" ")).not.toContain("|");
     expect(opts.windowsHide).toBe(true);

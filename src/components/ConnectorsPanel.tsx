@@ -416,7 +416,7 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
                   </div>
                   {remoteError && <div className="mcp-test mcp-test--fail">✕ {remoteError}</div>}
                   {!window.orplexDesktop?.mcp && (
-                    <div className="mcp-env-note">OAuth sign-in runs in the desktop app's main process — it is unavailable in a plain browser tab.</div>
+                    <div className="mcp-env-note">OAuth sign-in runs in the desktop app&apos;s main process — it is unavailable in a plain browser tab.</div>
                   )}
                 </div>
               </div>
@@ -543,7 +543,7 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
               </button>
             </div>
             <p className="mcp-detail-note">
-              Once connected, this server's tools are available to the agent in every run — it will use them automatically when a task needs them.
+              Once connected, this server&apos;s tools are available to the agent in every run — it will use them automatically when a task needs them.
             </p>
           </div>
         ) : null}

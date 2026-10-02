@@ -9,6 +9,11 @@
 // The frontend owns zero API routes and never does CORS/CSRF — that is the
 // backend proxy's job.
 
+// Module scope: without any import/export this file is a global script and its
+// top-level names collide with proxy-cors.test.ts (TS2451). This export
+// makes it a module — zero runtime effect.
+export {};
+
 let handler: (req: unknown) => Promise<Response>;
 const getToken = jest.fn();
 
