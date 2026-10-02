@@ -582,14 +582,7 @@ function createWindow(): void {
     }
   });
 
-  mainWindow.webContents.on("will-redirect", (event, url) => {
-    const oauthCallbackPattern = /^http:\/\/localhost:5000\/api\/auth\/callback\/google/;
-    if (oauthCallbackPattern.test(url)) {
-      event.preventDefault();
-      const dashboardUrl = `${APP_URL}/dashboard`;
-      mainWindow?.loadURL(dashboardUrl).catch(() => {});
-    }
-  });
+  
 }
 
 function buildMenu(): void {

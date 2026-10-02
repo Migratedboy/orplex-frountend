@@ -47,6 +47,12 @@ export async function register(): Promise<void> {
     /* catalog is best-effort; the picker re-kicks on fetch */
   }
 
+  const cloudMode = process.env.ORPLEX_API_URL || process.env.NEXT_PUBLIC_API_URL;
+  if (cloudMode) {
+    console.log("[executor] disabled in cloud mode — backend handles all runs");
+    return;
+  }
+
   const enabled = process.env.ORPLEX_SERVER_EXECUTOR === "1" || process.env.ORPLEX_SERVER_EXECUTOR === "true";
   if (!enabled) {
     console.log("[executor] disabled (set ORPLEX_SERVER_EXECUTOR=1 to enable server-side run execution)");
