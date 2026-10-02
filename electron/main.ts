@@ -1,21 +1,37 @@
 /**
- * electron/main.ts — Electron main process for Orplex (physical split).
+ * electron/main.ts — Electron main process for Orplex.
  *
- * Architecture: Electron is a native shell around TWO Next.js processes.
- * The UI app (repo root) renders only — zero API routes. The API app
- * (backend/) owns every route handler, next-auth, Prisma and all processing.
- * The main process spawns both (`next start`/`next dev`), waits for each to
- * answer HTTP, then opens a BrowserWindow pointing at the UI origin. The UI
- * reaches the API via NEXT_PUBLIC_API_BASE_URL (same machine = localhost);
- * set that var to a cloud URL instead and the same UI talks to a hosted
- * backend with no rebuild.
+ * Architecture: the desktop app is a native shell around the Next.js UI
+ * (repo root). All API routes, next-auth, Prisma and processing live in the
+ * CLOUD backend (e.g. https://orplextech.freebuff.app) — set ORPLEX_API_URL
+ * (ORPLEX_API_URL) and the main process spawns ONLY the UI
+ * server; the UI talks to the hosted backend over HTTPS. Both vars come
+ * from the repo-root .env via the loader at the top of this file.
  */
 import { app, BrowserWindow, shell, Menu, dialog, ipcMain, WebContentsView, session } from "electron";
 import { spawn, ChildProcess } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
+import { registerMcpIpc } from "./mcp-bridge";
+import { registerDesktopAuth, handleDesktopAuthArgv } from "./auth-desktop";
 import fs from "node:fs";
 import path from "node:path";
+
+// Load the repo-root .env into this process (tiny 2-line parser — dotenv is
+// intentionally not a dependency). Must run BEFORE the constants below read
+// ORPLEX_*: this is how cloud mode (ORPLEX_API_URL) is configured for the
+// desktop app without touching shell env or rebuilding.
+(function loadElectronEnv() {
+  try {
+    const envPath = path.join(process.cwd(), ".env");
+    if (!fs.existsSync(envPath)) return;
+    for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      if (!m || line.trim().startsWith("#")) continue;
+      if (process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^"|"$/g, "");
+    }
+  } catch {}
+})();
 
 const isDev = !app.isPackaged;
 // Electron OWNS both Next.js processes — the user never runs one separately.
@@ -25,10 +41,50 @@ const API_PORT = Number(process.env.ORPLEX_API_PORT || 5010);
 const APP_URL = `http://localhost:${UI_PORT}`;
 const LOCAL_DB_PORT = Number(process.env.LOCAL_DB_PORT || 5433);
 
+// === LIGHTWEIGHT MODE =======================================================
+// ORPLEX_LIGHTWEIGHT=1 (repo .env or shell env) skips the embedded local
+// Postgres entirely. For cloud setups where auth/chat/runs live behind
+// ORPLEX_API_URL and the local DB only serves legacy local tables, this
+// cuts ~30s of DB boot from every launch and removes a whole failure class
+// (port 5433 held, stale cluster, initdb corruption). UI still boots.
+const LIGHTWEIGHT = /^(1|true|yes)$/i.test(process.env.ORPLEX_LIGHTWEIGHT || "");
+
 let nextProcess: ChildProcess | null = null;
 let apiProcess: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
+
+// === CRASH RECOVERY =========================================================
+// A session file records whether the previous run ended cleanly. If the app
+// starts WITHOUT that marker (crash, force-kill, power loss), the renderer
+// offers "Recover previous session?" — the run ledger on the backend still
+// has the runs; the prompt just tells the user where to look.
+const sessionStatePath = (): string => {
+  try {
+    const path = require("node:path") as typeof import("node:path");
+    return path.join(app.getPath("userData"), "session-state.json");
+  } catch {
+    return "";
+  }
+};
+
+function readLastSessionState(): { clean: boolean; endedAt?: string } {
+  try {
+    const fs = require("node:fs") as typeof import("node:fs");
+    const p = sessionStatePath();
+    if (p && fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {}
+  // No file at all = a genuinely fresh install, not a crash.
+  return { clean: true };
+}
+
+function writeSessionState(clean: boolean): void {
+  try {
+    const fs = require("node:fs") as typeof import("node:fs");
+    const p = sessionStatePath();
+    if (p) fs.writeFileSync(p, JSON.stringify({ clean, endedAt: new Date().toISOString() }));
+  } catch {}
+}
 
 // === SINGLE INSTANCE ========================================================
 // Opening the app twice must focus the existing window, not fight over the
@@ -38,7 +94,9 @@ const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    // A second launch may be the OS delivering an orplex://auth deep link.
+    handleDesktopAuthArgv(argv);
     const win = getMainWindow();
     if (win) {
       if (win.isMinimized()) win.restore();
@@ -343,23 +401,21 @@ function probeServer(url: string, timeoutMs = 2500): Promise<boolean> {
 /**
  * Spawn one Next.js app ("ui" | "api") as a child process.
  *
- * Local mode (default): the API child runs from backend/ with its own
- * node_modules and its own .env — no rebuild ties it to localhost. Cloud
- * mode: ORPLEX_API_URL (or NEXT_PUBLIC_API_BASE_URL in the UI env) points at
- * a hosted backend and NO API child is spawned at all — the desktop app is
- * then a pure shell around a remote Orplex.
+ * Cloud mode: ORPLEX_API_URL points at a hosted backend and NO API child is
+ * spawned at all — the
+ * desktop app is a pure shell around a remote Orplex. (The historical
+ * local-API mode that spawned a second backend/ Next app is gone; the
+ * backend is deployed, not bundled.)
  */
 function startNextServer(which: "ui" | "api"): void {
   const runAsNode = {
     ...process.env,
     ELECTRON: "1",
     ELECTRON_RUN_AS_NODE: "1", // make electron.exe behave as plain node for the child
-    // UI process: the split-API origin must be a build-time constant
-    // (NEXT_PUBLIC_*), so it rides on the spawn env.
-    NEXT_PUBLIC_API_BASE_URL:
-      process.env.ORPLEX_API_URL ||
-      process.env.NEXT_PUBLIC_API_BASE_URL ||
-      `http://localhost:${API_PORT}`,
+    // The backend origin is SERVER-side only (ORPLEX_API_URL): the UI proxy
+    // forwards /api/* there. The browser stays same-origin so the session
+    // cookie is first-party on the UI origin — no CORS, no cross-site 401s.
+    // Nothing NEXT_PUBLIC_* is injected on purpose.
   } as NodeJS.ProcessEnv;
 
   const tag = which === "ui" ? "[ui]" : "[api]";
@@ -391,9 +447,11 @@ function startNextServer(which: "ui" | "api"): void {
   if (isDev) {
     // Dev: run `next dev` directly with node — no npm.cmd wrapper (spawning
     // .cmd/.bat without a shell is blocked on modern Node and crashes us).
+    // Only the UI ever spawns locally now; in cloud mode (ORPLEX_API_URL set)
+    // startNextServer("api") is never called.
     const root = projectRoot();
     const nextBin = path.join(root, "node_modules", "next", "dist", "bin", "next");
-    const cwd = which === "ui" ? root : path.join(root, "backend");
+    const cwd = root; // the UI app (repo root) — the only local Next app
     const child = spawn(process.execPath, [nextBin, "dev", "-p", String(port)], {
       cwd,
       env: runAsNode,
@@ -406,9 +464,9 @@ function startNextServer(which: "ui" | "api"): void {
   } else {
     // Packaged: run Next's server entry with Electron's bundled Node via
     // ELECTRON_RUN_AS_NODE (no separate node.exe needs to ship). The pack
-    // ships `app/` (the standalone UI) and `app/backend/` (standalone API).
+    // ships `app/` (the standalone UI); the API lives in the cloud backend.
     const root = projectRoot();
-    const appRoot = which === "ui" ? path.join(root, "app") : path.join(root, "app", "backend");
+    const appRoot = path.join(root, "app");
     const nextBin = path.join(appRoot, "node_modules", "next", "dist", "bin", "next");
     const child = spawn(process.execPath, [nextBin, "start", "-p", String(port)], {
       cwd: appRoot,
@@ -468,6 +526,8 @@ async function ensureLocalDb(): Promise<void> {
 }
 
 function createWindow(): void {
+  // Crash detection: start dirty; the clean-quit handler flips it to true.
+  writeSessionState(false);
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -475,7 +535,7 @@ function createWindow(): void {
     minHeight: 600,
     backgroundColor: "#1a1c1d",
     show: false,
-    title: "Orplex Tech — starting server…",
+    title: "Orplex Code — starting server…",
     autoHideMenuBar: true,
     // Orplex logo for the window + taskbar. On Windows an .ico carries the
     // full size range (16–256) so the taskbar renders crisply; PNG elsewhere.
@@ -499,7 +559,7 @@ function createWindow(): void {
   });
 
   mainWindow.once("ready-to-show", () => {
-    mainWindow?.setTitle("Orplex Tech");
+    mainWindow?.setTitle("Orplex Code");
     mainWindow?.show();
   });
 
@@ -511,12 +571,23 @@ function createWindow(): void {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    // Normal exit path (window closed while the app keeps running).
+    writeSessionState(true);
   });
 
   mainWindow.loadURL(APP_URL).catch(async (err) => {
     if (!isDev) {
       dialog.showErrorBox("Failed to start", `Could not load ${APP_URL}: ${err?.message || err}`);
       app.quit();
+    }
+  });
+
+  mainWindow.webContents.on("will-redirect", (event, url) => {
+    const oauthCallbackPattern = /^http:\/\/localhost:5000\/api\/auth\/callback\/google/;
+    if (oauthCallbackPattern.test(url)) {
+      event.preventDefault();
+      const dashboardUrl = `${APP_URL}/dashboard`;
+      mainWindow?.loadURL(dashboardUrl).catch(() => {});
     }
   });
 }
@@ -1260,6 +1331,9 @@ async function killPortListener(port: number): Promise<void> {
 }
 
 app.on("will-quit", () => {
+  // Normal quit: mark the session clean BEFORE children die, so the next
+  // boot knows there is nothing to recover. Crash paths never reach this.
+  writeSessionState(true);
   // Kill both Next.js children so no orphaned node process holds the ports.
   for (const child of [nextProcess, apiProcess]) {
     if (child && !child.killed) {
@@ -1283,10 +1357,25 @@ app.on("activate", () => {
 });
 
 app.whenReady().then(async () => {
+  // Own taskbar identity: without an explicit AUMID, Windows groups the dev
+  // window under electron.exe and reuses whatever icon it cached for that
+  // exe (the Electron atom), ignoring our window icon. Must match the
+  // packaged appId so dev and installed builds behave the same.
+  app.setAppUserModelId("tech.orplex.app");
+
+  // Desktop sign-in: register the orplex:// protocol handler and the IPC
+  // the sign-in page uses to start the browser OAuth flow and receive the
+  // one-time code back (see electron/auth-desktop.ts).
+  registerDesktopAuth(getMainWindow);
+
   // Orplex logo is wired per-window (BrowserWindow `icon` option below —
   // Windows pulls the taskbar icon from it; .ico preferred for the best
   // taskbar scaling). There is no app-level setIcon in Electron; on macOS
   // the Dock icon comes from the app bundle at packaging time.
+
+  // MCP remote servers: OAuth 2.1 browser flow + Node-side JSON-RPC
+  // passthrough (renderer has no Node and remote servers may lack CORS).
+  registerMcpIpc();
 
   // Renderer → main: open http(s) links in the OS default browser.
   ipcMain.handle("orplex:open-external", (_event, url: string) => {
@@ -1294,6 +1383,17 @@ app.whenReady().then(async () => {
       shell.openExternal(url);
     }
   });
+
+  // Crash recovery: did the previous session end uncleanly? (read-only —
+  // the marker flips to "dirty" in createWindow and "clean" on will-quit.)
+  ipcMain.handle("orplex:last-session-crashed", () => {
+    const state = readLastSessionState();
+    return state.clean === false;
+  });
+
+  // Update detection: the packaged app's version, so the renderer can show
+  // "What's new" exactly once per installed version.
+  ipcMain.handle("orplex:app-version", () => app.getVersion());
 
   try {
     // Electron owns BOTH server lifecycles — it always spawns its own Next
@@ -1303,7 +1403,11 @@ app.whenReady().then(async () => {
     // a crashed previous run, take it over cleanly; the user's own processes
     // on OTHER ports are never touched.
     const cloudApi = process.env.ORPLEX_API_URL || "";
-    await ensureLocalDb();
+    if (LIGHTWEIGHT) {
+      process.stdout.write("[startup] lightweight mode: skipping embedded local DB\n");
+    } else {
+      await ensureLocalDb();
+    }
     for (const [which, port] of [
       ["ui", UI_PORT],
       ["api", API_PORT],
@@ -1321,6 +1425,13 @@ app.whenReady().then(async () => {
     } else {
       process.stdout.write(`[startup] cloud mode: UI points at ${cloudApi} — no local API spawned\n`);
     }
+    // Warm the dev-compile path BEFORE the window opens: dev servers compile
+    // modules on first hit, and an in-flight recompile resets connections —
+    // which raced the app's first next-auth session fetch (CLIENT_FETCH_ERROR
+    // "Failed to fetch"). A warm-up probe pays the compile cost here instead.
+    await fetch(APP_URL).catch(() => {});
+    await new Promise((r) => setTimeout(r, 1500));
+    await fetch(APP_URL).catch(() => {});
     // Real-browser preview sessions persist cookies/storage in userData —
     // clear the special-page restriction so the isolated partition behaves
     // like a normal browser profile.
