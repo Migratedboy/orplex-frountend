@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import PromptBar, { type PromptBarMode, type PromptBarModel, type PromptBarSource } from "./PromptBar";
 import { useFileProcessor, formatFileSize, getFileIcon } from "@/hooks/useFileProcessor";
 import { SKILL_CATEGORIES, type Skill } from "@/lib/skills";
+import ConnectorsPanel from "./ConnectorsPanel";
+import { IconMcp } from "./Icons";
 import type { AttachedFile } from "@/hooks/useFileProcessor";
 import { Attachment01Icon, SparklesIcon } from "@hugeicons/core-free-icons";
 import QuotaIndicator from "./QuotaIndicator";
@@ -83,6 +85,7 @@ function pushRecent(key: string): string[] {
 const SOURCES: PromptBarSource[] = [
   { key: "files", name: "Files", description: "Upload from this device", icon: Attachment01Icon, attach: true },
   { key: "skills", name: "Skills", description: "100+ prebuilt prompt templates", icon: SparklesIcon, insert: "/" },
+  { key: "mcp", name: "MCP servers", description: "Connect Supabase, Vercel, Figma, GitHub…", icon: <IconMcp size={16} />, attach: true },
 ];
 
 const PLACEHOLDERS: Record<AgentMode, string> = {
@@ -146,6 +149,7 @@ function savePickers(conversationId: string | null | undefined, state: PickerSta
 export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, failedModels, clearFailedModels, onRetryModelSwap }: ChatInputProps) {
   const files = useFileProcessor();
   const [busy, setBusy] = useState(false);
+  const [mcpOpen, setMcpOpen] = useState(false);
   const clearRef = useRef<(() => void) | null>(null);
   const controlsRef = useRef<{ clear: () => void; setText: (t: string) => void } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -160,11 +164,44 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   // revision marker that tells us when to refetch (new/removed keys).
   const [userModels, setUserModels] = useState<PromptBarModel[]>([]);
   const keysRevRef = useRef<string>("");
+  // === Wake promotions ("Cold model woke up" bell items) ===================
+  // The backend announces a woken model via a notification, but its catalog
+  // re-publish can lag — the picker kept hiding the model as "cold" even
+  // after telling the user it had joined. Trust the announcement as proof of
+  // life: names harvested here un-hide cold models on the next fetch.
+  const [wakePromoted, setWakePromoted] = useState<string[]>([]);
+  const wakePromotedRef = useRef<string[]>([]);
+  const coldIdsRef = useRef<Set<string>>(new Set());
+
+  // A promoted model's short name matches its picker key exactly, or as the
+  // provider-qualified suffix ("deepseek-v4.1-flash" ⊂ "deepseek-ai/deepseek-v4.1-flash").
+  const keyMatchesPromotion = (key: string, name: string) =>
+    key === name || key.split("/").pop() === name || key.endsWith("/" + name);
+
+  // Pull recent wake notifications and record the announced model names
+  // (message starts with the model's short name).
+  const refreshWakePromotions = useCallback(() => {
+    apiFetch("/api/notifications?since=1970-01-01T00:00:00.000Z")
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((j: { notifications?: { title?: string; message?: string }[] }) => {
+        const names = (j.notifications ?? [])
+          .filter((n) => n.title === "Cold model woke up" && n.message)
+          .map((n) => n.message!.split(" ")[0].toLowerCase());
+        const merged = Array.from(new Set([...wakePromotedRef.current, ...names]));
+        if (merged.length !== wakePromotedRef.current.length) {
+          wakePromotedRef.current = merged;
+          setWakePromoted(merged);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const loadCatalog = useCallback(() => {
     if (catalogInFlight.current) return;
     catalogInFlight.current = true;
     setCatalogLoading(true);
+    // Harvest wake promotions in parallel (see wakePromoted above).
+    refreshWakePromotions();
     const finish = () => {
       catalogInFlight.current = false;
       setCatalogLoading(false);
@@ -189,9 +226,12 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
           //    probe answers, the model lands here WITHOUT the cold flag and
           //    appears on the next fetch.
           const coldIds = new Set(j.coldModelIds ?? []);
+          coldIdsRef.current = coldIds;
           const health = j.health ?? {};
+          // Cold models are KEPT in the stored list — the hide happens in the
+          // `models` getter below, so a wake promotion un-hides instantly
+          // without waiting for the backend's catalog re-publish.
           const list = (j.models ?? [])
-            .filter((m) => !coldIds.has(m.id))
             .map((m) => ({
               key: m.id,
               name: m.name || m.id,
@@ -226,7 +266,9 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             setUserModels(userList);
             userModelsRef.current = userList;
           }
-          if (list.length > 0) {
+          // Retry while nothing visible is verified (an all-cold catalog
+          // keeps polling and re-kicks the wake sweep).
+          if (list.some((m) => !coldIds.has(m.key))) {
             setCatalogModels(list);
             finish();
             return;
@@ -249,14 +291,30 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     tryFetch(0);
   }, []);
 
+  // A fresh wake toast means a model just became usable — refresh promotions
+  // + catalog so it appears in the picker without reopening the menu.
+  useEffect(() => {
+    const onWake = () => {
+      refreshWakePromotions();
+      loadCatalog();
+    };
+    window.addEventListener("orplex:wake-promoted", onWake);
+    return () => window.removeEventListener("orplex:wake-promoted", onWake);
+  }, [refreshWakePromotions, loadCatalog]);
+
   // Verified models first, then BYOK models the user can reach with their
   // own keys, deduped by id (a BYOK listing proves the same id the platform
   // catalog verified — keep the verified row's tag).
   const models = (() => {
-    if (catalogModels.length === 0) return userModels.length > 0 ? userModels : FALLBACK_MODELS;
-    if (userModels.length === 0) return catalogModels;
-    const seen = new Set(catalogModels.map((m) => m.key));
-    return [...catalogModels, ...userModels.filter((m) => !seen.has(m.key) && seen.add(m.key))];
+    // Cold models are hidden UNLESS a wake notification promoted them —
+    // trust the "woke up" announcement over a lagging coldModelIds list.
+    const visible = (m: PromptBarModel) =>
+      !coldIdsRef.current.has(m.key) || wakePromoted.some((n) => keyMatchesPromotion(m.key, n));
+    const catalog = catalogModels.filter(visible);
+    if (catalog.length === 0) return userModels.length > 0 ? userModels : FALLBACK_MODELS;
+    if (userModels.length === 0) return catalog;
+    const seen = new Set(catalog.map((m) => m.key));
+    return [...catalog, ...userModels.filter((m) => !seen.has(m.key) && seen.add(m.key))];
   })();
   const recentModels: PromptBarModel[] = recents
     .map((key) => models.find((m) => m.key === key))
@@ -402,6 +460,16 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
       <div className="chat-input-inner">
         <div className="ws-switcher-row">
           <WorkspaceSwitcher />
+          <button
+            type="button"
+            className="mcp-chip"
+            aria-label="MCP connectors"
+            title="MCP connectors — Supabase, Vercel, Figma, GitHub…"
+            onClick={() => setMcpOpen(true)}
+          >
+            <IconMcp size={14} />
+            <span className="mcp-chip-label">MCP</span>
+          </button>
         </div>
         {files.hasFiles && (
           <div className="file-chips">
@@ -478,7 +546,13 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
               if (am) onModeChange(am);
             }}
             onStop={() => { onStop(); setBusy(false); }}
-            onAttach={() => { fileInputRef.current?.click(); }}
+            onAttach={(source) => {
+              if (source.key === "mcp") {
+                setMcpOpen(true);
+                return;
+              }
+              fileInputRef.current?.click();
+            }}
             onRegisterClear={(fn) => { clearRef.current = fn; }}
             onRegisterControls={(c) => { controlsRef.current = c; }}
             className="prompt-bar--chat"
@@ -508,6 +582,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
           </div>
         )}
         <QuotaIndicator />
+        <ConnectorsPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
         <p className="chat-disclaimer">Orplex Agent can make mistakes. Verify important information.</p>
         {onFastAnswer && lastUserMessage && isStreaming && (
           <div className="fast-answer-bar">

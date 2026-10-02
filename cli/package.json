@@ -1,7 +1,7 @@
 {
   "name": "orplex-cli",
   "version": "0.1.0",
-  "description": "Orplex Tech CLI — chat with AI from your terminal",
+  "description": "Orplex Code CLI — chat with AI from your terminal",
   "bin": {
     "orplex": "./bin/orplex"
   },

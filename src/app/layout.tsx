@@ -17,17 +17,17 @@ const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 export const metadata: Metadata = {
   metadataBase: new URL(appUrl),
   title: {
-    default: "Orplex Tech",
-    template: "%s | Orplex Tech",
+    default: "Orplex Code",
+    template: "%s | Orplex Code",
   },
   description: "AI coding assistant with streaming chat, conversation history, file context, and multi-provider inference.",
   keywords: ["AI", "coding", "IDE", "agentic", "code generation", "debugging"],
-  authors: [{ name: "Orplex Tech" }],
+  authors: [{ name: "Orplex Code" }],
   openGraph: {
     type: "website",
     locale: "en_US",
-    siteName: "Orplex Tech",
-    title: "Orplex Tech - AI Coding Assistant",
+    siteName: "Orplex Code",
+    title: "Orplex Code - AI Coding Assistant",
     description: "AI coding assistant with streaming chat, conversation history, and file context.",
   },
 };

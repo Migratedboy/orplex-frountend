@@ -12,7 +12,7 @@ export default function WelcomeSection() {
   return (
     <div className="welcome-container">
       <div className="welcome-inner">
-        <img src="/logo.png" alt="Orplex Tech" className="welcome-logo" width={80} height={80} />
+        <img src="/logo.svg" alt="Orplex Code" className="welcome-logo" width={80} height={80} />
         <h1 className="welcome-heading">What can I help you build?</h1>
         <p className="welcome-subtext">Your agentic coding assistant. Ask me to write, debug, refactor, or architect code.</p>
         <div className="shortcut-hints">

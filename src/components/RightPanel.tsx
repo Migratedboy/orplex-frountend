@@ -312,6 +312,12 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
   const [omniboxFocused, setOmniboxFocused] = useState(false);
   const [loading, setLoading] = useState(false);
   const [agentDriven, setAgentDriven] = useState(false);
+  // Take over / Watch only: when the agent drives the tab, the user can
+  // pause the mirroring (Take over) so their navigation isn't yanked back
+  // by the next preview event, or hand control back (Watch only).
+  const [watchMode, setWatchMode] = useState<"watch" | "takeover">("watch");
+  const watchModeRef = useRef(watchMode);
+  watchModeRef.current = watchMode;
   const [nextTabId, setNextTabId] = useState(2);
   // Native load failure — surfaced by the main process's did-fail-load event
   // (real Chromium error codes, no probing required).
@@ -398,7 +404,12 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
       if (!alive) return;
       unsubscribe = onPreviewEvent((event) => {
         setAgentDriven(true);
-        navigateRef.current(event.url, { replace: true });
+        // Watch only = mirror the agent's navigation. Take over = leave the
+        // page where the user put it, but keep the badge visible so they
+        // know the agent is still browsing.
+        if (watchModeRef.current === "watch") {
+          navigateRef.current(event.url, { replace: true });
+        }
       });
     }).catch(() => {});
     return () => {
@@ -691,8 +702,24 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
             placeholder="Search the web or type a URL"
             spellCheck={false}
           />
-          {agentDriven && !loading && currentUrl && (
-            <span className="rp-preview-agent-badge" title="The agent navigated to this page">agent</span>
+          {agentDriven && (
+            watchMode === "watch" ? (
+              <button
+                className="rp-preview-agent-badge rp-preview-agent-live"
+                title="The agent is driving this tab — click to take over"
+                onClick={() => setWatchMode("takeover")}
+              >
+                <span className="ms ms-sm" aria-hidden="true">smart_toy</span> agent is driving
+              </button>
+            ) : (
+              <button
+                className="rp-preview-agent-badge"
+                title="You took over — click to follow the agent again"
+                onClick={() => setWatchMode("watch")}
+              >
+                watch only
+              </button>
+            )
           )}
         </div>
       </div>

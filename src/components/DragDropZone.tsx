@@ -18,8 +18,15 @@ export default function DragDropZone({ onFilesDropped, children }: DragDropZoneP
     dragCounter.current = 0;
     setDragging(false);
     if (e.dataTransfer.files.length > 0) {
-      const files = await processFileList(e.dataTransfer.files);
-      if (files.length > 0) onFilesDropped(files);
+      // processFileList can reject (unreadable file, FileReader error). An
+      // uncaught async rejection here surfaces as a dev-overlay console error,
+      // so a failed drop stays a no-op with a warning instead.
+      try {
+        const files = await processFileList(e.dataTransfer.files);
+        if (files.length > 0) onFilesDropped(files);
+      } catch (err) {
+        console.warn("[drag-drop] failed to process dropped files", err);
+      }
     }
   }, [onFilesDropped]);
 

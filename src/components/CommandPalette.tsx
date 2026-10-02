@@ -11,7 +11,7 @@ export interface Command {
   id: string;
   label: string;
   hint?: string;
-  section: "Navigation" | "Agent Runs" | "Panels" | "Actions";
+  section: "Navigation" | "Capabilities" | "Agent Runs" | "Panels" | "Actions";
   icon?: React.ReactNode;
   keywords?: string;
   action: () => void;
@@ -100,6 +100,31 @@ export default function CommandPalette({ open, onClose, onOpenPanel, onOpenRun }
         icon: NAV_ICONS[href],
         keywords,
         action: () => { router.push(href); close(); },
+      });
+    }
+
+    // Capabilities — the discovery layer: every major capability, with a
+    // one-line description of what it does for you. Searchable by what the
+    // user wants to accomplish, not just by feature name.
+    const capabilities: Array<[string, string, string, () => void]> = [
+      ["Spawn an agent task", "Multi-step work on a kanban board while you do other things", "background task board parallel spawn agent job work", () => { router.push("/manager"); close(); }],
+      ["Review & approve file changes", "Accept or reject each hunk like a PR before it lands", "diff approve review hunks changes accept reject", () => { if (onOpenPanel) { onOpenPanel("changes"); } close(); }],
+      ["Let the agent browse the web", "A real Chromium browser the agent drives — take over anytime", "browser web research chromium screenshot", () => { if (onOpenPanel) { onOpenPanel("preview"); } close(); }],
+      ["See run health & recover", "Stuck runs, waiting approvals, failed verification — with one-click fixes", "stuck health recover repair cancel", () => { router.push("/manager"); close(); }],
+      ["Connect MCP tools", "Plug external tool servers into the agent", "mcp connectors integrations plugins tools", () => { router.push("/plugins"); close(); }],
+      ["Agent memory", "What the agent remembers about your project and preferences", "memory recall context remember", () => { import("./AppLayout").then(m => m.openMemoryPanel()); close(); }],
+      ["Schedule work for tonight", "Queue tasks for 02:00 — done by morning", "tonight schedule overnight queue morning", () => { router.push("/manager"); close(); }],
+      ["What's new", "See the latest improvements to Orplex", "changelog whatsnew release notes updates", () => { import("./WhatIsNew").then(m => m.openWhatIsNew()); close(); }],
+    ];
+    for (const [label, hint, keywords, action] of capabilities) {
+      cmds.push({
+        id: `cap-${label.slice(0, 18)}`,
+        label,
+        hint,
+        section: "Capabilities",
+        icon: <IconAgent size={14} />,
+        keywords,
+        action,
       });
     }
 

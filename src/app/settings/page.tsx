@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
 import { useToast } from "@/components/Toast";
 import { IconCheck } from "@/components/Icons";
 import { formatTokens } from "@/lib/board-format";
@@ -106,7 +107,7 @@ function WarmModelsCard({ toast }: { toast: (msg: string, type?: "info" | "error
           onClick={warmNow}
           disabled={starting || running}
           className="settings-save-btn"
-          style={running ? { background: "#f3f4f6", color: "#6b7280" } : undefined}
+          style={running ? { opacity: 0.6 } : undefined}
           title="Probe every cold model now with generous warm-up timeouts — models that answer join the picker immediately"
         >
           {running ? "Warming…" : starting ? "Starting…" : "Warm models"}
@@ -118,7 +119,7 @@ function WarmModelsCard({ toast }: { toast: (msg: string, type?: "info" | "error
           {models.map((m) => {
             const s = WAKE_STATE_STYLE[m.state];
             return (
-              <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6, background: "#f9f9fa", border: "1px solid #f0f0f1" }}>
+              <div key={m.id} className="set-row">
                 <span
                   aria-hidden="true"
                   style={{
@@ -131,7 +132,7 @@ function WarmModelsCard({ toast }: { toast: (msg: string, type?: "info" | "error
                   {m.id}
                 </span>
                 {m.state === "waking" && (
-                  <span style={{ fontSize: 10, color: "#6b7280", flexShrink: 0 }}>
+                  <span className="set-muted" style={{ fontSize: 10, flexShrink: 0 }}>
                     attempt {m.attempt}/{m.totalAttempts}
                   </span>
                 )}
@@ -305,8 +306,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                           } catch { toast("Network error", "error"); }
                           setModelsLoading(false);
                         }}
-                        className="settings-save-btn"
-                        style={{ background: "#f3f4f6", color: "#374151", border: "1px solid #e4e4e7" }}
+                        className="settings-save-btn set-btn-secondary"
                       >
                         {modelsLoading ? "…" : "Refresh models"}
                       </button>
@@ -329,13 +329,12 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                           } catch { toast("Network error", "error"); }
                           setModelsLoading(false);
                         }}
-                        className="settings-save-btn"
-                        style={{ background: "#f3f4f6", color: "#374151", border: "1px solid #e4e4e7" }}
+                        className="settings-save-btn set-btn-secondary"
                         title="Probe up to 12 models with a tiny request to prove they answer — results get a ✓ in the picker"
                       >
                         {modelsLoading ? "…" : "Verify models"}
                       </button>
-                      <button onClick={() => deleteKey(key.id)} className="settings-save-btn" style={{ background: "#fef2f2", color: "#ef4444", border: "1px solid #fecaca" }}>
+                      <button onClick={() => deleteKey(key.id)} className="settings-save-btn set-btn-danger">
                         Remove
                       </button>
                     </div>
@@ -356,26 +355,25 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                     <button
                       key={def.id}
                       onClick={() => { setSelectedDef(def); setModel(""); setModels(null); setModelsError(""); }}
-                      className="settings-api-item"
-                      style={{ textAlign: "left", cursor: "pointer", border: "1px solid #e4e4e7", borderRadius: 8, padding: 12, background: "#fff" }}
+                      className="settings-api-item set-provider-card" style={{ textAlign: "left", cursor: "pointer", padding: 12 }}
                     >
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 13, fontWeight: 600 }}>{def.label}</span>
                         {tierBadge(def)}
                       </div>
-                      <p style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{def.tagline}</p>
+                      <p className="set-muted" style={{ fontSize: 11, marginTop: 4 }}>{def.tagline}</p>
                     </button>
                   ))}
                 </div>
-                <button onClick={resetAddFlow} className="settings-save-btn" style={{ marginTop: 12, background: "#f3f4f6", color: "#374151" }}>
+                <button onClick={resetAddFlow} className="settings-save-btn set-btn-secondary" style={{ marginTop: 12 }}>
                   Cancel
                 </button>
               </div>
             ) : (
-              <div style={{ marginTop: 12, padding: 16, background: "#f9f9fa", borderRadius: 8, border: "1px solid #e4e4e7" }}>
+              <div className="set-panel" style={{ marginTop: 12, padding: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <span style={{ fontSize: 13, fontWeight: 600 }}>{selectedDef.label}</span>
-                  <button onClick={() => setSelectedDef(null)} style={{ fontSize: 11, background: "none", border: "none", color: "#6b7280", cursor: "pointer" }}>
+                  <button onClick={() => setSelectedDef(null)} className="set-muted" style={{ fontSize: 11, background: "none", border: "none", cursor: "pointer" }}>
                     ← change provider
                   </button>
                 </div>
@@ -386,7 +384,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                   placeholder={selectedDef.keyPrefix ? `e.g. ${selectedDef.keyPrefix}…` : "Paste your API key here"}
                   value={apiKey}
                   onChange={e => { setApiKey(e.target.value); setModels(null); setModelsError(""); }}
-                  style={{ width: "100%", padding: 8, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7", marginBottom: 6 }}
+                  style={{ width: "100%", padding: 8, fontSize: 12, borderRadius: 4, border: "1px solid var(--set-line, #e4e4e7)", background: "var(--set-input-bg, #fff)", color: "inherit", marginBottom: 6 }}
                 />
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <a href={selectedDef.keyHintUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#818cf8" }}>
@@ -411,16 +409,16 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                       placeholder="Search models…"
                       value={modelQuery}
                       onChange={e => setModelQuery(e.target.value)}
-                      style={{ width: "100%", padding: 6, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7", marginBottom: 6 }}
+                      style={{ width: "100%", padding: 6, fontSize: 12, borderRadius: 4, border: "1px solid var(--set-line, #e4e4e7)", background: "var(--set-input-bg, #fff)", color: "inherit", marginBottom: 6 }}
                     />
-                    <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid #e4e4e7", borderRadius: 6, background: "#fff" }}>
+                    <div className="set-model-list" style={{ maxHeight: 220, overflowY: "auto" }}>
                       {filteredModels.map((m) => (
                         <button
                           key={m.id}
                           onClick={() => setModel(m.id)}
                           style={{
                             display: "block", width: "100%", textAlign: "left", padding: "7px 10px",
-                            borderBottom: "1px solid #f3f4f6", background: model === m.id ? "rgba(99,102,241,.1)" : "transparent",
+                            borderBottom: "1px solid var(--set-row-line, #f3f4f6)", background: model === m.id ? "rgba(99,102,241,.1)" : "transparent",
                             border: "none", cursor: "pointer",
                           }}
                         >
@@ -462,7 +460,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                   <button onClick={addKey} disabled={adding || !apiKey.trim()} className="settings-save-btn">
                     {adding ? "Testing..." : "Add Key"}
                   </button>
-                  <button onClick={resetAddFlow} className="settings-save-btn" style={{ background: "#f3f4f6", color: "#374151" }}>
+                  <button onClick={resetAddFlow} className="settings-save-btn set-btn-secondary">
                     Cancel
                   </button>
                 </div>
@@ -702,8 +700,143 @@ function SettingsCostTab() {
     </div>
   );}
 
+// === Reset & Recovery tab ================================================
+// One documented, safe escape hatch for "the app looks frozen": clear stuck
+// runs / cancel active runs and clear transient local UI state. Nothing here
+// touches conversations, files, or workspace data — the card says so
+// explicitly because trust is the point.
+function ResetRecoveryTab({ toast }: { toast: (msg: string, type?: "info" | "error" | "success") => void }) {
+  const [busy, setBusy] = useState<"runs" | "state" | null>(null);
+  const [confirming, setConfirming] = useState<"runs" | "state" | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  const cancelStuckRuns = async () => {
+    setBusy("runs");
+    setResult(null);
+    try {
+      const res = await fetch("/api/agent/runs?limit=50");
+      const data = await res.json();
+      const runs: Array<{ id: string; isActive: boolean; status: string }> = data?.runs || [];
+      const targets = runs.filter((r) => r.isActive);
+      let ok = 0;
+      for (const r of targets) {
+        try {
+          const del = await fetch(`/api/agent/runs/${r.id}`, { method: "DELETE" });
+          if (del.ok) ok++;
+        } catch {}
+      }
+      setResult(`Cancelled ${ok} active run${ok === 1 ? "" : "s"}. Your conversations and files are untouched.`);
+      toast(ok > 0 ? `Cancelled ${ok} stuck run${ok === 1 ? "" : "s"}` : "No active runs to clear", "success");
+    } catch {
+      toast("Could not reach the run service — try again", "error");
+    }
+    setBusy(null);
+    setConfirming(null);
+  };
+
+  const resetAgentState = () => {
+    setBusy("state");
+    try {
+      // Transient UI/agent state only — never conversations or files.
+      for (const key of [
+        "orplex.rightPanel", "orplex.rightPanelTab", "orplex.tipShown", "orplex.tipIndex",
+        "orplex.firstRun.v1", "orplex.whatsNewSeen.latest",
+      ]) {
+        try { localStorage.removeItem(key); } catch {}
+        try { sessionStorage.removeItem(key); } catch {}
+      }
+      try { sessionStorage.clear(); } catch {}
+      setResult("Transient agent/UI state cleared. Reload to start from a clean slate.");
+      toast("Agent state reset — reloading…", "success");
+      setTimeout(() => window.location.reload(), 900);
+    } finally {
+      setBusy(null);
+      setConfirming(null);
+    }
+  };
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-header">
+        <h2 className="settings-section-title">Reset &amp; Recovery</h2>
+        <p className="settings-section-desc">Safe, documented recovery when a run looks frozen or the UI feels wedged. Nothing here deletes conversations, files, or workspace data.</p>
+      </div>
+
+      {result && (
+        <div className="settings-card" style={{ marginBottom: 12, borderLeft: "3px solid #10b981" }}>
+          <p className="settings-hint" style={{ color: "#10b981" }}>{result}</p>
+        </div>
+      )}
+
+      <div className="settings-card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <p style={{ fontSize: 13, fontWeight: 600 }}>Clear stuck runs</p>
+            <p className="settings-hint" style={{ marginTop: 2 }}>
+              Cancels every active run (including ghosted ones that stopped reporting). Files already written stay; conversations stay.
+            </p>
+          </div>
+          {confirming === "runs" ? (
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={cancelStuckRuns} disabled={busy !== null} className="settings-save-btn set-btn-danger">
+                {busy === "runs" ? "Cancelling…" : "Confirm cancel"}
+              </button>
+              <button onClick={() => setConfirming(null)} disabled={busy !== null} className="settings-save-btn set-btn-secondary">Keep</button>
+            </div>
+          ) : (
+            <button onClick={() => setConfirming("runs")} disabled={busy !== null} className="settings-save-btn set-btn-secondary">
+              Clear stuck runs
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="settings-card" style={{ marginTop: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <p style={{ fontSize: 13, fontWeight: 600 }}>Reset agent state</p>
+            <p className="settings-hint" style={{ marginTop: 2 }}>
+              Clears transient local state (queues, panel layout, onboarding flags) and reloads. Conversations, history, and files are never touched.
+            </p>
+          </div>
+          {confirming === "state" ? (
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={resetAgentState} disabled={busy !== null} className="settings-save-btn set-btn-danger">
+                {busy === "state" ? "Resetting…" : "Confirm reset"}
+              </button>
+              <button onClick={() => setConfirming(null)} disabled={busy !== null} className="settings-save-btn set-btn-secondary">Keep</button>
+            </div>
+          ) : (
+            <button onClick={() => setConfirming("state")} disabled={busy !== null} className="settings-save-btn set-btn-secondary">
+              Reset agent state
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState("profile");
+  // Deep links (/settings?tab=api) and sidebar-driven switches arrive without
+  // remounting this page (query-only pushes don't re-run mount effects), so
+  // sync the tab from the URL + the orplex:settings-tab nav event.
+  useEffect(() => {
+    const readUrlTab = () => {
+      const t = new URLSearchParams(window.location.search).get("tab");
+      if (t) setActiveTab(t);
+    };
+    const onSettingsTab = (e: Event) => setActiveTab((e as CustomEvent<string>).detail);
+    readUrlTab();
+    window.addEventListener("popstate", readUrlTab);
+    window.addEventListener("orplex:settings-tab", onSettingsTab);
+    return () => {
+      window.removeEventListener("popstate", readUrlTab);
+      window.removeEventListener("orplex:settings-tab", onSettingsTab);
+    };
+  }, []);
+  const router = useRouter();
   const { data: session, update } = useSession();
   const { toast } = useToast();
   const [name, setName] = useState("");
@@ -730,7 +863,17 @@ export default function SettingsPage() {
     { id: "cost", label: "Provider & Cost" },
     { id: "api", label: "API Keys" },
     { id: "about", label: "About" },
+    { id: "danger", label: "Reset & Recovery" },
   ];
+
+  // Tab switches update the URL (so ?tab= stays shareable/back-nav friendly)
+  // and tell the sidebar, which tracks the active tab via the
+  // orplex:settings-tab event — usePathname can't see query params.
+  const switchTab = (id: string) => {
+    setActiveTab(id);
+    router.replace(`/settings?tab=${id}`, { scroll: false });
+    window.dispatchEvent(new CustomEvent("orplex:settings-tab", { detail: id }));
+  };
 
   return (
       <div className="page-content">
@@ -740,7 +883,7 @@ export default function SettingsPage() {
               <span className="settings-sidebar-title">Settings</span>
             </div>
             {tabs.map((tab) => (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              <button key={tab.id} onClick={() => switchTab(tab.id)}
                 className={`settings-tab ${activeTab === tab.id ? "active" : ""}`}>
                 {tab.label}
               </button>
@@ -794,7 +937,7 @@ export default function SettingsPage() {
               <div className="settings-section">
                 <div className="settings-section-header">
                   <h2 className="settings-section-title">Appearance</h2>
-                  <p className="settings-section-desc">Customize the look and feel of Orplex Tech.</p>
+                  <p className="settings-section-desc">Customize the look and feel of Orplex Code.</p>
                 </div>
                 <div className="settings-card">
                   <div className="settings-toggle-row">
@@ -835,7 +978,7 @@ export default function SettingsPage() {
             {activeTab === "about" && (
               <div className="settings-section">
                 <div className="settings-section-header">
-                  <h2 className="settings-section-title">About Orplex Tech</h2>
+                  <h2 className="settings-section-title">About Orplex Code</h2>
                   <p className="settings-section-desc">Information about your installation.</p>
                 </div>
                 <div className="settings-card">
@@ -860,6 +1003,8 @@ export default function SettingsPage() {
                 </div>
               </div>
             )}
+
+            {activeTab === "danger" && <ResetRecoveryTab toast={toast} />}
           </div>
         </div>
       </div>

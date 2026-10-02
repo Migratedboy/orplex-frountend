@@ -111,14 +111,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Physical split: the schema lives in the backend app now.
-      - name: Generate Prisma client
-        working-directory: backend
-        run: npx prisma generate
-
-      - name: Push schema to test DB
-        working-directory: backend
-        run: npx prisma db push --skip-generate
-
       - name: Build
         run: npm run build

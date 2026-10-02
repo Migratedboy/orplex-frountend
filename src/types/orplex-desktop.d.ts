@@ -77,6 +77,67 @@ declare global {
         /** Failed requests (4xx/5xx + aborted) since session start. */
         network: () => Promise<Record<string, unknown>>;
       };
+      /** True when the previous app session did not exit cleanly (crash recovery). */
+      lastSessionCrashed?: () => Promise<boolean>;
+      /** Packaged app version from package.json (update detection). */
+      getAppVersion?: () => Promise<string>;
+      /** Desktop sign-in: browser OAuth + orplex:// deep-link handoff. */
+      auth?: {
+        start: (provider: "google" | "github") => Promise<{
+          ok: boolean;
+          url?: string;
+          error?: string;
+        }>;
+        onCallback: (
+          listener: (payload: { code?: string; error?: string }) => void
+        ) => () => void;
+        consumePending: () => Promise<{ code?: string; error?: string } | null>;
+      };
+      /** MCP remote servers: OAuth 2.1 in main + Node-side JSON-RPC passthrough. */
+      mcp?: {
+        request: (params: {
+          url: string;
+          method?: string;
+          headers?: Record<string, string>;
+          body?: string;
+        }) => Promise<{
+          ok: boolean;
+          status?: number;
+          headers?: Record<string, string>;
+          text?: string;
+          error?: string;
+        }>;
+        oauthAuthorize: (params: {
+          serverUrl: string;
+          label?: string;
+        }) => Promise<{
+          ok: boolean;
+          error?: string;
+          accessToken?: string;
+          refreshToken?: string;
+          expiresIn?: number;
+          tokenType?: string;
+          scope?: string;
+          clientId?: string;
+          clientSecret?: string;
+          tokenEndpoint?: string;
+          serverUrl?: string;
+        }>;
+        oauthRefresh: (params: {
+          serverUrl: string;
+          refreshToken: string;
+          clientId: string;
+          clientSecret?: string;
+          tokenEndpoint?: string;
+        }) => Promise<{
+          ok: boolean;
+          error?: string;
+          accessToken?: string;
+          refreshToken?: string;
+          expiresIn?: number;
+          tokenType?: string;
+        }>;
+      };
     };
   }
 }

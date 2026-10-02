@@ -1,4 +1,4 @@
-# podman-compose.yml — Multi-service deployment for Orplex Tech
+# podman-compose.yml — Multi-service deployment for Orplex Code
 # Usage: podman-compose up -d
 # Stop:  podman-compose down
 

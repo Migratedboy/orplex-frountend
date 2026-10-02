@@ -13,6 +13,12 @@ export default function BugReportModal({ onClose }: Props) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null);
 
+  // Mirror the backend's zod limits (validators.ts: title ≥5, description ≥20)
+  // client-side so users get live feedback instead of a dead-end 400.
+  const titleValid = title.trim().length >= 5;
+  const descriptionValid = description.trim().length >= 20;
+  const isValid = titleValid && descriptionValid;
+
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", handleEsc);
@@ -21,7 +27,7 @@ export default function BugReportModal({ onClose }: Props) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !description.trim()) return;
+    if (!isValid) return;
     setLoading(true);
     try {
       const res = await apiFetch("/api/bug-report", {
@@ -62,6 +68,9 @@ export default function BugReportModal({ onClose }: Props) {
             <div className="modal-field">
               <label className="settings-label">Title</label>
               <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} className="settings-input" placeholder="Brief description of the issue…" required maxLength={200} />
+              {title.length > 0 && !titleValid && (
+                <p className="settings-hint" style={{ color: "#ba1a1a" }}>{5 - title.trim().length} more characters needed (min 5)</p>
+              )}
             </div>
             <div className="modal-field">
               <label className="settings-label">Severity</label>
@@ -84,11 +93,11 @@ export default function BugReportModal({ onClose }: Props) {
             <div className="modal-field">
               <label className="settings-label">Description</label>
               <textarea value={description} onChange={(e) => setDescription(e.target.value)} className="settings-input settings-textarea" placeholder="Steps to reproduce, expected vs actual behavior…" required maxLength={5000} />
-              <p className="settings-hint">{description.length}/5000</p>
+              <p className="settings-hint">{description.length}/5000{!descriptionValid && description.length > 0 ? ` — ${20 - description.trim().length} more characters needed (min 20)` : ""}</p>
             </div>
             <div className="modal-actions">
               <button type="button" onClick={onClose} className="modal-cancel-btn">Cancel</button>
-              <button type="submit" disabled={loading || !title.trim() || !description.trim()} className="modal-submit-btn">
+              <button type="submit" disabled={loading || !isValid} className="modal-submit-btn">
                 {loading ? "Sending…" : "Submit Report"}
               </button>
             </div>

@@ -24,7 +24,7 @@ describe("buildSystemPrompt — code mode (full)", () => {
 
   it("contains all ten sections in priority order", () => {
     const sections = [
-      "You are Orplex Tech",
+      "You are Orplex Code",
       "## PRIME DIRECTIVES",
       "## OUTPUT CONTRACT",
       "## TOOL DOCTRINE",

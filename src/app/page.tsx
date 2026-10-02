@@ -8,13 +8,13 @@ import { AgentMode } from "@/components/ModeSelector";
 import { MessageSkeleton } from "@/components/Skeleton";
 
 // Lazy-load heavy components — only needed on the chat page
-const WelcomeSection = dynamic(() => import("@/components/WelcomeSection"), { ssr: false });
 const MessageList = dynamic(() => import("@/components/MessageList"), { ssr: false });
 const ChatInput = dynamic(() => import("@/components/ChatInput"), { ssr: false });
 const DragDropZone = dynamic(() => import("@/components/DragDropZone"), { ssr: false });
 const FilePreviewModal = dynamic(() => import("@/components/FilePreviewModal"), { ssr: false });
 const TodoBar = dynamic(() => import("@/components/TodoBar"), { ssr: false });
 const QuestionCard = dynamic(() => import("@/components/QuestionCard"), { ssr: false });
+const FirstRunExperience = dynamic(() => import("@/components/FirstRunExperience"), { ssr: false });
 
 function LoadingMessages() {
   return (
@@ -176,7 +176,7 @@ export default function ChatPage() {
   return (
     <DragDropZone onFilesDropped={(dropped) => { toast(`${dropped.length} file(s) dropped`, "success"); }}>
         {session.isEmpty ? (
-          <WelcomeSection />
+          <FirstRunExperience />
         ) : (
           <Suspense fallback={<LoadingMessages />}>
             <MessageList

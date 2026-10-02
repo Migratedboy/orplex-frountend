@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 import { apiFetch } from "@/lib/api-base";
+import RunHealthStrip from "./RunHealthStrip";
 // === Types ===
 
 interface ManagerTask {
@@ -221,7 +222,7 @@ function AgentCard({ run, onSelect, onKill }: {
       onClick={() => onSelect(run.id)}
     >
       {/* Status Bar */}
-      <div className="manager-card-status" style={{ background: status.bg }}>
+      <div className="manager-card-status" style={{ background: status.bg, color: status.color }}>
         <span className="manager-card-status-icon"><span className="ms">{status.icon}</span></span>
         <span className="manager-card-status-label" style={{ color: status.color }}>
           {status.label}
@@ -542,6 +543,9 @@ export default function AgentManager() {
           onNavigate={handleNavigate}
         />
       )}
+
+      {/* Run health — stuck / waiting-approval / needs-repair, one-click recovery */}
+      <RunHealthStrip runs={runs} onChanged={fetchRuns} />
 
       {/* Agent Grid */}
       <div className="manager-grid">

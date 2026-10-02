@@ -1,4 +1,4 @@
-# Contributing to Orplex Tech
+# Contributing to Orplex Code
 
 Thank you for your interest in contributing! This guide covers everything you need to get started.
 

@@ -69,7 +69,19 @@ export async function reopenProject(name: string, deps: ReopenDeps): Promise<Reo
     return { status: "invalid", name, message: "Project name is required to reopen a workspace." };
   }
 
-  const handle = await deps.loadHandle(trimmed);
+  // loadHandle hits IndexedDB — a storage failure must not reject this
+  // "NEVER throws" contract (it would surface as an uncaught rejection in
+  // the caller's event handler). Treat it as a failed reopen.
+  let handle: FileSystemDirectoryHandle | null;
+  try {
+    handle = await deps.loadHandle(trimmed);
+  } catch (err) {
+    return {
+      status: "failed",
+      name: trimmed,
+      message: `Could not read saved access for "${trimmed}": ${(err as Error)?.message || "storage error"}`,
+    };
+  }
   if (!handle) {
     return {
       status: "not-found",

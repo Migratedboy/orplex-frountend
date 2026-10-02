@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 
 const INITIAL_LOGS = [
   { text: "orplex@tech:~/project$ npm run dev", color: "text-primary-container" },
-  { text: "> orplex-tech@1.0.0 dev", color: "" },
+  { text: "> orplex-code@1.0.0 dev", color: "" },
   { text: "> next dev", color: "" },
   { text: "  ▲ Next.js 14.2.0", color: "" },
   { text: "  - Local:        http://localhost:3000/", color: "text-outline" },

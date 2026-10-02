@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api-base";
 
 interface Key {
   id: string;
@@ -62,9 +63,9 @@ export default function AdminPage() {
   const fetchData = async () => {
     try {
       const [keysRes, usageRes, backupsRes] = await Promise.all([
-        fetch("/api/admin/keys"),
-        fetch("/api/admin/usage"),
-        fetch("/api/admin/backups"),
+        apiFetch("/api/admin/keys"),
+        apiFetch("/api/admin/usage"),
+        apiFetch("/api/admin/backups"),
       ]);
       if (keysRes.ok) {
         const data = await keysRes.json();
@@ -99,7 +100,7 @@ export default function AdminPage() {
   const addKey = async () => {
     setAddStatus("Adding...");
     try {
-      const res = await fetch("/api/admin/keys", {
+      const res = await apiFetch("/api/admin/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newKey),
@@ -119,7 +120,7 @@ export default function AdminPage() {
   };
 
   const toggleKey = async (id: string, isActive: boolean) => {
-    await fetch("/api/admin/keys", {
+    await apiFetch("/api/admin/keys", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, isActive: !isActive }),
@@ -129,7 +130,7 @@ export default function AdminPage() {
 
   const deleteKey = async (id: string) => {
     if (!confirm("Delete this key?")) return;
-    await fetch(`/api/admin/keys?id=${id}`, { method: "DELETE" });
+    await apiFetch(`/api/admin/keys?id=${id}`, { method: "DELETE" });
     fetchData();
   };
 
@@ -139,7 +140,7 @@ export default function AdminPage() {
     setBackupBusy(true);
     setBackupMsg("Backing up...");
     try {
-      const res = await fetch("/api/admin/backups", { method: "POST" });
+      const res = await apiFetch("/api/admin/backups", { method: "POST" });
       const data = await res.json();
       if (res.ok && data.success) {
         setBackupMsg(`✓ Created ${String(data.backup.path).split(/[\\/]/).pop()} (${fmtMB(data.backup.size)})`);
@@ -155,91 +156,91 @@ export default function AdminPage() {
     setBackupBusy(false);
   };
 
-  if (loading) return <div style={{ padding: 40, fontFamily: "monospace" }}>Loading admin dashboard...</div>;
-  if (error) return <div style={{ padding: 40, color: "red" }}>{error}</div>;
+  if (loading) return <div className="admin-wrap route-loading">Loading admin dashboard...</div>;
+  if (error) return <div className="admin-wrap admin-status-err">{error}</div>;
 
   return (
-    <div style={{ padding: 24, fontFamily: "'JetBrains Mono', monospace", maxWidth: 1000, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 24 }}>
-        <h1 style={{ fontSize: 20, margin: 0 }}>Admin Dashboard</h1>
-        <a href="/admin/system" style={{ fontSize: 12, color: "#a04100" }}>System status →</a>
+    <div className="admin-wrap">
+      <div className="admin-header">
+        <h1 className="admin-h1">Admin Dashboard</h1>
+        <a href="/admin/system" className="admin-link">System status →</a>
       </div>
 
       {/* Summary Cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
+      <div className="admin-cards">
         {[
           { label: "Requests Today", value: summary?.totalUsageToday || 0 },
           { label: "Active Keys", value: summary?.activeKeys || 0 },
           { label: "Capacity", value: `${summary?.utilizationPercent || 0}%` },
           { label: "Unique Users", value: usage?.today.uniqueUsers || 0 },
         ].map((card) => (
-          <div key={card.label} style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16 }}>
-            <div style={{ fontSize: 10, color: "#999", textTransform: "uppercase" }}>{card.label}</div>
-            <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{card.value}</div>
+          <div key={card.label} className="admin-card">
+            <div className="admin-card-label">{card.label}</div>
+            <div className="admin-card-value">{card.value}</div>
           </div>
         ))}
       </div>
 
       {/* Key Pool */}
-      <div style={{ marginBottom: 24 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <h2 style={{ fontSize: 14, margin: 0 }}>Key Pool</h2>
-          <button onClick={() => setShowAdd(!showAdd)} style={{ background: "#a04100", color: "#fff", border: "none", borderRadius: 4, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>
+      <div className="admin-section">
+        <div className="admin-row">
+          <h2 className="admin-h2">Key Pool</h2>
+          <button className="admin-btn" onClick={() => setShowAdd(!showAdd)}>
             + Add Key
           </button>
         </div>
 
         {/* Add Key Form */}
         {showAdd && (
-          <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, marginBottom: 12 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
-              <select value={newKey.provider} onChange={e => setNewKey({ ...newKey, provider: e.target.value })} style={{ padding: 6, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7" }}>
+          <div className="admin-panel">
+            <div className="admin-grid-form">
+              <select className="admin-select" value={newKey.provider} onChange={e => setNewKey({ ...newKey, provider: e.target.value })}>
                 <option value="nvidia">NVIDIA</option>
                 <option value="openrouter">OpenRouter</option>
               </select>
-              <input placeholder="API Key" value={newKey.apiKey} onChange={e => setNewKey({ ...newKey, apiKey: e.target.value })} style={{ padding: 6, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7" }} />
-              <input placeholder="Model" value={newKey.model} onChange={e => setNewKey({ ...newKey, model: e.target.value })} style={{ padding: 6, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7" }} />
-              <button onClick={addKey} style={{ background: "#a04100", color: "#fff", border: "none", borderRadius: 4, padding: 6, cursor: "pointer", fontSize: 12 }}>Add</button>
+              <input className="admin-input" placeholder="API Key" value={newKey.apiKey} onChange={e => setNewKey({ ...newKey, apiKey: e.target.value })} />
+              <input className="admin-input" placeholder="Model" value={newKey.model} onChange={e => setNewKey({ ...newKey, model: e.target.value })} />
+              <button className="admin-btn" onClick={addKey}>Add</button>
             </div>
-            {addStatus && <div style={{ fontSize: 11, color: addStatus.includes("success") ? "green" : "red" }}>{addStatus}</div>}
+            {addStatus && <div className={`admin-card-label ${addStatus.includes("success") ? "admin-status-ok" : "admin-status-err"}`} style={{ fontSize: 11 }}>{addStatus}</div>}
           </div>
         )}
 
         {/* Keys Table */}
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <table className="admin-table">
           <thead>
-            <tr style={{ borderBottom: "1px solid #e4e4e7", textAlign: "left" }}>
-              <th style={{ padding: "8px 4px" }}>Provider</th>
-              <th style={{ padding: "8px 4px" }}>Model</th>
-              <th style={{ padding: "8px 4px" }}>Usage</th>
-              <th style={{ padding: "8px 4px" }}>Priority</th>
-              <th style={{ padding: "8px 4px" }}>Status</th>
-              <th style={{ padding: "8px 4px" }}>Actions</th>
+            <tr>
+              <th>Provider</th>
+              <th>Model</th>
+              <th>Usage</th>
+              <th>Priority</th>
+              <th>Status</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {keys.map(key => (
-              <tr key={key.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
-                <td style={{ padding: "8px 4px" }}>{key.provider}</td>
-                <td style={{ padding: "8px 4px" }}>{key.model}</td>
-                <td style={{ padding: "8px 4px" }}>
+              <tr key={key.id}>
+                <td>{key.provider}</td>
+                <td>{key.model}</td>
+                <td>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <div style={{ width: 60, height: 6, background: "#e4e4e7", borderRadius: 3 }}>
+                    <div className="admin-bar">
                       <div style={{ width: `${Math.min(100, (key.usageToday / key.dailyLimit) * 100)}%`, height: "100%", background: key.usageToday / key.dailyLimit > 0.8 ? "#ef4444" : key.usageToday / key.dailyLimit > 0.5 ? "#f59e0b" : "#22c55e", borderRadius: 3 }} />
                     </div>
                     <span>{key.usageToday}/{key.dailyLimit}</span>
                   </div>
                 </td>
-                <td style={{ padding: "8px 4px" }}>{key.priority}</td>
-                <td style={{ padding: "8px 4px" }}>
+                <td>{key.priority}</td>
+                <td>
                   <span style={{ color: key.isActive ? "green" : "red" }}>{key.isActive ? "Active" : "Inactive"}</span>
                   {key.failures > 0 && <span style={{ color: "orange", marginLeft: 4 }}>({key.failures} failures)</span>}
                 </td>
-                <td style={{ padding: "8px 4px" }}>
-                  <button onClick={() => toggleKey(key.id, key.isActive)} style={{ background: "none", border: "1px solid #e4e4e7", borderRadius: 3, padding: "2px 8px", cursor: "pointer", fontSize: 11, marginRight: 4 }}>
+                <td>
+                  <button className="admin-btn--ghost" style={{ marginRight: 4 }} onClick={() => toggleKey(key.id, key.isActive)}>
                     {key.isActive ? "Disable" : "Enable"}
                   </button>
-                  <button onClick={() => deleteKey(key.id)} style={{ background: "none", border: "1px solid #fecaca", color: "#ef4444", borderRadius: 3, padding: "2px 8px", cursor: "pointer", fontSize: 11 }}>
+                  <button className="admin-btn--danger" onClick={() => deleteKey(key.id)}>
                     Delete
                   </button>
                 </td>
@@ -250,18 +251,18 @@ export default function AdminPage() {
       </div>
 
       {/* Database Backups */}
-      <div style={{ marginBottom: 24 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <h2 style={{ fontSize: 14, margin: 0 }}>Database Backups</h2>
+      <div className="admin-section">
+        <div className="admin-row">
+          <h2 className="admin-h2">Database Backups</h2>
           <button
+            className="admin-btn"
             onClick={triggerBackup}
             disabled={backupBusy || (backups !== null && !backups.pgDump.available)}
-            style={{ background: "#a04100", color: "#fff", border: "none", borderRadius: 4, padding: "6px 12px", cursor: backupBusy ? "wait" : "pointer", fontSize: 12, opacity: backupBusy || (backups !== null && !backups.pgDump.available) ? 0.6 : 1 }}
           >
             {backupBusy ? "Backing up..." : "Back Up Now"}
           </button>
         </div>
-        <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, fontSize: 12 }}>
+        <div className="admin-panel" style={{ marginBottom: 0 }}>
           {backups ? (
             <>
               <div>
@@ -269,9 +270,9 @@ export default function AdminPage() {
                 <span style={{ color: backups.pgDump.available ? "green" : "red", fontWeight: 700 }}>
                   {backups.pgDump.available ? `available (${backups.pgDump.source})` : "not found"}
                 </span>
-                {!backups.databaseConfigured && <span style={{ color: "#b45309" }}> · DATABASE_URL not set</span>}
+                {!backups.databaseConfigured && <span className="admin-warning"> · DATABASE_URL not set</span>}
               </div>
-              {backupHint && <div style={{ color: "#b45309", marginTop: 6 }}>{backupHint}</div>}
+              {backupHint && <div className="admin-warning" style={{ marginTop: 6 }}>{backupHint}</div>}
               <div style={{ marginTop: 8 }}>
                 {backups.lastBackup ? (
                   <>
@@ -287,16 +288,16 @@ export default function AdminPage() {
                 )}
               </div>
               {backups.retention.warnings.map((w) => (
-                <div key={w.kind} style={{ marginTop: 8, color: "#b45309", fontWeight: 600 }}>
+                <div key={w.kind} className="admin-warning" style={{ marginTop: 8, fontWeight: 600 }}>
                   ⚠ {w.message}
                 </div>
               ))}
               {backupMsg && <div style={{ marginTop: 8, color: backupMsg.startsWith("✓") ? "green" : "red" }}>{backupMsg}</div>}
-              <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+              <div className="admin-muted" style={{ marginTop: 8 }}>
                 Retention: warn if newest &gt; {backups.retention.maxStaleHours}h
                 {backups.retention.maxTotalMB > 0 ? ` · total > ${backups.retention.maxTotalMB} MB (ORPLEX_BACKUP_MAX_TOTAL_MB)` : " · size uncapped (ORPLEX_BACKUP_MAX_TOTAL_MB)"}
               </div>
-              <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+              <div className="admin-muted" style={{ marginTop: 8 }}>
                 Stored in {backups.backupDir} · restore with pg_restore · daily cron at server boot
               </div>
             </>
@@ -309,16 +310,16 @@ export default function AdminPage() {
       {/* Usage by Provider */}
       {usage && (
         <div>
-          <h2 style={{ fontSize: 14, marginBottom: 12 }}>Today&apos;s Usage</h2>
+          <h2 className="admin-h2" style={{ marginBottom: 12 }}>Today&apos;s Usage</h2>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
             {Object.entries(usage.today.byProvider).map(([provider, count]) => (
-              <div key={provider} style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 12, minWidth: 120 }}>
-                <div style={{ fontSize: 10, color: "#999", textTransform: "uppercase" }}>{provider}</div>
+              <div key={provider} className="admin-card" style={{ padding: 12, minWidth: 120 }}>
+                <div className="admin-card-label">{provider}</div>
                 <div style={{ fontSize: 18, fontWeight: 700 }}>{count}</div>
               </div>
             ))}
           </div>
-          <div style={{ marginTop: 12, fontSize: 12, color: "#666" }}>
+          <div className="admin-muted" style={{ marginTop: 12, fontSize: 12 }}>
             Avg latency: {usage.today.avgLatencyMs}ms | This week: {usage.thisWeek.totalRequests} requests
           </div>
         </div>

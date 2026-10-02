@@ -129,6 +129,18 @@ export async function dispatchToolCall(
     toolResults += xml;
   };
 
+  // ── MCP connector tools (mcp__<server>__<tool>) ─────────────────────
+  // OAuth-authenticated remote servers connected in MCP connectors. Checked
+  // FIRST so their names never collide with built-ins.
+  if (call.name.startsWith("mcp__")) {
+    const { dispatchMcpToolCall } = await import("../mcp/dispatch");
+    return dispatchMcpToolCall(call as { name: string } & Record<string, unknown>, {
+      setStatus: ctx.setStatus,
+      appendDisplay: ctx.appendDisplay,
+      syncDisplay: ctx.syncDisplay,
+    });
+  }
+
   // ── read_file ─────────────────────────────────────────────────────────
   if (call.name === "read_file" && call.path) {
     const readCount = ctx.readFiles.get(call.path) || 0;

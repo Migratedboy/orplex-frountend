@@ -9,7 +9,7 @@
 
 ## Reporting a Vulnerability
 
-We take the security of Orplex Tech seriously. If you discover a security vulnerability, please report it responsibly.
+We take the security of Orplex Code seriously. If you discover a security vulnerability, please report it responsibly.
 
 ### How to Report
 

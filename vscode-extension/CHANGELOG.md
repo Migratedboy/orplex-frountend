@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the Orplex Tech VS Code extension will be documented in this file.
+All notable changes to the Orplex Code VS Code extension will be documented in this file.
 
 ## [0.1.0] - 2026-09-02
 

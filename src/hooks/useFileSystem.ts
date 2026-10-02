@@ -96,19 +96,25 @@ export function useFileSystem() {
 
       const path = basePath ? `${basePath}/${entry.name}` : entry.name;
 
-      if (entry.kind === "file") {
-        fileHandlesRef.current.set(path, entry);
-        nodes.push({ name: entry.name, path, kind: "file", handle: entry });
-      } else if (entry.kind === "directory") {
-        const children = await scanDirectory(entry, path);
-        nodes.push({
-          name: entry.name, path, kind: "directory",
-          children: children.sort((a, b) => {
-            if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
-            return a.name.localeCompare(b.name);
-          }),
-          handle: entry,
-        });
+      try {
+        if (entry.kind === "file") {
+          fileHandlesRef.current.set(path, entry);
+          nodes.push({ name: entry.name, path, kind: "file", handle: entry });
+        } else if (entry.kind === "directory") {
+          const children = await scanDirectory(entry, path);
+          nodes.push({
+            name: entry.name, path, kind: "directory",
+            children: children.sort((a, b) => {
+              if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
+              return a.name.localeCompare(b.name);
+            }),
+            handle: entry,
+          });
+        }
+      } catch (err) {
+        // One unreadable entry (permission gap, transient IO) must not abort
+        // the whole folder open — skip it and keep scanning the rest.
+        console.warn(`[workspace] skipping unreadable entry "${path}"`, err);
       }
     }
     return nodes.sort((a, b) => {
@@ -190,22 +196,42 @@ export function useFileSystem() {
     return { fileCount: fileHandlesRef.current.size };
   }, [scanDirectory, toast]);
 
-  const openFolder = useCallback(async () => {
-    try {
-      if (typeof window === "undefined" || !("showDirectoryPicker" in window)) {
-        toast("File System Access API is not supported in this browser. Please use Chrome or Edge.", "error");
-        return;
-      }
+  // One native folder picker at a time. A second showDirectoryPicker() call
+  // while a dialog is still spawning throws NotAllowedError ("File picker
+  // already active") — the hero pill, its Ctrl+O shortcut and the workspace
+  // switcher can all fire inside that window, and the uncaught rejection used
+  // to surface as a dev-overlay console error. Collapse duplicate calls into
+  // the in-flight picker instead.
+  const pickerInFlightRef = useRef<Promise<void> | null>(null);
 
-      const handle = await (window as any).showDirectoryPicker({ mode: "readwrite" });
-      const { fileCount } = await openFolderHandle(handle);
-      toast(`Mapped "${handle.name}" — ${fileCount} files available to the AI on demand.`, "success");
-    } catch (err: any) {
-      if (err.name !== "AbortError") {
-        console.error(err);
-        toast(`Error opening folder: ${err.message}`, "error");
+  const openFolder = useCallback(async () => {
+    if (pickerInFlightRef.current) return pickerInFlightRef.current;
+    const run = (async () => {
+      try {
+        if (typeof window === "undefined" || !("showDirectoryPicker" in window)) {
+          toast("File System Access API is not supported in this browser. Please use Chrome or Edge.", "error");
+          return;
+        }
+
+        const handle = await (window as any).showDirectoryPicker({ mode: "readwrite" });
+        const { fileCount } = await openFolderHandle(handle);
+        toast(`Mapped "${handle.name}" — ${fileCount} files available to the AI on demand.`, "success");
+      } catch (err: any) {
+        // AbortError = the user closed the dialog (silent, expected).
+        // NotAllowedError "already active" = a second opener raced the first;
+        // the guard above makes this rare, but some Electron builds still
+        // throw it — treat it the same as a cancel.
+        const duplicate = err?.name === "NotAllowedError" && /already active/i.test(err?.message ?? "");
+        if (err?.name !== "AbortError" && !duplicate) {
+          console.error(err);
+          toast(`Error opening folder: ${err.message}`, "error");
+        }
+      } finally {
+        pickerInFlightRef.current = null;
       }
-    }
+    })();
+    pickerInFlightRef.current = run;
+    return run;
   }, [openFolderHandle, toast]);
 
   /**
@@ -216,18 +242,26 @@ export function useFileSystem() {
    * leaves the project listed and expandable.
    */
   const reopenProject = useCallback(async (name: string) => {
-    const { loadProjectHandle, requestHandlePermission, touchProject } = await import("@/lib/project-registry");
-    const { reopenProject: runReopen } = await import("@/lib/project-reopen");
-    const outcome = await runReopen(name, {
-      loadHandle: (n) => loadProjectHandle(n),
-      checkPermission: (h, mode, query) => requestHandlePermission(h, mode, query),
-      attach: (h) => openFolderHandle(h),
-      touch: (n) => {
-        try {
-          touchProject(window.localStorage, n);
-        } catch {}
-      },
-    });
+    // The reopen contract is "never throws" — chunk-load failures of the
+    // dynamic imports or any unexpected error become a failed outcome (the
+    // project row stays listed), not an uncaught rejection.
+    let outcome: Awaited<ReturnType<typeof import("@/lib/project-reopen").reopenProject>>;
+    try {
+      const { loadProjectHandle, requestHandlePermission, touchProject } = await import("@/lib/project-registry");
+      const { reopenProject: runReopen } = await import("@/lib/project-reopen");
+      outcome = await runReopen(name, {
+        loadHandle: (n) => loadProjectHandle(n),
+        checkPermission: (h, mode, query) => requestHandlePermission(h, mode, query),
+        attach: (h) => openFolderHandle(h),
+        touch: (n) => {
+          try {
+            touchProject(window.localStorage, n);
+          } catch {}
+        },
+      });
+    } catch (err: any) {
+      outcome = { status: "failed", name, message: `Could not reopen "${name}": ${err?.message || "unknown error"}` };
+    }
     if (outcome.status === "ok") {
       toast(outcome.message, "success");
     } else {
@@ -311,8 +345,15 @@ export function useFileSystem() {
       }
 
       const writable = await (handle as any).createWritable();
-      await writable.write(content);
-      await writable.close();
+      try {
+        await writable.write(content);
+        await writable.close();
+      } catch (writeErr) {
+        // A failed write/close must abort the stream — an OPEN writable
+        // locks the file, and every later write to it fails until reload.
+        try { await writable.abort(); } catch {}
+        throw writeErr;
+      }
 
       // Full content is written to DISK (the source of truth). Only cache the
       // copy when it is small — admitting a huge file would evict the whole
@@ -387,8 +428,15 @@ export function useFileSystem() {
       if (!handle) throw new Error("No file handle");
 
       const writable = await (handle as any).createWritable();
-      await writable.write(content);
-      await writable.close();
+      try {
+        await writable.write(content);
+        await writable.close();
+      } catch (writeErr) {
+        // A failed write/close must abort the stream — an OPEN writable
+        // locks the file, and every later write to it fails until reload.
+        try { await writable.abort(); } catch {}
+        throw writeErr;
+      }
 
       // Disk holds the truth; the cache copy stays under the byte budget.
       setFileContents(prev => insertWithBudget(prev, filePath, content));

@@ -52,7 +52,7 @@ jobs:
         with:
           name: "VS Code Extension ${{ github.ref_name }}"
           body: |
-            ## Orplex Tech — VS Code Extension
+            ## Orplex Code — VS Code Extension
 
             ### Install
             ```

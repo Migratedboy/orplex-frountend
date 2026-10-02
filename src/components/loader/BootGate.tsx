@@ -11,7 +11,7 @@ const GeometricLoader = dynamic(() => import("./GeometricLoader"), {
     <div className="gloader" role="status" aria-label="Loading Orplex">
       <div className="gloader-vignette" />
       <div className="gloader-ui">
-        <img src="/logo.png" alt="" className="gloader-logo" />
+        <img src="/logo.svg" alt="" className="gloader-logo" />
       </div>
     </div>
   ),
@@ -31,6 +31,10 @@ const GeometricLoader = dynamic(() => import("./GeometricLoader"), {
 const VISITED_KEY = "orplex-visited";
 const SPLASH_MS = 1200;  // Reduced from 2200ms
 const FADE_MS = 400;     // Reduced from 700ms
+// Hard ceiling on waiting for the window `load` event. If a chunk request
+// hangs (e.g. the dev server restarted mid-load), `load` never fires and the
+// splash would sit at FINALIZING forever — so fade out regardless after this.
+const LOAD_GRACE_MS = 4000;
 
 export default function BootGate({ children }: { children: React.ReactNode }) {
   const reducedMotion = useReducedMotion();
@@ -39,6 +43,7 @@ export default function BootGate({ children }: { children: React.ReactNode }) {
   const gateRef = useRef<HTMLDivElement>(null);
   const minTimer = useRef<ReturnType<typeof setTimeout>>();
   const fadeTimer = useRef<ReturnType<typeof setTimeout>>();
+  const fadingStarted = useRef(false);
 
   useEffect(() => {
     // Skip entirely for reduced-motion users
@@ -71,15 +76,20 @@ export default function BootGate({ children }: { children: React.ReactNode }) {
         window.addEventListener("load", startFade, { once: true });
       }
     }, SPLASH_MS);
+    // Safety net: never wait on `load` indefinitely (see LOAD_GRACE_MS).
+    const loadFallback = setTimeout(startFade, SPLASH_MS + LOAD_GRACE_MS);
 
     return () => {
       clearTimeout(minTimer.current);
       clearTimeout(fadeTimer.current);
+      clearTimeout(loadFallback);
       window.removeEventListener("load", startFade);
     };
   }, [reducedMotion]);
 
   function startFade() {
+    if (fadingStarted.current) return; // load listener + fallback may both fire
+    fadingStarted.current = true;
     setFading(true);
     document.documentElement.classList.remove("boot-active");
     document.documentElement.classList.add("boot-fading");

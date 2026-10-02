@@ -4,7 +4,7 @@
 
 set -e
 
-echo "🔧 Setting up Orplex Tech in GitHub Codespaces..."
+echo "🔧 Setting up Orplex Code in GitHub Codespaces..."
 echo ""
 
 # 1. Install dependencies

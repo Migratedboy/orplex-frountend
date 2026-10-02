@@ -1,6 +1,6 @@
 # Branch Protection Rules
 
-This document describes the recommended branch protection configuration for the Orplex Tech repository.
+This document describes the recommended branch protection configuration for the Orplex Code repository.
 
 ## Setup Instructions
 

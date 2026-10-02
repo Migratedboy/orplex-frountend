@@ -16,11 +16,49 @@
  */
 
 import { M3_TOOL_DEFINITIONS } from "./tool-definitions";
+import { loadRemotes, mcpToolName } from "./mcp/registry";
 import { buildFailureDoctrineContext } from "./failure-memory";
 
 // ============================================================
 // §1 IDENTITY — derived, never hardcoded
 // ============================================================
+
+/**
+ * Connected MCP servers' tools (OAuth remote servers the user added in MCP
+ * connectors). Empty string when none are connected — no prompt bloat. Reads
+ * the cached tools/list from localStorage (sync — buildSystemPrompt is sync).
+ */
+export function buildMcpToolsSection(): string {
+  let remotes: ReturnType<typeof loadRemotes> = [];
+  try {
+    remotes = loadRemotes();
+  } catch {
+    return ""; // non-browser test env
+  }
+  const lines: string[] = [];
+  let count = 0;
+  const CAP = 40;
+  for (const r of remotes) {
+    if (!r.tools?.length) continue;
+    lines.push(`### Server "${r.label}"`);
+    for (const t of r.tools) {
+      if (count >= CAP) {
+        lines.push(`…(${count}+ tools — remaining tools work the same way)`);
+        break;
+      }
+      const props = (t.inputSchema as { properties?: Record<string, unknown>; required?: string[] } | undefined)?.properties;
+      const paramNames = props ? Object.keys(props) : [];
+      const params = paramNames.length ? `(${paramNames.join(", ")})` : "()";
+      const desc = (t.description || "").replace(/\s+/g, " ").slice(0, 200);
+      lines.push(`- \`${mcpToolName(r.id, t.name)}\`${params} — ${desc}`);
+      count++;
+    }
+  }
+  if (!lines.length) return "";
+  return `## MCP CONNECTOR TOOLS — ${count} external tools
+
+The user's connected MCP servers expose the tools below. Call them exactly like built-in tools; results arrive as tool_result. Arguments are the tool's documented parameters.`.concat(`\n\n${lines.join("\n")}`);
+}
 
 /** Roster of every tool, generated from the real schema — can't go stale. */
 export function buildToolRoster(): string {
@@ -46,7 +84,7 @@ export function buildToolRoster(): string {
   return `${M3_TOOL_DEFINITIONS.length} tools:\n${lines.join("\n")}`;
 }
 
-const IDENTITY = (capabilities?: { browser?: boolean }) => `You are Orplex Tech, an elite agentic coding engineer working inside the user's workspace. You don't describe work — you do it, with ${M3_TOOL_DEFINITIONS.length} tools, and you prove it works before reporting done.
+const IDENTITY = (capabilities?: { browser?: boolean }) => `You are Orplex Code, an elite agentic coding engineer working inside the user's workspace. You don't describe work — you do it, with ${M3_TOOL_DEFINITIONS.length} tools, and you prove it works before reporting done.
 
 ${buildToolRoster()}${capabilities?.browser === false ? "\nNote: your own browser tools are unavailable in this environment — use preview_browser for verification instead." : ""}`;
 
@@ -243,7 +281,7 @@ Conversation only — no tools, no file writes. If the user asks you to build so
 // the free tier (8k/min NVIDIA budget).
 // ============================================================
 
-const COMPACT_CORE = `You are Orplex Tech, an elite agentic coding engineer. The full system prompt was provided earlier in this conversation; it still applies in full. Essentials only:
+const COMPACT_CORE = `You are Orplex Code, an elite agentic coding engineer. The full system prompt was provided earlier in this conversation; it still applies in full. Essentials only:
 - FILES, NOT FENCES: build = write_file.
 - READ before write. PLAN (todo_list) before multi-file builds.
 - VERIFY before done — rerun verification after fixes.
@@ -294,13 +332,14 @@ export function buildSystemPrompt(opts: BuildPromptOptions): string {
 
   if (mode === "ask") {
     return [
-      `You are Orplex Tech, a helpful AI assistant.`,
+      `You are Orplex Code, a helpful AI assistant.`,
       ASK_OVERLAY,
       FORMATTING_ASK,
       EFFORT_STYLE[effort ?? "medium"],
     ].filter(Boolean).join("\n\n").trim();
   }
 
+  const MCP_SECTION = buildMcpToolsSection();
   const sections =
     mode === "plan"
       ? [
@@ -308,6 +347,7 @@ export function buildSystemPrompt(opts: BuildPromptOptions): string {
           PRIME_DIRECTIVES,
           PLAN_OVERLAY,
           TOOL_DOCTRINE,
+          ...(MCP_SECTION ? [MCP_SECTION] : []),
           WORKFLOW,
           QUALITY_BARS,
           ENVIRONMENT,
@@ -320,6 +360,7 @@ export function buildSystemPrompt(opts: BuildPromptOptions): string {
           PRIME_DIRECTIVES,
           OUTPUT_CONTRACT,
           TOOL_DOCTRINE,
+          ...(MCP_SECTION ? [MCP_SECTION] : []),
           WORKFLOW,
           QUALITY_BARS,
           ENVIRONMENT,

@@ -93,3 +93,4 @@ service-account*.json
 .model-catalog-cache.json
 .model-test-results.json
 .orplex-workspaces/
+.env-backups/

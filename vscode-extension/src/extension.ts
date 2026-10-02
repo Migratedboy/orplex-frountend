@@ -62,7 +62,7 @@ export function activate(context: vscode.ExtensionContext) {
     100,
   );
   statusItem.text = "$(rocket) Orplex";
-  statusItem.tooltip = "Orplex Tech — AI Coding Assistant";
+  statusItem.tooltip = "Orplex Code — AI Coding Assistant";
   statusItem.command = "orplex.chat";
   statusItem.show();
   context.subscriptions.push(statusItem);

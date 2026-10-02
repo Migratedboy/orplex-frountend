@@ -14,7 +14,7 @@ export default function Header({ onBugReport }: HeaderProps) {
         <svg className="w-6 h-6 text-primary-container" viewBox="0 0 24 24" fill="currentColor">
           <path d="M20 3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-8 12H9v-2h3v2zm5-4H9V9h8v2z" />
         </svg>
-        <span className="font-display text-lg font-bold text-primary-container">Orplex Tech</span>
+        <span className="font-display text-lg font-bold text-primary-container">Orplex Code</span>
       </div>
 
       {/* Status + Nav */}

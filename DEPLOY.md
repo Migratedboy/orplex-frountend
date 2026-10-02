@@ -1,4 +1,4 @@
-# Deploy Orplex Tech — Free Tier Setup
+# Deploy Orplex Code — Free Tier Setup
 
 ## Architecture
 

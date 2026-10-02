@@ -1,4 +1,4 @@
-# Containerfile — Podman/OCI container for Orplex Tech
+# Containerfile — Podman/OCI container for Orplex Code
 # Build: podman build -t orplex-tech .
 # Run:   podman run -p 5000:5000 --env-file .env orplex-tech
 

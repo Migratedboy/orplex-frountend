@@ -177,7 +177,7 @@ function MessageRow({ msg, index, agentRunning, isLast, onRetryMessage, retrying
         )}
         {msg.role === "assistant" ? (
           <div className="msg-content msg-content-assistant">
-            <img src="/logo.png" alt="Orplex" className="msg-avatar" width={28} height={28} />
+            <img src="/logo.svg" alt="Orplex" className="msg-avatar" width={28} height={28} />
             <div className="msg-content-text">
               {msg.content ? (
                 <MessageContent

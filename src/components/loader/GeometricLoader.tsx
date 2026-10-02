@@ -28,7 +28,7 @@ export default function GeometricLoader() {
       <div className="gloader-vignette" aria-hidden="true" />
 
       <div className="gloader-ui">
-        <img src="/logo.png" alt="" className="gloader-logo" />
+        <img src="/logo.svg" alt="" className="gloader-logo" />
 
         <div className="gloader-ring-wrap">
           <svg className="gloader-ring" viewBox="0 0 120 120" aria-hidden="true">
@@ -65,7 +65,7 @@ export default function GeometricLoader() {
         <p className="gloader-phase">
           <span className="gloader-phase-text">{phase}…</span>
         </p>
-        <p className="gloader-brand">Orplex Tech</p>
+        <p className="gloader-brand">Orplex Code</p>
       </div>
     </div>
   );

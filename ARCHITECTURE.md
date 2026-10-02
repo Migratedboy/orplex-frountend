@@ -1,8 +1,8 @@
-# Architecture — Orplex Tech
+# Architecture — Orplex Code
 
 ## Overview
 
-Orplex Tech is an AI coding agent built as an **Electron desktop app** around an
+Orplex Code is an AI coding agent built as an **Electron desktop app** around an
 internal Next.js 16 + React 18 + PostgreSQL backend. The user never runs the
 backend: `npm run dev` (or the packaged binary) launches Electron, which spawns
 Next.js as an invisible child process, owns its lifecycle, and renders the UI

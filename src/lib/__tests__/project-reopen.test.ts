@@ -96,6 +96,22 @@ describe("reopenProject", () => {
     expect(deps.calls).toEqual([]); // no permission work without a handle
   });
 
+  it("loadHandle storage failure → failed outcome, never a rejection", async () => {
+    // IndexedDB can throw (quota, DB closed) — the "NEVER throws" contract
+    // turns that into a typed failed outcome instead of an uncaught promise
+    // rejection in the caller's event handler.
+    const deps = makeDeps({
+      loadHandle: async () => {
+        throw new Error("IndexedDB closed");
+      },
+    });
+    const outcome = await reopenProject("orplex", deps);
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.message).toContain("IndexedDB closed");
+    expect(deps.calls).toEqual([]); // no permission work without a handle
+  });
+
   it("blank name → invalid outcome, no handle lookup", async () => {
     const deps = makeDeps();
     expect((await reopenProject("", deps)).status).toBe("invalid");

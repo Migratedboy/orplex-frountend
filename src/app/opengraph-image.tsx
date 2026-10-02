@@ -5,7 +5,7 @@ import { ImageResponse } from "next/og";
 
 export const runtime = "nodejs";
 
-export const alt = "Orplex Tech - AI Coding Assistant";
+export const alt = "Orplex Code - AI Coding Assistant";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 

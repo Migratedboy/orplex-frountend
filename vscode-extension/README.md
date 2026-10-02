@@ -1,4 +1,4 @@
-# Orplex Tech — VS Code Extension
+# Orplex Code — VS Code Extension
 
 AI coding assistant with streaming chat, multi-provider support, and agentic tool calling.
 
@@ -39,4 +39,4 @@ AI coding assistant with streaming chat, multi-provider support, and agentic too
 ## Requirements
 
 - VS Code 1.90+
-- Orplex Tech server running (local or remote)
+- Orplex Code server running (local or remote)

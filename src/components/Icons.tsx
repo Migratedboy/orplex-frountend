@@ -42,6 +42,37 @@ export const IconBell = (p: IconProps) => <Ms name="notifications" {...p} />;
 export const IconEdit = (p: IconProps) => <Ms name="edit" {...p} />;
 export const IconTrash = (p: IconProps) => <Ms name="delete" {...p} />;
 
+/** MCP connectors: the user-supplied plug SVG (rounded servers under a
+ *  two-prong plug). Drawn inline — not part of the Material Symbols font. */
+export const IconMcp = ({ size = 16, className }: IconProps) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 200 200"
+    className={className}
+    aria-hidden="true"
+    style={{ display: "block", flexShrink: 0 }}
+  >
+    {/* connection lines */}
+    <line x1="100" y1="128" x2="56" y2="162" stroke="currentColor" strokeWidth="16" strokeLinecap="round" />
+    <line x1="100" y1="128" x2="100" y2="172" stroke="currentColor" strokeWidth="16" strokeLinecap="round" />
+    <line x1="100" y1="128" x2="144" y2="162" stroke="currentColor" strokeWidth="16" strokeLinecap="round" />
+    {/* server nodes */}
+    <rect x="43" y="149" width="26" height="26" rx="8" fill="currentColor" />
+    <rect x="87" y="159" width="26" height="26" rx="8" fill="currentColor" />
+    <rect x="131" y="149" width="26" height="26" rx="8" fill="currentColor" />
+    {/* hub */}
+    <circle cx="100" cy="128" r="12" fill="currentColor" />
+    {/* cord */}
+    <path d="M100 90 C100 104 100 108 100 122" stroke="currentColor" strokeWidth="18" strokeLinecap="round" fill="none" />
+    {/* plug body */}
+    <rect x="70" y="54" width="60" height="36" rx="14" fill="currentColor" />
+    {/* plug prongs */}
+    <rect x="82" y="30" width="12" height="28" rx="5" fill="currentColor" />
+    <rect x="106" y="30" width="12" height="28" rx="5" fill="currentColor" />
+  </svg>
+);
+
 // === File & Media ===
 
 export const IconFolder = (p: IconProps) => <Ms name="folder" {...p} />;
@@ -75,6 +106,10 @@ export function IconSeverityLow({ size = 12, className }: IconProps) {
 // === Package Icons ===
 
 export const IconModule = (p: IconProps) => <Ms name="layers" {...p} />;
+/** Agent Manager — multi-agent orchestration hub. */
+export const IconAgentManager = (p: IconProps) => <Ms name="hub" {...p} />;
+/** Runs Board — the kanban-style run board. */
+export const IconRunsBoard = (p: IconProps) => <Ms name="view_kanban" {...p} />;
 export const IconAgent = (p: IconProps) => <Ms name="smart_toy" {...p} />;
 
 // === Misc ===

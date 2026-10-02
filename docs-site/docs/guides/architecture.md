@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Architecture
 
-Orplex Tech is a Next.js application with a modular architecture.
+Orplex Code is a Next.js application with a modular architecture.
 
 ## High-Level Overview
 

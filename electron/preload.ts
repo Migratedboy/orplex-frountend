@@ -26,6 +26,15 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
     chrome: process.versions.chrome || "",
     node: process.versions.node || "",
   },
+  /**
+   * Crash recovery: true when the previous session did not exit cleanly
+   * (crash / force-kill / power loss). The renderer offers to recover.
+   */
+  lastSessionCrashed: () =>
+    ipcRenderer.invoke("orplex:last-session-crashed") as Promise<boolean>,
+  /** Packaged app version (package.json "version") for update detection. */
+  getAppVersion: () =>
+    ipcRenderer.invoke("orplex:app-version") as Promise<string>,
   /** Reveal a workspace folder in the OS file manager (Projects menu). */
   revealPath: (path: string) =>
     ipcRenderer.invoke("orplex:reveal-path", path) as Promise<boolean>,
@@ -98,5 +107,77 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
     tabs: (args: { action?: string; url?: string; index?: number }) =>
       ipcRenderer.invoke("agent-browser:tabs", args) as Promise<Record<string, unknown>>,
     network: () => ipcRenderer.invoke("agent-browser:network") as Promise<Record<string, unknown>>,
+  },
+  /**
+   * MCP REMOTE SERVERS: OAuth 2.1 flows run in the main process (discovery,
+   * dynamic client registration, browser sign-in with a 127.0.0.1 loopback
+   * callback, token exchange/refresh) and MCP JSON-RPC goes through a
+   * Node-side passthrough so remote servers' CORS can never block the app.
+   */
+  /**
+   * DESKTOP SIGN-IN: the renderer opens the backend's OAuth start page in
+   * the user's real browser; the backend deep-links back to orplex://auth
+   * with a one-time code, which the main process relays here. The renderer
+   * exchanges the code for a same-origin session cookie.
+   */
+  auth: {
+    start: (provider: "google" | "github") =>
+      ipcRenderer.invoke("orplex:auth-start", provider) as Promise<{
+        ok: boolean;
+        url?: string;
+        error?: string;
+      }>,
+    /** Fires when the OS hands the app an orplex://auth callback. */
+    onCallback: (listener: (payload: { code?: string; error?: string }) => void) => {
+      const wrapped = (_e: unknown, payload: { code?: string; error?: string }) =>
+        listener(payload);
+      ipcRenderer.on("orplex:auth-callback", wrapped);
+      return () => ipcRenderer.removeListener("orplex:auth-callback", wrapped);
+    },
+    /** Drain a callback that arrived before the sign-in page mounted. */
+    consumePending: () =>
+      ipcRenderer.invoke("orplex:auth-consume-pending") as Promise<{
+        code?: string;
+        error?: string;
+      } | null>,
+  },
+  mcp: {
+    request: (params: { url: string; method?: string; headers?: Record<string, string>; body?: string }) =>
+      ipcRenderer.invoke("orplex:mcp-request", params) as Promise<{
+        ok: boolean;
+        status?: number;
+        headers?: Record<string, string>;
+        text?: string;
+        error?: string;
+      }>,
+    oauthAuthorize: (params: { serverUrl: string; label?: string }) =>
+      ipcRenderer.invoke("orplex:mcp-oauth-authorize", params) as Promise<{
+        ok: boolean;
+        error?: string;
+        accessToken?: string;
+        refreshToken?: string;
+        expiresIn?: number;
+        tokenType?: string;
+        scope?: string;
+        clientId?: string;
+        clientSecret?: string;
+        tokenEndpoint?: string;
+        serverUrl?: string;
+      }>,
+    oauthRefresh: (params: {
+      serverUrl: string;
+      refreshToken: string;
+      clientId: string;
+      clientSecret?: string;
+      tokenEndpoint?: string;
+    }) =>
+      ipcRenderer.invoke("orplex:mcp-oauth-refresh", params) as Promise<{
+        ok: boolean;
+        error?: string;
+        accessToken?: string;
+        refreshToken?: string;
+        expiresIn?: number;
+        tokenType?: string;
+      }>,
   },
 });

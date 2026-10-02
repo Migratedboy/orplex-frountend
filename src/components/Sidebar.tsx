@@ -4,7 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import { useState, useCallback, useEffect } from "react";
 import { useConversations } from "./ConversationProvider";
-import { IconChat, IconHistory, IconPlugins, IconSettings, IconEdit, IconTrash, IconClose, IconMenu, IconAgent } from "./Icons";
+import { IconEdit, IconTrash, IconClose, IconMenu } from "./Icons";
 import { useFileSystemContext } from "./FileSystemProvider";
 import { useBackgroundChat } from "@/hooks/useBackgroundChat";
 import { announceConversationOpen } from "@/lib/navigation-events";
@@ -12,16 +12,10 @@ import { useActiveRunCount } from "@/hooks/useActiveRunCount";
 import { nextConfirmState, type ConfirmState, type ProjectMenuItemId } from "@/lib/project-menu";
 import { threadsForProject, ungroupedThreads, type ThreadLike } from "@/lib/project-threads";
 import { useWorkspace } from "./WorkspaceProvider";
-import { ProjectContextMenu, ProjectRow } from "./ProjectSidebarParts";
+import { ProjectContextMenu } from "./ProjectSidebarParts";
+import ProjectBranchedMenu from "./ProjectBranchedMenu";
+import BranchedMenu, { MsIcon } from "./BranchedMenu";
 import type { ProjectEntry } from "@/lib/project-registry";
-
-const NAV_ITEMS = [
-  { href: "/history", label: "History", Icon: IconHistory },
-  { href: "/manager", label: "Agent Manager", Icon: IconAgent, badge: "runs" as const },
-  { href: "/runs", label: "Runs Board", Icon: IconAgent, badge: "runs" as const },
-  { href: "/plugins", label: "Plugins", Icon: IconPlugins },
-  { href: "/settings", label: "Settings", Icon: IconSettings },
-];
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -43,6 +37,25 @@ export default function Sidebar() {
   const [menuProject, setMenuProject] = useState<ProjectEntry | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [menuConfirm, setMenuConfirm] = useState<ConfirmState>("idle");
+
+  // Which settings tab the nav should highlight. Kept in step with the URL
+  // (?tab= deep links) and with tab switches made inside the settings page
+  // (orplex:settings-tab event) — usePathname can't see query params.
+  const [settingsTab, setSettingsTab] = useState("profile");
+  useEffect(() => {
+    const readUrlTab = () => {
+      const t = new URLSearchParams(window.location.search).get("tab");
+      if (t) setSettingsTab(t);
+    };
+    if (pathname.startsWith("/settings")) readUrlTab();
+    const onSettingsTab = (e: Event) => setSettingsTab((e as CustomEvent<string>).detail);
+    window.addEventListener("orplex:settings-tab", onSettingsTab);
+    window.addEventListener("popstate", readUrlTab);
+    return () => {
+      window.removeEventListener("orplex:settings-tab", onSettingsTab);
+      window.removeEventListener("popstate", readUrlTab);
+    };
+  }, [pathname]);
 
   const toggleProject = useCallback((name: string) => {
     setExpandedProjects((prev) => {
@@ -141,47 +154,104 @@ export default function Sidebar() {
   const navContent = (
     <>
       <div className="sidebar-brand">
-        <img src="/logo.png" alt="Orplex Tech" className="sidebar-brand-logo" />
+        <img src="/logo.svg" alt="Orplex Code" className="sidebar-brand-logo" />
         <div className="sidebar-brand-text">
-          <h1>Orplex Tech</h1>
+          <h1>Orplex Code</h1>
           <span>Vivid Catalyst</span>
         </div>
       </div>
       <div className="sidebar-nav-items">
-        <button
-          onClick={() => {
-            // Clear chat state via event (picked up by useChatSession if mounted)
-            window.dispatchEvent(new CustomEvent("orplex:new-chat"));
-            // Also navigate directly — works even when ChatPage isn't mounted (e.g. on /history)
-            router.push("/");
+        {/* Branched menu (BranchedMenu.tsx): New Chat + History as leaves,
+            Agent Manager + Runs Board grouped under an "Agents" branch and
+            the settings tabs under a "Settings" branch, both with the
+            animated trunk. Plugins stays a leaf. Badges (active runs /
+            pending approvals) ride on the board rows. */}
+        <BranchedMenu
+          items={[
+            {
+              label: "New Chat",
+              value: "/",
+              children: undefined,
+            },
+            {
+              label: "History",
+              value: "/history",
+            },
+            {
+              label: "Agents",
+              children: [
+                {
+                  value: "/manager",
+                  label: "Agent Manager",
+                  icon: <MsIcon name="hub" />,
+                  badge:
+                    pendingApprovals > 0 ? (
+                      <span className="sidebar-nav-badge sidebar-nav-badge-warn" title={`${pendingApprovals} approval(s) pending`}>
+                        {pendingApprovals > 9 ? "9+" : pendingApprovals}
+                      </span>
+                    ) : undefined,
+                },
+                {
+                  value: "/runs",
+                  label: "Runs Board",
+                  icon: <MsIcon name="view_kanban" />,
+                  badge:
+                    activeRuns >= 2 ? (
+                      <span className="sidebar-nav-badge" title={`${activeRuns} active runs`}>
+                        {activeRuns > 9 ? "9+" : activeRuns}
+                      </span>
+                    ) : undefined,
+                },
+              ],
+            },
+            {
+              label: "Plugins",
+              value: "/plugins",
+            },
+            {
+              label: "Settings",
+              children: [
+                { value: "/settings?tab=profile", label: "Profile", icon: <MsIcon name="person" /> },
+                { value: "/settings?tab=appearance", label: "Appearance", icon: <MsIcon name="palette" /> },
+                { value: "/settings?tab=cost", label: "Provider & Cost", icon: <MsIcon name="payments" /> },
+                { value: "/settings?tab=api", label: "API Keys", icon: <MsIcon name="key" /> },
+                { value: "/settings?tab=about", label: "About", icon: <MsIcon name="info" /> },
+                { value: "/settings?tab=danger", label: "Reset & Recovery", icon: <MsIcon name="restart_alt" /> },
+              ],
+            },
+          ]}
+          // defaultActive carries the ?tab= query, matching the child values
+          // so the trunk reach + highlight follow deep links ( BranchedMenu
+          // syncs this via a useEffect when the pathname changes).
+          defaultActive={
+            pathname === "/" || pathname === "/history" || pathname === "/plugins"
+              ? pathname
+              : pathname.startsWith("/manager")
+                ? "/manager"
+                : pathname.startsWith("/runs")
+                  ? "/runs"
+                  : pathname.startsWith("/settings")
+                    ? `/settings?tab=${settingsTab}`
+                    : ""
+          }
+          // Open: the Agents branch (index 2), plus Settings (index 4) while
+          // the user is anywhere in /settings so the tree shows where they are.
+          defaultOpen={pathname.startsWith("/settings") ? [2, 4] : [2]}
+          onSelect={(value) => {
+            if (value === "/") {
+              window.dispatchEvent(new CustomEvent("orplex:new-chat"));
+            }
+            if (value.startsWith("/settings?tab=")) {
+              // The page may already be mounted — a query-only push doesn't
+              // re-run its mount effect, so tell it which tab directly.
+              window.dispatchEvent(
+                new CustomEvent("orplex:settings-tab", { detail: value.slice("/settings?tab=".length) })
+              );
+            }
+            router.push(value);
             setMobileOpen(false);
           }}
-          className={`sidebar-nav-item ${pathname === "/" ? "active" : ""}`}
-        >
-          <IconChat size={16} /> <span>New Chat</span>
-        </button>
-        {NAV_ITEMS.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            prefetch={true}
-            onClick={() => setMobileOpen(false)}
-            onMouseEnter={() => router.prefetch(item.href)}
-            className={`sidebar-nav-item ${pathname === item.href ? "active" : ""}`}
-          >
-            <item.Icon size={16} /> <span>{item.label}</span>
-            {item.badge === "runs" && activeRuns >= 2 && (
-              <span className="sidebar-nav-badge" title={`${activeRuns} active runs`}>
-                {activeRuns > 9 ? "9+" : activeRuns}
-              </span>
-            )}
-            {item.badge === "runs" && pendingApprovals > 0 && (
-              <span className="sidebar-nav-badge sidebar-nav-badge-warn" title={`${pendingApprovals} approval(s) pending`}>
-                {pendingApprovals > 9 ? "9+" : pendingApprovals}
-              </span>
-            )}
-          </Link>
-        ))}
+        />
 
         <BackgroundTaskIndicator />
 
@@ -189,19 +259,19 @@ export default function Sidebar() {
           <div className="conv-section">
             <div className="conv-section-label">Projects</div>
             {projects.map((project) => (
-              <ProjectRow
+              <ProjectBranchedMenu
                 key={project.name}
                 project={project}
-                active={directoryName === project.name}
+                conversations={conversations}
+                activeProject={directoryName}
                 expanded={expandedProjects.has(project.name)}
-                onToggle={() => toggleProject(project.name)}
-                onReopen={() => handleReopenProject(project.name)}
+                onToggle={toggleProject}
+                onReopen={handleReopenProject}
                 onOpenThread={loadConversation}
-                threads={threadsForProject(conversations, project.name)}
-                onContextMenu={(anchor) => {
+                onContextMenu={(proj, anchor) => {
                   setMenuConfirm("idle"); // re-right-click cancels an armed confirm
                   setMenuAnchor(anchor);
-                  setMenuProject(project);
+                  setMenuProject(proj);
                 }}
               />
             ))}
@@ -214,15 +284,16 @@ export default function Sidebar() {
           return (
             <div className="conv-section">
               <div className="conv-section-label">Chats</div>
-              <ProjectRow
+              <ProjectBranchedMenu
                 project={{ name: "", lastOpenedAt: 0 }}
-                active={false}
+                conversations={conversations}
+                activeProject={directoryName}
                 expanded={expandedProjects.has("__ungrouped__")}
-                onToggle={() => toggleProject("__ungrouped__")}
+                onToggle={toggleProject}
                 onReopen={() => toggleProject("__ungrouped__")}
                 onOpenThread={loadConversation}
-                threads={orphans}
-                onContextMenu={() => {}} // unused — Ungrouped skips the menu
+                onContextMenu={() => {}} // Ungrouped skips the menu
+                sectionLabel="Ungrouped"
               />
             </div>
           );

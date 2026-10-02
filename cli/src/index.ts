@@ -13,7 +13,7 @@ const program = new Command();
 
 program
   .name("orplex")
-  .description("Orplex Tech CLI — AI coding assistant in your terminal")
+  .description("Orplex Code CLI — AI coding assistant in your terminal")
   .version("0.1.0");
 
 program

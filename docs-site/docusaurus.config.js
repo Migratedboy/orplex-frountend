@@ -2,7 +2,7 @@ const lightCodeTheme = require("prism-react-renderer").themes.github;
 const darkCodeTheme = require("prism-react-renderer").themes.dracula;
 
 module.exports = {
-  title: "Orplex Tech",
+  title: "Orplex Code",
   tagline: "AI coding assistant with streaming chat, multi-provider support, and agentic tool calling",
   url: "https://docs.orplex.dev",
   baseUrl: "/",
@@ -13,8 +13,8 @@ module.exports = {
   projectName: "orplex-tech",
   themeConfig: {
     navbar: {
-      logo: { alt: "Orplex Tech Logo", src: "img/logo.png" },
-      title: "Orplex Tech",
+      logo: { alt: "Orplex Code Logo", src: "img/logo.png" },
+      title: "Orplex Code",
       items: [
         { type: "doc", docId: "getting-started/install", position: "left", label: "Get Started" },
         { to: "/guides", label: "Guides", position: "left" },
@@ -39,7 +39,7 @@ module.exports = {
           { label: "npm Package", href: "https://www.npmjs.com/package/orplex-cli" },
         ]},
       ],
-      copyright: `Copyright ${new Date().getFullYear()} Orplex Tech.`,
+      copyright: `Copyright ${new Date().getFullYear()} Orplex Code.`,
     },
     prism: { theme: lightCodeTheme, darkTheme: darkCodeTheme },
   },

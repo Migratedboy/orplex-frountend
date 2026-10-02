@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -18 320 320" width="320" height="320" role="img" aria-label="Orplex">
+  <!-- Orplex mascot — square reframing of the 320×280 original so it fills
+       the old square logo slots (sidebar 40px, welcome 80px, avatars 28px)
+       without cropping. Window is centered on the creature's animated bounds
+       (claws x≈8..312, antenna-to-feet y≈26..258 incl. the bob lift). -->
+  <title>Orplex</title>
+  <style>
+    .px { shape-rendering: crispEdges; }
+    .fb { transform-box: fill-box; }
+
+    /* ---------- intro pop (plays once) ---------- */
+    .pop {
+      transform-origin: 160px 280px;
+      animation: pop .9s cubic-bezier(.2, 1.6, .4, 1) backwards;
+    }
+    @keyframes pop {
+      0%   { transform: scale(.4, .2); opacity: 0; }
+      60%  { opacity: 1; }
+      100% { transform: scale(1); }
+    }
+
+    /* ---------- idle loop ---------- */
+    .bob { animation: bob 1.8s ease-in-out infinite; filter: drop-shadow(0 0 16px rgba(249,115,22,.55)); }
+    @keyframes bob {
+      0%, 100% { transform: translateY(0); }
+      50%      { transform: translateY(-12px); }
+    }
+    svg:hover .bob { animation-duration: .55s; }
+    svg:hover .legs .leg { animation-duration: .25s; }
+
+    /* eyes: look around + blink */
+    .look { animation: look 6s ease-in-out infinite; }
+    @keyframes look {
+      0%, 18%   { transform: translateX(0); }
+      25%, 42%  { transform: translateX(-6px); }
+      50%, 68%  { transform: translateX(6px); }
+      76%, 100% { transform: translateX(0); }
+    }
+    .eye { transform-origin: center; animation: blink 4.4s infinite; }
+    @keyframes blink {
+      0%, 92%, 100% { transform: scaleY(1); }
+      95%           { transform: scaleY(.08); }
+    }
+
+    /* arms + pincers */
+    .armL { transform-origin: 60px 150px;  animation: waveL 1.8s ease-in-out infinite; }
+    .armR { transform-origin: 260px 150px; animation: waveR 1.8s ease-in-out infinite; animation-delay: .9s; }
+    @keyframes waveL { 0%,100% { transform: rotate(0); }  50% { transform: rotate(-16deg); } }
+    @keyframes waveR { 0%,100% { transform: rotate(0); }  50% { transform: rotate(16deg); } }
+    .clawT { animation: clawT 1.2s steps(2, jump-none) infinite; }
+    .clawB { animation: clawB 1.2s steps(2, jump-none) infinite; }
+    @keyframes clawT { 0%,100% { transform: translateY(0); }  50% { transform: translateY(6px); } }
+    @keyframes clawB { 0%,100% { transform: translateY(0); }  50% { transform: translateY(-6px); } }
+
+    /* legs shuffle */
+    .leg { animation: step .8s steps(2, jump-none) infinite; }
+    .leg.b { animation-delay: .4s; }
+    @keyframes step { 0% { transform: translateY(0); } 100% { transform: translateY(-8px); } }
+
+    /* antenna */
+    .tip { animation: tip 1.2s ease-in-out infinite; }
+    @keyframes tip {
+      0%, 100% { fill: #FDBA74; filter: drop-shadow(0 0 0 rgba(255,200,130,0)); }
+      50%      { fill: #FFF3E0; filter: drop-shadow(0 0 12px rgba(255,200,130,1)); }
+    }
+    .ripple { transform-origin: center; animation: ripple 2.4s ease-out infinite; }
+    .ripple.r2 { animation-delay: 1.2s; }
+    @keyframes ripple {
+      0%   { transform: scale(1);   opacity: .9; }
+      100% { transform: scale(3.2); opacity: 0; }
+    }
+
+    /* terminal belly: typing loop */
+    .typebar { transform-origin: 0 50%; animation: typeBar 3.6s infinite; }
+    @keyframes typeBar {
+      0%, 8%   { transform: scaleX(0); animation-timing-function: steps(5, end); }
+      58%, 88% { transform: scaleX(1); }
+      90%, 100%{ transform: scaleX(0); }
+    }
+    .typecur { animation: typeCur 3.6s infinite; }
+    @keyframes typeCur {
+      0%, 8%   { transform: translateX(0);    animation-timing-function: steps(5, end); }
+      58%, 88% { transform: translateX(40px); }
+      90%, 100%{ transform: translateX(0); }
+    }
+    .curblink { animation: curblink 1s steps(1) infinite; }
+    @keyframes curblink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
+
+    /* scanline sweeping the body */
+    .scan { animation: scan 3.2s linear infinite; }
+    @keyframes scan {
+      0%   { transform: translateY(-10px); opacity: 0; }
+      10%  { opacity: .35; }
+      90%  { opacity: .35; }
+      100% { transform: translateY(130px); opacity: 0; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; }
+    }
+  </style>
+  <defs>
+    <clipPath id="bodyClip">
+      <path d="M80 90H240V110H260V200H240V220H80V200H60V110H80Z"/>
+    </clipPath>
+  </defs>
+  <!-- creature -->
+  <g class="pop">
+    <g class="bob px">
+
+      <!-- antenna -->
+      <rect x="150" y="62" width="20" height="28" fill="#EA580C"/>
+      <rect class="ripple fb" x="140" y="38" width="40" height="24" fill="none" stroke="#FDBA74" stroke-width="3"/>
+      <rect class="ripple r2 fb" x="140" y="38" width="40" height="24" fill="none" stroke="#FDBA74" stroke-width="3"/>
+      <rect class="tip" x="140" y="38" width="40" height="24" fill="#FDBA74"/>
+
+      <!-- legs -->
+      <g class="legs">
+        <g class="leg">   <rect x="84"  y="220" width="24" height="30" fill="#EA580C"/><rect x="78"  y="248" width="36" height="10" fill="#C2410C"/></g>
+        <g class="leg b"> <rect x="128" y="220" width="24" height="30" fill="#EA580C"/><rect x="122" y="248" width="36" height="10" fill="#C2410C"/></g>
+        <g class="leg">   <rect x="172" y="220" width="24" height="30" fill="#EA580C"/><rect x="166" y="248" width="36" height="10" fill="#C2410C"/></g>
+        <g class="leg b"> <rect x="216" y="220" width="24" height="30" fill="#EA580C"/><rect x="210" y="248" width="36" height="10" fill="#C2410C"/></g>
+      </g>
+
+      <!-- left arm + pincer -->
+      <g class="armL">
+        <rect x="30" y="140" width="32" height="28" fill="#EA580C"/>
+        <rect class="clawT fb" x="14" y="122" width="22" height="24" fill="#F97316"/>
+        <rect class="clawB fb" x="14" y="162" width="22" height="24" fill="#C2410C"/>
+      </g>
+      <!-- right arm + pincer -->
+      <g class="armR">
+        <rect x="258" y="140" width="32" height="28" fill="#EA580C"/>
+        <rect class="clawT fb" x="284" y="122" width="22" height="24" fill="#F97316"/>
+        <rect class="clawB fb" x="284" y="162" width="22" height="24" fill="#C2410C"/>
+      </g>
+
+      <!-- body (notched corners) -->
+      <path d="M80 90H240V110H260V200H240V220H80V200H60V110H80Z" fill="#F97316"/>
+      <!-- shading -->
+      <rect x="80"  y="90"  width="160" height="20" fill="#FB923C"/>
+      <rect x="80"  y="90"  width="160" height="8"  fill="#FDBA74"/>
+      <rect x="60"  y="110" width="14"  height="90" fill="#FB923C"/>
+      <rect x="246" y="110" width="14"  height="90" fill="#EA580C"/>
+      <rect x="80"  y="200" width="160" height="20" fill="#EA580C"/>
+      <rect x="80"  y="212" width="160" height="8"  fill="#C2410C"/>
+
+      <!-- scanline -->
+      <g clip-path="url(#bodyClip)">
+        <rect class="scan" x="60" y="90" width="200" height="8" fill="#FFF3E0"/>
+      </g>
+
+      <!-- eyes -->
+      <g class="look">
+        <g class="eye fb">
+          <rect x="98" y="124" width="26" height="38" fill="#1A1210"/>
+          <rect x="102" y="128" width="8" height="8" fill="#FFF3E0"/>
+        </g>
+        <g class="eye fb">
+          <rect x="196" y="124" width="26" height="38" fill="#1A1210"/>
+          <rect x="200" y="128" width="8" height="8" fill="#FFF3E0"/>
+        </g>
+      </g>
+
+      <!-- terminal belly -->
+      <rect x="116" y="170" width="88" height="30" fill="#1A1210"/>
+      <rect x="116" y="170" width="88" height="3" fill="#000" opacity=".5"/>
+      <g fill="#F97316">
+        <rect x="124" y="178" width="6" height="6"/>
+        <rect x="130" y="184" width="6" height="6"/>
+        <rect x="124" y="190" width="6" height="6"/>
+      </g>
+      <rect class="typebar fb" x="140" y="184" width="40" height="6" fill="#FDBA74"/>
+      <g class="typecur"><rect class="curblink" x="140" y="181" width="8" height="12" fill="#FFF3E0"/></g>
+    </g>
+  </g>
+</svg>

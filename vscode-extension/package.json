@@ -1,9 +1,9 @@
 {
-  "name": "orplex-tech",
-  "displayName": "Orplex Tech",
+  "name": "orplex-code",
+  "displayName": "Orplex Code",
   "description": "AI coding assistant with streaming chat, multi-provider support, and agentic tool calling",
   "version": "0.1.0",
-  "publisher": "orplex-tech",
+  "publisher": "orplex-code",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -23,7 +23,7 @@
     ],
     "viewsContainers": {
       "activitybar": [
-        { "id": "orplex", "title": "Orplex Tech", "icon": "$(robot)" }
+        { "id": "orplex", "title": "Orplex Code", "icon": "$(robot)" }
       ]
     },
     "views": {
@@ -40,7 +40,7 @@
       { "command": "orplex.inlineChat", "key": "ctrl+i", "mac": "cmd+i", "when": "editorHasSelection" }
     ],
     "configuration": {
-      "title": "Orplex Tech",
+      "title": "Orplex Code",
       "properties": {
         "orplex.apiUrl": {
           "type": "string",

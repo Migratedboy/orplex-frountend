@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { apiFetch } from "@/lib/api-base";
 
 interface ExecutorStatus {
   running: boolean;
@@ -100,7 +101,7 @@ function Row({ label, tone, value }: { label: string; tone?: string; value: stri
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 0" }}>
       {tone && <Dot tone={tone} />}
-      <span style={{ color: "#666" }}>{label}:</span>
+      <span className="admin-muted">{label}:</span>
       <span style={{ fontWeight: tone === "bad" ? 700 : 400 }}>{value}</span>
     </div>
   );
@@ -116,7 +117,7 @@ export default function SystemPage() {
 
   const fetchSystem = useCallback(async () => {
     try {
-      const res = await fetch("/api/admin/system");
+      const res = await apiFetch("/api/admin/system");
       const json = await res.json();
       if (res.ok && json.success) {
         setData(json);
@@ -150,7 +151,7 @@ export default function SystemPage() {
     setSweepBusy(true);
     setSweepMsg("Sweeping...");
     try {
-      const res = await fetch("/api/admin/janitor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) });
+      const res = await apiFetch("/api/admin/janitor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) });
       const d = await res.json();
       setSweepMsg(d.success ? `✓ ${d.result.deleted}/${d.result.candidates} removed · ${(d.result.bytesFreed / 1024 / 1024).toFixed(1)} MB freed` : `✗ ${d.error}`);
       fetchSystem();
@@ -164,7 +165,7 @@ export default function SystemPage() {
     <div style={{ padding: 24, fontFamily: "'JetBrains Mono', monospace", maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, margin: 0 }}>System</h1>
-        <span style={{ fontSize: 11, color: "#888" }}>
+        <span className="admin-muted" style={{ fontSize: 11 }}>
           auto-refresh 10s{lastRefresh ? ` · updated ${lastRefresh.toLocaleTimeString()}` : ""}
           {error ? ` · ${error}` : ""}
         </span>
@@ -172,7 +173,7 @@ export default function SystemPage() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
         {/* Process */}
-        <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, fontSize: 12 }}>
+        <div className="admin-panel">
           <h2 style={{ fontSize: 14, margin: "0 0 8px" }}>Process</h2>
           <Row label="Node" value={process.nodeVersion} />
           <Row label="Platform" value={process.platform} />
@@ -185,7 +186,7 @@ export default function SystemPage() {
         </div>
 
         {/* Executor */}
-        <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, fontSize: 12 }}>
+        <div className="admin-panel">
           <h2 style={{ fontSize: 14, margin: "0 0 8px" }}>
             <Dot tone={executorTone} />
             Run Executor
@@ -195,13 +196,13 @@ export default function SystemPage() {
           <Row label="Last poll" value={executor.running ? fmtAgo(executor.lastPollAt) : "—"} />
           <Row label="In flight" value={`${executor.inFlight} / ${env.maxConcurrentRuns}`} />
           <Row label="Claimed / completed / failed" value={`${executor.claimed} / ${executor.completed} / ${executor.failed}`} />
-          <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+          <div className="admin-muted" style={{ marginTop: 8 }}>
             Leases queued runs and executes them in isolated git worktrees (ORPLEX_SERVER_EXECUTOR=1).
           </div>
         </div>
 
         {/* Backups */}
-        <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, fontSize: 12 }}>
+        <div className="admin-panel">
           <h2 style={{ fontSize: 14, margin: "0 0 8px" }}>
             <Dot tone={backupTone} />
             Database Backups
@@ -217,13 +218,13 @@ export default function SystemPage() {
           {backup.retention?.warnings.map((w) => (
             <Row key={w.kind} tone="warn" label="Retention" value={w.message} />
           ))}
-          <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+          <div className="admin-muted" style={{ marginTop: 8 }}>
             Daily cron at boot + manual trigger on the <a href="/admin" style={{ color: "#a04100" }}>dashboard</a>. Restore: pg_restore.
           </div>
         </div>
 
         {/* Cron */}
-        <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, fontSize: 12 }}>
+        <div className="admin-panel">
           <h2 style={{ fontSize: 14, margin: "0 0 8px" }}>
             <Dot tone={cronTone} />
             Daily Reset Cron
@@ -231,12 +232,12 @@ export default function SystemPage() {
           <Row tone={cronTone} label="Status" value={cron.scheduled ? "scheduled" : "not scheduled"} />
           <Row label="Next reset" value={cron.nextResetAt ? new Date(cron.nextResetAt).toLocaleString() : "—"} />
           <Row label="Last completed" value={cron.lastResetAt ? fmtAgo(cron.lastResetAt) : "— (resets at first midnight UTC after boot)"} />
-          <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+          <div className="admin-muted" style={{ marginTop: 8 }}>
             Resets per-key usage counters at midnight UTC (advisory-locked across instances).
           </div>
         </div>
         {/* Workspaces (parallel-workspaces isolation) */}
-        <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, fontSize: 12 }}>
+        <div className="admin-panel">
           <h2 style={{ fontSize: 14, margin: "0 0 8px" }}>
             <Dot tone={workspaceTone} />
             Parallel Workspaces
@@ -249,13 +250,13 @@ export default function SystemPage() {
           {workspaces.lastFallbackAt && (
             <Row tone="bad" label="Last fallback" value={`${fmtAgo(workspaces.lastFallbackAt)} — ${workspaces.lastFallbackReason ?? "unknown"}`} />
           )}
-          <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+          <div className="admin-muted" style={{ marginTop: 8 }}>
             Agent workspaces normally use git worktrees. A fallback means that failed and a full directory copy was used instead — merge semantics and disk cost differ.
           </div>
         </div>
 
         {/* Memory & hardware pressure (8GB machine guardrails) */}
-        <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, fontSize: 12 }}>
+        <div className="admin-panel">
           <h2 style={{ fontSize: 14, margin: "0 0 8px" }}>
             <Dot tone={hardwareTone} />
             Memory Pressure
@@ -268,13 +269,13 @@ export default function SystemPage() {
             label="Run claiming"
             value={hardware.paused ? `paused — ${hardware.lastAction ?? "pressure"}` : "normal"}
           />
-          <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+          <div className="admin-muted" style={{ marginTop: 8 }}>
             Watchdog ladder: amber ≥{Math.round(hardware.thresholds.elevated * 100)}% · pause + no browser lanes ≥{Math.round(hardware.thresholds.high * 100)}% · critical actions (janitor, lane kill) ≥{Math.round(hardware.thresholds.critical * 100)}% sustained.
           </div>
         </div>
 
         {/* Memory janitor */}
-        <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, fontSize: 12 }}>
+        <div className="admin-panel">
           <h2 style={{ fontSize: 14, margin: "0 0 8px" }}>
             <Dot tone={janitor.running ? "warn" : "ok"} />
             Memory Janitor
@@ -301,13 +302,13 @@ export default function SystemPage() {
             </button>
           </div>
           {sweepMsg && <div style={{ marginTop: 8, color: sweepMsg.startsWith("✓") ? "green" : "red" }}>{sweepMsg}</div>}
-          <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+          <div className="admin-muted" style={{ marginTop: 8 }}>
             Whitelist-only: .next cache, node_modules/.cache, docs build, oversized logs, &gt;24h-orphaned worktrees. NEVER touches backups/, .env, .git, src/, .localpg, or the database.
           </div>
         </div>
 
         {/* TPM pacer / run lane (parallel-run enabler) */}
-        <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, fontSize: 12 }}>
+        <div className="admin-panel">
           <h2 style={{ fontSize: 14, margin: "0 0 8px" }}>
             <Dot tone={pacer.queueDepth > 0 ? "warn" : "ok"} />
             TPM Pacer
@@ -321,14 +322,14 @@ export default function SystemPage() {
           <Row tone={pacer.queueDepth > 0 ? "warn" : undefined} label="Queue" value={`${pacer.queueDepth} waiting`} />
           <Row label="Acquired total" value={pacer.totalAcquired.toLocaleString()} />
           <Row label="Total waited" value={`${(pacer.totalWaitedMs / 1000).toFixed(1)}s`} />
-          <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+          <div className="admin-muted" style={{ marginTop: 8 }}>
             One account-wide token bucket shared by every run — parallel runs split the {pacer.budgetPerMinute.toLocaleString()}/min free-tier budget deterministically instead of 429-cascading. ORPLEX_TPM_BUDGET overrides.
           </div>
         </div>
 
         {/* Auto-checkpoint health (rewind granularity + queue headroom) */}
         {autoCheckpoint && (
-          <div style={{ background: "#f9f9fa", border: "1px solid #e4e4e7", borderRadius: 8, padding: 16, fontSize: 12 }}>
+          <div className="admin-panel">
             <h2 style={{ fontSize: 14, margin: "0 0 8px" }}>
               <Dot
                 tone={
@@ -378,7 +379,7 @@ export default function SystemPage() {
               }
             />
             <Row label="Last 24h" value={`${autoCheckpoint.totalLast24h} total · ${autoCheckpoint.autoLast24h} auto`} />
-            <div style={{ marginTop: 8, fontSize: 11, color: "#666" }}>
+            <div className="admin-muted" style={{ marginTop: 8 }}>
               Pre-write checkpoints land before every agent file write and are restorable from the run timeline rewind button. Small edits (under 50KB since the last checkpoint) skip the cooldown — git tree-commits make tiny diffs nearly free — while large rewrites wait out the interval. The gate pauses automatically under RAM pressure; ORPLEX_AUTO_CHECKPOINTS=0 and ORPLEX_AUTO_CHECKPOINT_MAX_PER_RUN / _COOLDOWN_MS / _DELTA_BYTES tune or disable it.
             </div>
           </div>
@@ -388,7 +389,7 @@ export default function SystemPage() {
       {/* Runtime log */}
       <div style={{ marginTop: 24 }}>
         <h2 style={{ fontSize: 14, marginBottom: 8 }}>
-          Runtime Log <span style={{ fontSize: 11, color: "#888" }}>({data.logs.length} shown · {data.logBuffered} buffered in this process)</span>
+          Runtime Log <span className="admin-muted" style={{ fontSize: 11 }}>({data.logs.length} shown · {data.logBuffered} buffered in this process)</span>
         </h2>
         <div style={{ background: "#18181b", color: "#d4d4d8", borderRadius: 8, padding: 12, fontSize: 11, maxHeight: 360, overflowY: "auto" }}>
           {logs.length === 0 ? (

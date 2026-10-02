@@ -4,6 +4,7 @@ import { useTheme } from "@/components/ThemeProvider";
 import { useRouter } from "next/navigation";
 import { announceConversationOpen } from "@/lib/navigation-events";
 import { IconSearch, IconBug, IconSun, IconMoon, IconBell, IconPanel } from "./Icons";
+import { useConversations } from "./ConversationProvider";
 import { apiFetch } from "@/lib/api-base";
 
 interface SearchResult { id: string; title: string; messages: { content: string }[]; }
@@ -49,6 +50,11 @@ export function useNotificationCenter() {
           setToasts((prev) => [...arrivals, ...prev].slice(0, 3));
           for (const n of arrivals) {
             setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== n.id)), TOAST_MS);
+          }
+          // A woken model just became usable — tell the model picker to
+          // refetch so it appears without reopening the menu.
+          if (arrivals.some((n) => n.title === "Cold model woke up")) {
+            window.dispatchEvent(new CustomEvent("orplex:wake-promoted"));
           }
         }
       }
@@ -97,7 +103,7 @@ function notifIcon(type: string) {
   return "ℹ";
 }
 
-export default function TopBar({ title = "Orplex Tech", onBugReport, onTogglePanel, panelOpen }: { title?: string; onBugReport?: () => void; onTogglePanel?: () => void; panelOpen?: boolean }) {
+export default function TopBar({ title = "Orplex Code", onBugReport, onTogglePanel, panelOpen, onToggleSidebar, sidebarCollapsed }: { title?: string; onBugReport?: () => void; onTogglePanel?: () => void; panelOpen?: boolean; onToggleSidebar?: () => void; sidebarCollapsed?: boolean }) {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [showResults, setShowResults] = useState(false);
@@ -107,14 +113,24 @@ export default function TopBar({ title = "Orplex Tech", onBugReport, onTogglePan
   const searchRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
   const { notifications, unread, toasts, markRead, clearAll } = useNotificationCenter();
+  // The conversations cache is already loaded client-side (Sidebar/history use
+  // it) — search it directly. The backend /api/search is the AGENT'S web
+  // search tool (POST {query}); a GET conversation search never existed
+  // there, so the old call always 405'd and the topbar search stayed dead.
+  const { conversations } = useConversations();
 
   useEffect(() => {
     if (!search.trim()) { setResults([]); return; }
     const t = setTimeout(() => {
-      apiFetch(`/api/search?q=${encodeURIComponent(search)}`).then(r => r.json()).then(d => setResults(d.results || [])).catch(() => {});
-    }, 300);
+      const q = search.trim().toLowerCase();
+      setResults(
+        conversations
+          .filter((c) => c.title.toLowerCase().includes(q) || c.messages.some((m) => m.content.toLowerCase().includes(q)))
+          .slice(0, 8)
+      );
+    }, 120);
     return () => clearTimeout(t);
-  }, [search]);
+  }, [search, conversations]);
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
@@ -136,6 +152,18 @@ export default function TopBar({ title = "Orplex Tech", onBugReport, onTogglePan
   return (
     <header className="topbar-header">
       <div className="topbar-left">
+        {/* Sidebar toggle only while the sidebar is open — when collapsed,
+            the floating expand button (sb-expand-fab) takes over. */}
+        {onToggleSidebar && !sidebarCollapsed && (
+          <button
+            onClick={onToggleSidebar}
+            className="topbar-icon-btn topbar-sidebar-toggle"
+            title={sidebarCollapsed ? "Expand sidebar (Ctrl+\)" : "Collapse sidebar (Ctrl+\)"}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <span className="ms ms-sm">{sidebarCollapsed ? "left_panel_open" : "left_panel_close"}</span>
+          </button>
+        )}
         <h1 className="topbar-title">{title}</h1>
       </div>
       <div className="topbar-actions">
