@@ -158,12 +158,18 @@ describe("tool rosters advertise the advanced browser ops", () => {
     }
   });
 
-  it("usesCompactTools routes tight-TPM free tiers (groq, nvidia) to the lean set", () => {
+  it("usesCompactTools covers every provider incl. BYOK keys (unknown defaults to lean)", () => {
+    // Tight-TPM free tiers → lean set.
     for (const n of ["groq", "Groq", "groq-personal", "groq-pool", "nvidia", "NVIDIA NIM", "nvidia-pool", "nvidia-personal"]) {
       expect(usesCompactTools(n)).toBe(true);
     }
-    for (const n of ["openrouter", "OpenRouter", "anthropic", "openai", "minimax", ""]) {
+    // Known full-tier providers (platform, pool and BYOK personal keys) → full set.
+    for (const n of ["openrouter", "OpenRouter", "openrouter-personal", "anthropic", "Anthropic", "openai", "gemini", "mistral", "deepseek", "together", "xai", "fireworks", "cerebras", "minimax", "openai-personal"]) {
       expect(usesCompactTools(n)).toBe(false);
+    }
+    // Unknown/custom BYOK endpoints → lean set (safe default: every verb survives).
+    for (const n of ["my-custom-llm", "local-ollama", ""]) {
+      expect(usesCompactTools(n)).toBe(true);
     }
   });
 

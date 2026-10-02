@@ -477,10 +477,36 @@ export const M3_TOOL_DEFINITIONS = [
  */
 export const COMPACT_TOOL_PROVIDERS = ["groq", "nvidia"];
 
-/** True when a provider config name belongs to a tight-TPM free tier. */
+/**
+ * Providers known to handle the full 30-tool schema array (large context /
+ * billed tiers). Everything else — the compact-listed free tiers AND any
+ * unknown/custom BYOK endpoint — gets the lean set. Default-compact is
+ * deliberate: an unknown endpoint's TPM ceiling is unknowable, and the lean
+ * set still covers every verb family (inspect, create, execute, plan,
+ * lookup, browse), so no provider can ever silently lose the browser tools.
+ */
+export const FULL_TOOL_PROVIDERS = [
+  "openrouter",
+  "anthropic",
+  "openai",
+  "gemini",
+  "mistral",
+  "deepseek",
+  "together",
+  "xai",
+  "fireworks",
+  "cerebras",
+  "minimax",
+];
+
+/** Which schema array a provider config gets. Matches platform keys, key-pool
+ *  entries ("<id>-pool"), BYOK personal keys ("<id>-personal") and display
+ *  labels ("NVIDIA NIM") — anything carrying a known full-tier id gets the
+ *  full set, everything else gets the lean-but-complete set. */
 export function usesCompactTools(providerName: string): boolean {
   const n = (providerName || "").toLowerCase();
-  return COMPACT_TOOL_PROVIDERS.some((p) => n.includes(p));
+  if (FULL_TOOL_PROVIDERS.some((p) => n.includes(p))) return false;
+  return true;
 }
 export const GROQ_TOOL_NAMES = [
   "read_file",
