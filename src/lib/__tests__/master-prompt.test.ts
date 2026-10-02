@@ -124,6 +124,7 @@ describe("runtime directives moved from the worker", () => {
     expect(FORCE_TOOLS_DIRECTIVE).toContain("write_file NOW");
     expect(FORCE_BROWSER_TOOLS_DIRECTIVE).toContain("browser_navigate NOW");
     expect(FORCE_BROWSER_TOOLS_DIRECTIVE).toContain("Do NOT write Selenium");
+    expect(buildSystemPrompt({ mode: "code" })).toContain("auto-attached");
     expect(truncationContinue("src/app.tsx")).toContain("src/app.tsx");
     expect(truncationContinue(undefined)).not.toContain("undefined");
     expect(qualityReviewDirective("- line 3: any")).toContain("- line 3: any");

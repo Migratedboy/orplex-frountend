@@ -354,7 +354,7 @@ export const M3_TOOL_DEFINITIONS = [
     type: "function",
     function: {
       name: "browser_screenshot",
-      description: "Capture what YOUR browser is showing right now. The user sees it live in the preview panel; you get confirmation plus the live page state. Prefer browser_read for extracting text content. Optionally capture the full scrollable page or a specific viewport size to check responsive layouts.",
+      description: "Capture what YOUR browser is showing right now. The screenshot is AUTOMATICALLY attached inline in the chat (you and the user both see it) and its contents are described back to you — never claim you cannot attach, embed, or view screenshots. Prefer browser_read for extracting text content. Optionally capture the full scrollable page or a specific viewport size to check responsive layouts.",
       parameters: {
         type: "object",
         properties: {

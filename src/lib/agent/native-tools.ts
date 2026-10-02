@@ -16,6 +16,8 @@ import { virtualFS } from "../virtual-fs";
 import {
   searchCodeInContents,
   listFilesUnderPath,
+  screenshotMarkdown,
+  downscaleDataUrl,
 } from "../tool-text";
 import { recordFailure } from "../failure-memory";
 import { emitActivity, emitPreview } from "../agent-events";
@@ -77,6 +79,34 @@ export interface DispatchOutcome {
   blocked: boolean;
   /** true when the read was served from cache (dedup) — the loop uses this for re-prompting */
   dedupRead?: boolean;
+  /** Screenshot pixels (downscaled data URL) — the worker forwards these to
+   *  the vision channel so the model SEES the capture, and they are already
+   *  rendered inline in the chat transcript by the handler below. */
+  imageDataUrl?: string;
+}
+
+/**
+ * Shared screenshot landing: embed the capture inline in the chat transcript
+ * (the markdown renderer turns it into an <img>) and return the pixels so
+ * the caller can forward them to the vision channel. Never throws — worst
+ * case it returns undefined and the chat shows text only, exactly like
+ * before. NOTE: resultXml stays text-only on purpose — pixels travel via
+ * the return value (vision) + the display transcript (chat <img>).
+ */
+async function attachScreenshot(
+  ctx: ToolContext,
+  rawDataUrl: unknown,
+  label: string
+): Promise<string | undefined> {
+  try {
+    if (typeof rawDataUrl === "string" && rawDataUrl.startsWith("data:image/")) {
+      const shot = await downscaleDataUrl(rawDataUrl);
+      ctx.appendDisplay(screenshotMarkdown(shot, label));
+      ctx.syncDisplay();
+      return shot;
+    }
+  } catch {}
+  return undefined;
 }
 
 /** fetch helper that aborts when the task aborts or the timeout fires */
@@ -767,8 +797,11 @@ export async function dispatchToolCall(
       const data = await res.json();
       if (data.screenshot) {
         emitPreview(call.url, "take_screenshot");
-        result(`<tool_result name="take_screenshot" url="${call.url}">success - screenshot captured (${data.width || 1280}x${data.height || 720}). Page opened in the live preview panel.</tool_result>\n`);
+        const shot = await attachScreenshot(ctx, data.screenshot, `screenshot — ${call.url}`);
+        result(`<tool_result name="take_screenshot" url="${call.url}">success - screenshot captured (${data.width || 1280}x${data.height || 720}) and attached inline in the chat below. Page opened in the live preview panel.</tool_result>\n`);
         ctx.replaceStatus(`[OK] Screenshot captured: ${call.url} (shown in live preview)`);
+        ctx.syncDisplay();
+        if (shot) return { resultXml: toolResults, blocked: false, imageDataUrl: shot };
       } else {
         result(`<tool_result name="take_screenshot" url="${call.url}">error - ${data.error || "capture failed"}</tool_result>\n`);
         ctx.replaceStatus(`[FAIL] Screenshot failed: ${data.error || "unknown error"}`);
@@ -1004,8 +1037,10 @@ export async function dispatchToolCall(
           }
           case "screenshot": {
             const vp = d.viewport ? ` at ${d.viewport.width}x${d.viewport.height}` : "";
-            result(`<tool_result name="browser_screenshot">success — screenshot captured${d.fullPage ? " (full page)" : ""}${vp} (${d.url}). Use browser_read for the text content.</tool_result>\n`);
+            const shot = await attachScreenshot(ctx, (d as any).screenshot, `browser screenshot — ${d.url || "page"}`);
+            result(`<tool_result name="browser_screenshot">success — screenshot captured${d.fullPage ? " (full page)" : ""}${vp} (${d.url}) and attached inline in the chat below. Use browser_read for the text content.</tool_result>\n`);
             ctx.replaceStatus(`[OK] Screenshot captured`);
+            if (shot) return { resultXml: toolResults, blocked: false, imageDataUrl: shot };
             break;
           }
           case "find": {
@@ -1119,8 +1154,11 @@ export async function dispatchToolCall(
         window.dispatchEvent(new CustomEvent("orplex:agent-browser-tab"));
         const d = await bridge.screenshot({ fullPage: !!call.fullPage, viewpoint: call.viewpoint });
         const vp = d?.viewport ? ` at ${d.viewport.width}x${d.viewport.height}` : "";
-        result(`<tool_result name="browser_screenshot">success — screenshot captured${d?.fullPage ? " (full page)" : ""}${vp} (${d?.url ?? ""}). The live view is shown in the preview panel; use browser_read for the text content.</tool_result>\n`);
+        const shot = await attachScreenshot(ctx, (d as any)?.screenshot, `browser screenshot — ${d?.url ?? "page"}`);
+        result(`<tool_result name="browser_screenshot">success — screenshot captured${d?.fullPage ? " (full page)" : ""}${vp} (${d?.url ?? ""}) and attached inline in the chat below. The live view is shown in the preview panel; use browser_read for the text content.</tool_result>\n`);
         ctx.replaceStatus(`[OK] Screenshot captured`);
+        ctx.syncDisplay();
+        if (shot) return { resultXml: toolResults, blocked: false, imageDataUrl: shot };
       } else if (call.name === "browser_evaluate" && call.code) {
         const r = await bridge.evaluate(String(call.code));
         result(r.ok

@@ -725,6 +725,12 @@ export async function runInBackground(
   let turnsWithTools = 0;
   let hasShownText = false;
   let totalWrites = 0;
+  // Browser-screenshot pixels awaiting vision: collected from dispatch
+  // outcomes, forwarded once on the NEXT model turn (the chat route's vision
+  // preprocessor describes them for text-only models), then dropped — stale
+  // pixels must never ride every turn. Capped: TPM is the free-tier budget.
+  let pendingShotImages: string[] = [];
+  const MAX_SHOTS_PER_TURN = 2;
   // Each "continue" at a safety cap resets counters — bound how many times
   // the user (or a stuck UI) can keep granting it.
   let safetyContinueGrants = 0;
@@ -827,6 +833,14 @@ export async function runInBackground(
         status: "active",
       });
 
+      // Screenshots captured on previous turns ride along once so the model
+      // SEES what it captured (vision preprocessor describes them for
+      // text-only models). User attachments go every turn, as before.
+      const turnImages = pendingShotImages.length > 0
+        ? [...imageDataUrls, ...pendingShotImages.slice(-MAX_SHOTS_PER_TURN)]
+        : imageDataUrls;
+      pendingShotImages = [];
+
       const streamResult = await callModel(
         apiMessages,
         conversationId,
@@ -846,7 +860,7 @@ export async function runInBackground(
           },
         },
         mode,
-        imageDataUrls,
+        turnImages,
         abortSignal,
         effort,
         // Compact profile from turn 2 onward: the full master prompt is
@@ -1132,6 +1146,13 @@ export async function runInBackground(
         const outcome = await dispatchToolCall(call, toolCtx);
         toolResults += outcome.resultXml;
         if (outcome.dedupRead) skippedDueToDup = true;
+        // Screenshot pixels → vision channel on the next turn (capped).
+        if (outcome.imageDataUrl) {
+          pendingShotImages.push(outcome.imageDataUrl);
+          if (pendingShotImages.length > MAX_SHOTS_PER_TURN) {
+            pendingShotImages.splice(0, pendingShotImages.length - MAX_SHOTS_PER_TURN);
+          }
+        }
 
         // === PLUGIN HOOK: afterToolCall ===
         afterToolCall(call.name, call as any, outcome.resultXml.slice(-200)).catch(() => {});

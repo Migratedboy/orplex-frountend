@@ -34,6 +34,61 @@ export function dedupeStreamedChunk(cleanSoFar: string, rawDelta: string): strin
   return cleanSoFar.slice(0, tailStart) + deduplicateWords(cleanSoFar.slice(tailStart) + rawDelta);
 }
 
+// === Screenshot attach helpers (browser screenshots land inline in chat) ===
+
+/**
+ * Markdown image line the chat renderer turns into an inline <img> (with
+ * download action). The data URL rides in the display transcript only — the
+ * model gets the pixels through the vision channel, never this string.
+ */
+export function screenshotMarkdown(dataUrl: string, label: string): string {
+  const safeLabel = (label || "screenshot").replace(/[\[\]]/g, "");
+  return `\n![${safeLabel}](${dataUrl})\n`;
+}
+
+/**
+ * Downscale a PNG/JPEG data URL to a max width so chat transcripts and
+ * vision payloads stay light (a full-page capture can be megabytes).
+ * Resolves to the ORIGINAL on any failure or outside a DOM — never throws,
+ * so callers can always fall back to it.
+ */
+export function downscaleDataUrl(dataUrl: string, maxWidth = 1024): Promise<string> {
+  try {
+    if (typeof dataUrl !== "string" || !/^data:image\/(png|jpeg)/.test(dataUrl)) return Promise.resolve(dataUrl);
+    if (typeof document === "undefined") return Promise.resolve(dataUrl);
+    return new Promise((resolve) => {
+      const done = (v: string) => resolve(v);
+      try {
+        const img = new Image();
+        const timer = setTimeout(() => done(dataUrl), 8000);
+        img.onload = () => {
+          try {
+            clearTimeout(timer);
+            const w = (img as HTMLImageElement).naturalWidth || 0;
+            if (!w || w <= maxWidth) return done(dataUrl);
+            const scale = maxWidth / w;
+            const canvas = document.createElement("canvas");
+            canvas.width = maxWidth;
+            canvas.height = Math.round(((img as HTMLImageElement).naturalHeight || 0) * scale) || 1;
+            const ctx2d = canvas.getContext("2d");
+            if (!ctx2d) return done(dataUrl);
+            ctx2d.drawImage(img, 0, 0, canvas.width, canvas.height);
+            done(canvas.toDataURL("image/png"));
+          } catch {
+            done(dataUrl);
+          }
+        };
+        img.onerror = () => { clearTimeout(timer); done(dataUrl); };
+        img.src = dataUrl;
+      } catch {
+        done(dataUrl);
+      }
+    });
+  } catch {
+    return Promise.resolve(dataUrl);
+  }
+}
+
 // === XML tool-call parsing (legacy fallback for models without native tools) ===
 
 export interface XmlToolCall {
