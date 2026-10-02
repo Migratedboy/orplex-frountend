@@ -466,3 +466,32 @@ export const M3_TOOL_DEFINITIONS = [
 // Updated system prompt — no XML tool instructions needed
 // M3 gets tool definitions via the `tools` parameter natively
 // (System-prompt text and effort styles live in master-prompt.ts.)
+
+/**
+ * Lean tool set for tight-TPM providers (Groq free tier ~8k TPM): the full
+ * schema array blows the per-minute budget, but slicing to the first few
+ * entries silently amputated whole verbs — models then truthfully claimed
+ * they "can't help" with browsing. This curated set keeps every family
+ * (inspect, create, execute, plan, lookup, browse) with the cheapest
+ * schemas, so constrained models stay fully capable.
+ */
+export const GROQ_TOOL_NAMES = [
+  "read_file",
+  "list_files",
+  "write_file",
+  "edit_file",
+  "run_command",
+  "todo_list",
+  "ask_question",
+  "web_search",
+  "browser_navigate",
+  "browser_read",
+  "browser_find",
+  "browser_click",
+  "browser_type",
+  "browser_wait_for",
+] as const;
+
+export const GROQ_TOOL_DEFINITIONS = M3_TOOL_DEFINITIONS.filter((t: any) =>
+  (GROQ_TOOL_NAMES as readonly string[]).includes(t?.function?.name)
+);

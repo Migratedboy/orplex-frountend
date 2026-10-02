@@ -7,7 +7,7 @@
  * existing graceful-degradation tests (agent-browser-session.test.ts).
  */
 import { runBrowserOp, activeSessionCount, resolveRefSelector, evaluateAttempts, pushNetworkEvent, type NetworkEvent } from "../agent-browser-session";
-import { M3_TOOL_DEFINITIONS } from "../tool-definitions";
+import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS, GROQ_TOOL_NAMES } from "../tool-definitions";
 import { buildNativeToolDefs } from "../server-executor/executor";
 
 jest.mock("@/lib/browser-verification", () => ({
@@ -141,6 +141,21 @@ describe("tool rosters advertise the advanced browser ops", () => {
     const shot = M3_TOOL_DEFINITIONS.find((t: any) => t.function?.name === "browser_screenshot");
     expect(shot?.function?.parameters?.properties ?? {}).toHaveProperty("fullPage");
     expect(shot?.function?.parameters?.properties ?? {}).toHaveProperty("viewpoint");
+  });
+
+  it("GROQ_TOOL_DEFINITIONS keeps every verb family incl. browser core (no silent amputation)", () => {
+    const names = GROQ_TOOL_DEFINITIONS.map((t: any) => t.function?.name);
+    // Every name in the allowlist must resolve to a real schema.
+    expect(names).toHaveLength(GROQ_TOOL_NAMES.length);
+    // Browsing must stay callable on tight-TPM providers — a model without
+    // these tools truthfully answers "I can't help with that".
+    for (const n of ["browser_navigate", "browser_read", "browser_find", "browser_click", "browser_type", "browser_wait_for"]) {
+      expect(names).toContain(n);
+    }
+    // Core build/lookup verbs must survive too.
+    for (const n of ["read_file", "write_file", "run_command", "web_search", "todo_list", "ask_question"]) {
+      expect(names).toContain(n);
+    }
   });
 
   it("buildNativeToolDefs exposes the browser roster for server runs", () => {
