@@ -931,15 +931,18 @@ export async function runInBackground(
         }
 
         // BROWSER-TASK NUDGE: the user asked for live browsing but the model
-        // answered in prose (often by writing a Selenium script instead of
-        // driving its own browser). Same one-retry pattern as FORCE TOOLS —
-        // without this, weak models leave users thinking the feature is broken
-        // and they abandon the app. Skipped in ask mode (tools off by design).
+        // never touched its browser (often it writes a Selenium script with
+        // write_file instead of driving its own browser — that counts as tool
+        // use, so the check must be browser-specific, not turnsWithTools).
+        // Same one-retry pattern as FORCE TOOLS — without this, weak models
+        // leave users thinking the feature is broken and they abandon the
+        // app. Skipped in ask mode (tools off by design).
         const browserKeywords = /https?:\/\/|www\.|localhost|\.com|\.org|\.io|\.dev|\bbrows|\bnavigat|open (the|this|that|a)? ?(page|site|website|url|browser)|google|website|webpage|screenshot|visit|go to|check (the|this|that) site/i;
         const userWantsBrowsing = mode !== "ask" && userMessage && browserKeywords.test(userMessage);
+        const usedBrowserTools = Array.from(toolCounts.keys()).some(k => k.startsWith("browser_"));
         const alreadyRetriedBrowser = apiMessages.some(m => m.role === "user" && m.content?.includes("[FORCE BROWSER TOOLS]"));
 
-        if (userWantsBrowsing && hasTextResponse && turnsWithTools === 0 && !alreadyRetriedBrowser) {
+        if (userWantsBrowsing && hasTextResponse && !usedBrowserTools && !alreadyRetriedBrowser) {
           // Model dodged the browser tools — force them, once
           fullDisplayContent += textOnly + "\n\n";
           apiMessages.push({ role: "assistant", content: streamedContent || "" });
