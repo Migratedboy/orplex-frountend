@@ -236,6 +236,9 @@ No file is written before steps 1-3 are complete. The gate WILL block premature 
 /** Model described work instead of doing it. */
 export const FORCE_TOOLS_DIRECTIVE = `[FORCE TOOLS] You described the plan but created no files. Describing is not doing: call write_file NOW for each file. For an HTML site: write_file({path: "index.html", content: "<!DOCTYPE html>..."}). No more prose about code — produce the files.`;
 
+/** Model answered a browser task in prose instead of driving its browser. */
+export const FORCE_BROWSER_TOOLS_DIRECTIVE = `[FORCE BROWSER TOOLS] This task needs your real browser, not a script and not a description. Do NOT write Selenium/Playwright/puppeteer code — you HAVE a live browser. Call browser_navigate NOW with the URL, then browser_read to see the page. Interact with browser_click / browser_type (use browser_find refs like e1, e2 for precision), verify with browser_screenshot, diagnose with browser_console and browser_network. No more prose about browsing — drive the browser.`;
+
 /** Truncated tool call mid-stream. */
 export const truncationContinue = (path?: string): string =>
   `Continue where you left off — the previous response was truncated. ${

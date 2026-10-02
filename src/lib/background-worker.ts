@@ -14,7 +14,7 @@ import { beforeToolCall, afterToolCall, onFileWrite, onFileEdit, onTaskStart, on
 import { initializePlugins, isPluginEnabled } from "./plugins/initializer";
 import { TIMEOUTS, LIMITS, isBlockedCommand } from "./constants";
 import { readStream, deduplicateWords, dedupeStreamedChunk, replaceLastStatus, parseToolCalls, normalizeThinkingBlocks, stripRedundantFences, appendTaskAnchor, repairInterleavedReplay, type ToolCall, type StreamResult } from "./stream-reader";
-import { SPARC_PLAN_DIRECTIVE, FORCE_TOOLS_DIRECTIVE, SAFETY_CONTINUE_DIRECTIVE, qualityReviewDirective, SELF_REVIEW_DIRECTIVE, verificationRepairDirective, browserRepairDirective, truncationContinue, adaptiveFailureDoctrine } from "./master-prompt";
+import { SPARC_PLAN_DIRECTIVE, FORCE_TOOLS_DIRECTIVE, FORCE_BROWSER_TOOLS_DIRECTIVE, SAFETY_CONTINUE_DIRECTIVE, qualityReviewDirective, SELF_REVIEW_DIRECTIVE, verificationRepairDirective, browserRepairDirective, truncationContinue, adaptiveFailureDoctrine } from "./master-prompt";
 import { recordFailure, recordRepairAttempt, clearFailures } from "./failure-memory";
 import { startTaskMeter, recordPromptCall, formatSavingsSummary, logTaskMeter, calibratePromptSizes, computeTaskSavings } from "./prompt-meter";
 import { startRubricObservation, recordToolCall, recordLaneOutcome, finishRubricObservation, isRecordingEnabled, formatTrendReport, readTrendHistoryForReport, getObservationMeta } from "./rubric-recorder";
@@ -928,6 +928,23 @@ export async function runInBackground(
           apiMessages.push({ role: "assistant", content: streamedContent || "" });
           apiMessages.push({ role: "user", content: FORCE_TOOLS_DIRECTIVE });
           continue; // Retry with forced tool usage
+        }
+
+        // BROWSER-TASK NUDGE: the user asked for live browsing but the model
+        // answered in prose (often by writing a Selenium script instead of
+        // driving its own browser). Same one-retry pattern as FORCE TOOLS —
+        // without this, weak models leave users thinking the feature is broken
+        // and they abandon the app. Skipped in ask mode (tools off by design).
+        const browserKeywords = /https?:\/\/|www\.|localhost|\.com|\.org|\.io|\.dev|\bbrows|\bnavigat|open (the|this|that|a)? ?(page|site|website|url|browser)|google|website|webpage|screenshot|visit|go to|check (the|this|that) site/i;
+        const userWantsBrowsing = mode !== "ask" && userMessage && browserKeywords.test(userMessage);
+        const alreadyRetriedBrowser = apiMessages.some(m => m.role === "user" && m.content?.includes("[FORCE BROWSER TOOLS]"));
+
+        if (userWantsBrowsing && hasTextResponse && turnsWithTools === 0 && !alreadyRetriedBrowser) {
+          // Model dodged the browser tools — force them, once
+          fullDisplayContent += textOnly + "\n\n";
+          apiMessages.push({ role: "assistant", content: streamedContent || "" });
+          apiMessages.push({ role: "user", content: FORCE_BROWSER_TOOLS_DIRECTIVE });
+          continue; // Retry with forced browser tool usage
         }
 
         fullDisplayContent += streamedContent || "";

@@ -3,7 +3,7 @@
  * A system prompt rots silently: tool counts drift, sections contradict,
  * profiles diverge. These tests pin the properties that must never break.
  */
-import { buildSystemPrompt, buildToolRoster, SPARC_PLAN_DIRECTIVE, FORCE_TOOLS_DIRECTIVE, truncationContinue, qualityReviewDirective, verificationRepairDirective, browserRepairDirective } from "../master-prompt";
+import { buildSystemPrompt, buildToolRoster, SPARC_PLAN_DIRECTIVE, FORCE_TOOLS_DIRECTIVE, FORCE_BROWSER_TOOLS_DIRECTIVE, truncationContinue, qualityReviewDirective, verificationRepairDirective, browserRepairDirective } from "../master-prompt";
 import { M3_TOOL_DEFINITIONS } from "../tool-definitions";
 
 describe("buildToolRoster", () => {
@@ -122,6 +122,8 @@ describe("runtime directives moved from the worker", () => {
     expect(SPARC_PLAN_DIRECTIVE).toContain("todo_list");
     expect(SPARC_PLAN_DIRECTIVE).toContain("gate WILL block");
     expect(FORCE_TOOLS_DIRECTIVE).toContain("write_file NOW");
+    expect(FORCE_BROWSER_TOOLS_DIRECTIVE).toContain("browser_navigate NOW");
+    expect(FORCE_BROWSER_TOOLS_DIRECTIVE).toContain("Do NOT write Selenium");
     expect(truncationContinue("src/app.tsx")).toContain("src/app.tsx");
     expect(truncationContinue(undefined)).not.toContain("undefined");
     expect(qualityReviewDirective("- line 3: any")).toContain("- line 3: any");
