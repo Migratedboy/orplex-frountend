@@ -468,13 +468,20 @@ export const M3_TOOL_DEFINITIONS = [
 // (System-prompt text and effort styles live in master-prompt.ts.)
 
 /**
- * Lean tool set for tight-TPM providers (Groq free tier ~8k TPM): the full
- * schema array blows the per-minute budget, but slicing to the first few
- * entries silently amputated whole verbs — models then truthfully claimed
- * they "can't help" with browsing. This curated set keeps every family
- * (inspect, create, execute, plan, lookup, browse) with the cheapest
+ * Lean tool set for tight-TPM providers (Groq + NVIDIA free tiers, ~8k TPM):
+ * the full schema array blows the per-minute budget, but slicing to the
+ * first few entries silently amputated whole verbs — models then truthfully
+ * claimed they "can't help" with browsing. This curated set keeps every
+ * family (inspect, create, execute, plan, lookup, browse) with the cheapest
  * schemas, so constrained models stay fully capable.
  */
+export const COMPACT_TOOL_PROVIDERS = ["groq", "nvidia"];
+
+/** True when a provider config name belongs to a tight-TPM free tier. */
+export function usesCompactTools(providerName: string): boolean {
+  const n = (providerName || "").toLowerCase();
+  return COMPACT_TOOL_PROVIDERS.some((p) => n.includes(p));
+}
 export const GROQ_TOOL_NAMES = [
   "read_file",
   "list_files",

@@ -14,7 +14,7 @@ import {
 } from "@/lib/chat-middleware";
 import { sseTransform } from "@/lib/ai-providers";
 import { isMockAiEnabled, createMockProviderStream } from "@/lib/mock-ai";
-import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS } from "@/lib/tool-definitions";
+import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS, usesCompactTools } from "@/lib/tool-definitions";
 import { buildSystemPrompt } from "@/lib/master-prompt";
 import { routeToModel } from "@/lib/model-router";
 import { preprocessMessages } from "@/lib/vision-preprocessor";
@@ -172,7 +172,7 @@ export async function POST(request: NextRequest) {
         ],
         ...(mode === "ask"
           ? {}
-          : { tools: isGroq ? GROQ_TOOL_DEFINITIONS : M3_TOOL_DEFINITIONS, tool_choice: "auto" }),
+          : { tools: usesCompactTools(provider.name) ? GROQ_TOOL_DEFINITIONS : M3_TOOL_DEFINITIONS, tool_choice: "auto" }),
         max_completion_tokens: isGroq
           ? Math.min(2048, routingDecision.model.maxTokens)
           : effort === "low"

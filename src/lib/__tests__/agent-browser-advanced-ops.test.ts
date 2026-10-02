@@ -7,7 +7,7 @@
  * existing graceful-degradation tests (agent-browser-session.test.ts).
  */
 import { runBrowserOp, activeSessionCount, resolveRefSelector, evaluateAttempts, pushNetworkEvent, type NetworkEvent } from "../agent-browser-session";
-import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS, GROQ_TOOL_NAMES } from "../tool-definitions";
+import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS, GROQ_TOOL_NAMES, usesCompactTools } from "../tool-definitions";
 import { buildNativeToolDefs } from "../server-executor/executor";
 
 jest.mock("@/lib/browser-verification", () => ({
@@ -155,6 +155,15 @@ describe("tool rosters advertise the advanced browser ops", () => {
     // Core build/lookup verbs must survive too.
     for (const n of ["read_file", "write_file", "run_command", "web_search", "todo_list", "ask_question"]) {
       expect(names).toContain(n);
+    }
+  });
+
+  it("usesCompactTools routes tight-TPM free tiers (groq, nvidia) to the lean set", () => {
+    for (const n of ["groq", "Groq", "groq-personal", "groq-pool", "nvidia", "NVIDIA NIM", "nvidia-pool", "nvidia-personal"]) {
+      expect(usesCompactTools(n)).toBe(true);
+    }
+    for (const n of ["openrouter", "OpenRouter", "anthropic", "openai", "minimax", ""]) {
+      expect(usesCompactTools(n)).toBe(false);
     }
   });
 
