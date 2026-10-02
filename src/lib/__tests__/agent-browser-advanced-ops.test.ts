@@ -149,7 +149,7 @@ describe("tool rosters advertise the advanced browser ops", () => {
     expect(names).toHaveLength(GROQ_TOOL_NAMES.length);
     // Browsing must stay callable on tight-TPM providers — a model without
     // these tools truthfully answers "I can't help with that".
-    for (const n of ["browser_navigate", "browser_read", "browser_find", "browser_click", "browser_type", "browser_wait_for"]) {
+    for (const n of ["browser_navigate", "browser_read", "browser_find", "browser_click", "browser_type", "browser_wait_for", "browser_screenshot"]) {
       expect(names).toContain(n);
     }
     // Core build/lookup verbs must survive too.

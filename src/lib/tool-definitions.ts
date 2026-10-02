@@ -523,6 +523,10 @@ export const GROQ_TOOL_NAMES = [
   "browser_click",
   "browser_type",
   "browser_wait_for",
+  // Screenshot stays callable on lean lanes too: captures auto-attach inline
+  // in chat + feed the vision channel, so "take a screenshot" never dead-ends
+  // on Groq/NVIDIA the way browsing used to.
+  "browser_screenshot",
 ] as const;
 
 export const GROQ_TOOL_DEFINITIONS = M3_TOOL_DEFINITIONS.filter((t: any) =>
