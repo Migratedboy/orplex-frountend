@@ -4,7 +4,7 @@
   "private": true,
   "main": "electron-dist/main.js",
   "engines": {
-    "node": ">=20.9.0 <21"
+    "node": "24.x"
   },
   "scripts": {
     "predev": "node scripts/fetch-fonts.mjs && npm run electron:build:main",
