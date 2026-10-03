@@ -3,10 +3,11 @@
 import { useState, useEffect, useCallback, useRef, Component, type ReactNode } from "react";
 import { useFileSystemContext } from "./FileSystemProvider";
 import { useBackgroundChat } from "@/hooks/useBackgroundChat";
+import { useScratchpad } from "@/hooks/useScratchpad";
 import DiffView from "./DiffView";
 import { apiFetch } from "@/lib/api-base";
 
-type Tab = "queue" | "changes" | "files" | "preview" | "terminal";
+type Tab = "queue" | "changes" | "files" | "preview" | "terminal" | "scratch";
 
 // Error boundary to prevent one tab crash from killing the whole panel
 class TabErrorBoundary extends Component<{ children: ReactNode; tab: string }, { error: string | null; errorInfo: string | null }> {
@@ -1002,6 +1003,47 @@ function TerminalTab() {
   );
 }
 
+// === Scratch Tab — live mirror of the agent's private working memory ===
+function ScratchTab() {
+  const { text, live } = useScratchpad();
+  if (!text) {
+    return (
+      <div className="rp-empty">
+        No scratchpad yet — it appears here while the agent works a task.
+      </div>
+    );
+  }
+  // Render plan/hypotheses/findings/next as headed blocks; fall back to raw.
+  const lines = text.replace(/^<scratchpad>\n?/, "").replace(/\n?<\/scratchpad>$/, "").split("\n");
+  const blocks: Array<{ head: string; body: string }> = [];
+  let cur: { head: string; body: string } | null = null;
+  for (const line of lines) {
+    const m = line.match(/^(plan|hypotheses|findings|next):\s?(.*)$/);
+    if (m) {
+      if (cur) blocks.push(cur);
+      cur = { head: m[1], body: m[2] };
+    } else if (cur) {
+      cur.body += (cur.body ? "\n" : "") + line;
+    }
+  }
+  if (cur) blocks.push(cur);
+  return (
+    <div className="rp-scratch">
+      {!live && <div className="rp-scratch-stale">Last session — read-only snapshot</div>}
+      {blocks.length > 0 ? (
+        blocks.map((b, i) => (
+          <div key={i} className="rp-scratch-block">
+            <div className="rp-scratch-head">{b.head}</div>
+            <div className="rp-scratch-body">{b.body || <span className="rp-scratch-empty">—</span>}</div>
+          </div>
+        ))
+      ) : (
+        <pre className="rp-scratch-raw">{text}</pre>
+      )}
+    </div>
+  );
+}
+
 // === Main Component ===
 export default function RightPanel({ open, onClose, defaultTab, onResizingChange }: RightPanelProps) {
   // Storage reads happen in effects, NOT in useState initializers — the
@@ -1011,7 +1053,7 @@ export default function RightPanel({ open, onClose, defaultTab, onResizingChange
   useEffect(() => {
     try {
       const saved = sessionStorage.getItem("orplex.rightPanelTab");
-      if (saved && ["queue", "changes", "files", "preview", "terminal"].includes(saved)) {
+      if (saved && ["queue", "changes", "files", "preview", "terminal", "scratch"].includes(saved)) {
         setActiveTab(saved as Tab);
       }
     } catch {}
@@ -1084,6 +1126,7 @@ export default function RightPanel({ open, onClose, defaultTab, onResizingChange
     { id: "files", label: "Files" },
     { id: "preview", label: "Preview", dot: true },
     { id: "terminal", label: "Terminal" },
+    { id: "scratch", label: "Scratch" },
   ];
 
   return (
@@ -1147,6 +1190,7 @@ export default function RightPanel({ open, onClose, defaultTab, onResizingChange
             </div>
           )}
           {activeTab === "terminal" && <TerminalTab />}
+          {activeTab === "scratch" && <ScratchTab />}
         </TabErrorBoundary>
       </div>
     </aside>

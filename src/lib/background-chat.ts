@@ -28,6 +28,8 @@ export interface BackgroundTask {
   completedAt?: number;
   todos: TodoItem[];
   question: PendingQuestion | null;
+  /** Rendered scratchpad block mirror for the Scratch panel (UI-only). */
+  scratchpad?: string;
   /** True when the user pressed Stop — worker must exit without failing */
   aborted?: boolean;
   /** Aggregate outcome stats — powers actionable completion notifications */
@@ -351,6 +353,13 @@ export function completeTodo(index: number) {
 export function clearTodos() {
   if (!currentTask) return;
   currentTask.todos = [];
+  notify();
+}
+
+/** Mirror the agent's scratchpad into the task for the Scratch panel. */
+export function setScratchpad(text: string) {
+  if (!currentTask) return;
+  currentTask.scratchpad = text;
   notify();
 }
 

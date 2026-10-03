@@ -126,6 +126,9 @@ describe("runtime directives moved from the worker", () => {
     expect(FORCE_BROWSER_TOOLS_DIRECTIVE).toContain("Do NOT write Selenium");
     expect(buildSystemPrompt({ mode: "code" })).toContain("auto-attached");
     expect(buildSystemPrompt({ mode: "code" })).toContain("<tool_call>");
+    expect(buildSystemPrompt({ mode: "code" })).toContain("## SCRATCHPAD");
+    expect(buildSystemPrompt({ mode: "plan" })).toContain("## SCRATCHPAD");
+    expect(buildSystemPrompt({ mode: "ask" })).not.toContain("## SCRATCHPAD");
     expect(truncationContinue("src/app.tsx")).toContain("src/app.tsx");
     expect(truncationContinue(undefined)).not.toContain("undefined");
     expect(qualityReviewDirective("- line 3: any")).toContain("- line 3: any");

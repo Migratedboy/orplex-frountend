@@ -382,6 +382,8 @@ export interface ToolCall {
   index?: number; // browser_tabs switch/close target
   fullPage?: boolean;
   viewpoint?: string;
+  // scratchpad_update
+  section?: string;
 }
 
 // (deduplicateWords, parseToolCalls and replaceLastStatus moved to

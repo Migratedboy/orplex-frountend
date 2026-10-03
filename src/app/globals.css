@@ -1309,6 +1309,16 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .dark .rp-file-item:hover { background:#2a1f14; }
 .dark .rp-file-active { background:#2a1f14; color:#ffb693; }
 .dark .rp-queue-item { background:#2a1f14; border-color:#404040; }
+.rp-scratch { padding:12px; display:flex; flex-direction:column; gap:8px; }
+.rp-scratch-stale { font-size:10px; color:#a04100; font-family:'JetBrains Mono',monospace; background:#FFF7ED; border:1px solid #FED7AA; border-radius:6px; padding:4px 8px; }
+.rp-scratch-block { background:#fafafa; border:1px solid #e4e4e7; border-radius:6px; padding:8px; }
+.rp-scratch-head { font-size:10px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:#a04100; font-family:'JetBrains Mono',monospace; margin-bottom:4px; }
+.rp-scratch-body { font-size:12px; color:#1a1c1d; white-space:pre-wrap; word-break:break-word; }
+.rp-scratch-empty { color:#999; }
+.rp-scratch-raw { font-size:11px; white-space:pre-wrap; word-break:break-word; background:#fafafa; border:1px solid #e4e4e7; border-radius:6px; padding:8px; margin:0; }
+.dark .rp-scratch-block, .dark .rp-scratch-raw { background:#1a1a1a; border-color:#404040; }
+.dark .rp-scratch-body { color:#e5e2e1; }
+.dark .rp-scratch-stale { background:#2a1f14; border-color:#404040; color:#ffb693; }
 .dark .rp-queue-msg { color:#e5e2e1; }
 .dark .rp-queue-status { color:#a0a0a0; }
 .dark .rp-change-diff { background:#111; border-color:#333; color:#d4d4d8; }

@@ -150,9 +150,9 @@ export default function AppLayout({ children }: AppLayoutProps) {
         e.preventDefault();
         e.stopImmediatePropagation();
         setPaletteOpen(true);
-      } else if (mod && ["1", "2", "3", "4", "5"].includes(e.key)) {
-        // Ctrl+1..5: jump straight to a right-panel tab (opens the panel).
-        const tab = { "1": "queue", "2": "changes", "3": "files", "4": "preview", "5": "terminal" }[e.key];
+      } else if (mod && ["1", "2", "3", "4", "5", "6"].includes(e.key)) {
+        // Ctrl+1..6: jump straight to a right-panel tab (opens the panel).
+        const tab = { "1": "queue", "2": "changes", "3": "files", "4": "preview", "5": "terminal", "6": "scratch" }[e.key];
         if (tab) {
           e.preventDefault();
           setRightPanelOpen(true);

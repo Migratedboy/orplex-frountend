@@ -136,6 +136,7 @@ export default function CommandPalette({ open, onClose, onOpenPanel, onOpenRun }
         ["preview", "Open Preview panel", "browser live iframe"],
         ["terminal", "Open Terminal", "shell console"],
         ["queue", "Open Queue panel", "background tasks"],
+        ["scratch", "Open Scratchpad panel", "agent thinking plan scratchpad notes"],
       ];
       for (const [tab, label, keywords] of panels) {
         cmds.push({

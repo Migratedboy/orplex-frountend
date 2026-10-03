@@ -65,6 +65,15 @@ export interface ToolContext {
   // ── Display-transcript accessors (the worker composes the visible text) ──
   getDisplay(): string;
   appendDisplay(text: string): void;
+  /**
+   * Scratchpad access (optional — queue-runner/server lanes have no task
+   * scratchpad). The worker owns the state; the dispatcher only routes the
+   * model's section writes through update().
+   */
+  scratchpad?: {
+    get(): import("../scratchpad").ScratchpadState;
+    update(section: import("../scratchpad").ScratchpadSection, content: string): void;
+  };
   setStatus(status: import("../background-chat").TaskStatus, detail?: string): void;
   /** Replace the last status line in the display transcript */
   replaceStatus(line: string): void;
@@ -843,6 +852,31 @@ export async function dispatchToolCall(
     return { resultXml: toolResults, blocked: false };
   }
 
+  // ── scratchpad_update ─────────────────────────────────────────────────
+  // The model's private working memory. State lives in the worker (per task);
+  // this case only validates + routes. Refused loudly when no scratchpad is
+  // wired (server lanes) so the model adapts instead of looping.
+  if (call.name === "scratchpad_update") {
+    const section = typeof call.section === "string" ? call.section : "";
+    const content = typeof call.content === "string"
+      ? call.content
+      : JSON.stringify(call.content ?? "");
+    if (!ctx.scratchpad) {
+      result(`<tool_result name="scratchpad_update">error - no scratchpad in this environment; keep your reasoning in the reply text instead.</tool_result>\n`);
+    } else if (!["plan", "hypotheses", "findings", "next"].includes(section)) {
+      result(`<tool_result name="scratchpad_update">error - section must be one of: plan, hypotheses, findings, next.</tool_result>\n`);
+    } else {
+      ctx.scratchpad.update(
+        section as import("../scratchpad").ScratchpadSection,
+        content.slice(0, 2000)
+      );
+      result(`<tool_result name="scratchpad_update" section="${section}">recorded (${content.length} chars). It will be re-shown to you every turn.</tool_result>\n`);
+      ctx.replaceStatus(`[OK] Scratchpad: ${section} updated`);
+    }
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+
   // ── ask_question ──────────────────────────────────────────────────────
   if (call.name === "ask_question") {
     const question = typeof call.question === "string" ? call.question : JSON.stringify(call.question ?? "");
@@ -1231,7 +1265,7 @@ export async function dispatchToolCall(
   }
 
   // ── Unknown / not-implemented tool ────────────────────────────────────
-  result(`<tool_result name="${call.name || "unknown"}">error — this tool is not available in this environment. Use one of: read_file, list_files, write_file, write_file_chunk, edit_file, batch_edit, search_code, code_search, run_command, run_in_sandbox, undo_last_change, take_screenshot, todo_list, ask_question, preview_browser, verify_app, web_search, or browser_* tools.</tool_result>\n`);
+  result(`<tool_result name="${call.name || "unknown"}">error — this tool is not available in this environment. Use one of: read_file, list_files, write_file, write_file_chunk, edit_file, batch_edit, search_code, code_search, run_command, run_in_sandbox, undo_last_change, take_screenshot, todo_list, ask_question, scratchpad_update, preview_browser, verify_app, web_search, or browser_* tools.</tool_result>\n`);
   ctx.replaceStatus(`[WARN] Tool "${call.name}" is not available here`);
   ctx.syncDisplay();
   return { resultXml: toolResults, blocked: false };

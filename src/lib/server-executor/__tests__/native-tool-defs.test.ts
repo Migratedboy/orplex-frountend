@@ -13,6 +13,14 @@ describe("buildNativeToolDefs", () => {
     expect(edit.parameters).toMatchObject({ required: ["path", "old_text", "new_text"] });
   });
 
+  it("exposes scratchpad_update with section enum (server parity)", () => {
+    const defs = buildNativeToolDefs([]);
+    const names = defs.map((d) => d.name);
+    expect(names).toContain("scratchpad_update");
+    const sp = defs.find((d) => d.name === "scratchpad_update")!;
+    expect(sp.parameters).toMatchObject({ required: ["section", "content"] });
+  });
+
   it("maps MCP tools to the mcp__server__tool convention with their schema", () => {
     const defs = buildNativeToolDefs([
       { server: "fs", name: "search", description: "Search files", inputSchema: { type: "object", properties: { q: { type: "string" } }, required: ["q"] } },

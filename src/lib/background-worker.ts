@@ -22,6 +22,15 @@ import { getWorkspaceKey, buildFinalizePayload, postRunToLedger, hydrateFailureM
 import { buildSystemPrompt } from "./master-prompt";
 import { emitStatus, emitActivity, emitPreview } from "./agent-events";
 import { dispatchToolCall, type ToolContext } from "./agent/native-tools";
+import {
+  createScratchpad,
+  seedScratchpad,
+  isScratchpadEmpty,
+  updateScratchpadSection,
+  renderScratchpadBlock,
+  type ScratchpadState,
+  type ScratchpadSection,
+} from "./scratchpad";
 import { searchCache, cacheResponse, invalidateByFileChange } from "./semantic-cache";
 import { stampFailedMessage } from "./message-retry";
 
@@ -39,6 +48,7 @@ import {
   setTodos,
   completeTodo,
   clearTodos,
+  setScratchpad as setScratchpadText,
   setQuestion,
   answerQuestion,
   bumpStat,
@@ -731,6 +741,20 @@ export async function runInBackground(
   // pixels must never ride every turn. Capped: TPM is the free-tier budget.
   let pendingShotImages: string[] = [];
   const MAX_SHOTS_PER_TURN = 2;
+  // Scratchpad: the model's private working memory (plan drafts, hypotheses,
+  // intermediate results, next move). Complex tasks start seeded so weak
+  // models write into structure; simple tasks start empty (zero tokens until
+  // the model actually uses it).
+  let scratch: ScratchpadState = sparcDirective
+    ? seedScratchpad(typeof userMessage === "string" ? userMessage : "")
+    : createScratchpad();
+  let scratchNudged = false;
+  const pushScratchpadToUI = () => {
+    try {
+      setScratchpadText(renderScratchpadBlock(scratch));
+    } catch {}
+  };
+  pushScratchpadToUI();
   // Each "continue" at a safety cap resets counters — bound how many times
   // the user (or a stuck UI) can keep granting it.
   let safetyContinueGrants = 0;
@@ -1084,6 +1108,13 @@ export async function runInBackground(
         },
         getDisplay: () => fullDisplayContent,
         appendDisplay: (text) => { fullDisplayContent += text; },
+        scratchpad: {
+          get: () => scratch,
+          update: (section: ScratchpadSection, content: string) => {
+            scratch = updateScratchpadSection(scratch, section, content, turn);
+            pushScratchpadToUI();
+          },
+        },
         setStatus: (status, detail) => updateTaskStatus(status, detail),
         replaceStatus: (line) => { fullDisplayContent = replaceLastStatus(fullDisplayContent, line); },
         syncDisplay: () => setDisplayContent(fullDisplayContent),
@@ -1180,10 +1211,20 @@ export async function runInBackground(
 
       fullDisplayContent += "\n";
 
+      // Scratchpad rides the LAST message (same trim-proof pattern as the
+      // task anchor): re-rendered fresh every turn from live state, so it is
+      // always current and can never be evicted by budget trimming.
+      const scratchBlock = renderScratchpadBlock(scratch);
+      // One nudge max: complex task, several turns in, scratchpad untouched.
+      let scratchNudge = "";
+      if (sparcDirective && turn >= 2 && isScratchpadEmpty(scratch) && !scratchNudged) {
+        scratchNudged = true;
+        scratchNudge = `\n[SCRATCHPAD] Use scratchpad_update to record your plan, key findings, and next move before continuing.`;
+      }
       apiMessages = [
         ...apiMessages,
         { role: "assistant", content: streamedContent || "" },
-        { role: "user", content: `[TOOL RESULTS]\n${toolResults}${contextFiles.size ? `\n${buildWorkspaceDigest()}` : ""}\nYou now have all the information you need. Act on it: write files or answer. Do NOT re-read files you've already read.` },
+        { role: "user", content: `[TOOL RESULTS]\n${toolResults}${contextFiles.size ? `\n${buildWorkspaceDigest()}` : ""}${scratchBlock ? `\n${scratchBlock}` : ""}${scratchNudge}\nYou now have all the information you need. Act on it: write files or answer. Do NOT re-read files you've already read.` },
       ];
     }
 

@@ -66,7 +66,7 @@ export function buildToolRoster(): string {
   const categories: Array<[RegExp, string]> = [
     [/^(read_file|list_files|search_code|code_search)$/, "Inspect"],
     [/^(write_file|write_file_chunk|edit_file|batch_edit)$/, "Create & edit"],
-    [/^(todo_list|ask_question)$/, "Plan & interact"],
+    [/^(todo_list|ask_question|scratchpad_update)$/, "Plan & interact"],
     [/^(run_command|run_in_sandbox)$/, "Execute — prefer run_command; run_in_sandbox is for contained one-shot work, NEVER for starting servers"],
     [/^(verify_app|take_screenshot)$/, "Verify"],
     [/^browser_/, "Own browser"],
@@ -177,6 +177,15 @@ const ENVIRONMENT = `## ENVIRONMENT
 - Default ports: static sites npx serve . -l 3001 · Next.js npm run dev (port 3000). Report the URL when a server starts. Port 5000 is reserved by the app itself — never bind anything to it. The app is TypeScript/Node — prefer Node tooling (npx serve, http-server) over python one-liners
 - When editing this app itself (an Orplex/Next.js workspace): tsc --noEmit is the verification lane, jest for lib logic, prisma db push for schema changes.
 - Project skills live in .orplex/skills/<name>/SKILL.md — list that folder and read the relevant SKILL.md when the task touches its domain (you have no skill-loader tool; reading the file IS loading the skill).`;
+
+// ============================================================
+// §7b SCRATCHPAD — private working memory (code/plan only)
+// ============================================================
+
+const SCRATCHPAD_DOCTRINE = `## SCRATCHPAD (your private working memory)
+- You have scratchpad_update(section, content) with sections plan | hypotheses | findings | next. It is re-shown to you every turn and never shown to the user as a deliverable — think there, report cleanly here.
+- Division of labor: todo_list = checkable steps the user sees; scratchpad = your reasoning, hunches, intermediate results, and the single next move.
+- Update it as you learn — especially next BEFORE any irreversible write. Never store secrets, credentials, or tokens in it.`;
 
 // ============================================================
 // §8 FAILURE DOCTRINE
@@ -356,6 +365,7 @@ export function buildSystemPrompt(opts: BuildPromptOptions): string {
           WORKFLOW,
           QUALITY_BARS,
           ENVIRONMENT,
+          SCRATCHPAD_DOCTRINE,
           FAILURE_DOCTRINE,
           SAFETY,
           FORMATTING_CODE,
@@ -369,6 +379,7 @@ export function buildSystemPrompt(opts: BuildPromptOptions): string {
           WORKFLOW,
           QUALITY_BARS,
           ENVIRONMENT,
+          SCRATCHPAD_DOCTRINE,
           FAILURE_DOCTRINE,
           SAFETY,
           FORMATTING_CODE,

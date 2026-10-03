@@ -38,6 +38,14 @@ import { collectMcpServerConfigs, MAX_MCP_SERVERS_PER_RUN } from "../mcp-account
 import { getMcpCatalogEntry } from "../mcp-catalog";
 import { mcpUsageBlock, mcpServerSummaries } from "../mcp-prompt";
 import { grepSearch, codeSearch } from "@/lib/grep-search";
+import {
+  createScratchpad,
+  seedScratchpad,
+  updateScratchpadSection,
+  renderScratchpadBlock,
+  type ScratchpadState,
+  type ScratchpadSection,
+} from "@/lib/scratchpad";
 import type { VerifyResult } from "@/lib/browser-verification";
 import { loadToolHooks, evaluateDenyRules, matchesNotifyRules, type CompiledHooks } from "@/lib/tool-hooks";
 import { runUserHooks } from "@/lib/user-hooks";
@@ -78,6 +86,7 @@ const TOOL_WHITELIST = new Set([
   "browser_network",
   "browser_evaluate",
   "use_skill",
+  "scratchpad_update",
 ]);
 
 interface QueuedRun {
@@ -109,6 +118,7 @@ export function buildNativeToolDefs(mcpTools: McpToolDef[]): NativeToolDef[] {
     { name: "search_code", description: "Search the worktree (ripgrep-backed).", parameters: obj({ query: { type: "string" } }, ["query"]) },
     { name: "code_search", description: "Search with context: grouped per-file matching-line snippets plus a ready-made read_file offset/limit hint per match — locate regions without reading whole files.", parameters: obj({ query: { type: "string" }, context: { type: "number", description: "Context lines around each match (0-10, default 3)" } }, ["query"]) },
     { name: "use_skill", description: "Load the full instructions of a listed skill by name.", parameters: obj({ name_of_skill: { type: "string", description: "Skill name from the roster" } }, ["name_of_skill"]) },
+    { name: "scratchpad_update", description: "Write to your private scratchpad (plan, hypotheses, findings, next move). Re-shown every turn, never a deliverable. Never store secrets.", parameters: obj({ section: { type: "string", description: "plan | hypotheses | findings | next" }, content: { type: "string", description: "New section content" } }, ["section", "content"]) },
     { name: "run_command", description: "Run a shell command in the worktree (screened; dangerous commands are refused).", parameters: obj({ command: { type: "string" } }, ["command"]) },
     { name: "browser_navigate", description: "Open a URL in the agent's SSRF-guarded headless browser. Returns HTTP status, title, and page summary.", parameters: obj({ url: { type: "string", description: "Full URL to load" } }, ["url"]) },
     { name: "browser_read", description: "Read the active tab: URL, title, text, headings, interactive elements with selectors.", parameters: obj({}, []) },
@@ -161,6 +171,8 @@ function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBl
     `- search_code { "name": "search_code", "query": "..." }`,
     `- code_search { "name": "code_search", "query": "..." } (grouped snippets + read_file hints — preferred for locating code)`,
     `- run_command { "name": "run_command", "command": "..." } (screened; dangerous commands are refused)`,
+    `- scratchpad_update { "name": "scratchpad_update", "section": "plan|hypotheses|findings|next", "content": "..." } (private working memory, re-shown every turn — record plan, findings, next move; never store secrets)`,
+    `Keep a private scratchpad via scratchpad_update as you learn — todo discipline still applies; the scratchpad holds reasoning, not checkmarks.`,
   ];
   if (skillRoster) {
     lines.push(``, `Skills available (call use_skill { "name": "use_skill", "name_of_skill": "<name>" } to load the full instructions):`, skillRoster);
@@ -344,7 +356,11 @@ async function executeTool(
   writtenFiles?: Set<string>,
   hooks?: CompiledHooks,
   autoCp?: AutoCheckpointState,
-  mcpRunConfigs?: Record<string, McpRunConfig>
+  mcpRunConfigs?: Record<string, McpRunConfig>,
+  scratchpad?: {
+    get(): ScratchpadState;
+    update(section: ScratchpadSection, content: string): void;
+  }
 ): Promise<string> {
   const name = call.name;
 
@@ -425,6 +441,22 @@ async function executeTool(
   // transcript (the roster in the system prompt carries only descriptions).
   if (name === "use_skill" && typeof call.name_of_skill === "string") {
     return (call.__skillBody as string) || `error: skill "${String(call.name_of_skill).slice(0, 80)}" not found`;
+  }
+
+  // scratchpad_update: the run's private working memory (plan, hypotheses,
+  // findings, next). State lives in the run scope; this case only validates
+  // and routes. Unknown sections fail loudly so the model adapts.
+  if (name === "scratchpad_update") {
+    const section = typeof call.section === "string" ? call.section : "";
+    const content = typeof call.content === "string" ? call.content : JSON.stringify(call.content ?? "");
+    if (!scratchpad) {
+      return `error: no scratchpad in this environment; keep reasoning in the reply text instead.`;
+    }
+    if (!["plan", "hypotheses", "findings", "next"].includes(section)) {
+      return `error: section must be one of: plan, hypotheses, findings, next.`;
+    }
+    scratchpad.update(section as ScratchpadSection, content.slice(0, 2000));
+    return `recorded ${section} (${content.length} chars). It will be re-shown every turn.`;
   }
 
   if (name === "read_file" && typeof call.path === "string") {
@@ -694,6 +726,10 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
   ];
   let turns = 0;
   let summary = "";
+  // Scratchpad: claimed runs do real multi-step work, so start seeded. The
+  // block is re-rendered fresh into every turn's results message (stale copies
+  // compact away harmlessly; the live one is always in the latest message).
+  let scratch: ScratchpadState = seedScratchpad(run.prompt);
   // Paths written this run (for the verification lane + artifacts).
   const writtenFiles = new Set<string>();
   // Auto-checkpoint state: pre-write checkpoints with cooldown + per-run cap.
@@ -917,10 +953,16 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         if (String(call.name) === "use_skill") {
           (call as Record<string, unknown>).__skillBody = skillBody(skills, String((call as Record<string, unknown>).name_of_skill ?? "")) ?? "";
         }
-        const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs);
+        const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, {
+          get: () => scratch,
+          update: (section, content) => {
+            scratch = updateScratchpadSection(scratch, section, content, turns);
+          },
+        });
         results.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
       }
-      transcript.push({ role: "user", content: results.join("\n") });
+      const scratchBlock = renderScratchpadBlock(scratch);
+      transcript.push({ role: "user", content: results.join("\n") + (scratchBlock ? `\n${scratchBlock}` : "") });
     }
 
     if (usageKnown) {

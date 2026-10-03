@@ -223,6 +223,21 @@ export const M3_TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "scratchpad_update",
+      description: "Write to your private scratchpad (plan, hypotheses, findings, next move). It is re-shown to you every turn and never shown to the user as a deliverable. Update it as you learn — especially the next move before any irreversible write. Never store secrets or credentials here.",
+      parameters: {
+        type: "object",
+        properties: {
+          section: { type: "string", enum: ["plan", "hypotheses", "findings", "next"], description: "Which scratchpad section to replace" },
+          content: { type: "string", description: "New section content (plain text, concise)" },
+        },
+        required: ["section", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "ask_question",
       description: "Ask the user a clarifying question with multiple choice options. Use when you need more details to proceed — ask one question at a time.",
       parameters: {
@@ -531,6 +546,7 @@ export const GROQ_TOOL_NAMES = [
   "run_command",
   "todo_list",
   "ask_question",
+  "scratchpad_update",
   "web_search",
   "search_code",
   "code_search",
