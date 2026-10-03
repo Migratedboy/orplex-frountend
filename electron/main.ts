@@ -92,6 +92,12 @@ function writeSessionState(clean: boolean): void {
 // backend port (the old "kill the port listener" behavior murdered the
 // user's own dev servers AND a healthy app instance).
 const gotTheLock = app.requestSingleInstanceLock();
+// Taskbar identity FIRST (before ready): Windows groups the taskbar button
+// by AppUserModelId + exe. Set as early as possible so the shell never
+// associates this process with electron.exe's default icon.
+try {
+  app.setAppUserModelId("tech.orplex.app");
+} catch {}
 if (!gotTheLock) {
   app.quit();
 } else {
@@ -545,10 +551,20 @@ function createWindow(): void {
         const fs = require("fs") as typeof import("fs");
         const ico = path.join(__dirname, "assets", "icon.ico");
         const png = path.join(__dirname, "assets", "icon.png");
-        if (process.platform === "win32" && fs.existsSync(ico)) return ico;
-        if (fs.existsSync(png)) return png;
-      } catch {}
-      return undefined;
+        const picked =
+          process.platform === "win32" && fs.existsSync(ico)
+            ? ico
+            : fs.existsSync(png)
+              ? png
+              : undefined;
+        process.stdout.write(
+          `[icon] dir=${__dirname} ico=${fs.existsSync(ico)} png=${fs.existsSync(png)} picked=${picked ?? "NONE"}\n`
+        );
+        return picked;
+      } catch (err) {
+        process.stdout.write(`[icon] resolve failed: ${String((err as Error)?.message || err)}\n`);
+        return undefined;
+      }
     })(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -1356,11 +1372,11 @@ app.on("activate", () => {
 });
 
 app.whenReady().then(async () => {
-  // Own taskbar identity: without an explicit AUMID, Windows groups the dev
-  // window under electron.exe and reuses whatever icon it cached for that
-  // exe (the Electron atom), ignoring our window icon. Must match the
-  // packaged appId so dev and installed builds behave the same.
-  app.setAppUserModelId("tech.orplex.app");
+  // (AppUserModelId is set at module top, before ready — kept here as a
+  // no-op-safe reaffirm for the packaged appId parity.)
+  try {
+    app.setAppUserModelId("tech.orplex.app");
+  } catch {}
 
   // Desktop sign-in: register the orplex:// protocol handler and the IPC
   // the sign-in page uses to start the browser OAuth flow and receive the
