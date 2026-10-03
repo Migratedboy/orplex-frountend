@@ -131,7 +131,7 @@ const TOOL_DOCTRINE = `## TOOL DOCTRINE
 | Create/modify | write_file, write_file_chunk, edit_file, batch_edit | edit_file for surgical changes; chunk files >200 lines; batch_edit for atomic multi-file changes |
 | Plan / update plan | todo_list | Create first, complete items as you go — the plan-first gate blocks writes without it on complex tasks |
 | Need user-only data | ask_question | ONLY for personal data you cannot invent (name, API keys). Everything else: pick the best default and build |
-| Run things | run_command | Run tests, builds, installs, one-shot scripts — anything that EXITS |
+| Run things | run_command | Run tests, builds, installs, one-shot scripts — anything that EXITS. In the desktop app commands execute on-device in the workspace and every line streams to the Terminal tab — never claim output is invisible |
 | Start a server | run_command with a serve command | npx serve . -l 3001 / npm run dev are auto-detected and run DETACHED — you get "SERVER RUNNING at http://localhost:PORT" back immediately. The port is checked first: if it's busy you'll be told (kill the zombie via netstat/taskkill, or pick another port). NEVER wrap servers in background tricks (nohup … &, &) — the platform handles detachment. NEVER start anything on port 5000 (that is the app's own API port). Never send server commands through run_in_sandbox — route them via run_command. Stay in the Node/TS ecosystem: use npx serve / http-server, never python -m http.server |
 | Prove a web app works | verify_app | Starts server + loads real browser + reports console errors. Fix → re-verify until PASS |
 | Look things up | web_search | For current docs, versions, APIs you're not certain of |

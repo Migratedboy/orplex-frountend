@@ -93,6 +93,34 @@ declare global {
         ) => () => void;
         consumePending: () => Promise<{ code?: string; error?: string } | null>;
       };
+      /** On-device terminal (Electron only): real shell in the workspace folder. */
+      terminal?: {
+        exec: (args: { command: string; cwd?: string; timeoutMs?: number; streamId?: string }) => Promise<{
+          ok: boolean;
+          stdout?: string;
+          stderr?: string;
+          exitCode?: number;
+          cwd?: string;
+          timedOut?: boolean;
+          error?: string;
+        }>;
+        onStream: (
+          listener: (event: { streamId: string; type: string; text: string }) => void
+        ) => () => void;
+        serveStart: (args: { command: string; cwd?: string }) => Promise<{
+          ok: boolean;
+          id?: number;
+          port?: number;
+          url?: string;
+          tail?: string;
+          error?: string;
+        }>;
+        serveStop: (id: number) => Promise<{ ok: boolean; error?: string }>;
+        serveList: () => Promise<{
+          ok: boolean;
+          servers?: Array<{ id: number; command: string; cwd: string; port: number; url: string | null; startedAt: number }>;
+        }>;
+      };
       /** MCP remote servers: OAuth 2.1 in main + Node-side JSON-RPC passthrough. */
       mcp?: {
         request: (params: {

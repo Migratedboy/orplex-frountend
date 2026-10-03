@@ -623,6 +623,16 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .rp-terminal-prompt { color:#f97316; font-weight:700; font-family:'JetBrains Mono',monospace; font-size:12px; }
 .rp-terminal-input { flex:1; background:none; border:none; color:#c9d1d9; font-size:12px; font-family:'JetBrains Mono',monospace; outline:none; caret-color:#f97316; }
 .rp-terminal-input::placeholder { color:#484f58; }
+.rp-terminal-servers { display:flex; flex-wrap:wrap; gap:6px; padding:6px 12px; border-bottom:1px solid #30363d; background:#161b22; }
+.rp-terminal-server { display:inline-flex; align-items:center; gap:6px; font-size:10px; font-family:'JetBrains Mono',monospace; color:#3fb950; background:#3fb95015; border:1px solid #3fb95044; border-radius:10px; padding:2px 4px 2px 8px; }
+.rp-terminal-server-dot { width:6px; height:6px; border-radius:50%; background:#3fb950; animation:rp-pulse 1.5s ease-in-out infinite; }
+.rp-terminal-server-stop { background:none; border:none; color:#8b949e; cursor:pointer; font-size:12px; line-height:1; padding:0 4px; }
+.rp-terminal-server-stop:hover { color:#f85149; }
+.rp-terminal-confirm { margin:0 12px 6px; padding:8px 10px; background:#2a1f14; border:1px solid #a04100; border-radius:6px; }
+.rp-terminal-confirm-text { font-size:11px; color:#ffb693; font-family:'JetBrains Mono',monospace; margin-bottom:6px; }
+.rp-terminal-confirm-actions { display:flex; gap:8px; }
+.rp-terminal-confirm-run { background:#a04100; color:#fff; border:none; border-radius:4px; font-size:11px; padding:4px 12px; cursor:pointer; font-family:'JetBrains Mono',monospace; }
+.rp-terminal-confirm-cancel { background:none; color:#8b949e; border:1px solid #30363d; border-radius:4px; font-size:11px; padding:4px 12px; cursor:pointer; font-family:'JetBrains Mono',monospace; }
 
 /* Queue + Stop buttons */
 .chat-actions-active { display:flex; gap:4px; align-items:center; }

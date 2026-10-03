@@ -606,8 +606,41 @@ export async function dispatchToolCall(
       return { resultXml: toolResults, blocked: false };
     }
 
+    // Lane selection lives in terminal-lane.ts: the Electron desktop bridge
+    // runs commands ON THE USER'S DEVICE in their workspace folder; otherwise
+    // the API lane runs them server-side. Either way every line is mirrored
+    // to the Terminal tab via the terminal event bus.
+    const { runTerminalCommand, hasDesktopTerminal, resolveDesktopCwd } = await import("../terminal-lane");
+    const { emitTerminalLine } = await import("../terminal-events");
+    const desktopCwd = resolveDesktopCwd(ctx.fs.directoryName);
+
     if (isServerCommand(call.command)) {
-      // SERVER LANE: dev/preview servers never exit — run detached.
+      // SERVE LANE: dev/preview servers never exit — run detached.
+      if (hasDesktopTerminal() && desktopCwd) {
+        try {
+          const bridge = window.orplexDesktop!.terminal!;
+          emitTerminalLine("cmd", `$ ${call.command}  [on this device]`, "agent");
+          const started = await bridge.serveStart({ command: call.command, cwd: desktopCwd });
+          if (started.ok) {
+            ctx.stats.commandRun();
+            if (started.tail) emitTerminalLine("stdout", started.tail, "agent");
+            result(`<tool_result name="run_command" command="${call.command}">SERVER RUNNING on this device${started.url ? ` at ${started.url}` : ""}\n${started.tail || ""}\n</tool_result>\n`);
+            ctx.replaceStatus(`[OK] Server running${started.url ? ` at ${started.url}` : ""} (device)`);
+            if (started.url) emitPreview(started.url, "verify_app");
+          } else {
+            ctx.stats.failedStep();
+            emitTerminalLine("error", started.error || "serve failed", "agent");
+            result(`<tool_result name="run_command" command="${call.command}">FAILED: ${started.error}\n</tool_result>\n`);
+            ctx.replaceStatus(`[FAIL] Server failed: ${String(started.error).split("\n")[0].slice(0, 60)}`);
+          }
+        } catch (err) {
+          ctx.stats.failedStep();
+          result(`<tool_result name="run_command" command="${call.command}">error: ${(err as Error).message}\n</tool_result>\n`);
+          ctx.replaceStatus(`[FAIL] Server start failed`);
+        }
+        ctx.syncDisplay();
+        return { resultXml: toolResults, blocked: false };
+      }
       try {
         const serveRes = await ctxFetch("/api/agent/serve", {
           method: "POST",
@@ -617,6 +650,8 @@ export async function dispatchToolCall(
         const serveData = await serveRes.json();
         if (serveData.ok) {
           ctx.stats.commandRun();
+          emitTerminalLine("cmd", `$ ${call.command}`, "agent");
+          if (serveData.output) emitTerminalLine("stdout", String(serveData.output).slice(0, 4000), "agent");
           result(`<tool_result name="run_command" command="${call.command}">SERVER RUNNING — ${serveData.message}\n${serveData.output || ""}\n</tool_result>\n`);
           ctx.replaceStatus(`[OK] Server running${serveData.port ? ` at http://localhost:${serveData.port}` : ""}`);
           if (serveData.port) emitPreview(`http://localhost:${serveData.port}`, "verify_app");
@@ -634,14 +669,15 @@ export async function dispatchToolCall(
       return { resultXml: toolResults, blocked: false };
     }
 
-    // Execute via server-side API (child_process can't run in the browser)
+    // One-shot exec: shared lane runner (desktop-first, API fallback) — the
+    // bus mirror makes every agent command visible in the Terminal tab.
     try {
-      const execRes = await ctxFetch("/api/agent/exec", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: call.command }),
-      }, ctx);
-      const execData = await execRes.json();
+      const execData = await runTerminalCommand({
+        command: call.command,
+        dirName: ctx.fs.directoryName,
+        signal: ctx.abortSignal,
+        source: "agent",
+      });
       if (execData.exitCode === 0) {
         ctx.stats.commandRun();
         result(`<tool_result name="run_command" command="${call.command}">\n${execData.stdout}${execData.stderr ? `\nSTDERR: ${execData.stderr}` : ""}\n</tool_result>\n`);

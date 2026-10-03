@@ -109,6 +109,50 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
     network: () => ipcRenderer.invoke("agent-browser:network") as Promise<Record<string, unknown>>,
   },
   /**
+   * ON-DEVICE TERMINAL: the main process runs commands in the user's real
+   * workspace folder (cloud lanes would run on Vercel instead). One-shot
+   * exec streams live chunks; the serve lane tracks detached dev servers.
+   */
+  terminal: {
+    exec: (args: { command: string; cwd?: string; timeoutMs?: number; streamId?: string }) =>
+      ipcRenderer.invoke("terminal:exec", args) as Promise<{
+        ok: boolean;
+        stdout?: string;
+        stderr?: string;
+        exitCode?: number;
+        cwd?: string;
+        timedOut?: boolean;
+        error?: string;
+      }>,
+    /** Live output chunks for a streamId passed to exec. */
+    onStream: (
+      listener: (event: { streamId: string; type: string; text: string }) => void
+    ) => {
+      const wrapped = (
+        _e: unknown,
+        payload: { streamId: string; type: string; text: string }
+      ) => listener(payload);
+      ipcRenderer.on("terminal:stream", wrapped);
+      return () => ipcRenderer.removeListener("terminal:stream", wrapped);
+    },
+    serveStart: (args: { command: string; cwd?: string }) =>
+      ipcRenderer.invoke("terminal:serve-start", args) as Promise<{
+        ok: boolean;
+        id?: number;
+        port?: number;
+        url?: string;
+        tail?: string;
+        error?: string;
+      }>,
+    serveStop: (id: number) =>
+      ipcRenderer.invoke("terminal:serve-stop", { id }) as Promise<{ ok: boolean; error?: string }>,
+    serveList: () =>
+      ipcRenderer.invoke("terminal:serve-list") as Promise<{
+        ok: boolean;
+        servers?: Array<{ id: number; command: string; cwd: string; port: number; url: string | null; startedAt: number }>;
+      }>,
+  },
+  /**
    * MCP REMOTE SERVERS: OAuth 2.1 flows run in the main process (discovery,
    * dynamic client registration, browser sign-in with a 127.0.0.1 loopback
    * callback, token exchange/refresh) and MCP JSON-RPC goes through a

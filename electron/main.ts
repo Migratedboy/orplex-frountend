@@ -14,6 +14,7 @@ import http from "node:http";
 import net from "node:net";
 import { registerMcpIpc } from "./mcp-bridge";
 import { registerDesktopAuth, handleDesktopAuthArgv } from "./auth-desktop";
+import { registerTerminalIpc, killAllTerminalChildren } from "./terminal";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -1327,6 +1328,11 @@ app.on("will-quit", () => {
   // Normal quit: mark the session clean BEFORE children die, so the next
   // boot knows there is nothing to recover. Crash paths never reach this.
   writeSessionState(true);
+  // Kill terminal children (exec + serve lanes) first so no zombie holds
+  // the workspace ports, then both Next.js children.
+  try {
+    killAllTerminalChildren();
+  } catch {}
   // Kill both Next.js children so no orphaned node process holds the ports.
   for (const child of [nextProcess, apiProcess]) {
     if (child && !child.killed) {
@@ -1369,6 +1375,10 @@ app.whenReady().then(async () => {
   // MCP remote servers: OAuth 2.1 browser flow + Node-side JSON-RPC
   // passthrough (renderer has no Node and remote servers may lack CORS).
   registerMcpIpc();
+
+  // On-device terminal: exec streaming + detached serve registry, all in the
+  // user's workspace folder (see electron/terminal.ts).
+  registerTerminalIpc(getMainWindow);
 
   // Renderer → main: open http(s) links in the OS default browser.
   ipcMain.handle("orplex:open-external", (_event, url: string) => {
