@@ -61,10 +61,35 @@ export interface PreviewEvent {
 
 let _previewListeners: Array<(event: PreviewEvent) => void> = [];
 
+/** How long an unheard preview event stays available for the first subscriber. */
+const UNHEARD_PREVIEW_TTL_MS = 10_000;
+
+/**
+ * A preview event nobody was around to hear — the right panel can be closed
+ * (or still mounting) when the agent navigates. Handed to the first listener
+ * that subscribes, but only while fresh, so a stale URL can never hijack the
+ * panel later.
+ */
+let _unheardPreview: PreviewEvent | null = null;
+
 export function onPreviewEvent(
   listener: (event: PreviewEvent) => void
 ): () => void {
   _previewListeners.push(listener);
+  const unheard = _unheardPreview;
+  if (unheard) {
+    _unheardPreview = null;
+    if (Date.now() - unheard.timestamp <= UNHEARD_PREVIEW_TTL_MS) {
+      // Next tick: the subscriber's own layout effects (viewport bounds, tab
+      // visibility) must have run before we navigate, or the view is briefly
+      // positioned at the main process's fallback rect.
+      setTimeout(() => {
+        try {
+          listener(unheard);
+        } catch {}
+      }, 0);
+    }
+  }
   return () => {
     _previewListeners = _previewListeners.filter((l) => l !== listener);
   };
@@ -72,6 +97,7 @@ export function onPreviewEvent(
 
 export function emitPreview(url: string, source: PreviewEvent["source"]) {
   const event: PreviewEvent = { url, source, timestamp: Date.now() };
+  _unheardPreview = _previewListeners.length === 0 ? event : null;
   for (const listener of _previewListeners) {
     try {
       listener(event);

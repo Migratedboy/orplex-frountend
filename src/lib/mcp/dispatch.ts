@@ -49,12 +49,20 @@ export async function dispatchMcpToolCall(
   try {
     const { text, isError } = await withConnection(server, (conn) => conn.callTool(parsed.toolName, args));
     const clipped = text.length > MAX_RESULT_CHARS ? `${text.slice(0, MAX_RESULT_CHARS)}\n…[truncated]` : text;
+    // Close the display line opened above so the row settles instead of
+    // spinning until the chain is dropped.
+    ctx.appendDisplay(
+      `${isError ? "[FAIL]" : "[OK]"} MCP ${server.label}: ${parsed.toolName}${isError ? ` — ${clipped.slice(0, 160)}` : ""}\n`
+    );
+    ctx.syncDisplay();
     return {
       resultXml: `<tool_result name="${call.name}">${isError ? "\n[TOOL ERROR]\n" : ""}\n${clipped}\n</tool_result>\n`,
       blocked: false,
     };
   } catch (err) {
     const msg = (err as Error)?.message ?? String(err);
+    ctx.appendDisplay(`[FAIL] MCP ${server.label}: ${parsed.toolName} — ${msg}\n`);
+    ctx.syncDisplay();
     return {
       resultXml: `<tool_result name="${call.name}">\n[MCP ERROR] ${msg}${/401|403/.test(msg) ? " — the OAuth session expired; ask the user to reconnect this server in MCP connectors." : ""}\n</tool_result>\n`,
       blocked: false,
