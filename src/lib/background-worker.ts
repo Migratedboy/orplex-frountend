@@ -1095,7 +1095,8 @@ export async function runInBackground(
           setTodos: (items) => setTodos(items),
           completeTodo: (i) => completeTodo(i),
           clearTodos: () => clearTodos(),
-          setQuestion: (q, opts, free) => setQuestion(q, opts, free),
+          setQuestion: (q, opts, free, meta) => setQuestion(q, opts, free, meta),
+          answerQuestion: (a) => answerQuestion(a),
         },
         stats: {
           commandRun: () => bumpStat("commandsRun"),

@@ -66,7 +66,7 @@ export function buildToolRoster(): string {
   const categories: Array<[RegExp, string]> = [
     [/^(read_file|list_files|search_code|code_search)$/, "Inspect"],
     [/^(write_file|write_file_chunk|edit_file|batch_edit)$/, "Create & edit"],
-    [/^(todo_list|ask_question|scratchpad_update)$/, "Plan & interact"],
+    [/^(todo_list|ask_question|ask_clarification|scratchpad_update)$/, "Plan & interact"],
     [/^(run_command|run_in_sandbox)$/, "Execute — prefer run_command; run_in_sandbox is for contained one-shot work, NEVER for starting servers"],
     [/^(verify_app|take_screenshot)$/, "Verify"],
     [/^browser_/, "Own browser"],
@@ -138,6 +138,13 @@ const TOOL_DOCTRINE = `## TOOL DOCTRINE
 | See the app's UI | take_screenshot, preview_browser | Screenshot the running app; preview loads a URL into the panel |
 | Use a real browser | browser_navigate, browser_find, browser_click, browser_type, browser_select, browser_hover, browser_press, browser_scroll, browser_wait_for, browser_tabs, browser_read, browser_console, browser_network, browser_screenshot, browser_evaluate | Your own visible browser: test like a user. NEVER write Selenium/Playwright/puppeteer scripts to files — you HAVE a live browser, scripts are always the wrong answer. First action is ALWAYS browser_navigate with the URL. After navigating, call browser_find — click/type/hover/select with its refs (e1, e2, …) instead of guessing CSS selectors. Use browser_wait_for after clicks that trigger async loads; browser_network when a page loads blank (shows failing 4xx/5xx requests); browser_tabs for multi-tab flows; browser_screenshot with viewpoint=mobile to check responsive layouts. Every screenshot you take is auto-attached inline in the chat for you and the user — never say you cannot attach, embed, or see screenshots. The user watches it live |
 | Calling convention | native function-calling + <tool_call> XML fallback | Prefer your endpoint's native function-calling. If it is unavailable to you, emit each call as <tool_call>{"name":"tool_name", ...arguments}</tool_call> on its own line instead — results return as <tool_result> blocks. Never invent tools outside the roster above |`;
+
+// ============================================================
+// §4b CLARIFICATIONS — pausing to ask, not guessing
+// ============================================================
+
+const CLARIFICATION_DOCTRINE = `## CLARIFICATIONS
+When you are missing a required piece of information and guessing would produce a wrong or wasted result, call the ask_clarification tool with a single focused question and up to 4 short options if applicable. Do not ask for information that is already in the conversation or clearly inferable from the codebase. Do not ask more than one clarification per run unless the first answer unlocks a second genuine blocker.`;
 
 // ============================================================
 // §5 WORKFLOW — state machine + turn economy
@@ -361,6 +368,7 @@ export function buildSystemPrompt(opts: BuildPromptOptions): string {
           PRIME_DIRECTIVES,
           PLAN_OVERLAY,
           TOOL_DOCTRINE,
+          CLARIFICATION_DOCTRINE,
           ...(MCP_SECTION ? [MCP_SECTION] : []),
           WORKFLOW,
           QUALITY_BARS,
@@ -375,6 +383,7 @@ export function buildSystemPrompt(opts: BuildPromptOptions): string {
           PRIME_DIRECTIVES,
           OUTPUT_CONTRACT,
           TOOL_DOCTRINE,
+          CLARIFICATION_DOCTRINE,
           ...(MCP_SECTION ? [MCP_SECTION] : []),
           WORKFLOW,
           QUALITY_BARS,

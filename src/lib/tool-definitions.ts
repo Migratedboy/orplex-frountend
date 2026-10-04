@@ -254,6 +254,24 @@ export const M3_TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "ask_clarification",
+      description:
+        "Use this tool when you do not have enough information to proceed correctly and making a wrong assumption would waste the user's time or produce a wrong result. Ask ONE focused question. Do NOT use this for optional enhancements — only when the task is genuinely ambiguous or a required input is missing.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "The single clarifying question, plain language" },
+          context: { type: "string", description: "One sentence explaining WHY you need this (shown to the user)" },
+          options: { type: "array", items: { type: "string" }, description: "2-4 short option labels, optional but preferred" },
+          allow_freetext: { type: "boolean", description: "Whether to also accept a typed reply (default true)" },
+        },
+        required: ["question", "context"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "preview_browser",
       description: "Fetch a URL and render it in the preview panel. Use to verify web pages, check API responses, or view rendered HTML. Returns the page title, content type, and size.",
       parameters: {
@@ -546,6 +564,7 @@ export const GROQ_TOOL_NAMES = [
   "run_command",
   "todo_list",
   "ask_question",
+  "ask_clarification",
   "scratchpad_update",
   "web_search",
   "search_code",

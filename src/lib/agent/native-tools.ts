@@ -21,6 +21,7 @@ import {
 } from "../tool-text";
 import { recordFailure } from "../failure-memory";
 import { emitActivity, emitPreview } from "../agent-events";
+import { CLARIFICATION_SKIP } from "../background-chat";
 import { writeFileAudited, editFileAudited, type FileOpsFs, type FileOpsCounters } from "./file-ops";
 import { isServerCommand, diagnosePortConflict } from "./serve-helpers";
 import type { ToolCall } from "../stream-reader";
@@ -48,7 +49,9 @@ export interface ToolContext {
     setTodos(items: string[]): void;
     completeTodo(index: number): void;
     clearTodos(): void;
-    setQuestion(question: string, options: string[], allowFreeText: boolean): void;
+    setQuestion(question: string, options: string[], allowFreeText: boolean, meta?: { context?: string; kind?: "question" | "clarification" }): void;
+    /** Mark the pending question answered — used on timeout so a card never dangles. */
+    answerQuestion(answer: string): void;
   };
   /** Task-stat bumps the worker tracks for completion notifications */
   stats: {
@@ -191,7 +194,8 @@ export async function dispatchToolCall(
       const cached = ctx.contextFiles.get(call.path);
       const preview = ctx.readResults.get(call.path) || "(already read)";
       result(`<tool_result name="read_file" path="${call.path}">\n[Already read ${readCount} times — showing cached content, do NOT re-read]\n${cached ?? preview}\n</tool_result>\n`);
-      ctx.appendDisplay(`read [${call.path}] (cached — already read ${readCount}×)\n`);
+      ctx.appendDisplay(`[OK] Read \`${call.path}\` (cached — already read ${readCount}×)\n`);
+      ctx.syncDisplay();
       return { resultXml: toolResults, blocked: false };
     }
 
@@ -937,6 +941,43 @@ export async function dispatchToolCall(
     return { resultXml: toolResults, blocked: false };
   }
 
+  // ── ask_clarification ──────────────────────────────────────────────────
+  // Pauses the run: status → waiting_for_input, the message-stream
+  // ClarificationCard replaces the tail spinner, and the loop parks on
+  // waitForAnswer until the user replies, dismisses (skip), or the task
+  // dies. The answered exchange is folded into the display transcript as a
+  // [CLARIFIED] marker so the compact card survives in message history.
+  if (call.name === "ask_clarification") {
+    const question = typeof call.question === "string" ? call.question : JSON.stringify(call.question ?? "");
+    const context = typeof call.context === "string" ? call.context : "";
+    const options = Array.isArray(call.options)
+      ? call.options.map((o: unknown) => (typeof o === "string" ? o : JSON.stringify(o))).slice(0, 4)
+      : [];
+    const allowFreeText = call.allow_freetext !== false;
+
+    if (!question) {
+      result(`<tool_result name="ask_clarification">error - missing question</tool_result>\n`);
+    } else {
+      ctx.store.setQuestion(question, options, allowFreeText, { context, kind: "clarification" });
+      ctx.setStatus("waiting_for_input", "Waiting for input");
+      ctx.syncDisplay();
+
+      const raw = await ctx.waitForAnswer();
+      const skipped = raw === CLARIFICATION_SKIP || raw === "(timed out)" || raw === "(task cancelled)";
+      if (raw === "(timed out)") ctx.store.answerQuestion(CLARIFICATION_SKIP);
+      const answerForModel = (
+        skipped ? "User skipped clarification. Make a reasonable assumption and proceed." : raw
+      ).replace(/<\/?tool_result[^>]*>/g, "");
+      ctx.appendDisplay(
+        `[CLARIFIED]:${JSON.stringify({ q: question, ...(context ? { c: context } : {}), a: skipped ? "Skipped" : raw })}\n`
+      );
+      result(`<tool_result name="ask_clarification">${answerForModel}</tool_result>\n`);
+      ctx.setStatus("streaming", "Processing…");
+      ctx.syncDisplay();
+    }
+    return { resultXml: toolResults, blocked: false };
+  }
+
   // ── preview_browser ───────────────────────────────────────────────────
   if (call.name === "preview_browser" && call.url) {
     ctx.setStatus("tool_executing", `Previewing ${call.url}...`);
@@ -1163,8 +1204,15 @@ export async function dispatchToolCall(
         ctx.setStatus("tool_executing", `Browsing to ${call.url}…`);
         ctx.appendDisplay(`browsing [${String(call.url).slice(0, 60)}]\n`);
         ctx.syncDisplay();
-        await bridge.show().catch(() => {});
-        window.dispatchEvent(new CustomEvent("orplex:agent-browser-tab"));
+        // No floating overlay: bridge.show() lifted the agent's WebContentsView
+        // over the whole app (stale bounds = a window floating on the chat).
+        // Open the right panel on Preview and hand the URL to that panel's
+        // EXISTING webview through the preview bus instead — the panel's own
+        // URL bar, tabs, loading state and nav buttons drive it from there.
+        window.dispatchEvent(new CustomEvent("orplex:open-panel", { detail: { tab: "preview" } }));
+        emitPreview(String(call.url), "preview_browser");
+        // The agent's own view still loads the page (headless — never shown)
+        // so browser_read / browser_click keep working against it.
         const r = await bridge.navigate(String(call.url));
         if (r.ok) {
           result(`<tool_result name="browser_navigate" url="${r.url}">success — now on "${r.title || r.url}". Use browser_read to see the page content.</tool_result>\n`);
@@ -1220,7 +1268,8 @@ export async function dispatchToolCall(
       } else if (call.name === "browser_screenshot") {
         ctx.setStatus("tool_executing", "Capturing browser…");
         ctx.syncDisplay();
-        await bridge.show().catch(() => {});
+        // Never bridge.show() — that attached the agent view above the app.
+        // Ask the panel to display it as a tab instead (in-panel only).
         window.dispatchEvent(new CustomEvent("orplex:agent-browser-tab"));
         const d = await bridge.screenshot({ fullPage: !!call.fullPage, viewpoint: call.viewpoint });
         const vp = d?.viewport ? ` at ${d.viewport.width}x${d.viewport.height}` : "";
@@ -1280,7 +1329,7 @@ export async function dispatchToolCall(
           result(`<tool_result name="browser_tabs">${head}\n${tabs}</tool_result>\n`);
           ctx.replaceStatus(`[OK] Tabs: ${(r.tabs || []).length} open`);
           if (r.opened !== undefined || r.switchedTo !== undefined) {
-            await bridge.show().catch(() => {});
+            // In-panel display only — never lift the view over the app.
             window.dispatchEvent(new CustomEvent("orplex:agent-browser-tab"));
           }
         }
@@ -1301,7 +1350,7 @@ export async function dispatchToolCall(
   }
 
   // ── Unknown / not-implemented tool ────────────────────────────────────
-  result(`<tool_result name="${call.name || "unknown"}">error — this tool is not available in this environment. Use one of: read_file, list_files, write_file, write_file_chunk, edit_file, batch_edit, search_code, code_search, run_command, run_in_sandbox, undo_last_change, take_screenshot, todo_list, ask_question, scratchpad_update, preview_browser, verify_app, web_search, or browser_* tools.</tool_result>\n`);
+    result(`<tool_result name="${call.name || "unknown"}">error — this tool is not available in this environment. Use one of: read_file, list_files, write_file, write_file_chunk, edit_file, batch_edit, search_code, code_search, run_command, run_in_sandbox, undo_last_change, take_screenshot, todo_list, ask_question, ask_clarification, scratchpad_update, preview_browser, verify_app, web_search, or browser_* tools.</tool_result>\n`);
   ctx.replaceStatus(`[WARN] Tool "${call.name}" is not available here`);
   ctx.syncDisplay();
   return { resultXml: toolResults, blocked: false };

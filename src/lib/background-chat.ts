@@ -13,7 +13,7 @@ export interface ChatMessage {
   time: string;
 }
 
-export type TaskStatus = "idle" | "streaming" | "tool_executing" | "awaiting_approval" | "done" | "error";
+export type TaskStatus = "idle" | "streaming" | "tool_executing" | "awaiting_approval" | "waiting_for_input" | "done" | "error";
 
 export interface BackgroundTask {
   id: string;
@@ -28,6 +28,8 @@ export interface BackgroundTask {
   completedAt?: number;
   todos: TodoItem[];
   question: PendingQuestion | null;
+  /** Clarifications asked this run — powers the ">2 = rephrase" hint on the card. */
+  clarificationCount?: number;
   /** Rendered scratchpad block mirror for the Scratch panel (UI-only). */
   scratchpad?: string;
   /** True when the user pressed Stop — worker must exit without failing */
@@ -64,7 +66,18 @@ export interface PendingQuestion {
   allowFreeText: boolean;
   answered: boolean;
   answer?: string;
+  /** "question" (legacy ask_question / safety prompt) | "clarification" (ask_clarification card). */
+  kind?: "question" | "clarification";
+  /** One line telling the user WHY the agent needs this — shown above the question. */
+  context?: string;
 }
+
+/**
+ * Answer sentinel the clarification card sends on Escape/dismiss. The tool
+ * handler converts it to the skip wording the model sees; it never travels
+ * past the store → handler boundary.
+ */
+export const CLARIFICATION_SKIP = "__orplex_clarification_skip__";
 
 type Listener = (task: BackgroundTask | null) => void;
 
@@ -119,7 +132,70 @@ function hasTaskStorage(): boolean {
 }
 
 function isInFlightStatus(status: string): boolean {
-  return status === "streaming" || status === "tool_executing" || status === "awaiting_approval";
+  return status === "streaming" || status === "tool_executing" || status === "awaiting_approval" || status === "waiting_for_input";
+}
+
+// === Run phase (UI-facing view of the task) ================================
+// The chat UI never keeps its own run-state store — every surface (tail
+// indicator, sidebar card, composer Stop, tool chips) derives from THIS task.
+export type RunPhase = "idle" | "thinking" | "running_tool" | "streaming" | "done" | "error" | "stopped";
+
+/**
+ * Is the tail of the display content a reasoning block? The worker writes the
+ * turn's [THINKING]…[/THINKING] block CLOSED and then appends answer text (or
+ * folds it before running tools) — so "ends with reasoning" means the model is
+ * thinking RIGHT NOW. Checked with indexOf only (no regex over a transcript
+ * that can be hundreds of KB and updates ~8×/second).
+ */
+function reasoningIsStreaming(content: string): boolean {
+  const tail = content.trimEnd();
+  if (tail.endsWith("[/THINKING]")) return true;
+  const open = tail.lastIndexOf("[THINKING]");
+  const close = tail.lastIndexOf("[/THINKING]");
+  return open > close;
+}
+
+/** Map the task store onto the per-turn phases the UI renders. */
+export function deriveRunPhase(task: BackgroundTask | null): RunPhase {
+  if (!task) return "idle";
+  switch (task.status) {
+    case "streaming":
+      // Empty content, or content whose last produced thing is the reasoning
+      // block, is still the thinking state — on a later turn the transcript
+      // already holds the PREVIOUS answer, so "has content" alone would mislabel
+      // live reasoning as streaming.
+      if (!task.displayContent.trim() || reasoningIsStreaming(task.displayContent)) {
+        return "thinking";
+      }
+      return "streaming";
+    case "tool_executing":
+    case "awaiting_approval":
+    // Waiting on the user's clarification is still "the run is parked mid-tool"
+    // — the tail spinner is suppressed by the card itself (MessageList), and
+    // the status detail ("Waiting for input") carries the real label.
+    case "waiting_for_input":
+      return "running_tool";
+    case "done":
+      return "done";
+    case "error":
+      return task.aborted ? "stopped" : "error";
+    case "idle":
+    default:
+      return "idle";
+  }
+}
+
+/** Human label for a phase — used when the task carries no detail yet. */
+export function runPhaseLabel(phase: RunPhase): string {
+  switch (phase) {
+    case "thinking": return "Thinking…";
+    case "running_tool": return "Working…";
+    case "streaming": return "Responding…";
+    case "done": return "Done";
+    case "error": return "Failed";
+    case "stopped": return "Stopped";
+    default: return "";
+  }
 }
 
 /** Write the current task to sessionStorage so a reload can restore it. */
@@ -305,6 +381,7 @@ export function startTask(
     startedAt: Date.now(),
     todos: [],
     question: null,
+    clarificationCount: 0,
     mode,
     ...(model ? { model } : {}),
     stats: { filesChanged: 0, commandsRun: 0, toolCalls: 0, rejectedActions: 0, failedSteps: 0 },
@@ -363,14 +440,31 @@ export function setScratchpad(text: string) {
   notify();
 }
 
-export function setQuestion(question: unknown, options: unknown, allowFreeText: boolean) {
+export interface QuestionMeta {
+  /** Why the agent needs this — shown as the muted line on the clarification card. */
+  context?: string;
+  /** "clarification" routes the UI to the message-stream card, not the legacy QuestionCard. */
+  kind?: "question" | "clarification";
+}
+
+export function setQuestion(question: unknown, options: unknown, allowFreeText: boolean, meta?: QuestionMeta) {
   if (!currentTask) return;
   // Validate: LLM can send objects instead of strings
   const q = typeof question === "string" ? question : JSON.stringify(question ?? "");
   const opts = Array.isArray(options)
     ? options.map(o => typeof o === "string" ? o : JSON.stringify(o))
     : [];
-  currentTask.question = { question: q, options: opts, allowFreeText, answered: false };
+  currentTask.question = {
+    question: q,
+    options: opts,
+    allowFreeText,
+    answered: false,
+    ...(meta?.kind ? { kind: meta.kind } : {}),
+    ...(meta?.context ? { context: meta.context } : {}),
+  };
+  if (meta?.kind === "clarification") {
+    currentTask.clarificationCount = (currentTask.clarificationCount ?? 0) + 1;
+  }
   notify();
 }
 

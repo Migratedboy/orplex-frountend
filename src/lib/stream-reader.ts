@@ -361,6 +361,8 @@ export interface ToolCall {
   question?: string;
   options?: string[];
   allow_free_text?: boolean;
+  // ask_clarification — accept a typed reply alongside the option pills
+  allow_freetext?: boolean;
   edits?: { path: string; old_text: string; new_text: string }[];
   timeout?: number;
   // verify_app
