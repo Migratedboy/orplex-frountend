@@ -169,9 +169,57 @@ shape) — an entry may have BOTH rows (hybrid catalog entries); the UI prefers 
   unwedging after a rejected section), ciphertext-at-rest round-trips, issuer mismatch
   rejection, typed no-DCR error.
 
-## 6. Sections added in later phases
+## 6. Routes & desktop bridge (Phase 3)
 
-- Phase 3: routes (connect/complete/callback), proxy prefix rules, Electron loopback bridge.
+### HTTP surface (all session-gated with `jwtOnlyOptions`, local-only per C2)
+
+| Route | Job |
+|---|---|
+| `POST /api/mcp/connections/[serverId]/connect` | Validates `redirectUri` **before** any pending row/network call (exact hosted callback or RFC 8252 loopback only — see below), then `startAuthorization` → `{status:"awaiting_browser", authUrl, state, expiresAt}` \| `{status:"connected"}` (stored tokens already work) \| `{status:"error", code, error}` (`no_remote` 400, `mcp_static_client_required`/`network`/`oauth_failed` 502) |
+| `POST /api/mcp/oauth/complete` | Desktop leg: renderer posts `{state, code?, iss?, error?, error_description?}` **with its session cookie** (the Electron main process has none). Single-use claim → session↔state binding → `finishAuth(whole query)` → verify connect. Codes: `state_unknown/expired/used/failed`, `wrong_owner`, `denied` → 400; `issuer_mismatch`, `exchange_failed`, `verify_failed`, `no_remote` → 502 |
+| `GET /api/mcp/oauth/callback` | Hosted leg: the AS redirects the browser here with the session cookie; exchange runs server-side; answers with a small branded HTML page (`Cache-Control: no-store`) telling the user to return to the app |
+
+Redirect policy (`flow.ts`): `resolveRedirectUri` accepts only (a) the exact
+`<origin>/api/mcp/oauth/callback`, or (b) `http://127.0.0.1|localhost:<any-port>/callback`
+with no credentials — https-loopback, private LAN IPs, external hosts, and other paths are
+rejected with `bad_redirect` before anything is created.
+
+### How `auth()` is driven (verified against the installed client)
+
+`client.connect(transport)` → transport gets 401 → `adaptOAuthProvider.onUnauthorized` →
+`auth(provider, …)` (discovery → DCR → PKCE → `redirectToAuthorization`) →
+`auth() !== "AUTHORIZED"` throws **`UnauthorizedError`** (`index.cjs:265`) → the flow catches
+it, reads the captured `provider.authorizationUrl`, and returns `awaiting_browser`.
+No manual `auth()` call, no reimplemented discovery/DCR/PKCE.
+
+### Electron loopback relay (`electron/mcp-bridge.ts`)
+
+- `mcpOAuth.prepare()` → binds `127.0.0.1:0` (OS-assigned port) → returns the exact
+  `redirectUri` for the connect body (port-first, per RFC 8252 / DCR exact-match).
+- `mcpOAuth.open(authUrl)` → parses `state` out of the URL, stores it as the expected value,
+  `shell.openExternal` (system browser, never a webview).
+- AS redirect hits `/callback` → state checked (defense-in-depth; the server-side one-time
+  claim is authoritative) → holding page → `orplex:mcp-oauth-callback` IPC to the renderer →
+  single-use close (first hit settles it; 5-minute timeout otherwise).
+- Renderer relays to `POST /api/mcp/oauth/complete` **because it holds the session cookie** —
+  this is why the completion hop exists at all. `preload.ts` + `orplex-desktop.d.ts` expose
+  `mcp.oauthPrepare / oauthOpen / onOAuthCallback`.
+
+### Proxy (C2 implemented)
+
+`LOCAL_ONLY_API_PREFIXES = ["/api/mcp/", "/api/agent/mcp/"]` + exact
+`LOCAL_ONLY_API_ROUTES` in `src/proxy.ts` — all MCP traffic stays on this process; every
+other `/api/agent/*` route still rewrites to the backend (covered by
+`proxy-mcp-local.test.ts`).
+
+### Tests (Phase 3): 30 new
+
+`mcp-oauth-flow.test.ts` (redirect policy incl. 6 rejection cases; awaiting/connected/typed
+start failures; state unknown/expired/replay; session binding; denial; exchange + issuer +
+verify failures) and `proxy-mcp-local.test.ts` (prefix match + non-MCP control routes).
+
+## 7. Sections added in later phases
+
 - Phase 4: hub status machine, wrapping rules (timeouts/caps/backoff), SSRF details.
 - Phase 5: discovery + visibility pipeline.
 - Phase 6: catalog audit results → `docs/MCP-CATALOG-AUDIT.md`.

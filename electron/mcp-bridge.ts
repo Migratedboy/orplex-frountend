@@ -24,7 +24,7 @@
 // validates `state`, and self-closes (callback or 5-minute timeout). The
 // passthrough accepts only http(s) URLs.
 
-import { ipcMain, shell } from "electron";
+import { BrowserWindow, ipcMain, shell } from "electron";
 import http from "node:http";
 import crypto from "node:crypto";
 
@@ -309,6 +309,105 @@ async function exchangeCode(tokenEndpoint: string, body: Record<string, string>)
 }
 
 export function registerMcpIpc(): void {
+  // ── SDK-driven flow (spec Phase 3): loopback only RELAYS the AS redirect ──
+  // The renderer drives the official MCP client via /api/mcp/* and holds the
+  // session cookie; the main process has none. So this listener's job is just:
+  // bind a port BEFORE connect (exact redirect_uri into DCR), validate the
+  // returned state (defense-in-depth — the server's one-time claim is
+  // authoritative), show a holding page, and hand the params to the renderer.
+  interface LoopbackState {
+    server: http.Server;
+    port: number;
+    expectedState: string | null;
+    timer: NodeJS.Timeout;
+  }
+  let loopback: LoopbackState | null = null;
+
+  const closeLoopback = (): void => {
+    if (!loopback) return;
+    clearTimeout(loopback.timer);
+    const lb = loopback;
+    loopback = null;
+    try {
+      lb.server.close(() => {});
+    } catch {}
+  };
+
+  const relayPage = (ok: boolean, detail: string): string =>
+    `<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;background:#141414;color:#eee;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:${ok ? "#ff6b00" : "#eee"}">${ok ? "&#10003; Orplex received the sign-in" : "Connection failed"}</h2><p style="color:#9aa">${detail}</p></div></body>`;
+
+  ipcMain.handle(
+    "orplex:mcp-oauth-prepare",
+    async (): Promise<{ ok: boolean; redirectUri?: string; error?: string }> => {
+      closeLoopback(); // one active flow at a time
+      return new Promise((resolve) => {
+        const server = http.createServer((req, res) => {
+          try {
+            const u = new URL(req.url ?? "/", "http://127.0.0.1");
+            if (u.pathname !== "/callback") {
+              res.writeHead(404).end();
+              return;
+            }
+            const code = u.searchParams.get("code");
+            const state = u.searchParams.get("state");
+            const iss = u.searchParams.get("iss");
+            const error = u.searchParams.get("error");
+            const errorDescription = u.searchParams.get("error_description");
+            const matched = !!state && !!loopback && state === loopback.expectedState;
+            const ok = matched && !error && !!code;
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(
+              ok
+                ? relayPage(true, "You can close this tab and return to the Orplex app — the connector is being connected now.")
+                : relayPage(false, `${error ?? "sign-in did not complete"} — return to the app and try again.`)
+            );
+            if (matched) {
+              const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+              win?.webContents.send("orplex:mcp-oauth-callback", {
+                code: code ?? undefined,
+                state: state ?? undefined,
+                iss: iss ?? undefined,
+                error: error ?? undefined,
+                error_description: errorDescription ?? undefined,
+              });
+            }
+            setTimeout(closeLoopback, 150); // single-use: first /callback settles it
+          } catch {
+            res.writeHead(500).end();
+            setTimeout(closeLoopback, 150);
+          }
+        });
+        server.on("error", (e) => {
+          if (loopback?.server === server) closeLoopback();
+          resolve({ ok: false, error: (e as Error).message });
+        });
+        server.listen(0, "127.0.0.1", () => {
+          const port = (server.address() as { port: number }).port;
+          loopback = { server, port, expectedState: null, timer: setTimeout(closeLoopback, OAUTH_WAIT_MS) };
+          resolve({ ok: true, redirectUri: `http://127.0.0.1:${port}/callback` });
+        });
+      });
+    }
+  );
+
+  ipcMain.handle(
+    "orplex:mcp-oauth-open",
+    async (_e, params: { authUrl?: string }): Promise<{ ok: boolean; error?: string }> => {
+      if (!loopback) return { ok: false, error: "No prepared loopback listener — call mcpOAuth.prepare() first." };
+      if (!params.authUrl) return { ok: false, error: "Missing authUrl" };
+      let state: string | null;
+      try {
+        state = new URL(params.authUrl).searchParams.get("state");
+      } catch {
+        return { ok: false, error: "authUrl is not a valid URL" };
+      }
+      if (!state) return { ok: false, error: "authUrl has no state parameter" };
+      loopback.expectedState = state;
+      await shell.openExternal(params.authUrl); // system browser — never a webview
+      return { ok: true };
+    }
+  );
+
   // Generic HTTP passthrough so the renderer's MCP JSON-RPC client avoids
   // CORS on remote servers. http(s) only, 30s ceiling.
   ipcMain.handle(

@@ -40,6 +40,24 @@ function backendOrigin(): string | null {
 // to render and keeps the failure legible in one place.
 const PROXIED_AUTH_PREFIXES = ["/api/auth/", "/api/dev/"];
 
+// Local-only API routes (never rewritten to the backend): machine-local
+// diagnostics whose whole point is THIS host's hardware. /api/system/memory
+// feeds low-memory failure messages — the cloud backend would report the
+// Vercel host's RAM instead of the user's machine.
+const LOCAL_ONLY_API_ROUTES = ["/api/system/memory"];
+
+// MCP connector routes are local BY DESIGN (conflict C2): the OAuth token
+// store, one-time pending states, and stdio configs live in THIS process's
+// Prisma/Postgres — rewriting them to the backend would split-brain (two
+// token stores, two states) and the backend has no Electron loopback either.
+// Prefix match, so dynamic children (…/connections/[id]/connect) match too.
+const LOCAL_ONLY_API_PREFIXES = ["/api/mcp/", "/api/agent/mcp/"];
+
+function isLocalOnlyApi(pathname: string): boolean {
+  if (LOCAL_ONLY_API_ROUTES.includes(pathname)) return true;
+  return LOCAL_ONLY_API_PREFIXES.some((p) => pathname.startsWith(p));
+}
+
 // Page routes that require a session (the frontend has no API routes left).
 function requiresPageAuth(pathname: string): boolean {
   // Sign-in/out and static assets never redirect.
@@ -80,7 +98,11 @@ export default async function proxy(request: NextRequest) {
   // real handlers run in the cloud backend. Covers next-auth (/api/auth/*),
   // the dev-session helper (/api/dev/*) and every data route in one rule.
   const origin = backendOrigin();
-  if (origin && request.nextUrl.pathname.startsWith("/api/")) {
+  if (
+    origin &&
+    request.nextUrl.pathname.startsWith("/api/") &&
+    !isLocalOnlyApi(request.nextUrl.pathname)
+  ) {
     const backendUrl = new URL(request.nextUrl.pathname + request.nextUrl.search, origin);
     const headers = new Headers(request.headers);
     headers.set("x-request-id", requestId);

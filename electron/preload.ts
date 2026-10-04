@@ -223,5 +223,27 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
         expiresIn?: number;
         tokenType?: string;
       }>,
+    /** SDK flow: bind the 127.0.0.1 loopback BEFORE connect (exact redirect_uri). */
+    oauthPrepare: () =>
+      ipcRenderer.invoke("orplex:mcp-oauth-prepare") as Promise<{
+        ok: boolean;
+        redirectUri?: string;
+        error?: string;
+      }>,
+    /** Open the auth URL in the system browser (never a webview). */
+    oauthOpen: (authUrl: string) =>
+      ipcRenderer.invoke("orplex:mcp-oauth-open", { authUrl }) as Promise<{
+        ok: boolean;
+        error?: string;
+      }>,
+    /** Loopback caught ?code&state&iss — relay to POST /api/mcp/oauth/complete. */
+    onOAuthCallback: (
+      listener: (payload: { code?: string; state?: string; iss?: string; error?: string; error_description?: string }) => void
+    ) => {
+      const wrapped = (_e: unknown, payload: { code?: string; state?: string; iss?: string; error?: string; error_description?: string }) =>
+        listener(payload);
+      ipcRenderer.on("orplex:mcp-oauth-callback", wrapped);
+      return () => ipcRenderer.removeListener("orplex:mcp-oauth-callback", wrapped);
+    },
   },
 });
