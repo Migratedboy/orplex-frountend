@@ -107,17 +107,71 @@ Updated each phase. Full list grows per phase; see git history for additions.
 | C1 | Spec names v1-era packages; README recommends v2 split packages | Use `@modelcontextprotocol/client@2.3.0`; spec's API names (`finishAuth`, transports, provider interface, `UnauthorizedError`) all exist in v2 with the same names (verified above). |
 | C2 | `src/proxy.ts` rewrites all `/api/*` to the cloud backend; `LOCAL_ONLY_API_ROUTES` is exact-match only, so dynamic routes like `/api/mcp/connections/[id]/connect` can never match | Add **prefix matching** (`/api/mcp/*`, `/api/agent/mcp/*`) to `proxy.ts` and move ALL MCP routes local (single connection store — no split-brain between cloud `McpServerConfig` rows and local `McpConnection` rows). Backend's duplicate `/api/mcp/*` handlers become dead for this deployment (mirror = follow-up). |
 | C3 | Server-lane runs execute on the **backend** (instrumentation.ts:51 disables the local executor when `ORPLEX_API_URL` is set), whose DB won't have the new tables | Server-lane MCP works in local/offline mode (shared local DB); cloud executor runs don't see MCP connections until a backend mirror. Browser (interactive) lane works everywhere. Documented limitation, not silently promised. |
-| C4 | `.env` has no `DIRECT_URL` (DATABASE_URL = local `localhost:5433`) | Schema gains `directUrl = env("DIRECT_URL")`; migrations run with `DIRECT_URL` supplied at invocation (`.env.example` documents it; we do not edit `.env`). Runtime stays on `DATABASE_URL` (pooled URL when hosted = Supabase). No session advisory locks anywhere — pooler-safe by construction. |
+| C4 | `.env` has no `DIRECT_URL` (DATABASE_URL = local `localhost:5433`); a `directUrl = env("DIRECT_URL")` would hard-fail `prisma validate`/`generate`/runtime with P1012 whenever the var is unset — and `.env` edits are out of bounds | **No `directUrl` in the schema** (the earlier plan to add it was reverted after hitting P1012). Migrations run against `DATABASE_URL` (direct localhost here). The future hosted migration (backend mirror) adds `directUrl` in that environment *with* `DIRECT_URL` supplied inline at invocation. Migration folder: `prisma/migrations/20261004000000_add_mcp_oauth/`. There is no local `prisma` CLI in `package.json` — always pin it: `npx --yes prisma@5.20.0 …` (matches `@prisma/client@5.20`; a bare `npx prisma` resolves to v7, which rejects this schema's syntax entirely). |
 | C5 | No `src/lib/agent/loop/`; two loops (`background-worker.ts:847`, `server-executor/executor.ts:864`) assemble tools in different places | ONE shared tool-array builder (`src/lib/mcp/tool-builder.ts`, Phase 5) feeds chat route tools, master-prompt section, executor defs, and the What-AI-sees endpoint. |
 | C6 | MCP calls bypass risk/approval in both lanes today (`native-tools.ts:177` early-returns; executor gates only `run_command`) | Phase 4/5 route `mcp__*` through `classifyRisk` (MCP-aware: `readOnlyHint`→low, default medium) + both lanes' approval paths; per-server "auto-approve read-only" toggle. |
 | C7 | Existing `checkUrlPolicy` allows `http://public` (no scheme check) | MCP wrapper = existing policy **+ `https:` required unless loopback**; injected as the transports' `fetch` (supported — verified) so discovery/registration/token requests are covered too. |
-| C8 | Legacy renderer token storage (`localStorage orplex.mcp.remotes.v1`) violates "tokens never in the renderer" | All tokens move to `McpConnection.encryptedCredentials` (AES-256-GCM); legacy paths stay runnable behind `ORPLEX_MCP=legacy` until Phase 8 passes, then are dead code (removal noted in final report). |
+| C8 | Legacy renderer token storage (`localStorage orplex.mcp.remotes.v1`) violates "tokens never in the renderer" | All tokens move to `McpConnection.tokensCiphertext` (AES-256-GCM, same key as BYOK — see §5); legacy paths stay runnable behind `ORPLEX_MCP=legacy` until Phase 8 passes, then are dead code (removal noted in final report). |
 | C9 | Proxy has **no CSRF layer** (delegated to backend by design) | Hosted callback protection = session-gated route + one-time server-stored `state` bound to user+serverId (single use, TTL, replay rejection) — the state IS the anti-CSRF token. |
 | C10 | Prompt meter never meters tool schemas; executor silently `slice(0,20)`s MCP tools | Builder (Phase 5) never drops silently (>40 → names-only + `mcp_search_tools`/`mcp_describe_tool` meta tools); meter accounts MCP schema chars. |
 
-## 5. Sections added in later phases
+## 5. Data model & persistence (Phase 2)
 
-- Phase 2+: data model (`McpConnection`, `McpOAuthPending`, `McpTool`), migration notes.
+Migration: `prisma/migrations/20261004000000_add_mcp_oauth/migration.sql`
+(apply with `npx --yes prisma@5.20.0 migrate dev` against a reachable DB — see C4 for the
+CLI-pinning rule; the local DB at `localhost:5433` was down during development, so the
+migration is generated via `prisma migrate diff --from-empty --to-schema-datamodel` and
+committed unapplied).
+
+### `mcp_connections` — one OAuth-authorized remote connector per (user, catalog id)
+
+| Column | Notes |
+|---|---|
+| `transport`, `url` | `streamable-http` (default) or `sse` + endpoint |
+| `status` | `connected` \| `needs_reauth` \| `disconnected` — set `needs_reauth` with **wiped** ciphertext when a refresh dies (`invalid_grant`) or the SDK calls `invalidateCredentials` |
+| `issuer` | authorization-server issuer the tokens/client are bound to (SEP-2352); reads are issuer-checked |
+| `clientId` / `clientSecret` | DCR result; id plaintext (not a secret), secret ciphertext |
+| `tokensCiphertext` | AES-256-GCM JSON of `StoredOAuthTokens` — **the only place tokens exist**; decrypted in-process by `loadConnectionTokens` only |
+| `tokenType`, `scope`, `expiresAt` | query/display metadata (Bearer/DPoP, granted scopes, expiry) |
+| `version` | optimistic lock — every write is `UPDATE … WHERE id AND version` + bump, ≤3 retries against the fresh row, then typed `McpTokenConflictError` |
+
+Stdio/token connectors are unchanged: they stay in `mcp_server_configs` (Claude Code wire
+shape) — an entry may have BOTH rows (hybrid catalog entries); the UI prefers OAuth.
+
+### `mcp_oauth_pendings` — one-time authorization state (the anti-CSRF token, C9)
+
+| Column | Notes |
+|---|---|
+| `state` | 32-byte `base64url`, `@unique` — created **before** the browser round-trip (`createPending`) |
+| `codeVerifier` | PKCE verifier written by the provider's `saveCodeVerifier` (server-side only) |
+| `redirectUrl` | exact `redirect_uri` the loopback listener bound (port allocated first) |
+| `authorizationUrl` | captured from `redirectToAuthorization` — returned to the UI once, then never auto-opened |
+| `issuer`, `discoveryState` | SDK discovery results (SEP-2352) so the callback leg can bind without re-discovery |
+| `status` / `consumedAt` | claim flips `pending → consumed` in ONE guarded `UPDATE` (state + not-expired + not-yet-consumed); replays get typed `used` / `expired` / `unknown` / `failed` |
+| `version` | `failPending(id, expectedVersion, reason)` is version+`status:consumed` guarded — a stale writer gets `false`, not a silent overwrite |
+| `expiresAt` | 10-minute TTL; `sweepExpiredPendings` drops rows a day past it |
+
+### Module map (Phase 2, all under `src/lib/mcp/oauth/`)
+
+- `store.ts` — token/credential persistence: per-`(userId,serverId)` in-process mutex
+  (`withConnectionLock`), version-guarded writes, ciphertext round-trip, `markNeedsReauth`,
+  `listConnections` (ciphertext columns stripped — safe for API responses).
+- `pending.ts` — `createPending` / `claimPending` (single-use) / `failPending` (optimistic) /
+  verifier+authorization+discovery setters / `sweepExpiredPendings`.
+- `provider.ts` — `DbMcpOAuthProvider implements OAuthClientProvider`: DCR metadata with our
+  exact loopback `redirect_uri`, issuer-checked client info, catalog `staticClientId`
+  override, `allowDynamicRegistration: false` → **typed `McpStaticClientRequiredError`**
+  (`code: mcp_static_client_required`) instead of a stack trace, `state()` returns the
+  pending row's state, auth URL captured-not-opened, `invalidateCredentials("tokens"|"all")`
+  → `needs_reauth`.
+- Tests: `src/lib/__tests__/mcp-oauth.test.ts` (20 tests, mocked Prisma): single-use claim
+  + typed reasons, version guard + retry + typed exhaustion, mutex serialization (and
+  unwedging after a rejected section), ciphertext-at-rest round-trips, issuer mismatch
+  rejection, typed no-DCR error.
+
+## 6. Sections added in later phases
+
+- Phase 3: routes (connect/complete/callback), proxy prefix rules, Electron loopback bridge.
 - Phase 4: hub status machine, wrapping rules (timeouts/caps/backoff), SSRF details.
 - Phase 5: discovery + visibility pipeline.
 - Phase 6: catalog audit results → `docs/MCP-CATALOG-AUDIT.md`.

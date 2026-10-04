@@ -9,6 +9,10 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  // NOTE: no directUrl — env("DIRECT_URL") hard-fails validate/generate/runtime
+  // whenever the var is unset (P1012), and .env edits are out of bounds.
+  // Hosted migration (backend mirror) adds directUrl + supplies DIRECT_URL
+  // inline at that time. Tracked as C4 in docs/MCP-OAUTH.md.
 }
 
 model User {
@@ -28,6 +32,8 @@ model User {
   // merges survive a server restart.
   workspacePath    String?
   mcpServers       McpServerConfig[]
+  mcpConnections   McpConnection[]
+  mcpOAuthPendings McpOAuthPending[]
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -664,4 +670,63 @@ model McpServerConfig {
   @@unique([userId, serverId])
   @@index([userId, enabled])
   @@map("mcp_server_configs")
+}
+
+// OAuth-authorized connection to a REMOTE MCP server (spec Phase 2). One row
+// per (user, catalog id) — the stdio/token path stays in McpServerConfig;
+// this table is the OAuth path. Tokens live ONLY here as AES-256-GCM
+// ciphertext (same key as BYOK); never returned raw to the renderer.
+model McpConnection {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serverId         String // catalog id (slug), e.g. "github"
+  transport        String    @default("streamable-http") // streamable-http | sse
+  url              String // MCP endpoint the transport connects to
+  status           String    @default("connected") // connected | needs_reauth | disconnected
+  issuer           String? // authorization-server issuer the tokens are bound to (SEP-2352)
+  clientId         String? // registered client_id (plaintext — not a secret)
+  clientSecret     String? // AES-256-GCM ciphertext (DCR clients that got a secret)
+  tokensCiphertext String?   @db.Text // AES-256-GCM JSON of StoredOAuthTokens — never plaintext
+  tokenType        String? // display metadata only (Bearer / DPoP)
+  scope            String? // granted scopes (display + step-up checks)
+  expiresAt        DateTime? // access-token expiry (null = unknown/no expiry)
+  version          Int       @default(1) // optimistic lock for token/client writes
+  lastTestAt       DateTime?
+  lastTestOk       Boolean?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([userId, serverId])
+  @@index([userId, status])
+  @@map("mcp_connections")
+}
+
+// One in-flight OAuth authorization: created at connect, single-use at
+// complete. Holds the state param, PKCE verifier, and exact redirect_uri so
+// the callback leg proves the exchange belongs to this browser round-trip
+// (one-time server-stored state doubles as the CSRF defense — there is no
+// proxy CSRF layer). codeVerifier/authorizationUrl never leave the server.
+model McpOAuthPending {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serverId         String
+  state            String    @unique // OAuth state param — single-use correlation key
+  codeVerifier     String? // PKCE code_verifier (server-side only)
+  redirectUrl      String // exact redirect_uri registered with the AS
+  authorizationUrl String?   @db.Text // where the browser was sent (read once by the UI)
+  issuer           String? // resolved authorization-server issuer (discovery result)
+  discoveryState   Json? // OAuthDiscoveryState (SEP-2352) — skips re-discovery on the callback leg
+  status           String    @default("pending") // pending | consumed | failed
+  consumedAt       DateTime?
+  expiresAt        DateTime // TTL (10 minutes)
+  version          Int       @default(1) // optimistic lock on claim/finish
+  failureReason    String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([userId, serverId, status])
+  @@index([expiresAt])
+  @@map("mcp_oauth_pendings")
 }
