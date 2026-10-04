@@ -21,12 +21,12 @@ import {
 } from "@/lib/mcp/registry";
 import { withConnection } from "@/lib/mcp/client";
 
-interface EnvSpec {
-  key: string;
-  description: string;
-  required?: boolean;
+interface StdioEnv {
+  name: string;
+  label: string;
   secret?: boolean;
-  placeholder?: string;
+  required?: boolean;
+  help?: string;
 }
 
 interface CatalogServer {
@@ -34,9 +34,10 @@ interface CatalogServer {
   name: string;
   description: string;
   category: string;
-  command: string;
-  args: string[];
-  envSpec: EnvSpec[];
+  auth: "oauth" | "token" | "none";
+  remote: { url: string; transport: "streamable-http" | "sse" } | null;
+  stdio: { command: string; args: string[]; env: StdioEnv[] } | null;
+  oauth: { scopes?: string[]; clientId?: string } | null;
   docsUrl: string | null;
   popular: boolean;
 }
@@ -173,8 +174,8 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
     const initial: Record<string, string> = {};
     // Pre-fill plain (non-secret) values from an existing connection; secrets
     // stay blank and the backend keeps the stored value when left empty.
-    for (const spec of server.envSpec) {
-      if (!spec.secret && existing?.env[spec.key]) initial[spec.key] = existing.env[spec.key];
+    for (const spec of server.stdio?.env ?? []) {
+      if (!spec.secret && existing?.env[spec.name]) initial[spec.name] = existing.env[spec.name];
     }
     setEnvValues(initial);
     setConnectTarget(server);
@@ -506,28 +507,30 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
                 Documentation ↗
               </a>
             )}
-            <div className="mcp-detail-cmd">
-              <code>{connectTarget.command} {connectTarget.args.join(" ")}</code>
-            </div>
+            {connectTarget.stdio && (
+              <div className="mcp-detail-cmd">
+                <code>{connectTarget.stdio.command} {connectTarget.stdio.args.join(" ")}</code>
+              </div>
+            )}
 
-            {connectTarget.envSpec.length > 0 && (
+            {(connectTarget.stdio?.env.length ?? 0) > 0 && (
               <div className="mcp-env-form">
                 <div className="mcp-section-label">Credentials & settings</div>
-                {connectTarget.envSpec.map((spec) => (
-                  <label key={spec.key} className="mcp-env-field">
+                {connectTarget.stdio!.env.map((spec) => (
+                  <label key={spec.name} className="mcp-env-field">
                     <span className="mcp-env-key">
-                      {spec.key}
+                      {spec.name}
                       {spec.required && <em className="mcp-env-req">required</em>}
                       {spec.secret && <em className="mcp-env-secret">secret</em>}
                     </span>
                     <input
                       type={spec.secret ? "password" : "text"}
-                      value={envValues[spec.key] ?? ""}
-                      placeholder={spec.placeholder ?? spec.description}
-                      onChange={(e) => setEnvValues((v) => ({ ...v, [spec.key]: e.target.value }))}
+                      value={envValues[spec.name] ?? ""}
+                      placeholder={spec.help ?? spec.label}
+                      onChange={(e) => setEnvValues((v) => ({ ...v, [spec.name]: e.target.value }))}
                       autoComplete="off"
                     />
-                    <span className="mcp-env-help">{spec.description}</span>
+                    <span className="mcp-env-help">{spec.label}</span>
                   </label>
                 ))}
                 <p className="mcp-env-note">Secrets are encrypted (AES-256-GCM) before storage and never returned to the browser.</p>

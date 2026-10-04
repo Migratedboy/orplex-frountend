@@ -11,15 +11,15 @@
 
 import { prisma } from "@/lib/prisma";
 import { decryptKey, encryptKey, maskKey } from "@/lib/key-encryption";
-import { getMcpCatalogEntry, type McpCatalogEntry, type McpEnvSpec } from "@/lib/mcp-catalog";
+import { getMcpCatalogEntry, type McpCatalogEntry } from "@/lib/mcp-catalog";
 import type { McpServerConfig } from "@/lib/mcp-client";
 
 export const MAX_MCP_SERVERS_PER_RUN = 2; // mirrors mcp-client MAX_SERVERS
 const MAX_SERVERS_PER_USER = 20;
 
-/** Which env keys of a catalog entry are secrets (never returned raw). */
+/** Which env vars of a catalog entry are secrets (never returned raw). */
 function secretKeys(entry: McpCatalogEntry): Set<string> {
-  return new Set(entry.envSpec.filter((s) => s.secret).map((s) => s.key));
+  return new Set((entry.stdio?.env ?? []).filter((v) => v.secret).map((v) => v.name));
 }
 
 export interface ConnectedServer {
@@ -106,9 +106,9 @@ export interface ConnectResult {
 
 /**
  * Connect (or re-save) a catalog server for a user. Env values that map to
- * secret envSpec keys are encrypted at rest; plain values pass through.
- * An existing row is updated in place — secrets the user leaves blank are
- * preserved so the UI can post only the fields that changed.
+ * secret vars declared by the catalog entry are encrypted at rest; plain
+ * values pass through. An existing row is updated in place — secrets the user
+ * leaves blank are preserved so the UI can post only the fields that changed.
  */
 export async function connectServer(
   userId: string,
@@ -117,6 +117,10 @@ export async function connectServer(
 ): Promise<ConnectResult> {
   const entry = getMcpCatalogEntry(serverId);
   if (!entry) return { ok: false, status: 404, error: `unknown MCP server "${serverId.slice(0, 60)}"` };
+  if (!entry.stdio) {
+    return { ok: false, status: 400, error: `${entry.name} connects over OAuth — no token/stdio path to save` };
+  }
+  const stdio = entry.stdio;
 
   const count = await prisma.mcpServerConfig.count({ where: { userId } });
   const existing = await prisma.mcpServerConfig.findUnique({ where: { userId_serverId: { userId, serverId } } });
@@ -128,20 +132,20 @@ export async function connectServer(
   const prevEnv = existing && existing.env && typeof existing.env === "object" ? (existing.env as Record<string, string>) : {};
   const envOut: Record<string, string> = {};
   const supplied = input.env ?? {};
-  for (const spec of entry.envSpec as McpEnvSpec[]) {
-    const raw = supplied[spec.key];
+  for (const spec of stdio.env) {
+    const raw = supplied[spec.name];
     if (typeof raw === "string" && raw.trim() !== "") {
-      envOut[spec.key] = secrets.has(spec.key) ? encryptKey(raw.trim()) : raw.trim();
-    } else if (prevEnv[spec.key]) {
-      envOut[spec.key] = prevEnv[spec.key]; // blank → keep stored value
+      envOut[spec.name] = secrets.has(spec.name) ? encryptKey(raw.trim()) : raw.trim();
+    } else if (prevEnv[spec.name]) {
+      envOut[spec.name] = prevEnv[spec.name]; // blank → keep stored value
     }
   }
 
   const args = Array.isArray(input.args) && input.args.every((a) => typeof a === "string")
     ? (input.args as string[])
     : existing
-      ? (Array.isArray(existing.args) ? (existing.args as string[]) : entry.args)
-      : entry.args;
+      ? (Array.isArray(existing.args) ? (existing.args as string[]) : stdio.args)
+      : stdio.args;
 
   const row = await prisma.mcpServerConfig.upsert({
     where: { userId_serverId: { userId, serverId } },
@@ -149,7 +153,7 @@ export async function connectServer(
       userId,
       serverId,
       label: input.label?.slice(0, 80) || entry.name,
-      command: entry.command,
+      command: stdio.command,
       args,
       env: envOut,
       enabled: input.enabled ?? true,
@@ -196,7 +200,7 @@ export async function getServerRunConfig(userId: string, serverId: string): Prom
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(envRaw)) {
     if (typeof v !== "string" || v === "") continue;
-    if (entry?.envSpec.find((s) => s.key === k)?.secret) {
+    if ((entry?.stdio?.env ?? []).find((s) => s.name === k)?.secret) {
       try {
         env[k] = decryptKey(v);
       } catch {
@@ -209,7 +213,7 @@ export async function getServerRunConfig(userId: string, serverId: string): Prom
   const args = Array.isArray(row.args) ? (row.args as string[]) : [];
   return {
     command: row.command,
-    args: args.length > 0 ? args : (entry?.args ?? []),
+    args: args.length > 0 ? args : (entry?.stdio?.args ?? []),
     env: Object.keys(env).length > 0 ? env : undefined,
   };
 }
@@ -234,7 +238,7 @@ export async function collectMcpServerConfigs(userId: string): Promise<Record<st
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(envRaw)) {
       if (typeof v !== "string" || v === "") continue;
-      if (entry?.envSpec.find((s) => s.key === k)?.secret) {
+      if ((entry?.stdio?.env ?? []).find((s) => s.name === k)?.secret) {
         try {
           env[k] = decryptKey(v);
         } catch {
@@ -247,7 +251,7 @@ export async function collectMcpServerConfigs(userId: string): Promise<Record<st
     const args = Array.isArray(r.args) ? (r.args as string[]) : [];
     out[r.serverId] = {
       command: r.command,
-      args: args.length > 0 ? args : (entry?.args ?? []),
+      args: args.length > 0 ? args : (entry?.stdio?.args ?? []),
       env: Object.keys(env).length > 0 ? env : undefined,
     };
   }

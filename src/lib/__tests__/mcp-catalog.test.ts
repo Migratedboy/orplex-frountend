@@ -1,6 +1,14 @@
 // Unit tests for the MCP catalog: size promise (100+), structural integrity,
-// and search ranking behavior.
-import { MCP_CATALOG, MCP_CATALOG_SIZE, MCP_CATEGORIES, getMcpCatalogEntry, searchMcpCatalog } from "../mcp-catalog";
+// Zod schema validation, auth/stdio shape, and search ranking behavior.
+import {
+  MCP_CATALOG,
+  MCP_CATALOG_SIZE,
+  MCP_CATEGORIES,
+  getMcpCatalogEntry,
+  mcpCatalogEntrySchema,
+  searchMcpCatalog,
+  validateMcpCatalog,
+} from "../mcp-catalog";
 
 describe("mcp-catalog", () => {
   it("ships 100+ servers", () => {
@@ -13,19 +21,49 @@ describe("mcp-catalog", () => {
     expect(ids.size).toBe(MCP_CATALOG.length);
   });
 
-  it("every entry is well-formed (command, args, envSpec keys unique)", () => {
+  it("every entry is well-formed (stdio command/args, unique env names, labels)", () => {
     for (const e of MCP_CATALOG) {
       expect(e.id).toMatch(/^[a-z0-9-]+$/);
       expect(e.name.length).toBeGreaterThan(0);
       expect(e.description.length).toBeGreaterThan(10);
-      expect(typeof e.command).toBe("string");
-      expect(Array.isArray(e.args)).toBe(true);
-      expect(e.args.every((a) => typeof a === "string")).toBe(true);
-      const keys = e.envSpec.map((s) => s.key);
-      expect(new Set(keys).size).toBe(keys.length);
-      for (const spec of e.envSpec) {
-        expect(spec.description.length).toBeGreaterThan(0);
+      expect(e.stdio).toBeDefined();
+      expect(typeof e.stdio!.command).toBe("string");
+      expect(e.stdio!.command.length).toBeGreaterThan(0);
+      expect(Array.isArray(e.stdio!.args)).toBe(true);
+      expect(e.stdio!.args.every((a) => typeof a === "string")).toBe(true);
+      const names = e.stdio!.env.map((s) => s.name);
+      expect(new Set(names).size).toBe(names.length);
+      for (const spec of e.stdio!.env) {
+        expect(spec.name).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
+        expect(spec.label.length).toBeGreaterThan(0);
       }
+    }
+  });
+
+  it("passes the Zod catalog schema (load-time validation)", () => {
+    const result = validateMcpCatalog();
+    expect(result.errors).toEqual([]);
+    expect(result.ok).toBe(true);
+    for (const e of MCP_CATALOG) {
+      const parsed = mcpCatalogEntrySchema.safeParse(e);
+      expect(parsed.success).toBe(true);
+    }
+  });
+
+  it("derives a consistent auth type for every entry", () => {
+    for (const e of MCP_CATALOG) {
+      expect(["oauth", "token", "none"]).toContain(e.auth);
+      if (e.auth === "oauth") expect(e.oauth).toBeDefined();
+      if (e.auth === "token") {
+        expect((e.stdio?.env ?? []).some((s) => s.secret)).toBe(true);
+      }
+      if (e.oauth) expect(e.auth).toBe("oauth");
+      if (e.docsUrl) expect(e.docsUrl.startsWith("https://")).toBe(true);
+    }
+    // Every entry with a secret env var must not claim "none".
+    for (const e of MCP_CATALOG) {
+      const hasSecret = (e.stdio?.env ?? []).some((s) => s.secret);
+      if (hasSecret) expect(e.auth).not.toBe("none");
     }
   });
 
@@ -39,8 +77,9 @@ describe("mcp-catalog", () => {
   it("marks popular entries and secret env fields", () => {
     expect(MCP_CATALOG.filter((e) => e.popular).length).toBeGreaterThanOrEqual(15);
     const supabase = getMcpCatalogEntry("supabase")!;
-    expect(supabase.envSpec[0].secret).toBe(true);
-    expect(supabase.envSpec[0].required).toBe(true);
+    expect(supabase.stdio!.env[0].secret).toBe(true);
+    expect(supabase.stdio!.env[0].required).toBe(true);
+    expect(supabase.auth).toBe("token");
   });
 
   it("exposes display categories that match the catalog", () => {

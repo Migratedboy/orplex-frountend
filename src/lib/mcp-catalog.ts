@@ -1,31 +1,47 @@
 // mcp-catalog.ts — Orplex's verified catalog of MCP (Model Context Protocol)
 // servers, surfaced in the Connectors UI ("+" → MCP servers).
 //
-// Every entry carries the Claude Code wire shape (command/args/env) so the
-// executor can spawn it directly once the user connects it. Env vars marked
-// `required` collect the user's secrets (stored encrypted in McpServerConfig).
+// Entry shape (spec §Phase 1): auth hint + optional remote (OAuth) + nested
+// stdio {command, args, env:[{name,label,secret,required,help}]} + optional
+// oauth hints. Entries may carry BOTH remote(oauth) and stdio(token); the UI
+// defaults to remote/OAuth when present. Saved McpServerConfig rows keep the
+// flat command/args/env wire shape, so existing connections keep working.
 //
 // A note on honesty: the MCP ecosystem moves fast — command strings below are
 // verified against each project's README at time of writing, but npm/PyPI
 // package names drift. The Connectors panel runs a real `listTools` probe
 // (test-connection) before a server is marked healthy, so a stale template
-// fails loudly at connect time instead of silently at run time.
+// fails loudly at connect time instead of silently at run time. Remote URLs
+// are NEVER trusted from this file: Phase 6 (scripts/audit-mcp-catalog.mjs)
+// probes each candidate and only verified endpoints ship as `remote`.
 
-export type McpCategory =
-  | "database"
-  | "devtools"
-  | "cloud"
-  | "design"
-  | "productivity"
-  | "data"
-  | "ai"
-  | "payments"
-  | "comms"
-  | "web"
-  | "search"
-  | "files"
-  | "shell";
+import { z } from "zod";
 
+const MCP_CATEGORY_KEYS = [
+  "database",
+  "devtools",
+  "cloud",
+  "design",
+  "productivity",
+  "data",
+  "ai",
+  "payments",
+  "comms",
+  "web",
+  "search",
+  "files",
+  "shell",
+] as const;
+
+export type McpCategory = (typeof MCP_CATEGORY_KEYS)[number];
+
+/** How a connector authenticates to its server. */
+export type McpAuthType = "oauth" | "token" | "none";
+
+/**
+ * Builder input for env declarations (kept in the legacy key/description
+ * spelling so entry call-sites stay terse — entry() converts it to stdio.env).
+ */
 export interface McpEnvSpec {
   key: string;
   description: string;
@@ -34,16 +50,115 @@ export interface McpEnvSpec {
   placeholder?: string;
 }
 
+/** One declared env var for the stdio launch (spec shape). */
+export interface McpStdioEnv {
+  name: string;
+  label: string;
+  secret?: boolean;
+  required?: boolean;
+  help?: string;
+}
+
+export interface McpStdioSpec {
+  command: string;
+  args: string[];
+  env: McpStdioEnv[];
+}
+
+export interface McpRemoteSpec {
+  url: string;
+  transport: "streamable-http" | "sse";
+}
+
+export interface McpOAuthSpec {
+  scopes?: string[];
+  /** Only for providers without dynamic registration (filled from the Phase 6 audit). */
+  clientId?: string;
+}
+
 export interface McpCatalogEntry {
   id: string;
   name: string;
   description: string;
   category: McpCategory;
-  command: string;
-  args: string[];
-  envSpec: McpEnvSpec[];
-  docsUrl?: string;
   popular?: boolean;
+  auth: McpAuthType;
+  /** Primary path when present — the UI defaults to remote/OAuth. */
+  remote?: McpRemoteSpec;
+  /** Local process path (also the token fallback for hybrid entries). */
+  stdio?: McpStdioSpec;
+  oauth?: McpOAuthSpec;
+  docsUrl?: string;
+}
+
+// ── Zod validation (runs at load — see validateMcpCatalog) ──────────────────
+
+const LOOPBACK_HTTP = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i;
+
+const stdioEnvSchema = z.object({
+  name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+  label: z.string().min(1),
+  secret: z.boolean().optional(),
+  required: z.boolean().optional(),
+  help: z.string().optional(),
+});
+
+export const mcpCatalogEntrySchema = z.object({
+  id: z.string().regex(/^[a-z0-9-]+$/),
+  name: z.string().min(1),
+  description: z.string().min(11),
+  category: z.enum(MCP_CATEGORY_KEYS),
+  popular: z.boolean().optional(),
+  auth: z.enum(["oauth", "token", "none"]),
+  remote: z
+    .object({
+      url: z
+        .string()
+        .url()
+        .refine((u) => u.startsWith("https://") || LOOPBACK_HTTP.test(u), "remote URL must be https (http allowed on loopback only)"),
+      transport: z.enum(["streamable-http", "sse"]),
+    })
+    .optional(),
+  stdio: z
+    .object({
+      command: z.string().min(1),
+      args: z.array(z.string()),
+      env: z.array(stdioEnvSchema).superRefine((env, ctx) => {
+        const seen = new Set<string>();
+        for (const v of env) {
+          if (seen.has(v.name)) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: `duplicate env var ${v.name}` });
+          }
+          seen.add(v.name);
+        }
+      }),
+    })
+    .optional(),
+  oauth: z
+    .object({
+      scopes: z.array(z.string()).min(1).optional(),
+      clientId: z.string().min(1).optional(),
+    })
+    .optional(),
+  docsUrl: z
+    .string()
+    .url()
+    .optional()
+    .refine((u) => u === undefined || u.startsWith("https://"), "docsUrl must be https"),
+});
+
+export interface McpCatalogValidation {
+  ok: boolean;
+  errors: string[];
+}
+
+export function validateMcpCatalog(catalog: readonly McpCatalogEntry[] = MCP_CATALOG): McpCatalogValidation {
+  const parsed = z.array(mcpCatalogEntrySchema).safeParse(catalog);
+  if (parsed.success) return { ok: true, errors: [] };
+  return {
+    ok: false,
+    errors: parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`),
+  };
 }
 
 const npx = (pkg: string, ...rest: string[]): { command: string; args: string[] } => ({
@@ -63,17 +178,30 @@ const entry = (
   category: McpCategory,
   cmd: { command: string; args: string[] },
   envSpec: McpEnvSpec[] = [],
-  opts: { docsUrl?: string; popular?: boolean } = {}
+  opts: { docsUrl?: string; popular?: boolean; auth?: McpAuthType; remote?: McpRemoteSpec; oauth?: McpOAuthSpec } = {}
 ): McpCatalogEntry => ({
   id,
   name,
   description,
   category,
-  command: cmd.command,
-  args: cmd.args,
-  envSpec,
-  docsUrl: opts.docsUrl,
   popular: opts.popular,
+  // Explicit opt wins; oauth hint implies oauth; any declared secret means
+  // token auth; otherwise the server needs no credentials.
+  auth: opts.auth ?? (opts.oauth ? "oauth" : envSpec.some((s) => s.secret) ? "token" : "none"),
+  ...(opts.remote ? { remote: opts.remote } : {}),
+  ...(opts.oauth ? { oauth: opts.oauth } : {}),
+  stdio: {
+    command: cmd.command,
+    args: cmd.args,
+    env: envSpec.map((s) => ({
+      name: s.key,
+      label: s.description,
+      ...(s.secret !== undefined ? { secret: s.secret } : {}),
+      ...(s.required !== undefined ? { required: s.required } : {}),
+      ...(s.placeholder !== undefined ? { help: s.placeholder } : {}),
+    })),
+  },
+  ...(opts.docsUrl ? { docsUrl: opts.docsUrl } : {}),
 });
 
 const URL_ENV = (key = "URL", description = "Server URL (https://…)"): McpEnvSpec => ({
@@ -394,6 +522,19 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
   entry("terminal-control", "Terminal", "Persistent terminal sessions the agent can drive.", "shell",
     npx("@wonderwhy-er/desktop-commander")),
 ];
+
+// Fail fast: a malformed entry would otherwise surface as a broken Connectors
+// form at runtime. Throws in dev/test, logs in production (the UI degrades to
+// the last-known shape instead of white-screening).
+const CATALOG_VALIDATION = validateMcpCatalog(MCP_CATALOG);
+if (!CATALOG_VALIDATION.ok) {
+  const report = `MCP catalog failed validation (${CATALOG_VALIDATION.errors.length}):\n- ${CATALOG_VALIDATION.errors.join("\n- ")}`;
+  if (typeof process !== "undefined" && process.env?.NODE_ENV === "production") {
+    console.error(report);
+  } else {
+    throw new Error(report);
+  }
+}
 
 /** All categories in display order with labels. */
 export const MCP_CATEGORIES: Array<{ key: McpCategory | "all"; label: string }> = [
