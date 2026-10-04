@@ -7,10 +7,19 @@
 // are refreshed through the Electron bridge when they expire; the connecting
 // flow lives in ConnectorsPanel.
 
+export interface McpToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
 export interface McpToolInfo {
   name: string;
   description: string;
   inputSchema: unknown;
+  /** Server-declared ToolAnnotations from tools/list (risk hints — C6). */
+  annotations?: McpToolAnnotations;
 }
 
 export interface McpTokens {

@@ -122,7 +122,12 @@ export class McpConnection {
     const { result, error } = await this.rpc("tools/list", {});
     if (error) throw new Error(`tools/list failed: ${error.message}`);
     const tools = (result?.tools ?? []) as McpToolInfo[];
-    return tools.map((t) => ({ name: t.name, description: t.description ?? "", inputSchema: t.inputSchema ?? { type: "object", properties: {} } }));
+    return tools.map((t) => ({
+      name: t.name,
+      description: t.description ?? "",
+      inputSchema: t.inputSchema ?? { type: "object", properties: {} },
+      ...(t.annotations ? { annotations: t.annotations } : {}),
+    }));
   }
 
   async callTool(toolName: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {

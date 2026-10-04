@@ -18,6 +18,19 @@ export interface RiskAssessment {
   autoApprovable: boolean;
 }
 
+/**
+ * Server-declared hints for MCP connector tools (spec Phase 4, conflict C6).
+ * `readOnlyHint`/`destructiveHint` come from the server's own ToolAnnotations
+ * on tools/list — third-party claims we only TRUST for the read-only path,
+ * never as a reason to skip approval entirely.
+ */
+export interface McpRiskHint {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  /** Per-server user toggle: auto-approve tools the server marks read-only. */
+  serverAutoApproveReadOnly?: boolean;
+}
+
 const LOW_RISK_TOOLS = new Set([
   "read_file",
   "list_files",
@@ -46,7 +59,8 @@ const SENSITIVE_FILE = /(\.env|\.npmrc|\.ssh|id_rsa|credentials|secret|password|
  */
 export function classifyRisk(
   toolName: string,
-  args: Record<string, unknown> = {}
+  args: Record<string, unknown> = {},
+  mcp?: McpRiskHint
 ): RiskAssessment {
   // 1. Read-only tools are always low risk
   if (LOW_RISK_TOOLS.has(toolName)) {
@@ -100,7 +114,25 @@ export function classifyRisk(
     return { level: "medium", reason: "File modification", autoApprovable: false };
   }
 
-  // 6. Unknown tool — fail closed
+  // 6. MCP connector tools (mcp__<server>__<tool>) — third-party code with
+  //    unknown side effects. Fail closed: without a server-side read-only
+  //    annotation the call is medium and needs approval (C6). The per-server
+  //    auto-approve toggle only ever unlocks tools the server itself
+  //    declared readOnly; destructiveHint → elevated tier.
+  if (toolName.startsWith("mcp__")) {
+    if (mcp?.destructiveHint) {
+      return { level: "high", reason: "MCP tool declared destructive by its server", autoApprovable: false };
+    }
+    if (mcp?.readOnlyHint && mcp.serverAutoApproveReadOnly) {
+      return { level: "low", reason: "MCP read-only tool — auto-approved for this server", autoApprovable: true };
+    }
+    if (mcp?.readOnlyHint) {
+      return { level: "medium", reason: "MCP tool marked read-only by its server", autoApprovable: false };
+    }
+    return { level: "medium", reason: "MCP connector tool — external side effects", autoApprovable: false };
+  }
+
+  // 7. Unknown tool — fail closed
   return { level: "medium", reason: "Unrecognized tool — requires review", autoApprovable: false };
 }
 

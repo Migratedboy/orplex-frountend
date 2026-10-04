@@ -27,6 +27,7 @@ import {
 import { getMcpCatalogEntry, type McpCatalogEntry } from "@/lib/mcp-catalog";
 import { PENDING_TTL_MS, claimPending, createPending, failPending } from "./pending";
 import { DbMcpOAuthProvider, McpStaticClientRequiredError } from "./provider";
+import { ssrfFetch } from "../ssrf-fetch";
 
 const CLIENT_INFO = { name: "Orplex", version: "1.0.0" } as const;
 
@@ -107,7 +108,9 @@ function makeProvider(
 
 function makeTransport(entry: McpCatalogEntry, provider: DbMcpOAuthProvider) {
   const url = new URL(remoteOf(entry)!.url);
-  const opts = { authProvider: provider };
+  // `fetch` covers the transport POSTs AND the OAuth discovery/exchange
+  // requests the SDK drives itself (C7 — ssrf-fetch.ts).
+  const opts = { authProvider: provider, fetch: ssrfFetch };
   return entry.remote!.transport === "sse" ? new SSEClientTransport(url, opts) : new StreamableHTTPClientTransport(url, opts);
 }
 

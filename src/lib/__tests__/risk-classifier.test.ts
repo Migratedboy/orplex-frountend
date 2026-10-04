@@ -76,6 +76,33 @@ describe("classifyRisk — fail-closed defaults", () => {
   });
 });
 
+describe("classifyRisk — MCP connector tools (C6)", () => {
+  it("defaults mcp__ tools to medium — approval required, never auto-approved", () => {
+    const r = classifyRisk("mcp__acme-cloud__create_issue", { title: "hi" });
+    expect(r.level).toBe("medium");
+    expect(r.autoApprovable).toBe(false);
+    expect(r.reason).toMatch(/side effects/);
+  });
+
+  it("stays medium for read-only tools until the per-server toggle opts in", () => {
+    const plain = classifyRisk("mcp__acme-cloud__list", {}, { readOnlyHint: true });
+    expect(plain).toMatchObject({ level: "medium", autoApprovable: false });
+
+    const opted = classifyRisk("mcp__acme-cloud__list", {}, { readOnlyHint: true, serverAutoApproveReadOnly: true });
+    expect(opted).toMatchObject({ level: "low", autoApprovable: true });
+  });
+
+  it("toggle without a read-only annotation does not auto-approve", () => {
+    const r = classifyRisk("mcp__acme-cloud__mutate", {}, { serverAutoApproveReadOnly: true });
+    expect(r).toMatchObject({ level: "medium", autoApprovable: false });
+  });
+
+  it("server-declared destructive tools go elevated, even with the toggle", () => {
+    const r = classifyRisk("mcp__acme-cloud__wipe", {}, { destructiveHint: true, readOnlyHint: true, serverAutoApproveReadOnly: true });
+    expect(r).toMatchObject({ level: "high", autoApprovable: false });
+  });
+});
+
 describe("riskRank", () => {
   it("orders high > medium > low", () => {
     expect(riskRank("high")).toBeGreaterThan(riskRank("medium"));

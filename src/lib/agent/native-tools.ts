@@ -173,8 +173,34 @@ export async function dispatchToolCall(
 
   // ── MCP connector tools (mcp__<server>__<tool>) ─────────────────────
   // OAuth-authenticated remote servers connected in MCP connectors. Checked
-  // FIRST so their names never collide with built-ins.
+  // FIRST so their names never collide with built-ins. Risk-tiered approval
+  // runs BEFORE dispatch (C6): unknown third-party tools default to medium,
+  // only server-declared read-only + the user's per-server toggle go silent.
   if (call.name.startsWith("mcp__")) {
+    const { assessMcpToolRisk } = await import("../mcp/risk-hint");
+    const mcpRisk = assessMcpToolRisk(call.name);
+    if (!mcpRisk.autoApprovable) {
+      if (mcpRisk.level === "high") {
+        emitActivity({ type: "tool", message: `High-risk MCP tool requires approval: ${call.name}`, agent: "coder" });
+      }
+      ctx.setStatus("awaiting_approval", `Waiting for approval: ${call.name}`);
+      ctx.appendDisplay(`${call.name} — awaiting approval\n`);
+      ctx.syncDisplay();
+      const approved = await requestApproval(
+        "mcp_tool",
+        `MCP tool ${call.name} — ${mcpRisk.reason}`,
+        { tool: call.name },
+        undefined,
+        mcpRisk.level
+      );
+      if (!approved) {
+        ctx.stats.rejectedAction();
+        result(`<tool_result name="${call.name}">rejected by user</tool_result>\n`);
+        ctx.replaceStatus(`[FAIL] Rejected: ${call.name}`);
+        ctx.syncDisplay();
+        return { resultXml: toolResults, blocked: false };
+      }
+    }
     const { dispatchMcpToolCall } = await import("../mcp/dispatch");
     return dispatchMcpToolCall(call as { name: string } & Record<string, unknown>, {
       setStatus: ctx.setStatus,

@@ -8,7 +8,7 @@
 
 import { classifyRisk, riskRank, type RiskLevel } from "./risk-classifier";
 
-export type ApprovalType = "write_file" | "edit_file" | "run_command";
+export type ApprovalType = "write_file" | "edit_file" | "run_command" | "mcp_tool";
 
 export interface PendingApproval {
   id: string;
@@ -155,6 +155,10 @@ function saveAlwaysRules(rules: AlwaysRule[]): void {
 export function approvalKey(type: ApprovalType, details: Record<string, unknown>): string {
   if (type === "run_command") {
     return String(details.command || "").trim().split(/\s+/).slice(0, 2).join(" ").toLowerCase();
+  }
+  if (type === "mcp_tool") {
+    // Whole qualified name — an "always allow" rule is per server+tool.
+    return String(details.tool || "").trim().toLowerCase();
   }
   return String(details.path || "").replace(/\\/g, "/");
 }

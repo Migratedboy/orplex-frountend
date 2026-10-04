@@ -218,9 +218,72 @@ other `/api/agent/*` route still rewrites to the backend (covered by
 start failures; state unknown/expired/replay; session binding; denial; exchange + issuer +
 verify failures) and `proxy-mcp-local.test.ts` (prefix match + non-MCP control routes).
 
-## 7. Sections added in later phases
+## 7. Hub, SSRF, risk (Phase 4)
 
-- Phase 4: hub status machine, wrapping rules (timeouts/caps/backoff), SSRF details.
+### `hub.ts` — the SDK session manager (server-side only)
+
+One live `Client` per (user, server) with shared wrapping rules:
+
+| Rule | Value | Behavior |
+|---|---|---|
+| Status machine | `disconnected → connecting → connected` | plus `error` (backoff-gated) and `needs_reauth` (terminal until the user reconnects) |
+| Single flight | — | concurrent callers share one `connect()` attempt |
+| Connect/list/call timeouts | 15s / 15s / 30s | `McpHubTimeoutError` → close session, count a failure |
+| Concurrency cap | 4 in-flight per server | FIFO waiters with their own timeout (→ `call_timeout`) |
+| Tool-list cache | 60s TTL, ≤200 tools | `refresh:true` forces re-list |
+| Backoff | 1s → 2s → … cap 60s | consecutive failures gate reconnects (`cooldown` error carries `retryAt`) |
+| Idle close | 5 min | session self-closes when no calls are in flight |
+| Protocol errors | — | invalid params / unknown tool rethrown **untouched**: session stays healthy, no failure counted |
+
+`RuntimeMcpOAuthProvider` backs runtime connects: tokens/client-info from
+Prisma (issuer-checked), silent refresh saves through the store, discovery
+state in-memory — and every browser-redirect leg throws
+`McpInteractiveAuthRequiredError`, which the hub maps to `needs_reauth` +
+`markNeedsReauth`. Runtime NEVER does DCR (a runtime-registered client would
+carry a placeholder `redirect_uri`); credential bootstrapping is exclusively
+the connect route's job. Errors from `hubCallTool`/`hubListTools` are typed
+`McpHubError` (`no_remote`, `unsupported_auth`, `needs_reauth`, `cooldown`,
+`connect_failed`, `call_failed`, `call_timeout`).
+
+### `ssrf-fetch.ts` (C7)
+
+`checkMcpUrl`: http/https only · loopback (`localhost`/`127.x`/`[::1]`) allowed
+on http **and** https · private/link-local/CGNAT/metadata hosts blocked ·
+public hosts must be https. `ssrfFetch` is handed to the transports as their
+`fetch` — covering MCP POSTs/SSE **and** the OAuth discovery/exchange requests
+the SDK drives itself — in both `hub.ts` and `flow.ts`. Known limitation
+(documented in-file): redirect hops aren't re-checked; safe because
+transports default to same-origin redirects and catalog URLs are https-or-loopback.
+
+### Risk tiering for MCP tools (C6)
+
+`classifyRisk(tool, args, mcpHint)` grew an MCP branch (checked before the
+unknown-tool fallthrough):
+
+1. `destructiveHint` → **high** (elevated dialog, never rule-rememberable)
+2. `readOnlyHint` + per-server auto-approve toggle → **low** (silent)
+3. `readOnlyHint` alone → **medium** (one approval)
+4. everything else → **medium**, "external side effects" (fail closed)
+
+Hints: `risk-hint.ts` (browser-safe, localStorage) reads ToolAnnotations from
+the registry cache + the `orplex.mcp.prefs.v1` per-server toggle
+(`saveMcpServerPrefs` — the SDK lane's Prisma-backed lookup lands with
+tool-builder in Phase 5). `native-tools.ts` calls `assessMcpToolRisk` **before**
+`dispatchMcpToolCall`; rejections render `rejected by user` exactly like
+`run_command`. Approval type `"mcp_tool"` was added to `ApprovalType` —
+"always allow" keys on the full `mcp__<server>__<tool>` name
+(`approvalKey`), and the store receives the precomputed tier via `riskHint`.
+
+### Tests (Phase 4): 45 new
+
+`mcp-ssrf-fetch.test.ts` (policy matrix + guard), `mcp-hub.test.ts` (status
+machine, single-flight, transport fetch, needs_reauth, backoff/cooldown,
+cache, caps, timeouts, protocol-error tolerance, idle close under fake
+timers, runtime provider), `mcp-risk-hint.test.ts` (annotations + prefs +
+wiring), plus the MCP block in `risk-classifier.test.ts`.
+
+## 8. Sections added in later phases
+
 - Phase 5: discovery + visibility pipeline.
 - Phase 6: catalog audit results → `docs/MCP-CATALOG-AUDIT.md`.
 - Phase 9: how to add a connector; debugging login failures / missing tools.
