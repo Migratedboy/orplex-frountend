@@ -495,4 +495,66 @@ name, POST contract, tool errors, reauth/cooldown mapping, truncation,
 fetch failure), risk-classifier +4 (`mcpRiskHintFrom` mapping + end-to-end),
 native-tool-defs +2 (remoteTools merge, over-cap names-only + meta tools).
 
-### Phase 9 — how to add a connector; debugging login failures / missing tools.
+### Phase 9 - how to add a connector; debugging login failures / missing tools
+
+**Adding a connector (user-facing):**
+
+- *OAuth remote (default lane):* Settings → Connectors → pick a catalog
+  remote → "Sign in with OAuth" runs `oauthPrepare` (Electron binds the
+  loopback first) → `POST /connections/[id]/connect` → browser →
+  `oauthOpen(authUrl)` → callback relays to `POST /api/mcp/oauth/complete`
+  (hosted setups instead ride the 60 s poll on the same complete POST).
+  Success now ALSO fires hub discovery (`refreshServerSnapshot`) so tools
+  appear immediately.
+- *stdio/custom server:* save it in the Connectors form (env/command path,
+  `mcp-accounts`), then "Test connection" — the probe's real tools/list is
+  persisted as the roster (Phase 9 trigger in `test-connection`).
+- Tools then flow to: prompt sections + defs (chat route & executor, C5
+  builder), `GET /api/agent/mcp/tools` (renderer loop, sdk lane), the
+  `toolCount` badges (`connection-view`), and the What-AI-sees page.
+
+**Debugging login failures:**
+
+- Panel shows `needs_reauth` with `failureReason` (set by `markNeedsReauth`
+  on revoked/invalidated credentials, or pending-stage failures like
+  "authorization denied"). Re-authorize = full sign-in again; Reconnect is
+  the pre-auth re-entry.
+- 4xx from the AS at complete time maps to typed codes: `denied`,
+  `state_unknown/expired/used/failed` (replay-safe one-time state),
+  `wrong_owner`, `issuer_mismatch` (RFC 9207), `exchange_failed`,
+  `verify_failed` (token exchanged but the MCP endpoint rejects the
+  session). Statuses are in the complete route's `statusFor`.
+- `redirect_uri` must be the bound loopback or the hosted callback origin
+  (policy in flow.ts); plain `http://` endpoints are rejected outside
+  loopback (C7 SSRF fetch) — the classic "transport error" on connect is
+  usually this.
+- If requests seem to hit the cloud instead of local state, verify the
+  proxy keeps `/api/mcp/*` and `/api/agent/mcp/*` local (C2 prefix match in
+  `src/proxy.ts`) — split stores look exactly like "my connection vanished".
+
+**Debugging missing tools:**
+
+- Roster source of truth = the `mcpTool` snapshot (`syncToolSnapshot`).
+  Phase 9 wired the two triggers (both OAuth complete routes — desktop
+  POST `/complete` and hosted `GET /callback` — plus test-connection) and
+  self-heal: `GET /api/agent/mcp/tools` awaits discovery for every
+  `connected` server that has no snapshot rows (`refreshMissingSnapshots`,
+  parallel, errors swallowed). Empty prompt section → check that server's
+  connection status first; `connected_no_tools` means discovery ran and the
+  server really advertised none.
+- Over 40 tools → names-only defs + `mcp_search_tools`/`mcp_describe_tool`
+  is intentional (C10), not a bug; the prompt meter accounts the schemas.
+- Name conflicts: workspace/account stdio configs win over snapshot tools
+  with the same server id (Phase 8 filter) — one def, the stdio one.
+- Lane mismatches: `ORPLEX_MCP=legacy` keeps the old localStorage dispatch
+  but NOT prompt assembly (chat/executor read the snapshot); the default
+  `sdk` lane is consistent end-to-end. An unset/typo'd `ORPLEX_MCP` always
+  means `sdk` (fail-safe, C8).
+- Model sees `mcp__<server>__<tool>` but the call errors "no MCP server" →
+  the tool came from a stale prompt: the executor only dispatches servers
+  present in the snapshot (sdk lane) or its stdio configs; refresh the
+  roster (self-heal on next roster fetch) and resubmit.
+
+**Tests (Phase 9): +5** - `mcp-roster-refresh.test.ts` (4: discover+persist,
+skip current/non-connected rows, per-server errors swallowed, dead db no-op)
+and `mcp-oauth-flow.test.ts` updated (complete now returns `serverId`).

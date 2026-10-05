@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
 import { completeAuthorization } from "@/lib/mcp/oauth/flow";
+import { refreshServerSnapshot } from "@/lib/mcp/roster-refresh";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,8 @@ export async function GET(request: NextRequest) {
       params: request.nextUrl.searchParams, // whole query: finishAuth wants code + iss (+ nothing else)
     });
     if (result.status === "connected") {
+      // Phase 9: same discovery trigger as the desktop complete route.
+      void refreshServerSnapshot(session.user.id, result.serverId).catch(() => {});
       return html("&#10003; Connector connected", "You can close this tab and return to the Orplex app.", 200);
     }
     return html("Connection failed", `${result.error} Return to the app and try again.`, 400);

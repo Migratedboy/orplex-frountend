@@ -277,7 +277,7 @@ describe("completeAuthorization", () => {
     const params = new URLSearchParams({ code: "auth_code_1", state: "s".repeat(43), iss: "https://auth.acme.dev" });
     const res = await completeAuthorization({ userId: USER, state: "s".repeat(43), params });
 
-    expect(res).toEqual({ status: "connected" });
+    expect(res).toEqual({ status: "connected", serverId: "acme-cloud" });
     expect(finishAuthMock).toHaveBeenCalledTimes(1);
     expect(finishAuthMock.mock.calls[0][0].get("code")).toBe("auth_code_1");
     expect(connectMock).toHaveBeenCalledTimes(1); // verify leg

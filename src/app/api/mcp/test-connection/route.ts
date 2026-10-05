@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
 import { getServerRunConfig, recordTestResult } from "@/lib/mcp-accounts";
 import { getMcpServerForRun, shutdownAllMcp } from "@/lib/mcp-client";
+import { syncToolSnapshot } from "@/lib/mcp/tool-snapshot";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -34,6 +35,9 @@ export async function POST(request: NextRequest) {
     const handle = await getMcpServerForRun(serverId, { [serverId]: cfg });
     const tools = await handle.listTools();
     await recordTestResult(session.user.id, serverId, true);
+    // Phase 9: this probe already ran a real tools/list — persist it as the
+    // Phase 5 roster so prompts/tools counts don't wait for another trigger.
+    void syncToolSnapshot(session.user.id, serverId, tools).catch(() => {});
     // Drop the probe session so the run-time 2-server budget stays free.
     await shutdownAllMcp();
     return NextResponse.json({

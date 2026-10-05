@@ -8,6 +8,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
 import { listSnapshotToolsByServer, loadMcpServerPrefsDb } from "@/lib/mcp/tool-snapshot";
+import { refreshMissingSnapshots } from "@/lib/mcp/roster-refresh";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,10 @@ export async function GET() {
   }
   try {
     const userId = session.user.id;
+    // Phase 9 self-heal: connected servers with no snapshot rows get hub
+    // discovery now (parallel, errors swallowed), so the roster below is
+    // complete even for connections made before discovery was wired.
+    await refreshMissingSnapshots(userId).catch(() => {});
     const tools = await listSnapshotToolsByServer(userId);
     const servers = [...new Set(tools.map((t) => t.server))];
     const entries = await Promise.all(

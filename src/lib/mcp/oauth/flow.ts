@@ -48,7 +48,10 @@ export type CompleteErrorCode =
   | "exchange_failed"
   | "verify_failed";
 
-export type CompleteResult = { status: "connected" } | { status: "error"; code: CompleteErrorCode; error: string };
+/** Phase 9: `connected` carries the serverId so callers can kick off hub
+ * discovery (hubListTools -> syncToolSnapshot) right after sign-in — without
+ * it the Phase 5 roster stays empty and tools never reach any prompt. */
+export type CompleteResult = { status: "connected"; serverId: string } | { status: "error"; code: CompleteErrorCode; error: string };
 
 // ── redirect_uri policy ─────────────────────────────────────────────────────
 
@@ -239,7 +242,7 @@ export async function completeAuthorization(input: CompleteInput): Promise<Compl
   const client = new Client(CLIENT_INFO);
   try {
     await client.connect(makeTransport(entry, provider));
-    return { status: "connected" };
+    return { status: "connected", serverId: pending.serverId };
   } catch (e) {
     return { status: "error", code: "verify_failed", error: `Signed in, but the MCP server rejected the session: ${errorMessage(e)}` };
   } finally {

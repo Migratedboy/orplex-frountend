@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
 import { completeAuthorization, type CompleteErrorCode } from "@/lib/mcp/oauth/flow";
+import { refreshServerSnapshot } from "@/lib/mcp/roster-refresh";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +44,9 @@ export async function POST(request: NextRequest) {
     if (result.status === "error") {
       return NextResponse.json({ success: false, ...result }, { status: statusFor(result.code) });
     }
+    // Phase 9: kick hub discovery now so the roster (prompts, tool counts,
+    // /api/agent/mcp/tools) populates without waiting for the next call.
+    void refreshServerSnapshot(session.user.id, result.serverId).catch(() => {});
     return NextResponse.json({ success: true, ...result });
   } catch (e) {
     return NextResponse.json(
