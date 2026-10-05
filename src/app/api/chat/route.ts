@@ -16,6 +16,8 @@ import { sseTransform } from "@/lib/ai-providers";
 import { isMockAiEnabled, createMockProviderStream } from "@/lib/mock-ai";
 import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS, usesCompactTools } from "@/lib/tool-definitions";
 import { buildSystemPrompt } from "@/lib/master-prompt";
+import { buildMcpRoster, mcpPromptSection, toOpenAiFunctions } from "@/lib/mcp/tool-builder";
+import { listSnapshotToolsByServer } from "@/lib/mcp/tool-snapshot";
 import { routeToModel } from "@/lib/model-router";
 import { preprocessMessages } from "@/lib/vision-preprocessor";
 import { recordProviderEvent } from "@/lib/provider-uptime";
@@ -59,6 +61,12 @@ export async function POST(request: NextRequest) {
     if (!quota.ok) return quota.response;
 
     const mode = parsed.mode || "ask";
+
+    // Phase 5 (C5): one snapshot-based MCP roster for both surfaces — the
+    // system-prompt section and the tools array. Empty until a hub connect
+    // has written a tools/list snapshot, so this is a no-op pre-discovery.
+    const mcpRoster = buildMcpRoster(await listSnapshotToolsByServer(userId).catch(() => []));
+    const mcpSection = mcpPromptSection(mcpRoster);
 
     // --- Step 5: Build messages (with vision preprocessing) ---
     const topLevelImages = parsed.images || [];
@@ -166,13 +174,24 @@ export async function POST(request: NextRequest) {
               effort,
               profile: isGroq ? "compact" : parsed.profile === "compact" ? "compact" : "full",
               capabilities: { browser: true },
+              mcpSection,
             }),
           },
           ...processedMessages,
         ],
         ...(mode === "ask"
           ? {}
-          : { tools: usesCompactTools(provider.name) ? GROQ_TOOL_DEFINITIONS : M3_TOOL_DEFINITIONS, tool_choice: "auto" }),
+          : {
+              tools: [
+                ...(usesCompactTools(provider.name) ? GROQ_TOOL_DEFINITIONS : M3_TOOL_DEFINITIONS),
+                // Compact-tools providers (Groq's TPM cap) skip MCP schemas —
+                // the roster still rides in the prompt section for discovery.
+                ...toOpenAiFunctions(
+                  usesCompactTools(provider.name) ? [] : [...mcpRoster.defs, ...mcpRoster.metaDefs]
+                ),
+              ],
+              tool_choice: "auto",
+            }),
         max_completion_tokens: isGroq
           ? Math.min(2048, routingDecision.model.maxTokens)
           : effort === "low"

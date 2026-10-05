@@ -209,6 +209,29 @@ export async function dispatchToolCall(
     });
   }
 
+  // ── over-cap MCP meta tools (C10) ─────────────────────────────────────
+  // Read-only discovery (no approval): search/describe run against the same
+  // localStorage roster the prompt section was built from.
+  if (call.name === "mcp_search_tools" || call.name === "mcp_describe_tool") {
+    const { loadRemotes } = await import("../mcp/registry");
+    const { executeMcpMetaTool } = await import("../mcp/tool-builder");
+    const tools = loadRemotes().flatMap((r) =>
+      (r.tools ?? []).map((t) => ({
+        server: r.id,
+        name: t.name,
+        description: t.description ?? "",
+        inputSchema: t.inputSchema,
+        annotations: t.annotations,
+      }))
+    );
+    ctx.setStatus("tool_executing", `${call.name}…`);
+    const out = executeMcpMetaTool(call.name, call as unknown as Record<string, unknown>, tools);
+    ctx.appendDisplay(`[OK] ${call.name}\n`);
+    ctx.syncDisplay();
+    result(`<tool_result name="${call.name}">\n${out}\n</tool_result>\n`);
+    return { resultXml: toolResults, blocked: false };
+  }
+
   // ── read_file ─────────────────────────────────────────────────────────
   if (call.name === "read_file" && call.path) {
     const readCount = ctx.readFiles.get(call.path) || 0;

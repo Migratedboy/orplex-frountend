@@ -284,6 +284,47 @@ wiring), plus the MCP block in `risk-classifier.test.ts`.
 
 ## 8. Sections added in later phases
 
-- Phase 5: discovery + visibility pipeline.
-- Phase 6: catalog audit results → `docs/MCP-CATALOG-AUDIT.md`.
-- Phase 9: how to add a connector; debugging login failures / missing tools.
+### Phase 5 — discovery + visibility pipeline (C5 / C10 / C6)
+
+**Persistence.** `McpTool` (Prisma, `mcp_tools`) holds one row per
+discovered tool — unique on `(userId, serverId, name)`, with the full
+`inputSchema` JSON and ToolAnnotations (`annotations`) so the server lane can
+risk-tier without the localStorage registry (C6). Migration
+`20261004000001_add_mcp_tools` also adds
+`mcp_connections.autoApproveReadOnly` — the SDK-lane Prisma twin of the
+browser lane's `orplex.mcp.prefs.v1` toggle — and the `connected_no_tools`
+status value. Both migrations are committed unapplied (local PG down).
+
+**Snapshot (`tool-snapshot.ts`, server-only).** The hub writes after every
+successful `tools/list` — fire-and-forget so a slow table never delays the
+call — persisting the FULL list (pre-`HUB_MAX_TOOLS`). `diffTools` is pure:
+added / removed / changed (fingerprint = description+schema+annotations) /
+unchanged, plus the status the result implies. Status flips
+`connected ↔ connected_no_tools` ONLY from a connected-ish starting point —
+`needs_reauth` / `disconnected` belong to the OAuth/connect state machines
+and are never clobbered. Rows are capped at `SNAPSHOT_MAX_TOOLS = 500`;
+`clearToolSnapshot` runs on disconnect.
+
+**Builder (`tool-builder.ts`, pure — C5's one shared tool-array builder).**
+`buildMcpRoster(tools, { serverMeta })` → model defs + the
+`## MCP CONNECTOR TOOLS` prompt section + server summaries + `schemaChars`.
+Cap policy (C10): over `MCP_TOOL_CAP = 40` tools → **names-only** defs for
+EVERY tool (`additionalProperties: true`, no silent `slice()`) plus the
+`mcp_search_tools` / `mcp_describe_tool` meta tools; `executeMcpMetaTool`
+answers both against the same list the roster was built from (search matches
+names/descriptions/servers; describe returns the full JSON schema).
+
+**Consumers.** Chat route: snapshot roster → `buildSystemPrompt({ mcpSection })`
++ the tools array (compact-tools providers — Groq TPM — skip MCP schemas;
+the roster still rides in the prompt section). Master-prompt's
+`buildMcpToolsSection` now delegates to the builder (registry lane, same
+format as before). Executor: `buildNativeToolDefs` and its prompt roster both
+go through the builder (the old silent `slice(0, 20)` is gone), with meta-tool
+dispatch in `executeTool`. The renderer lane's `native-tools` dispatches the
+meta tools against the localStorage roster. Metering (C10): the worker passes
+`toolSchemaChars` (builder-computed) into `recordPromptCall`; those chars are
+counted into `systemTokens` and surfaced as `toolSchemaTokens` per call.
+
+### Phase 6 — catalog audit results → `docs/MCP-CATALOG-AUDIT.md`.
+
+### Phase 9 — how to add a connector; debugging login failures / missing tools.

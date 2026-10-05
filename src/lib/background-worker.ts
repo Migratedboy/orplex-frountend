@@ -230,6 +230,21 @@ async function callModel(
       const { getPromptSizes } = await import("./prompt-meter");
       const sizes = getPromptSizes();
       const contextChars = fitted.reduce((s, m) => s + (m.content || "").length, 0);
+      // C10: MCP schemas ride in the tools array every call — count them on
+      // the system side via the shared builder's schemaChars.
+      const { loadRemotes } = await import("./mcp/registry");
+      const { buildMcpRoster } = await import("./mcp/tool-builder");
+      const toolSchemaChars = buildMcpRoster(
+        loadRemotes().flatMap((r) =>
+          (r.tools ?? []).map((t) => ({
+            server: r.id,
+            name: t.name,
+            description: t.description ?? "",
+            inputSchema: t.inputSchema,
+            annotations: t.annotations,
+          }))
+        )
+      ).schemaChars;
       recordPromptCall({
         taskId: meterInfo.taskId,
         turn: meterInfo.turn,
@@ -238,6 +253,7 @@ async function callModel(
         effort,
         systemChars: profile === "compact" ? sizes.compact : sizes.full,
         contextChars,
+        toolSchemaChars,
         why: meterInfo.why,
       });
     } catch {}

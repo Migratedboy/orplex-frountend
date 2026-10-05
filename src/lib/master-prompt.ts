@@ -16,7 +16,8 @@
  */
 
 import { M3_TOOL_DEFINITIONS } from "./tool-definitions";
-import { loadRemotes, mcpToolName } from "./mcp/registry";
+import { loadRemotes } from "./mcp/registry";
+import { buildMcpRoster, mcpPromptSection } from "./mcp/tool-builder";
 import { buildFailureDoctrineContext } from "./failure-memory";
 
 // ============================================================
@@ -27,37 +28,27 @@ import { buildFailureDoctrineContext } from "./failure-memory";
  * Connected MCP servers' tools (OAuth remote servers the user added in MCP
  * connectors). Empty string when none are connected — no prompt bloat. Reads
  * the cached tools/list from localStorage (sync — buildSystemPrompt is sync).
+ * Rendering (cap policy, meta tools, format) lives in tool-builder — the ONE
+ * builder both lanes share (C5).
  */
 export function buildMcpToolsSection(): string {
-  let remotes: ReturnType<typeof loadRemotes> = [];
   try {
-    remotes = loadRemotes();
+    const remotes = loadRemotes();
+    const tools = remotes.flatMap((r) =>
+      (r.tools ?? []).map((t) => ({
+        server: r.id,
+        name: t.name,
+        description: t.description ?? "",
+        inputSchema: t.inputSchema,
+        annotations: t.annotations,
+      }))
+    );
+    if (tools.length === 0) return "";
+    const serverMeta = Object.fromEntries(remotes.map((r) => [r.id, { label: r.label }]));
+    return mcpPromptSection(buildMcpRoster(tools, { serverMeta }));
   } catch {
     return ""; // non-browser test env
   }
-  const lines: string[] = [];
-  let count = 0;
-  const CAP = 40;
-  for (const r of remotes) {
-    if (!r.tools?.length) continue;
-    lines.push(`### Server "${r.label}"`);
-    for (const t of r.tools) {
-      if (count >= CAP) {
-        lines.push(`…(${count}+ tools — remaining tools work the same way)`);
-        break;
-      }
-      const props = (t.inputSchema as { properties?: Record<string, unknown>; required?: string[] } | undefined)?.properties;
-      const paramNames = props ? Object.keys(props) : [];
-      const params = paramNames.length ? `(${paramNames.join(", ")})` : "()";
-      const desc = (t.description || "").replace(/\s+/g, " ").slice(0, 200);
-      lines.push(`- \`${mcpToolName(r.id, t.name)}\`${params} — ${desc}`);
-      count++;
-    }
-  }
-  if (!lines.length) return "";
-  return `## MCP CONNECTOR TOOLS — ${count} external tools
-
-The user's connected MCP servers expose the tools below. Call them exactly like built-in tools; results arrive as tool_result. Arguments are the tool's documented parameters.`.concat(`\n\n${lines.join("\n")}`);
 }
 
 /** Roster of every tool, generated from the real schema — can't go stale. */
@@ -323,6 +314,11 @@ export interface BuildPromptOptions {
   /** compact = for later turns in an ongoing task (repair/continue): same rules, 1/3 size */
   profile?: PromptProfile;
   capabilities?: { browser?: boolean };
+  /**
+   * Pre-built MCP roster section (C5). Server lanes pass the snapshot-based
+   * section from tool-builder; absent → the browser-lane localStorage build.
+   */
+  mcpSection?: string;
 }
 
 const EFFORT_STYLE: Record<PromptEffort, string> = {
@@ -360,7 +356,7 @@ export function buildSystemPrompt(opts: BuildPromptOptions): string {
     ].filter(Boolean).join("\n\n").trim();
   }
 
-  const MCP_SECTION = buildMcpToolsSection();
+  const MCP_SECTION = opts.mcpSection ?? buildMcpToolsSection();
   const sections =
     mode === "plan"
       ? [

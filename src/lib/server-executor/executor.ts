@@ -33,7 +33,8 @@ import { loadUserSkills, renderSkillRoster, skillBody } from "@/lib/user-skills"
 import { recordRuntimeLog } from "@/lib/runtime-log";
 import { runtimeState } from "@/lib/runtime-state";
 import { maxConcurrentRuns, parseFailoverChain } from "./executor-config";
-import { getMcpServerForRun, ensureMcpReaper, mcpToolName, parseMcpToolName, type McpToolDef, type McpServerConfig as McpRunConfig } from "../mcp-client";
+import { getMcpServerForRun, ensureMcpReaper, parseMcpToolName, type McpToolDef, type McpServerConfig as McpRunConfig } from "../mcp-client";
+import { buildMcpRoster, executeMcpMetaTool, mcpPromptSection, type BuilderTool } from "@/lib/mcp/tool-builder";
 import { collectMcpServerConfigs, MAX_MCP_SERVERS_PER_RUN } from "../mcp-accounts";
 import { getMcpCatalogEntry } from "../mcp-catalog";
 import { mcpUsageBlock, mcpServerSummaries } from "../mcp-prompt";
@@ -104,6 +105,11 @@ interface QueuedRun {
 // text-protocol fallbacks stay, but native tool calling removes that whole
 // bug class on models that support it.
 
+/** Lane adapter: legacy in-run defs → the shared builder's input (C5). */
+function toBuilderTool(t: McpToolDef): BuilderTool {
+  return { server: t.server, name: t.name, description: t.description, inputSchema: t.inputSchema };
+}
+
 export function buildNativeToolDefs(mcpTools: McpToolDef[]): NativeToolDef[] {
   const obj = (props: Record<string, unknown>, required: string[]): Record<string, unknown> => ({
     type: "object",
@@ -136,16 +142,11 @@ export function buildNativeToolDefs(mcpTools: McpToolDef[]): NativeToolDef[] {
     { name: "browser_screenshot", description: "Capture the active tab; optionally fullPage or a named viewport (desktop/tablet/mobile) for responsive checks.", parameters: obj({ fullPage: { type: "boolean" }, viewpoint: { type: "string", description: "desktop | tablet | mobile" } }, []) },
     { name: "browser_evaluate", description: "Run JavaScript in the page and get the JSON result (bare expression or multi-statement IIFE auto-wrapped).", parameters: obj({ code: { type: "string", description: "Expression or statements, e.g. document.title or const n = document.images.length; n" } }, ["code"]) },
   ];
-  for (const t of mcpTools.slice(0, 20)) {
-    const schema = t.inputSchema && typeof t.inputSchema === "object" && !Array.isArray(t.inputSchema)
-      ? (t.inputSchema as Record<string, unknown>)
-      : { type: "object", properties: {} };
-    defs.push({
-      name: mcpToolName(t.server, t.name),
-      description: t.description.slice(0, 300),
-      parameters: schema,
-    });
-  }
+  // Shared builder (C5): full schemas under the cap; over it, names-only for
+  // every tool plus the search/describe meta tools — never a silent drop (C10).
+  const mcpRoster = buildMcpRoster(mcpTools.map(toBuilderTool));
+  for (const d of mcpRoster.defs) defs.push(d);
+  for (const d of mcpRoster.metaDefs) defs.push(d);
   return defs;
 }
 
@@ -181,14 +182,12 @@ function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBl
     lines.push(``, `Project memory (user-authored conventions from orplex.md — follow these):`, memoryBlock);
   }
   if (mcpTools.length > 0) {
-    lines.push(``, `External MCP tools (call like any other tool):`);
-    for (const t of mcpTools.slice(0, 20)) {
-      lines.push(`- ${mcpToolName(t.server, t.name)} — ${t.description.slice(0, 160)}`);
-    }
+    const roster = buildMcpRoster(mcpTools.map(toBuilderTool));
+    lines.push(``, mcpPromptSection(roster));
     if (mcpServers && mcpServers.length > 0) {
       lines.push(``, `Connected MCP services:`, mcpServerSummaries(mcpServers));
     }
-    lines.push(``, mcpUsageBlock(mcpTools.length));
+    lines.push(``, mcpUsageBlock(roster.toolCount));
   }
   lines.push(
     ``,
@@ -357,6 +356,7 @@ async function executeTool(
   hooks?: CompiledHooks,
   autoCp?: AutoCheckpointState,
   mcpRunConfigs?: Record<string, McpRunConfig>,
+  mcpTools?: McpToolDef[],
   scratchpad?: {
     get(): ScratchpadState;
     update(section: ScratchpadSection, content: string): void;
@@ -422,9 +422,13 @@ async function executeTool(
     return `blocked by pre-tool hook: ${pre.output.slice(0, 300)}`;
   }
 
+  // ── over-cap meta tools (C10) — read-only discovery against this run's roster ──
+  if (name === "mcp_search_tools" || name === "mcp_describe_tool") {
+    return executeMcpMetaTool(name, call, (mcpTools ?? []).map(toBuilderTool));
+  }
+
   // ── MCP tools (mcp__<server>__<tool>) — dispatched through the hooks gate ──
-  if (name.startsWith("mcp__")) {
-    const parsed = parseMcpToolName(name);
+  if (name.startsWith("mcp__")) {    const parsed = parseMcpToolName(name);
     if (!parsed) return `error: malformed MCP tool name "${name.slice(0, 80)}"`;
     if (!mcpRunConfigs || Object.keys(mcpRunConfigs).length === 0) {
       return `error: no MCP servers are connected for this run — the user can add connectors in Settings → Connectors`;
@@ -953,7 +957,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         if (String(call.name) === "use_skill") {
           (call as Record<string, unknown>).__skillBody = skillBody(skills, String((call as Record<string, unknown>).name_of_skill ?? "")) ?? "";
         }
-        const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, {
+        const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, {
           get: () => scratch,
           update: (section, content) => {
             scratch = updateScratchpadSection(scratch, section, content, turns);
@@ -1120,7 +1124,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         const repairCalls = parseToolCalls(repairText).filter((c) => String(c.name) === "write_file");
         const repairResults: string[] = [];
         for (const call of repairCalls) {
-          const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs);
+          const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools);
           repairResults.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
         }
         if (repairCalls.length > 0) {

@@ -45,6 +45,7 @@ import {
   saveConnectionTokens,
 } from "./oauth/store";
 import { ssrfFetch } from "./ssrf-fetch";
+import { syncToolSnapshot } from "./tool-snapshot";
 
 const CLIENT_INFO = { name: "Orplex", version: "1.0.0" } as const;
 
@@ -560,6 +561,18 @@ export async function hubListTools(
     }));
     s.toolsAt = Date.now();
     s.lastUsedAt = Date.now();
+    // Phase 5 discovery: persist the FULL list (pre-cap) as the McpTool
+    // snapshot — fire-and-forget so a slow table never delays tools/list.
+    void syncToolSnapshot(
+      s.userId,
+      s.serverId,
+      tools.map((t) => ({
+        name: t.name,
+        description: t.description ?? "",
+        inputSchema: t.inputSchema ?? { type: "object", properties: {} },
+        ...(t.annotations ? { annotations: t.annotations } : {}),
+      }))
+    ).catch(() => {});
     return s.tools;
   } finally {
     release(s);

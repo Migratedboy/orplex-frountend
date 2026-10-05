@@ -34,6 +34,7 @@ model User {
   mcpServers       McpServerConfig[]
   mcpConnections   McpConnection[]
   mcpOAuthPendings McpOAuthPending[]
+  mcpTools         McpTool[]
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -683,14 +684,17 @@ model McpConnection {
   serverId         String // catalog id (slug), e.g. "github"
   transport        String    @default("streamable-http") // streamable-http | sse
   url              String // MCP endpoint the transport connects to
-  status           String    @default("connected") // connected | needs_reauth | disconnected
+  status           String    @default("connected") // connected | connected_no_tools | needs_reauth | disconnected
   issuer           String? // authorization-server issuer the tokens are bound to (SEP-2352)
   clientId         String? // registered client_id (plaintext — not a secret)
   clientSecret     String? // AES-256-GCM ciphertext (DCR clients that got a secret)
   tokensCiphertext String?   @db.Text // AES-256-GCM JSON of StoredOAuthTokens — never plaintext
   tokenType        String? // display metadata only (Bearer / DPoP)
   scope            String? // granted scopes (display + step-up checks)
-  expiresAt        DateTime? // access-token expiry (null = unknown/no expiry)
+  expiresAt       DateTime? // access-token expiry (null = unknown/no expiry)
+  // C6 SDK-lane twin of the browser lane's orplex.mcp.prefs.v1 toggle: the
+  // same auto-approve-read-only setting, Prisma-backed (tool-snapshot.ts).
+  autoApproveReadOnly Boolean @default(false)
   version          Int       @default(1) // optimistic lock for token/client writes
   lastTestAt       DateTime?
   lastTestOk       Boolean?
@@ -729,4 +733,27 @@ model McpOAuthPending {
   @@index([userId, serverId, status])
   @@index([expiresAt])
   @@map("mcp_oauth_pendings")
+}
+
+// One row per discovered tool — the persistence half of the Phase 5
+// discovery pipeline. The hub writes after every tools/list (tool-snapshot
+// diff → McpConnection status connected/connected_no_tools); the AI loops
+// read it back through tool-builder (C5). annotations carries ToolAnnotations
+// (readOnly/destructive hints) so the server lane can risk-tier without a
+// localStorage registry (C6).
+model McpTool {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serverId    String // catalog slug / remote id — same key as McpConnection
+  name        String // unqualified tool name from tools/list
+  description String   @default("")
+  inputSchema Json? // full JSON Schema — feeds model defs
+  annotations Json? // ToolAnnotations — C6 risk hints, server-side
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  @@unique([userId, serverId, name])
+  @@index([userId, serverId])
+  @@map("mcp_tools")
 }

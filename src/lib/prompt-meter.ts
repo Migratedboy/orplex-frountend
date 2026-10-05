@@ -24,6 +24,8 @@ export interface PromptCallRecord {
   contextTokens: number;
   /** Counterfactual system size had the FULL profile been sent. */
   fullSystemTokens: number;
+  /** MCP tool-schema tokens included in systemTokens (C10 accounting). */
+  toolSchemaTokens: number;
   why: string;
   at: number;
 }
@@ -69,6 +71,8 @@ export interface RecordCallInput {
   /** Character counts of the message list actually sent. */
   systemChars: number;
   contextChars: number;
+  /** MCP tool-schema chars sent with the tools array (C10) — counted into system tokens. */
+  toolSchemaChars?: number;
   why: string;
 }
 
@@ -76,17 +80,21 @@ export function recordPromptCall(input: RecordCallInput): PromptCallRecord | nul
   try {
     const meter = METERS.find((m) => m.taskId === input.taskId);
     if (!meter) return null;
+    // MCP schemas ride with every call's tools array → they belong to the
+    // system side of the split (C10), not uncounted overhead.
+    const systemChars = input.systemChars + (input.toolSchemaChars ?? 0);
     const record: PromptCallRecord = {
       turn: input.turn,
       profile: input.profile,
       mode: input.mode,
       effort: input.effort,
-      systemTokens: charsToTokens(input.systemChars),
+      systemTokens: charsToTokens(systemChars),
       contextTokens: charsToTokens(input.contextChars),
       fullSystemTokens:
         input.profile === "full"
-          ? charsToTokens(input.systemChars)
-          : charsToTokens(FULL_SYSTEM_CHARS || input.systemChars * 3),
+          ? charsToTokens(systemChars)
+          : charsToTokens(FULL_SYSTEM_CHARS || systemChars * 3),
+      toolSchemaTokens: charsToTokens(input.toolSchemaChars ?? 0),
       why: input.why,
       at: Date.now(),
     };
