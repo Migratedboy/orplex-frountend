@@ -38,6 +38,10 @@ import { buildMcpRoster, executeMcpMetaTool, mcpPromptSection, type BuilderTool 
 import { collectMcpServerConfigs, MAX_MCP_SERVERS_PER_RUN } from "../mcp-accounts";
 import { getMcpCatalogEntry } from "../mcp-catalog";
 import { mcpUsageBlock, mcpServerSummaries } from "../mcp-prompt";
+import { resolveMcpLane } from "@/lib/mcp/gate";
+import { hubCallTool, McpHubError } from "@/lib/mcp/hub";
+import { listSnapshotToolsByServer } from "@/lib/mcp/tool-snapshot";
+import { assessMcpToolRiskDb } from "@/lib/mcp/risk-db";
 import { grepSearch, codeSearch } from "@/lib/grep-search";
 import {
   createScratchpad,
@@ -110,7 +114,7 @@ function toBuilderTool(t: McpToolDef): BuilderTool {
   return { server: t.server, name: t.name, description: t.description, inputSchema: t.inputSchema };
 }
 
-export function buildNativeToolDefs(mcpTools: McpToolDef[]): NativeToolDef[] {
+export function buildNativeToolDefs(mcpTools: McpToolDef[], remoteTools: BuilderTool[] = []): NativeToolDef[] {
   const obj = (props: Record<string, unknown>, required: string[]): Record<string, unknown> => ({
     type: "object",
     properties: props,
@@ -144,7 +148,8 @@ export function buildNativeToolDefs(mcpTools: McpToolDef[]): NativeToolDef[] {
   ];
   // Shared builder (C5): full schemas under the cap; over it, names-only for
   // every tool plus the search/describe meta tools — never a silent drop (C10).
-  const mcpRoster = buildMcpRoster(mcpTools.map(toBuilderTool));
+  // remoteTools = SDK-lane OAuth connectors from the Phase 5 snapshot (P8).
+  const mcpRoster = buildMcpRoster([...mcpTools.map(toBuilderTool), ...remoteTools]);
   for (const d of mcpRoster.defs) defs.push(d);
   for (const d of mcpRoster.metaDefs) defs.push(d);
   return defs;
@@ -159,7 +164,7 @@ function parseFailoverChainEnv(): string[] {
   return parseFailoverChain(process.env.AI_FAILOVER, process.env.AI_PROVIDER || "nvidia", process.env);
 }
 
-function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBlock = "", skillRoster = "", mcpServers?: Array<{ name: string; description: string; toolCount: number }>): string {
+function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBlock = "", skillRoster = "", mcpServers?: Array<{ name: string; description: string; toolCount: number }>, remoteTools: BuilderTool[] = []): string {
   const lines = [
     `You are the Orplex Server Agent, executing a task in an isolated git worktree of the user's workspace.`,
     nativeMode
@@ -181,8 +186,8 @@ function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBl
   if (memoryBlock) {
     lines.push(``, `Project memory (user-authored conventions from orplex.md — follow these):`, memoryBlock);
   }
-  if (mcpTools.length > 0) {
-    const roster = buildMcpRoster(mcpTools.map(toBuilderTool));
+  if (mcpTools.length > 0 || remoteTools.length > 0) {
+    const roster = buildMcpRoster([...mcpTools.map(toBuilderTool), ...remoteTools]);
     lines.push(``, mcpPromptSection(roster));
     if (mcpServers && mcpServers.length > 0) {
       lines.push(``, `Connected MCP services:`, mcpServerSummaries(mcpServers));
@@ -360,6 +365,12 @@ async function executeTool(
   scratchpad?: {
     get(): ScratchpadState;
     update(section: ScratchpadSection, content: string): void;
+  },
+  mcpExtras?: {
+    /** Session user for the SDK lane (C6 DB risk lookup + hub dispatch). */
+    userId?: string;
+    /** Phase 5 snapshot roster for OAuth connectors (meta tools + dispatch). */
+    remoteTools?: BuilderTool[];
   }
 ): Promise<string> {
   const name = call.name;
@@ -424,21 +435,57 @@ async function executeTool(
 
   // ── over-cap meta tools (C10) — read-only discovery against this run's roster ──
   if (name === "mcp_search_tools" || name === "mcp_describe_tool") {
-    return executeMcpMetaTool(name, call, (mcpTools ?? []).map(toBuilderTool));
+    return executeMcpMetaTool(
+      name,
+      call,
+      [...(mcpTools ?? []).map(toBuilderTool), ...(mcpExtras?.remoteTools ?? [])]
+    );
   }
 
-  // ── MCP tools (mcp__<server>__<tool>) — dispatched through the hooks gate ──
-  if (name.startsWith("mcp__")) {    const parsed = parseMcpToolName(name);
+  // ── MCP tools (mcp__<server>__<tool>) — risk gate, then the right lane ──
+  if (name.startsWith("mcp__")) {
+    const parsed = parseMcpToolName(name);
     if (!parsed) return `error: malformed MCP tool name "${name.slice(0, 80)}"`;
-    if (!mcpRunConfigs || Object.keys(mcpRunConfigs).length === 0) {
-      return `error: no MCP servers are connected for this run — the user can add connectors in Settings → Connectors`;
+
+    // C6 (server lane): DB-backed risk tier — snapshot annotations + the
+    // Prisma autoApproveReadOnly toggle. Approval parks the run (the same
+    // DB request flow run_command uses).
+    if (mcpExtras?.userId) {
+      const risk = await assessMcpToolRiskDb(mcpExtras.userId, name);
+      if (!risk.autoApprovable) {
+        const approved = await requestUserApproval(runId, `MCP tool ${name} — ${risk.reason}`, {
+          tool: name,
+          riskLevel: risk.level,
+        });
+        if (!approved) return `rejected by user`;
+      }
     }
-    try {
-      const handle = await getMcpServerForRun(parsed.server, mcpRunConfigs);
-      return await handle.callTool(parsed.tool, call as Record<string, unknown>);
-    } catch (err) {
-      return `error: ${(err as Error).message.slice(0, 500)}`;
+
+    if (mcpRunConfigs && mcpRunConfigs[parsed.server]) {
+      try {
+        const handle = await getMcpServerForRun(parsed.server, mcpRunConfigs);
+        return await handle.callTool(parsed.tool, call as Record<string, unknown>);
+      } catch (err) {
+        return `error: ${(err as Error).message.slice(0, 500)}`;
+      }
     }
+
+    // SDK lane (Phase 8, default): remote OAuth connector through the hub.
+    if (mcpExtras?.userId && resolveMcpLane(process.env.ORPLEX_MCP) === "sdk") {
+      try {
+        const { name: _name, ...args } = call;
+        const out = await hubCallTool(mcpExtras.userId, parsed.server, parsed.tool, args);
+        return out.isError ? `error: ${out.text.slice(0, 2000)}` : out.text;
+      } catch (err) {
+        const msg = (err as Error).message.slice(0, 500);
+        const hint = err instanceof McpHubError && err.code === "needs_reauth"
+          ? " — the OAuth session expired; reconnect it in Connectors"
+          : "";
+        return `error: ${msg}${hint}`;
+      }
+    }
+
+    return `error: no MCP server "${parsed.server}" is connected for this run — the user can add connectors in Settings → Connectors`;
   }
 
   // use_skill: inject the full body of a discovered skill into the
@@ -800,6 +847,17 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       }
     } catch {}
 
+    // SDK lane (Phase 8, default): remote OAuth connectors from the Phase 5
+    // snapshot. Workspace/account stdio configs win on name conflicts; in
+    // ORPLEX_MCP=legacy this list stays empty (rollback safety, C8).
+    let remoteTools: BuilderTool[] = [];
+    try {
+      if (resolveMcpLane(process.env.ORPLEX_MCP) === "sdk") {
+        const stdioNames = new Set(Object.keys(mcpRunConfigs));
+        remoteTools = (await listSnapshotToolsByServer(run.userId)).filter((t) => !stdioNames.has(t.server));
+      }
+    } catch {}
+
     // Project memory (orplex.md hierarchy) + user skills: the user-owned
     // context layer, injected ahead of the transcript every turn via
     // buildSystemPrompt.
@@ -821,7 +879,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       return adapterText;
     });
 
-    const nativeDefs = buildNativeToolDefs(mcpTools);
+    const nativeDefs = buildNativeToolDefs(mcpTools, remoteTools);
 
     // Failover chain: primary adapter first, then the opt-in chain on
     // rate/quota errors (retries already exhausted inside the adapter).
@@ -892,11 +950,20 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
           nativeMode,
           memoryBlock,
           skillRoster,
-          Object.keys(mcpRunConfigs).map((serverId) => ({
-            name: getMcpCatalogEntry(serverId)?.name ?? serverId,
-            description: getMcpCatalogEntry(serverId)?.description ?? "user-connected MCP server",
-            toolCount: mcpTools.filter((t) => t.server === serverId).length,
-          }))
+          [
+            ...Object.keys(mcpRunConfigs).map((serverId) => ({
+              name: getMcpCatalogEntry(serverId)?.name ?? serverId,
+              description: getMcpCatalogEntry(serverId)?.description ?? "user-connected MCP server",
+              toolCount: mcpTools.filter((t) => t.server === serverId).length,
+            })),
+            // SDK-lane OAuth connectors (Phase 8): summarized alongside stdio.
+            ...[...new Set(remoteTools.map((t) => t.server))].map((serverId) => ({
+              name: getMcpCatalogEntry(serverId)?.name ?? serverId,
+              description: getMcpCatalogEntry(serverId)?.description ?? "OAuth connector",
+              toolCount: remoteTools.filter((t) => t.server === serverId).length,
+            })),
+          ],
+          remoteTools
         ) },
         ...(transcript as Array<{ role: "user" | "assistant"; content: string }>),
       ] as never;
@@ -962,7 +1029,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
           update: (section, content) => {
             scratch = updateScratchpadSection(scratch, section, content, turns);
           },
-        });
+        }, { userId: run.userId, remoteTools });
         results.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
       }
       const scratchBlock = renderScratchpadBlock(scratch);
@@ -1124,7 +1191,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         const repairCalls = parseToolCalls(repairText).filter((c) => String(c.name) === "write_file");
         const repairResults: string[] = [];
         for (const call of repairCalls) {
-          const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools);
+          const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, undefined, { userId: run.userId, remoteTools });
           repairResults.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
         }
         if (repairCalls.length > 0) {

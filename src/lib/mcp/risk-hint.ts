@@ -10,7 +10,7 @@
 //
 // classifyRisk fails closed on every path: no annotation → medium.
 
-import { classifyRisk, type McpRiskHint, type RiskAssessment } from "../risk-classifier";
+import { classifyRisk, mcpRiskHintFrom, type McpRiskHint, type RiskAssessment } from "../risk-classifier";
 import { findRemote, parseMcpToolName } from "./registry";
 
 export const MCP_PREFS_KEY = "orplex.mcp.prefs.v1";
@@ -63,11 +63,7 @@ export function getMcpRiskHint(fullName: string): McpRiskHint {
   const server = findRemote(parsed.serverId);
   const tool = server?.tools?.find((t) => t.name === parsed.toolName);
   const prefs = loadMcpServerPrefs(parsed.serverId);
-  return {
-    ...(tool?.annotations?.readOnlyHint !== undefined ? { readOnlyHint: tool.annotations.readOnlyHint } : {}),
-    ...(tool?.annotations?.destructiveHint !== undefined ? { destructiveHint: tool.annotations.destructiveHint } : {}),
-    ...(prefs.autoApproveReadOnly !== undefined ? { serverAutoApproveReadOnly: prefs.autoApproveReadOnly } : {}),
-  };
+  return mcpRiskHintFrom(tool?.annotations, prefs.autoApproveReadOnly);
 }
 
 /** Full risk assessment for one MCP tool call — what the dispatch gate uses. */

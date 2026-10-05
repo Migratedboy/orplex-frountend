@@ -1,4 +1,4 @@
-import { classifyRisk, riskRank } from "../risk-classifier";
+import { classifyRisk, riskRank, mcpRiskHintFrom } from "../risk-classifier";
 
 describe("classifyRisk — read-only tools", () => {
   it("auto-approves read-only tools", () => {
@@ -100,6 +100,36 @@ describe("classifyRisk — MCP connector tools (C6)", () => {
   it("server-declared destructive tools go elevated, even with the toggle", () => {
     const r = classifyRisk("mcp__acme-cloud__wipe", {}, { destructiveHint: true, readOnlyHint: true, serverAutoApproveReadOnly: true });
     expect(r).toMatchObject({ level: "high", autoApprovable: false });
+  });
+});
+
+describe("mcpRiskHintFrom (shared C6 hint assembler)", () => {
+  it("maps snapshot ToolAnnotations into the hint", () => {
+    expect(mcpRiskHintFrom({ readOnlyHint: true })).toEqual({ readOnlyHint: true });
+    expect(mcpRiskHintFrom({ destructiveHint: true })).toEqual({ destructiveHint: true });
+    expect(mcpRiskHintFrom({ readOnlyHint: true, destructiveHint: false })).toEqual({
+      readOnlyHint: true,
+      destructiveHint: false,
+    });
+  });
+
+  it("adds the per-server auto-approve toggle", () => {
+    expect(mcpRiskHintFrom({ readOnlyHint: true }, true)).toEqual({
+      readOnlyHint: true,
+      serverAutoApproveReadOnly: true,
+    });
+    expect(mcpRiskHintFrom(undefined, true)).toEqual({ serverAutoApproveReadOnly: true });
+  });
+
+  it("returns an empty hint for missing annotations and toggle off", () => {
+    expect(mcpRiskHintFrom(undefined)).toEqual({});
+    expect(mcpRiskHintFrom(null)).toEqual({});
+    expect(mcpRiskHintFrom({ readOnlyHint: true }, false)).toEqual({ readOnlyHint: true });
+  });
+
+  it("feeds classifyRisk end-to-end (annotation + toggle auto-approves)", () => {
+    const r = classifyRisk("mcp__acme__list", {}, mcpRiskHintFrom({ readOnlyHint: true }, true));
+    expect(r).toMatchObject({ level: "low", autoApprovable: true });
   });
 });
 

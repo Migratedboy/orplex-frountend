@@ -111,7 +111,7 @@ Updated each phase. Full list grows per phase; see git history for additions.
 | C5 | No `src/lib/agent/loop/`; two loops (`background-worker.ts:847`, `server-executor/executor.ts:864`) assemble tools in different places | ONE shared tool-array builder (`src/lib/mcp/tool-builder.ts`, Phase 5) feeds chat route tools, master-prompt section, executor defs, and the What-AI-sees endpoint. |
 | C6 | MCP calls bypass risk/approval in both lanes today (`native-tools.ts:177` early-returns; executor gates only `run_command`) | Phase 4/5 route `mcp__*` through `classifyRisk` (MCP-aware: `readOnlyHint`→low, default medium) + both lanes' approval paths; per-server "auto-approve read-only" toggle. |
 | C7 | Existing `checkUrlPolicy` allows `http://public` (no scheme check) | MCP wrapper = existing policy **+ `https:` required unless loopback**; injected as the transports' `fetch` (supported — verified) so discovery/registration/token requests are covered too. |
-| C8 | Legacy renderer token storage (`localStorage orplex.mcp.remotes.v1`) violates "tokens never in the renderer" | All tokens move to `McpConnection.tokensCiphertext` (AES-256-GCM, same key as BYOK — see §5); legacy paths stay runnable behind `ORPLEX_MCP=legacy` until Phase 8 passes, then are dead code (removal noted in final report). |
+| C8 | Legacy renderer token storage (`localStorage orplex.mcp.remotes.v1`) violates "tokens never in the renderer" | All tokens move to `McpConnection.tokensCiphertext` (AES-256-GCM, same key as BYOK — see §5); legacy paths stay runnable behind `ORPLEX_MCP=legacy` until Phase 8 passes, then are dead code (removal noted in final report). **Shipped in Phase 8:** `resolveMcpLane` in `src/lib/mcp/gate.ts` — only the exact value `legacy` selects the old lane; default is `sdk`. |
 | C9 | Proxy has **no CSRF layer** (delegated to backend by design) | Hosted callback protection = session-gated route + one-time server-stored `state` bound to user+serverId (single use, TTL, replay rejection) — the state IS the anti-CSRF token. |
 | C10 | Prompt meter never meters tool schemas; executor silently `slice(0,20)`s MCP tools | Builder (Phase 5) never drops silently (>40 → names-only + `mcp_search_tools`/`mcp_describe_tool` meta tools); meter accounts MCP schema chars. |
 
@@ -437,5 +437,62 @@ went undetected because every test mocks Prisma. Migration
 counts, unknown-id fallback, empty list) and `mcp-oauth.test.ts` (+5: toggle
 column update/missing row, disconnect wipe/preference survival, listConnections
 surfaces toggle + reason without ciphertext). Full suite: 1132 passing.
+
+### Phase 8 - ORPLEX_MCP gate; both lanes dispatch through the hub (C8/C6)
+
+One gate decides where `mcp__<server>__<tool>` executes:
+
+- `src/lib/mcp/gate.ts` - `resolveMcpLane(raw)`: only the exact string
+  `legacy` (trim/case-insensitive) returns `"legacy"`; unset, empty, or any
+  typo returns `"sdk"` (the DEFAULT), so a bad env value can never silently
+  fall back to the renderer token store.
+- HTTP surface (session-gated `jwtOnlyOptions`, prefix already local via C2):
+  - `GET /api/agent/mcp` - `{lane}` for the renderer (server env is not
+    readable there; fetched once per session).
+  - `GET /api/agent/mcp/tools` - Phase 5 snapshot roster for one user plus
+    `serverPrefs: {serverId: {autoApproveReadOnly}}` from Prisma - read-only;
+    no ciphertext, no tokens.
+  - `POST /api/agent/mcp/call` - `{serverId, tool, args}` -> `hubCallTool`
+    (server-side OAuth tokens in `McpConnection`); hub errors map honestly:
+    `needs_reauth` -> 401, `cooldown` -> 503 + `retryAt`, other hub failures
+    -> 502, unexpected -> 500. Success returns `{text, isError}` only.
+
+Renderer lane (`native-tools.ts`): `getMcpLane()` caches the lane promise
+(fetch failure -> `"sdk"`); the `mcp__` branch forks risk assessment
+(legacy = localStorage `assessMcpToolRisk`, sdk = `assessSdkMcpRisk`:
+snapshot annotations + Prisma toggle -> `mcpRiskHintFrom` ->
+`classifyRisk`, roster fetched with a 60 s cache) and dispatch
+(`dispatchMcpToolCall` vs the new `dispatchMcpToolCallSdk`, which POSTs
+`/api/agent/mcp/call` and keeps the exact `{resultXml, blocked}` contract:
+reconnect hint on `needs_reauth`, retry window on `cooldown`, 30 000-char
+clip, invalid-name path without an API call). The meta tools
+(`mcp_search_tools`/`mcp_describe_tool`) read the same roster the lane
+discovered from - localStorage registry or snapshot.
+
+Executor lane (`executor.ts`): `resolveMcpLane` is read from env directly
+(same process). In the sdk lane the run fetches `listSnapshotToolsByServer`
+once, minus names that collide with workspace/account stdio configs (stdio
+wins), and merges `remoteTools` through the shared Phase 5 builder into
+defs + prompt (plus catalog summaries alongside the stdio ones).
+`executeTool` gained `mcpExtras {userId, remoteTools}`: the `mcp__` branch
+now runs the DB-backed C6 gate FIRST (`assessMcpToolRiskDb` -> the existing
+`requestUserApproval`, which parks the run) and only then dispatches -
+stdio config path unchanged, sdk path `hubCallTool` with an honest
+`needs_reauth` hint, and the original "no MCP server" error only when
+neither lane has the server. Meta tools merge `remoteTools` into the
+search/describe roster.
+
+Known limitation (documented, not silently patched): the chat route's
+prompt roster comes from the snapshot server-side and was left unchanged;
+under `ORPLEX_MCP=legacy` the *dispatch* works through localStorage but the
+prompt roster only shows tools once the hub has populated the snapshot.
+The default sdk lane is consistent end-to-end.
+
+**Tests (Phase 8): +21** - `mcp-gate.test.ts` (2: fail-safe defaults,
+exact-legacy), `mcp-risk-db.test.ts` (6: toggle+annotation matrix, fail-closed
+on read errors, non-MCP fallback), `mcp-dispatch-sdk.test.ts` (7: invalid
+name, POST contract, tool errors, reauth/cooldown mapping, truncation,
+fetch failure), risk-classifier +4 (`mcpRiskHintFrom` mapping + end-to-end),
+native-tool-defs +2 (remoteTools merge, over-cap names-only + meta tools).
 
 ### Phase 9 — how to add a connector; debugging login failures / missing tools.

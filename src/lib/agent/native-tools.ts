@@ -29,6 +29,72 @@ import { apiFetch } from "@/lib/api-base";
 
 const base = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:5000";
 
+// === Phase 8 lane gate (ORPLEX_MCP, default "sdk") ===========================
+// Server env isn't visible here, so ask GET /api/agent/mcp once per session
+// (static until restart). A fetch failure falls back to "sdk" — the
+// server-side lane, whose dispatch errors surface honestly in the result.
+type McpLane = "sdk" | "legacy";
+let lanePromise: Promise<McpLane> | null = null;
+function getMcpLane(): Promise<McpLane> {
+  if (!lanePromise) {
+    lanePromise = (async (): Promise<McpLane> => {
+      try {
+        const r = await apiFetch("/api/agent/mcp");
+        const j = (await r.json()) as { success?: boolean; lane?: string };
+        if (j?.success && (j.lane === "sdk" || j.lane === "legacy")) return j.lane;
+      } catch {}
+      return "sdk";
+    })();
+  }
+  return lanePromise;
+}
+
+// SDK-lane roster (snapshot + toggles) for the C6 risk gate and the meta
+// tools — fetched on demand, cached for a minute so a long run doesn't
+// refetch per call.
+interface SdkRosterTool {
+  server: string;
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  annotations?: import("../mcp/registry").McpToolAnnotations;
+}
+type RawSdkRosterTool = Omit<SdkRosterTool, "description"> & { description?: string | null; annotations?: import("../mcp/registry").McpToolAnnotations | null };
+let sdkRoster: { at: number; tools: SdkRosterTool[]; serverPrefs: Record<string, { autoApproveReadOnly: boolean }> } | null = null;
+const SDK_ROSTER_TTL_MS = 60_000;
+async function getSdkRoster(): Promise<{ tools: SdkRosterTool[]; serverPrefs: Record<string, { autoApproveReadOnly: boolean }> }> {
+  if (sdkRoster && Date.now() - sdkRoster.at < SDK_ROSTER_TTL_MS) {
+    return { tools: sdkRoster.tools, serverPrefs: sdkRoster.serverPrefs };
+  }
+  try {
+    const r = await apiFetch("/api/agent/mcp/tools");
+    const j = (await r.json()) as { success?: boolean; tools?: RawSdkRosterTool[]; serverPrefs?: Record<string, { autoApproveReadOnly: boolean }> };
+    if (j?.success) {
+      const tools: SdkRosterTool[] = (j.tools ?? []).map((t) => ({
+        ...t,
+        description: t.description ?? "",
+        annotations: t.annotations ?? undefined,
+      }));
+      sdkRoster = { at: Date.now(), tools, serverPrefs: j.serverPrefs ?? {} };
+      return { tools, serverPrefs: sdkRoster.serverPrefs };
+    }
+  } catch {}
+  if (sdkRoster) return { tools: sdkRoster.tools, serverPrefs: sdkRoster.serverPrefs };
+  return { tools: [], serverPrefs: {} };
+}
+
+/** C6 in the SDK lane: snapshot ToolAnnotations + Prisma toggle → classifyRisk (fail closed). */
+async function assessSdkMcpRisk(fullName: string): Promise<{ level: "low" | "medium" | "high"; reason: string; autoApprovable: boolean }> {
+  const { mcpRiskHintFrom } = await import("../risk-classifier");
+  const { parseMcpToolName } = await import("../mcp/registry");
+  const parsed = parseMcpToolName(fullName);
+  if (!parsed) return classifyRisk(fullName, {});
+  const { tools, serverPrefs } = await getSdkRoster();
+  const tool = tools.find((t) => t.server === parsed.serverId && t.name === parsed.toolName);
+  const autoApprove = serverPrefs[parsed.serverId]?.autoApproveReadOnly ?? false;
+  return classifyRisk(fullName, {}, mcpRiskHintFrom(tool?.annotations, autoApprove));
+}
+
 export interface ToolContext {
   mode: string;
   /** Files read this task (path → count) — dedup tracking */
@@ -176,9 +242,17 @@ export async function dispatchToolCall(
   // FIRST so their names never collide with built-ins. Risk-tiered approval
   // runs BEFORE dispatch (C6): unknown third-party tools default to medium,
   // only server-declared read-only + the user's per-server toggle go silent.
+  // The lane decides where the call executes (Phase 8): legacy = the
+  // in-process renderer client; sdk = POST /api/agent/mcp/call → hub.
   if (call.name.startsWith("mcp__")) {
-    const { assessMcpToolRisk } = await import("../mcp/risk-hint");
-    const mcpRisk = assessMcpToolRisk(call.name);
+    const lane = await getMcpLane();
+    let mcpRisk: { level: "low" | "medium" | "high"; reason: string; autoApprovable: boolean };
+    if (lane === "legacy") {
+      const { assessMcpToolRisk } = await import("../mcp/risk-hint");
+      mcpRisk = assessMcpToolRisk(call.name);
+    } else {
+      mcpRisk = await assessSdkMcpRisk(call.name);
+    }
     if (!mcpRisk.autoApprovable) {
       if (mcpRisk.level === "high") {
         emitActivity({ type: "tool", message: `High-risk MCP tool requires approval: ${call.name}`, agent: "coder" });
@@ -201,8 +275,9 @@ export async function dispatchToolCall(
         return { resultXml: toolResults, blocked: false };
       }
     }
-    const { dispatchMcpToolCall } = await import("../mcp/dispatch");
-    return dispatchMcpToolCall(call as { name: string } & Record<string, unknown>, {
+    const { dispatchMcpToolCall, dispatchMcpToolCallSdk } = await import("../mcp/dispatch");
+    const impl = lane === "legacy" ? dispatchMcpToolCall : dispatchMcpToolCallSdk;
+    return impl(call as { name: string } & Record<string, unknown>, {
       setStatus: ctx.setStatus,
       appendDisplay: ctx.appendDisplay,
       syncDisplay: ctx.syncDisplay,
@@ -211,19 +286,26 @@ export async function dispatchToolCall(
 
   // ── over-cap MCP meta tools (C10) ─────────────────────────────────────
   // Read-only discovery (no approval): search/describe run against the same
-  // localStorage roster the prompt section was built from.
+  // roster the prompt section was built from — localStorage in the legacy
+  // lane, the Phase 5 snapshot (GET /api/agent/mcp/tools) in the sdk lane.
   if (call.name === "mcp_search_tools" || call.name === "mcp_describe_tool") {
-    const { loadRemotes } = await import("../mcp/registry");
     const { executeMcpMetaTool } = await import("../mcp/tool-builder");
-    const tools = loadRemotes().flatMap((r) =>
-      (r.tools ?? []).map((t) => ({
-        server: r.id,
-        name: t.name,
-        description: t.description ?? "",
-        inputSchema: t.inputSchema,
-        annotations: t.annotations,
-      }))
-    );
+    const lane = await getMcpLane();
+    let tools: SdkRosterTool[];
+    if (lane === "legacy") {
+      const { loadRemotes } = await import("../mcp/registry");
+      tools = loadRemotes().flatMap((r) =>
+        (r.tools ?? []).map((t) => ({
+          server: r.id,
+          name: t.name,
+          description: t.description ?? "",
+          inputSchema: t.inputSchema,
+          annotations: t.annotations,
+        }))
+      );
+    } else {
+      tools = (await getSdkRoster()).tools;
+    }
     ctx.setStatus("tool_executing", `${call.name}…`);
     const out = executeMcpMetaTool(call.name, call as unknown as Record<string, unknown>, tools);
     ctx.appendDisplay(`[OK] ${call.name}\n`);

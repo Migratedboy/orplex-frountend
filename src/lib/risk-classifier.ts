@@ -31,6 +31,24 @@ export interface McpRiskHint {
   serverAutoApproveReadOnly?: boolean;
 }
 
+/**
+ * Assemble the McpRiskHint for one tool from server-declared ToolAnnotations
+ * plus the per-server auto-approve toggle. Shared by every lane (C6): the
+ * browser lane feeds it localStorage registry/prefs (risk-hint.ts), the SDK
+ * lanes the Phase 5 snapshot + Prisma toggle (risk-db.ts, and the renderer's
+ * /api/agent/mcp/tools roster) — one shape, one classification.
+ */
+export function mcpRiskHintFrom(
+  annotations: { readOnlyHint?: boolean; destructiveHint?: boolean } | null | undefined,
+  serverAutoApproveReadOnly?: boolean
+): McpRiskHint {
+  return {
+    ...(annotations?.readOnlyHint !== undefined ? { readOnlyHint: annotations.readOnlyHint } : {}),
+    ...(annotations?.destructiveHint !== undefined ? { destructiveHint: annotations.destructiveHint } : {}),
+    ...(serverAutoApproveReadOnly ? { serverAutoApproveReadOnly: true } : {}),
+  };
+}
+
 const LOW_RISK_TOOLS = new Set([
   "read_file",
   "list_files",

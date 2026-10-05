@@ -35,4 +35,30 @@ describe("buildNativeToolDefs", () => {
     const defs = buildNativeToolDefs([{ server: "x", name: "t", description: "d", inputSchema: "garbage" }]);
     expect(defs[defs.length - 1].parameters).toEqual({ type: "object", properties: {} });
   });
+
+  it("merges SDK-lane snapshot tools (remoteTools) with stdio defs", () => {
+    const defs = buildNativeToolDefs(
+      [{ server: "fs", name: "search", description: "Search files", inputSchema: { type: "object" } }],
+      [{ server: "github", name: "list_prs", description: "List PRs", inputSchema: { type: "object", properties: {} } }]
+    );
+    const names = defs.map((d) => d.name);
+    expect(names).toEqual(expect.arrayContaining(["mcp__fs__search", "mcp__github__list_prs"]));
+    expect(defs.find((d) => d.name === "mcp__github__list_prs")!.description).toBe("List PRs");
+  });
+
+  it("keeps every name (names-only) and adds meta tools when remoteTools pushes past the cap", () => {
+    const many = Array.from({ length: 45 }, (_, i) => ({
+      server: "big",
+      name: `tool_${i}`,
+      description: `Tool ${i}`,
+      inputSchema: { type: "object" as const, properties: { q: { type: "string" } } },
+    }));
+    const defs = buildNativeToolDefs([], many);
+    const names = defs.map((d) => d.name);
+    const mcpNames = defs.filter((d) => d.name.startsWith("mcp__")).map((d) => d.name);
+    expect(mcpNames).toContain("mcp__big__tool_44");
+    expect(names).toEqual(expect.arrayContaining(["mcp_search_tools", "mcp_describe_tool"]));
+    const stripped = defs.find((d) => d.name === "mcp__big__tool_44")!;
+    expect(stripped.parameters).toMatchObject({ type: "object", properties: {} });
+  });
 });
