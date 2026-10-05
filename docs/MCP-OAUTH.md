@@ -399,4 +399,43 @@ halves:
 - 14 mcp-remote entries still carry `auth=none` — OAuth runs inside
   mcp-remote; the hint rework belongs to Phase 7's UI.
 
+### Phase 7 - Connectors panel: statuses, C6 toggle, browser sign-in
+
+Server-side read model + routes behind the panel (tokens never leave
+`store.ts`):
+
+- `src/lib/mcp/connection-view.ts` - `listConnectionViews(userId)` joins
+  `SafeConnection` rows with catalog metadata and the Phase 5 tool snapshot
+  (`mcpTool.groupBy`) into `{name, description, auth, toolCount, ...}`.
+- `GET /api/mcp/connections` - that view for the session user;
+  `PATCH /api/mcp/connections/[serverId]` - `{autoApproveReadOnly}` (the C6
+  toggle, Prisma column, no version bump - it cannot race token writes);
+  `DELETE /api/mcp/connections/[serverId]` - `disconnectConnection` wipes
+  ciphertext + client registration in place while the row and its preference
+  survive for the next connect.
+- `ConnectorsPanel.tsx` renders an "OAuth connectors" section: status badges
+  (`connected` / `connected_no_tools` / `needs_reauth` / `disconnected`, with
+  `failureReason` on reauth), per-connector "Auto-approve reads" checkbox,
+  Re-authorize / Reconnect, and disconnect. Catalog detail for `auth=oauth`
+  remotes gained the SDK sign-in flow: `oauthPrepare` (main binds the
+  loopback before connect) -> `POST /connections/[id]/connect` ->
+  `oauthOpen(authUrl)` -> `onOAuthCallback` relays to
+  `POST /api/mcp/oauth/complete`; a 60 s poll covers the hosted-callback
+  path (plain browser tab, no Electron bridge). The stdio env form and
+  "Save changes" are hidden for OAuth remotes (there is no token/stdio path
+  to save - `mcp-accounts.ts` rejects those).
+
+**Bug found & fixed while wiring this up:** `store.ts` wrote
+`failureReason` into `mcp_connections` updates (token save, `markNeedsReauth`,
+client registration) but the Phase 2 migration only created the column on
+`mcp_oauth_pendings` - Prisma rejects the unknown argument at runtime. It
+went undetected because every test mocks Prisma. Migration
+`20261004000002_add_mcp_connection_failure_reason` adds the column;
+`McpConnectionStatus` now includes `connected_no_tools` (the Phase 5 value).
+
+**Tests (Phase 7): +8** - `mcp-connection-view.test.ts` (3: catalog join +
+counts, unknown-id fallback, empty list) and `mcp-oauth.test.ts` (+5: toggle
+column update/missing row, disconnect wipe/preference survival, listConnections
+surfaces toggle + reason without ciphertext). Full suite: 1132 passing.
+
 ### Phase 9 — how to add a connector; debugging login failures / missing tools.

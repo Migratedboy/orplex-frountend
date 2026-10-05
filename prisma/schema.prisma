@@ -695,6 +695,9 @@ model McpConnection {
   // C6 SDK-lane twin of the browser lane's orplex.mcp.prefs.v1 toggle: the
   // same auto-approve-read-only setting, Prisma-backed (tool-snapshot.ts).
   autoApproveReadOnly Boolean @default(false)
+  // Why the status is needs_reauth (P2 store writes it on every token wipe /
+  // credential reset - the P2 migration only created it on McpOAuthPending).
+  failureReason       String?
   version          Int       @default(1) // optimistic lock for token/client writes
   lastTestAt       DateTime?
   lastTestOk       Boolean?

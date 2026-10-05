@@ -67,6 +67,32 @@ interface TestResult {
   latencyMs?: number;
 }
 
+/** One SDK-lane connector row (GET /api/mcp/connections) — no tokens, ever. */
+interface SdkConnection {
+  serverId: string;
+  name: string;
+  url: string;
+  transport: string;
+  status: "connected" | "connected_no_tools" | "needs_reauth" | "disconnected";
+  scope: string | null;
+  autoApproveReadOnly: boolean;
+  failureReason: string | null;
+  toolCount: number;
+}
+
+function sdkBadge(status: SdkConnection["status"], toolCount: number): { cls: string; text: string } {
+  switch (status) {
+    case "connected":
+      return { cls: "mcp-badge--ok", text: toolCount ? `${toolCount} tools` : "connected" };
+    case "connected_no_tools":
+      return { cls: "", text: "no tools" };
+    case "needs_reauth":
+      return { cls: "mcp-badge--fail", text: "needs reauth" };
+    default:
+      return { cls: "mcp-badge--off", text: "disconnected" };
+  }
+}
+
 interface Category {
   key: string;
   label: string;
@@ -117,7 +143,20 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const [remoteRefreshing, setRemoteRefreshing] = useState<string | null>(null);
 
-  const connectedIds = useMemo(() => new Set(connected.map((c) => c.serverId)), [connected]);
+  // === SDK-lane connectors (spec Phase 7) ==================================
+  // Server-side OAuth rows (McpConnection): status badges, the C6
+  // auto-approve-read-only toggle, and the browser sign-in flow driven by
+  // the Electron loopback relay (oauthPrepare/oauthOpen/onOAuthCallback).
+  const [sdk, setSdk] = useState<SdkConnection[]>([]);
+  const [sdkBusy, setSdkBusy] = useState<string | null>(null);
+  const [sdkToggle, setSdkToggle] = useState<string | null>(null);
+  const [sdkError, setSdkError] = useState<string | null>(null);
+  const oauthOffRef = useRef<(() => void) | null>(null);
+
+  const connectedIds = useMemo(
+    () => new Set([...connected.map((c) => c.serverId), ...sdk.map((c) => c.serverId)]),
+    [connected, sdk]
+  );
 
   const loadConnected = useCallback(async () => {
     try {
@@ -125,6 +164,19 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
       const j = await r.json();
       if (j?.success) setConnected(j.servers ?? []);
     } catch {}
+  }, []);
+
+  const loadSdk = useCallback(async (): Promise<SdkConnection[]> => {
+    try {
+      const r = await apiFetch("/api/mcp/connections");
+      const j = await r.json();
+      if (j?.success) {
+        const rows: SdkConnection[] = j.connections ?? [];
+        setSdk(rows);
+        return rows;
+      }
+    } catch {}
+    return [];
   }, []);
 
   // Debounced catalog search.
@@ -149,9 +201,13 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
   useEffect(() => {
     if (open) {
       void loadConnected();
+      void loadSdk();
       setRemotes(loadRemotes());
     }
-  }, [open, loadConnected]);
+  }, [open, loadConnected, loadSdk]);
+
+  // Unsubscribe the loopback callback relay if the panel closes mid-sign-in.
+  useEffect(() => () => { oauthOffRef.current?.(); }, []);
 
   // Esc closes (after connect form closes first).
   useEffect(() => {
@@ -180,6 +236,7 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
     setEnvValues(initial);
     setConnectTarget(server);
     setSaveError(null);
+    setSdkError(null);
     setView("detail");
   };
 
@@ -221,6 +278,120 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
     await apiFetch(`/api/mcp/servers?serverId=${encodeURIComponent(serverId)}`, { method: "DELETE" }).catch(() => null);
     if (testResult?.serverId === serverId) setTestResult(null);
     await loadConnected();
+  };
+
+  // === SDK-lane OAuth flow (spec Phase 7) ==================================
+  // prepare (main binds the loopback BEFORE connect) → connect → open the
+  // auth URL in the system browser → the loopback listener relays ?code&
+  // state to POST /api/mcp/oauth/complete. A poll covers the hosted-callback
+  // path (plain browser tab, no Electron bridge).
+
+  const completeOauth = async (
+    serverId: string,
+    payload: { code?: string; state?: string; iss?: string; error?: string; error_description?: string }
+  ): Promise<boolean> => {
+    try {
+      const r = await apiFetch("/api/mcp/oauth/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if (j?.success && j.status === "connected") {
+        setSdkError(null);
+        await loadSdk();
+        return true;
+      }
+      setSdkError(j?.error ?? `Sign-in failed (HTTP ${r.status})`);
+      return false;
+    } catch (err) {
+      setSdkError(err instanceof Error ? err.message : "Sign-in failed");
+      return false;
+    }
+  };
+
+  const startOauth = async (serverId: string) => {
+    setSdkBusy(serverId);
+    setSdkError(null);
+    try {
+      const bridge = window.orplexDesktop?.mcp;
+      let redirectUri: string | undefined;
+      if (bridge?.oauthPrepare) {
+        const prep = await bridge.oauthPrepare();
+        if (!prep.ok) {
+          setSdkError(prep.error ?? "Could not start the local sign-in listener.");
+          return;
+        }
+        redirectUri = prep.redirectUri;
+      }
+      const r = await apiFetch(`/api/mcp/connections/${encodeURIComponent(serverId)}/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(redirectUri ? { redirectUri } : {}),
+      });
+      const j = await r.json();
+      if (!j?.success) {
+        setSdkError(j?.error ?? `HTTP ${r.status}`);
+        return;
+      }
+      if (j.status === "connected") {
+        await loadSdk();
+        return;
+      }
+      if (j.status !== "awaiting_browser" || typeof j.authUrl !== "string") {
+        setSdkError(j?.error ?? "Unexpected response from the connect endpoint.");
+        return;
+      }
+      if (bridge?.onOAuthCallback) {
+        const off = bridge.onOAuthCallback((payload) => {
+          void completeOauth(serverId, payload).finally(() => {
+            oauthOffRef.current?.();
+            oauthOffRef.current = null;
+          });
+        });
+        oauthOffRef.current = off;
+      }
+      if (bridge?.oauthOpen) await bridge.oauthOpen(j.authUrl);
+      else window.open(j.authUrl, "_blank", "noopener,noreferrer");
+      // Hosted-callback fallback: watch until the row lands connected.
+      for (let i = 0; i < 40; i++) {
+        await new Promise((res) => setTimeout(res, 1500));
+        const rows = await loadSdk();
+        const row = rows.find((c) => c.serverId === serverId);
+        if (row && (row.status === "connected" || row.status === "connected_no_tools")) return;
+      }
+      setSdkError("Sign-in didn't finish in time — try again.");
+    } catch (err) {
+      setSdkError(err instanceof Error ? err.message : String(err));
+    } finally {
+      oauthOffRef.current?.();
+      oauthOffRef.current = null;
+      setSdkBusy(null);
+    }
+  };
+
+  const toggleAutoApprove = async (serverId: string, value: boolean) => {
+    setSdkToggle(serverId);
+    setSdk((rows) => rows.map((c) => (c.serverId === serverId ? { ...c, autoApproveReadOnly: value } : c)));
+    try {
+      const r = await apiFetch(`/api/mcp/connections/${encodeURIComponent(serverId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoApproveReadOnly: value }),
+      });
+      const j = await r.json();
+      if (!j?.success) setSdkError(j?.error ?? `HTTP ${r.status}`);
+    } catch (err) {
+      setSdkError(err instanceof Error ? err.message : "Could not save the setting");
+    } finally {
+      setSdkToggle(null);
+      await loadSdk();
+    }
+  };
+
+  const disconnectSdk = async (serverId: string) => {
+    await apiFetch(`/api/mcp/connections/${encodeURIComponent(serverId)}`, { method: "DELETE" }).catch(() => null);
+    await loadSdk();
   };
 
   const connectRemote = async () => {
@@ -336,7 +507,7 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
           <div className="mcp-title">
             <IconMcp size={20} />
             <h2>MCP connectors</h2>
-            <span className="mcp-count">{connected.length} connected</span>
+            <span className="mcp-count">{connected.length + sdk.length} connected</span>
           </div>
           <button className="mcp-close" onClick={onClose} aria-label="Close connectors">✕</button>
         </header>
@@ -370,6 +541,49 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
             </div>
 
             <div className="mcp-list">
+              {/* SDK-lane connectors (spec Phase 7): status, tool counts, C6 toggle. */}
+              {sdk.length > 0 && <div className="mcp-section-label">OAuth connectors</div>}
+              {sdk.map((c) => {
+                const badge = sdkBadge(c.status, c.toolCount);
+                return (
+                  <div key={`sdk-${c.serverId}`} className="mcp-row mcp-row--connected">
+                    <IconMcp size={18} />
+                    <div className="mcp-row-main">
+                      <div className="mcp-row-name">
+                        {c.name}
+                        <span className={`mcp-badge ${badge.cls}`}>{badge.text}</span>
+                        {c.autoApproveReadOnly && <span className="mcp-badge mcp-badge--pop">auto-approve reads</span>}
+                      </div>
+                      <div className="mcp-row-desc">
+                        {c.url}
+                        {c.status === "needs_reauth" && c.failureReason ? ` — ${c.failureReason}` : ""}
+                        {c.scope ? ` · scopes: ${c.scope}` : ""}
+                      </div>
+                    </div>
+                    <div className="mcp-row-actions">
+                      {(c.status === "needs_reauth" || c.status === "disconnected") && (
+                        <button className="mcp-btn mcp-btn--primary" disabled={sdkBusy === c.serverId} onClick={() => startOauth(c.serverId)}>
+                          {sdkBusy === c.serverId ? "Waiting for sign-in…" : c.status === "needs_reauth" ? "Re-authorize" : "Reconnect"}
+                        </button>
+                      )}
+                      <label className="mcp-autoapprove" title="Approve read-only tools without asking each time">
+                        <input
+                          type="checkbox"
+                          checked={c.autoApproveReadOnly}
+                          disabled={sdkToggle === c.serverId}
+                          onChange={(e) => toggleAutoApprove(c.serverId, e.target.checked)}
+                        />
+                        Auto-approve reads
+                      </label>
+                      <button className="mcp-btn mcp-btn--danger" aria-label={`Disconnect ${c.name}`} onClick={() => disconnectSdk(c.serverId)}>
+                        <IconTrash size={13} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              {sdkError && <div className="mcp-test mcp-test--fail">✕ {sdkError}</div>}
+
               {/* Remote OAuth servers — the catalog's PAT fields don't fit these. */}
               <div className="mcp-section-label">Remote servers (OAuth)</div>
               {remotes.map((r) => (
@@ -507,9 +721,34 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
                 Documentation ↗
               </a>
             )}
+            {connectTarget.remote && (
+              <div className="mcp-detail-cmd">
+                <code>{connectTarget.remote.url}</code>
+              </div>
+            )}
             {connectTarget.stdio && (
               <div className="mcp-detail-cmd">
                 <code>{connectTarget.stdio.command} {connectTarget.stdio.args.join(" ")}</code>
+              </div>
+            )}
+
+            {connectTarget.remote && connectTarget.auth === "oauth" && (
+              <div className="mcp-detail-oauth">
+                <div className="mcp-section-label">Sign in</div>
+                <p className="mcp-env-note">
+                  {connectTarget.oauth?.scopes?.length ? <>Grants: <code>{connectTarget.oauth.scopes.join(" ")}</code>. </> : null}
+                  The browser opens for sign-in; tokens are stored encrypted on this device and never
+                  returned to the page.
+                </p>
+                <div className="mcp-detail-actions">
+                  <button className="mcp-btn mcp-btn--primary" disabled={sdkBusy === connectTarget.id} onClick={() => startOauth(connectTarget.id)}>
+                    {sdkBusy === connectTarget.id
+                      ? "Waiting for sign-in…"
+                      : sdk.some((c) => c.serverId === connectTarget.id && c.status === "needs_reauth")
+                        ? "Re-authorize with browser"
+                        : "Sign in with browser"}
+                  </button>
+                </div>
               </div>
             )}
 
@@ -538,12 +777,15 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
             )}
 
             {saveError && <div className="mcp-test mcp-test--fail">✕ {saveError}</div>}
+            {sdkError && <div className="mcp-test mcp-test--fail">✕ {sdkError}</div>}
 
             <div className="mcp-detail-actions">
               <button className="mcp-btn" onClick={() => { setView("browse"); setConnectTarget(null); }}>Cancel</button>
-              <button className="mcp-btn mcp-btn--primary" disabled={saving} onClick={saveConnect}>
-                {saving ? "Saving…" : connectedIds.has(connectTarget.id) ? "Save changes" : "Connect server"}
-              </button>
+              {!(connectTarget.remote && connectTarget.auth === "oauth") && (
+                <button className="mcp-btn mcp-btn--primary" disabled={saving} onClick={saveConnect}>
+                  {saving ? "Saving…" : connectedIds.has(connectTarget.id) ? "Save changes" : "Connect server"}
+                </button>
+              )}
             </div>
             <p className="mcp-detail-note">
               Once connected, this server&apos;s tools are available to the agent in every run — it will use them automatically when a task needs them.

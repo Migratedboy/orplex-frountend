@@ -26,11 +26,14 @@ jest.mock("@/lib/prisma", () => ({
 
 import {
   McpTokenConflictError,
+  disconnectConnection,
+  listConnections,
   loadConnectionCredentials,
   loadConnectionTokens,
   markNeedsReauth,
   saveConnectionCredentials,
   saveConnectionTokens,
+  setConnectionAutoApprove,
   withConnectionLock,
 } from "@/lib/mcp/oauth/store";
 import {
@@ -374,5 +377,60 @@ describe("DbMcpOAuthProvider", () => {
     conn.updateMany.mockResolvedValue({ count: 1 } as never);
     await provider().invalidateCredentials("tokens");
     expect(arg<{ data: Record<string, unknown> }>(conn.updateMany.mock.calls).data).toMatchObject({ status: "needs_reauth", tokensCiphertext: null });
+  });
+});
+
+// ── panel settings: toggle + disconnect (spec Phase 7) ──────────────────────
+
+describe("panel settings (Phase 7)", () => {
+  it("setConnectionAutoApprove updates only that column for the owning user", async () => {
+    conn.updateMany.mockResolvedValue({ count: 1 } as never);
+    await expect(setConnectionAutoApprove(USER, SERVER, true)).resolves.toBe(true);
+    expect(arg<{ where: Record<string, unknown>; data: Record<string, unknown> }>(conn.updateMany.mock.calls)).toEqual({
+      where: { userId: USER, serverId: SERVER },
+      data: { autoApproveReadOnly: true },
+    });
+  });
+
+  it("setConnectionAutoApprove reports a missing connection", async () => {
+    conn.updateMany.mockResolvedValue({ count: 0 } as never);
+    await expect(setConnectionAutoApprove(USER, "ghost", false)).resolves.toBe(false);
+  });
+
+  it("disconnectConnection wipes tokens + client registration but keeps the preference", async () => {
+    conn.findUnique.mockResolvedValue(
+      connectionRow({ version: 3, tokensCiphertext: "deadbeef", clientId: "c_1", clientSecret: "enc", autoApproveReadOnly: true }) as never
+    );
+    conn.updateMany.mockResolvedValue({ count: 1 } as never);
+
+    await expect(disconnectConnection(USER, SERVER)).resolves.toBe(true);
+
+    const call = arg<{ where: { version: number }; data: Record<string, unknown> }>(conn.updateMany.mock.calls);
+    expect(call.where.version).toBe(3);
+    expect(call.data).toMatchObject({
+      status: "disconnected",
+      tokensCiphertext: null,
+      tokenType: null,
+      expiresAt: null,
+      clientId: null,
+      clientSecret: null,
+      failureReason: null,
+    });
+    expect(call.data).not.toHaveProperty("autoApproveReadOnly");
+  });
+
+  it("disconnectConnection reports a missing connection without writing", async () => {
+    conn.findUnique.mockResolvedValue(null as never);
+    await expect(disconnectConnection(USER, "ghost")).resolves.toBe(false);
+    expect(conn.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("listConnections surfaces the toggle + failure reason, never the ciphertext", async () => {
+    conn.findMany.mockResolvedValue([
+      connectionRow({ autoApproveReadOnly: true, failureReason: "invalid_grant", tokensCiphertext: "secret-cipher-value" }),
+    ] as never);
+    const rows = await listConnections(USER);
+    expect(rows[0]).toMatchObject({ serverId: SERVER, autoApproveReadOnly: true, failureReason: "invalid_grant" });
+    expect(JSON.stringify(rows)).not.toContain("secret-cipher-value");
   });
 });

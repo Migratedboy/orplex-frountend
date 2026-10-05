@@ -3029,6 +3029,11 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .mcp-env-note { font-size:11.5px; color:#a1a1aa; margin-top:4px; }
 .mcp-detail-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
 .mcp-detail-note { font-size:11.5px; color:#a1a1aa; margin-top:10px; line-height:1.5; }
+.mcp-autoapprove { display:flex; align-items:center; gap:6px; font-size:11px; color:#9aa; cursor:pointer; user-select:none; white-space:nowrap; }
+.mcp-autoapprove input { accent-color:#ff6b00; cursor:pointer; margin:0; }
+.mcp-autoapprove input:disabled { cursor:default; opacity:.6; }
+.mcp-detail-oauth { margin-top:14px; }
+.mcp-detail-oauth .mcp-detail-actions { justify-content:flex-start; }
 
 .dark .mcp-panel { background:#222426; border-color:#404040; box-shadow:0 24px 64px rgba(0,0,0,0.6); }
 .dark .mcp-header { border-bottom-color:#333; }

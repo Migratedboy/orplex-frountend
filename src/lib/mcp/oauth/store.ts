@@ -13,7 +13,7 @@ import type { StoredOAuthClientInformation, StoredOAuthTokens } from "@modelcont
 import { decryptKey, encryptKey } from "@/lib/key-encryption";
 import { prisma } from "@/lib/prisma";
 
-export type McpConnectionStatus = "connected" | "needs_reauth" | "disconnected";
+export type McpConnectionStatus = "connected" | "connected_no_tools" | "needs_reauth" | "disconnected";
 export type McpTransport = "streamable-http" | "sse";
 
 /** Thrown when the version guard exhausts its retries (row churned or deleted). */
@@ -194,6 +194,45 @@ export async function setConnectionTestResult(userId: string, serverId: string, 
   });
 }
 
+// ── Connectors-panel settings (spec Phase 7) ─────────────────────────────────
+
+/**
+ * C6 SDK-lane twin of the browser lane's orplex.mcp.prefs.v1 toggle: the
+ * auto-approve-read-only permission for one connector. A plain column
+ * update - it neither bumps `version` nor touches token/client columns, so
+ * it cannot race the guarded token writes above.
+ * Returns false when no such connection exists.
+ */
+export async function setConnectionAutoApprove(userId: string, serverId: string, value: boolean): Promise<boolean> {
+  const res = await prisma.mcpConnection.updateMany({
+    where: { userId, serverId },
+    data: { autoApproveReadOnly: value },
+  });
+  return res.count > 0;
+}
+
+/**
+ * Disconnect: wipe tokens + client registration in place. The row and its
+ * auto-approve preference survive so reconnect keeps settings; the
+ * ciphertext never does.
+ */
+export async function disconnectConnection(userId: string, serverId: string): Promise<boolean> {
+  return withConnectionLock(lockKey(userId, serverId), async () => {
+    const row = await findConnection(userId, serverId);
+    if (!row) return false;
+    await versionedUpdate({ userId, serverId }, row.id, row.version, {
+      status: "disconnected",
+      tokensCiphertext: null,
+      tokenType: null,
+      expiresAt: null,
+      clientId: null,
+      clientSecret: null,
+      failureReason: null,
+    });
+    return true;
+  });
+}
+
 // ── Client registration (DCR) ───────────────────────────────────────────────
 
 export interface SaveCredentialsInput {
@@ -255,6 +294,8 @@ export interface SafeConnection {
   expiresAt: Date | null;
   lastTestAt: Date | null;
   lastTestOk: boolean | null;
+  autoApproveReadOnly: boolean;
+  failureReason: string | null;
   updatedAt: Date;
 }
 
@@ -270,6 +311,8 @@ export async function listConnections(userId: string): Promise<SafeConnection[]>
     expiresAt: r.expiresAt,
     lastTestAt: r.lastTestAt,
     lastTestOk: r.lastTestOk,
+    autoApproveReadOnly: r.autoApproveReadOnly,
+    failureReason: r.failureReason ?? null,
     updatedAt: r.updatedAt,
   }));
 }
