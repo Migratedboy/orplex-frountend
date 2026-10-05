@@ -325,6 +325,78 @@ meta tools against the localStorage roster. Metering (C10): the worker passes
 `toolSchemaChars` (builder-computed) into `recordPromptCall`; those chars are
 counted into `systemTokens` and surfaced as `toolSchemaTokens` per call.
 
-### Phase 6 — catalog audit results → `docs/MCP-CATALOG-AUDIT.md`.
+### Phase 6 — catalog audit → `docs/MCP-CATALOG-AUDIT.md`
+
+`npm run audit:mcp` (`scripts/audit-mcp-catalog.mjs`) is the phase the
+catalog header promises ("probes each candidate and only verified endpoints
+ship as `remote`"). It compiles `mcp-catalog.ts` + `ssrf-fetch.ts` with the
+repo's own tsc into `node_modules/.cache/orplex-mcp-audit` (no dependency on
+the TS toolchain beyond what's installed, no regex-scraping), then runs two
+halves:
+
+- **Static (always; `--offline` skips probes)** — re-runs the Zod
+  validation, then the checks the schema can't express: https-or-loopback on
+  every remote candidate via the real `checkMcpUrl` (zero policy drift),
+  shell metacharacters in stdio command/args (placeholder args like
+  `--project-ref=<x>` exempt — spawn runs without a shell), auth-hint
+  invariants (same rules as `mcp-catalog.test.ts`), docsUrl https, duplicate
+  ids/names, category coverage, OAuth-by-default observations.
+- **Probes** — MCP `initialize` POST per remote candidate (verdicts
+  `verified` / `auth-gated` / `not-mcp` / `unreachable`; 3 attempts with
+  backoff for transient DNS/reset and `Accept: */*` retry for 405/406/415),
+  npm/PyPI existence per stdio package (ok / deprecated / missing / dead =
+  metadata shell with no installable version; `pkg@version` specs stripped
+  before lookup), docsUrl GETs. `remote.spec` failures are **hard** failures
+  — only verified endpoints ship as `remote`; mcp-remote stdio-arg failures
+  warn (the Connectors panel's live `listTools` probe is the backstop).
+  `--strict` promotes warnings to failures. Exit: 0 pass, 1 over threshold,
+  2 setup failure.
+
+**First-run findings (2026-10-04) — fixed in this phase:**
+
+- All 15 proxy entries ran `npx @anthropic-ai/mcp-remote` — that package
+  does not exist (npm E404) → `mcp-remote` (the bridge Elastic's own docs
+  recommend; `0.14.3`).
+- Gmail pointed at NXDOMAIN `gmail.mcp.google.com/mcp` → Google's official
+  `https://gmailmcp.googleapis.com/mcp/v1` (probe: **verified**, 200
+  jsonrpc).
+- ElevenLabs pointed at NXDOMAIN `mcp.elevenlabs.io/mcp` → official hosted
+  `https://api.elevenlabs.io/v1/mcp` (probe: **auth-gated**, OAuth).
+- Cloudflare pointed at record-less `bindings.cloudflare.com/mcp` →
+  `https://mcp.cloudflare.com/mcp` (probe: **auth-gated**, RFC9728 metadata
+  + scopes).
+- Railway pointed at `railway.app/mcp`, which serves an HTML page
+  ("Only HTML requests are supported here") → `https://mcp.railway.app/mcp`
+  (probe: **auth-gated**, `realm="mcp"` + resource metadata).
+- OneDrive pointed at record-less `mcp.microsoft365.com/mcp` →
+  `https://graph.microsoft.com/mcp/v1` (probe: **auth-gated** with AAD
+  `authorization_uri`; the whole `/mcp/v1` tree auth-gates before routing —
+  client restrictions can't be proven until a real connect, so the panel's
+  `listTools` probe remains the backstop).
+- `netlify-mcp` → `@netlify/mcp`, `apify-mcp-server` →
+  `@apify/actors-mcp-server` (official vendor packages, registry-verified).
+
+**Open findings (in the report; decisions deferred to Phase 7):**
+
+- `mcp.elastic.co` is NXDOMAIN — Elastic ships no public endpoint; its
+  servers proxy *your* cluster (`@elastic/mcp-server-elasticsearch` + env,
+  or `https://www.elastic.co/docs/_mcp/` for docs only — probe-verified).
+- Azure: `mcp.azure.com/mcp` is an HTML docs page (POST → 405,
+  `ai.azure.com/mcp` → 405), and `@azure/azure-mcp` doesn't exist on npm —
+  no npx-able or probe-verified endpoint found.
+- Dead stdio packages: `prisma-mcp`, `@QuantGeekDev/docker-mcp`,
+  `mcp-grafana`, `framer-mcp`, `asana-mcp-server`, `perplexity-ask`,
+  `razorpay-mcp-server`, `mcp-anthropic`; unpublished shells: `render-mcp`,
+  `fly-mcp`, `penpot-mcp`. Probe-verified hosted alternatives exist for
+  Asana (`https://mcp.asana.com/sse`) and Perplexity
+  (`https://api.perplexity.ai/mcp`) — both auth-gated; registry candidates:
+  `razorpay-mcp`, `docker-mcp-server`, `mcp-grafana-npx`.
+- Deprecated-but-installable: `@modelcontextprotocol/server-{github,
+  puppeteer,brave-search,gdrive,google-maps,postgres}`, `sonarqube-mcp-server`,
+  `@circleci/mcp-server-circleci`, `@browserbasehq/mcp-server-browserbase`,
+  `@neondatabase/mcp-server-neon` (npm deprecation text names successors).
+- Wikipedia has no official hosted MCP (third-party candidates only).
+- 14 mcp-remote entries still carry `auth=none` — OAuth runs inside
+  mcp-remote; the hint rework belongs to Phase 7's UI.
 
 ### Phase 9 — how to add a connector; debugging login failures / missing tools.
