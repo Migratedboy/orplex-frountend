@@ -509,6 +509,27 @@ export const M3_TOOL_DEFINITIONS = [
       },
     },
   },
+  // === UNIVERSAL MCP CALLER — available on EVERY provider (full + lean).
+  //  Call any connected MCP tool by server id + tool name + arguments.
+  //  Use mcp_search_tools to find tools, mcp_describe_tool for exact schemas.
+  //  This is the MCP path for lean providers (groq, nvidia, any BYOK) that
+  //  don't get per-tool MCP definitions in the function-calling array.
+  {
+    type: "function",
+    function: {
+      name: "mcp_call",
+      description: "Call a tool on a connected MCP server by name. Use when the server's per-tool definitions are not in your function-calling list (lean providers) — discover tools first with mcp_search_tools and get exact parameters with mcp_describe_tool. serverId is the MCP server id shown in MCP connectors (e.g. \"supabase\", \"linear\"). tool is the tool name on that server (e.g. \"list_tables\", \"create_issue\"). arguments is the tool's parameter object. Results arrive as tool_result. Never invent server ids or tool names — use mcp_search_tools to list what's actually connected.",
+      parameters: {
+        type: "object",
+        properties: {
+          serverId: { type: "string", description: "MCP server id (from MCP connectors, e.g. \"supabase\", \"linear\", \"filesystem\") — never invent one" },
+          tool: { type: "string", description: "Tool name on that server (e.g. \"list_tables\", \"create_issue\") — discover with mcp_search_tools if unsure" },
+          arguments: { type: "object", description: "Tool parameter object (keys/values per the tool's schema). Pass {} or omit if the tool takes no args." },
+        },
+        required: ["serverId", "tool"],
+      },
+    },
+  },
 ];
 
 // Updated system prompt — no XML tool instructions needed
@@ -526,12 +547,13 @@ export const M3_TOOL_DEFINITIONS = [
 export const COMPACT_TOOL_PROVIDERS = ["groq", "nvidia"];
 
 /**
- * Providers known to handle the full 30-tool schema array (large context /
- * billed tiers). Everything else — the compact-listed free tiers AND any
- * unknown/custom BYOK endpoint — gets the lean set. Default-compact is
- * deliberate: an unknown endpoint's TPM ceiling is unknowable, and the lean
- * set still covers every verb family (inspect, create, execute, plan,
- * lookup, browse), so no provider can ever silently lose the browser tools.
+ * Providers known to handle the full schema array (large context / billed
+ * tiers). Everything NOT in this list OR in COMPACT_TOOL_PROVIDERS gets the
+ * lean set. Lean is now safe for MCP: every provider (including lean groq/
+ * nvidia and any BYOK endpoint) still gets the generic mcp_call built-in +
+ * the search/describe discovery tools, so MCP is never blind on any provider.
+ * Default-compact for truly-unknown endpoints is deliberate (unknown TPM
+ * ceiling), but MCP capability is preserved via mcp_call.
  */
 export const FULL_TOOL_PROVIDERS = [
   "openrouter",
@@ -548,13 +570,25 @@ export const FULL_TOOL_PROVIDERS = [
 ];
 
 /** Which schema array a provider config gets. Matches platform keys, key-pool
- *  entries ("<id>-pool"), BYOK personal keys ("<id>-personal") and display
- *  labels ("NVIDIA NIM") — anything carrying a known full-tier id gets the
- *  full set, everything else gets the lean-but-complete set. */
+ *  entries ("<id>-pool"), BYOK personal keys ("<id>-personal"), display
+ *  labels ("NVIDIA NIM") — known full-tier ids get the full set.
+ * Anything in COMPACT_TOOL_PROVIDERS (groq, nvidia) gets the lean set.
+ * Everything else (incl. BYOK providers served via OpenRouter, or unknown
+ * endpoints) gets the full set — EXCEPT groq/nvidia, which are explicitly
+ * lean because their free-tier TPM cap (~8k/min) 413s the full schema array.
+ * Lean providers still get mcp_call + discovery tools, so MCP always works.
+ */
 export function usesCompactTools(providerName: string): boolean {
   const n = (providerName || "").toLowerCase();
+  // Known full-tier providers (incl. OpenRouter — the path for most BYOK).
   if (FULL_TOOL_PROVIDERS.some((p) => n.includes(p))) return false;
-  return true;
+  // Explicitly lean: tight-TPM free tiers where the full schema array 413s.
+  if (COMPACT_TOOL_PROVIDERS.some((p) => n.includes(p))) return true;
+  // Default-full for any other endpoint (incl. unknown/custom BYOK):
+  // MCP is fully available (per-tool defs + mcp_call + discovery), and the
+  // lean-set safety net (mcp_call) is there if a future endpoint turns out
+  // to be TPM-constrained. Only groq/nvidia are forced lean.
+  return false;
 }
 export const GROQ_TOOL_NAMES = [
   "read_file",
@@ -579,6 +613,12 @@ export const GROQ_TOOL_NAMES = [
   // in chat + feed the vision channel, so "take a screenshot" never dead-ends
   // on Groq/NVIDIA the way browsing used to.
   "browser_screenshot",
+  // Universal MCP caller — always available, even on lean/groq/nvidia and
+  // any BYOK endpoint, so MCP is never blind on any provider. Takes a
+  // connected server id + tool name + arguments and dispatches through the
+  // same risk gate + lane as a direct mcp__ call. Use mcp_search_tools /
+  // mcp_describe_tool to discover tools and get exact schemas.
+  "mcp_call",
 ] as const;
 
 export const GROQ_TOOL_DEFINITIONS = M3_TOOL_DEFINITIONS.filter((t: any) =>

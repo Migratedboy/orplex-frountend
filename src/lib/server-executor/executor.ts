@@ -146,6 +146,12 @@ export function buildNativeToolDefs(mcpTools: McpToolDef[], remoteTools: Builder
     { name: "browser_network", description: "Failed requests (HTTP 4xx/5xx + aborted) since session start — diagnose blank pages / missing data.", parameters: obj({}, []) },
     { name: "browser_screenshot", description: "Capture the active tab; optionally fullPage or a named viewport (desktop/tablet/mobile) for responsive checks.", parameters: obj({ fullPage: { type: "boolean" }, viewpoint: { type: "string", description: "desktop | tablet | mobile" } }, []) },
     { name: "browser_evaluate", description: "Run JavaScript in the page and get the JSON result (bare expression or multi-statement IIFE auto-wrapped).", parameters: obj({ code: { type: "string", description: "Expression or statements, e.g. document.title or const n = document.images.length; n" } }, ["code"]) },
+    // Universal MCP caller — available on every provider the executor calls,
+    // so MCP works even when the provider is a lean/TPM-constrained one or an
+    // unknown BYOK endpoint that doesn't get per-tool MCP defs in its array.
+    // The model learns the server id + tool name from the system-prompt MCP
+    // section and from mcp_search_tools / mcp_describe_tool (added below).
+    { name: "mcp_call", description: "Call a tool on a connected MCP server by name. Use mcp_search_tools to list connected servers and their tools, and mcp_describe_tool to get an exact parameter schema. serverId is the MCP server id (e.g. \"supabase\", \"linear\"); tool is the server's tool name (e.g. \"list_tables\", \"create_issue\"); arguments is the tool's parameter object. Results arrive as text. Never invent server ids or tool names.", parameters: obj({ serverId: { type: "string", description: "MCP server id from MCP connectors" }, tool: { type: "string", description: "Tool name on that server" }, arguments: { type: "object", description: "Tool parameter object ({} if none)" } }, ["serverId", "tool"]) },
   ];
   // Shared builder (C5): full schemas under the cap; over it, names-only for
   // every tool plus the search/describe meta tools — never a silent drop (C10).
@@ -484,10 +490,62 @@ async function executeTool(
           : "";
         return `error: ${msg}${hint}`;
       }
-    }
+    }        return `error: no MCP server "${parsed.server}" is connected for this run — the user can add connectors in Settings → Connectors`;
+      }
 
-    return `error: no MCP server "${parsed.server}" is connected for this run — the user can add connectors in Settings → Connectors`;
-  }
+    // ── Universal MCP caller (mcp_call) — mirrors the client-side handler. ───
+    // A lean/unknown provider the executor calls may not have the server's
+    // per-tool MCP definitions in its function-calling array, but it can still
+    // emit mcp_call with the server id + tool name + args learned from the
+    // system-prompt MCP section. This constructs the mcp__ name and runs the
+    // same risk gate + lane dispatch as a direct mcp__ call.
+    if (name === "mcp_call") {
+      const serverId = (call as Record<string, unknown>).serverId as string | undefined;
+      const tool = (call as Record<string, unknown>).tool as string | undefined;
+      const args = (call as Record<string, unknown>).arguments as Record<string, unknown> ?? {};
+      if (!serverId || !tool) {
+        return `error: mcp_call requires serverId and tool (e.g. mcp_call({serverId: \"supabase\", tool: \"list_tables\", arguments: {}})). Use mcp_search_tools to list connected servers and their tools.`;
+      }
+      const mcpName = `mcp__${serverId}__${tool}`;
+      const parsed = parseMcpToolName(mcpName);
+      if (!parsed) return `error: malformed mcp_call target "${mcpName.slice(0, 80)}"`;
+
+      if (mcpExtras?.userId) {
+        const risk = await assessMcpToolRiskDb(mcpExtras.userId, mcpName);
+        if (!risk.autoApprovable) {
+          const approved = await requestUserApproval(
+            runId,
+            `MCP tool ${mcpName} — ${risk.reason}`,
+            { tool: mcpName, riskLevel: risk.level },
+          );
+          if (!approved) return `rejected by user`;
+        }
+      }
+
+      if (mcpRunConfigs && mcpRunConfigs[parsed.server]) {
+        try {
+          const handle = await getMcpServerForRun(parsed.server, mcpRunConfigs);
+          return await handle.callTool(parsed.tool, args);
+        } catch (err) {
+          return `error: ${(err as Error).message.slice(0, 500)}`;
+        }
+      }
+
+      if (mcpExtras?.userId && resolveMcpLane(process.env.ORPLEX_MCP) === "sdk") {
+        try {
+          const out = await hubCallTool(mcpExtras.userId, parsed.server, parsed.tool, args);
+          return out.isError ? `error: ${out.text.slice(0, 2000)}` : out.text;
+        } catch (err) {
+          const msg = (err as Error).message.slice(0, 500);
+          const hint = err instanceof McpHubError && err.code === "needs_reauth"
+            ? " — the OAuth session expired; reconnect it in Connectors"
+            : "";
+          return `error: ${msg}${hint}`;
+        }
+      }
+
+      return `error: no MCP server "${parsed.server}" is connected for this run — the user can add connectors in Settings → Connectors`;
+    }
 
   // use_skill: inject the full body of a discovered skill into the
   // transcript (the roster in the system prompt carries only descriptions).

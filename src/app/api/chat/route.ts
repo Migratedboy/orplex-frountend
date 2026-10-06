@@ -191,7 +191,9 @@ export async function POST(request: NextRequest) {
                 // Compact-tools providers (Groq's TPM cap) skip MCP schemas —
                 // the roster still rides in the prompt section for discovery.
                 ...toOpenAiFunctions(
-                  usesCompactTools(provider.name) ? [] : [...mcpRoster.defs, ...mcpRoster.metaDefs]
+                  usesCompactTools(provider.name)
+                    ? [...mcpRoster.metaDefs]
+                    : [...mcpRoster.defs, ...mcpRoster.metaDefs]
                 ),
               ],
               tool_choice: "auto",

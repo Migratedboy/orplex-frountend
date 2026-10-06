@@ -302,6 +302,64 @@ export async function dispatchToolCall(
     });
   }
 
+  // ── Universal MCP caller (mcp_call) — available on EVERY provider. ───────
+  // A lean/unknown provider (groq, nvidia, any BYOK endpoint) doesn't get the
+  // server's per-tool MCP definitions in its function-calling array, so the
+  // model can't emit a direct mcp__ call — but it CAN emit mcp_call with the
+  // server id + tool name + args it learned from the prompt section /
+  // mcp_search_tools. This dispatches through the SAME risk gate + lane as a
+  // direct mcp__ call, so MCP works on every provider, not just full-set ones.
+  if (call.name === "mcp_call") {
+    const serverId = (call as unknown as Record<string, unknown>).serverId as string | undefined;
+    const tool = (call as unknown as Record<string, unknown>).tool as string | undefined;
+    const args = (call as unknown as Record<string, unknown>).arguments as Record<string, unknown> ?? {};
+    if (!serverId || !tool) {
+      result(`<tool_result name="mcp_call">\nerror: mcp_call requires serverId and tool (e.g. mcp_call({serverId: "supabase", tool: "list_tables", arguments: {}})). Use mcp_search_tools to list connected servers and their tools.\n</tool_result>\n`);
+      return { resultXml: toolResults, blocked: false };
+    }
+    const mcpName = `mcp__${serverId}__${tool}`;
+    const lane = await getMcpLane();
+    let mcpRisk: { level: "low" | "medium" | "high"; reason: string; autoApprovable: boolean };
+    if (lane === "legacy") {
+      const { assessMcpToolRisk } = await import("../mcp/risk-hint");
+      mcpRisk = assessMcpToolRisk(mcpName);
+    } else {
+      mcpRisk = await assessSdkMcpRisk(mcpName);
+    }
+    if (!mcpRisk.autoApprovable) {
+      if (mcpRisk.level === "high") {
+        emitActivity({ type: "tool", message: `High-risk MCP tool requires approval: ${mcpName}`, agent: "coder" });
+      }
+      ctx.setStatus("awaiting_approval", `Waiting for approval: ${mcpName}`);
+      ctx.appendDisplay(`${mcpName} — awaiting approval\n`);
+      ctx.syncDisplay();
+      const approved = await requestApproval(
+        "mcp_tool",
+        `MCP tool ${mcpName} — ${mcpRisk.reason}`,
+        { tool: mcpName },
+        undefined,
+        mcpRisk.level
+      );
+      if (!approved) {
+        ctx.stats.rejectedAction();
+        result(`<tool_result name="mcp_call">rejected by user</tool_result>\n`);
+        ctx.replaceStatus(`[FAIL] Rejected: ${mcpName}`);
+        ctx.syncDisplay();
+        return { resultXml: toolResults, blocked: false };
+      }
+    }
+    const { dispatchMcpToolCall, dispatchMcpToolCallSdk } = await import("../mcp/dispatch");
+    const impl = lane === "legacy" ? dispatchMcpToolCall : dispatchMcpToolCallSdk;
+    return impl(
+      { name: mcpName, ...args } as { name: string } & Record<string, unknown>,
+      {
+        setStatus: ctx.setStatus,
+        appendDisplay: ctx.appendDisplay,
+        syncDisplay: ctx.syncDisplay,
+      }
+    );
+  }
+
   // ── over-cap MCP meta tools (C10) ─────────────────────────────────────
   // Read-only discovery (no approval): search/describe run against the same
   // roster the prompt section was built from — localStorage in the legacy

@@ -210,7 +210,7 @@ export function mcpPromptSection(roster: McpRoster): string {
     }
     return `## MCP CONNECTOR TOOLS — ${roster.toolCount} external tools
 
-The connected MCP servers expose more tools than fit in full here. Every tool name is listed; schemas are names-only. Get exact parameters with \`${MCP_DESCRIBE_TOOL}\` (pass the full name) and find tools by keyword with \`${MCP_SEARCH_TOOL}\`. Call them exactly like built-in tools; results arrive as tool_result.
+The connected MCP servers expose more tools than fit in full here. Every tool name is listed; schemas are names-only. Get exact parameters with \`${MCP_DESCRIBE_TOOL}\` (pass the full name) and find tools by keyword with \`${MCP_SEARCH_TOOL}\`. Call MCP tools with the built-in mcp_call tool: mcp_call({serverId: "<server id>", tool: "<tool name>", arguments: {…}}). The server id is the MCP server name from MCP connectors; the tool name is one of the names listed below. Results arrive as tool_result.
 
 ${lines.join("\n")}`;
   }
@@ -227,7 +227,7 @@ ${lines.join("\n")}`;
 
   return `## MCP CONNECTOR TOOLS — ${roster.toolCount} external tools
 
-The user's connected MCP servers expose the tools below. Call them exactly like built-in tools; results arrive as tool_result. Arguments are the tool's documented parameters.
+The user's connected MCP servers expose the tools below. If your function-calling list includes a server's per-tool names, call them directly like built-in tools; results arrive as tool_result. If your function-calling list does NOT include a server's per-tool names (lean/TPM-constrained providers), call them with the built-in tool mcp_call: mcp_call({serverId: "<server id>", tool: "<tool name>", arguments: {…}}). The server id is the MCP server name shown in MCP connectors (e.g. "supabase", "linear", "filesystem"); the tool name is the server's tool (e.g. "list_tables", "create_issue"). Results arrive as tool_result. Never invent server ids or tool names.
 
 ${lines.join("\n")}`;
 }

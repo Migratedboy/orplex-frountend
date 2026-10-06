@@ -167,18 +167,21 @@ describe("tool rosters advertise the advanced browser ops", () => {
     expect(def?.function?.parameters?.required).toContain("query");
   });
 
-  it("usesCompactTools covers every provider incl. BYOK keys (unknown defaults to lean)", () => {
-    // Tight-TPM free tiers → lean set.
+  it("usesCompactTools covers every provider incl. BYOK keys", () => {
+    // Explicitly lean: tight-TPM free tiers whose full schema array 413s.
     for (const n of ["groq", "Groq", "groq-personal", "groq-pool", "nvidia", "NVIDIA NIM", "nvidia-pool", "nvidia-personal"]) {
       expect(usesCompactTools(n)).toBe(true);
     }
-    // Known full-tier providers (platform, pool and BYOK personal keys) → full set.
+    // Known full-tier providers (platform + BYOK personal keys via OpenRouter, etc.) → full set.
     for (const n of ["openrouter", "OpenRouter", "openrouter-personal", "anthropic", "Anthropic", "openai", "gemini", "mistral", "deepseek", "together", "xai", "fireworks", "cerebras", "minimax", "openai-personal"]) {
       expect(usesCompactTools(n)).toBe(false);
     }
-    // Unknown/custom BYOK endpoints → lean set (safe default: every verb survives).
-    for (const n of ["my-custom-llm", "local-ollama", ""]) {
-      expect(usesCompactTools(n)).toBe(true);
+    // Unknown / custom BYOK endpoints → FULL set now (not lean).
+    // The lean-set safety net (mcp_call + discovery tools) is always present, so even
+    // unknown endpoints can call MCP — there is no longer a need to force them lean.
+    // Only groq/nvidia are forced lean (their free-tier TPM cap 413s the full array).
+    for (const n of ["my-custom-llm", "local-ollama", "unknown-provider", ""]) {
+      expect(usesCompactTools(n)).toBe(false);
     }
   });
 
