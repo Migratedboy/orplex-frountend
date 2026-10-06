@@ -41,6 +41,7 @@ import { mcpUsageBlock, mcpServerSummaries } from "../mcp-prompt";
 import { resolveMcpLane } from "@/lib/mcp/gate";
 import { hubCallTool, McpHubError } from "@/lib/mcp/hub";
 import { listSnapshotToolsByServer } from "@/lib/mcp/tool-snapshot";
+import { refreshMissingSnapshots as refreshMissingMcpSnapshots } from "@/lib/mcp/roster-refresh";
 import { assessMcpToolRiskDb } from "@/lib/mcp/risk-db";
 import { grepSearch, codeSearch } from "@/lib/grep-search";
 import {
@@ -850,10 +851,14 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
     // SDK lane (Phase 8, default): remote OAuth connectors from the Phase 5
     // snapshot. Workspace/account stdio configs win on name conflicts; in
     // ORPLEX_MCP=legacy this list stays empty (rollback safety, C8).
+    // Phase 9 self-heal: discover any connected server whose snapshot hasn't
+    // been written yet, so freshly-connected connectors are visible on the first
+    // run (not "the next snapshot write"). Errors swallowed.
     let remoteTools: BuilderTool[] = [];
     try {
       if (resolveMcpLane(process.env.ORPLEX_MCP) === "sdk") {
         const stdioNames = new Set(Object.keys(mcpRunConfigs));
+        await refreshMissingMcpSnapshots(run.userId).catch(() => {});
         remoteTools = (await listSnapshotToolsByServer(run.userId)).filter((t) => !stdioNames.has(t.server));
       }
     } catch {}

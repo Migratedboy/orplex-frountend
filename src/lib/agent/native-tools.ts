@@ -63,23 +63,41 @@ type RawSdkRosterTool = Omit<SdkRosterTool, "description"> & { description?: str
 let sdkRoster: { at: number; tools: SdkRosterTool[]; serverPrefs: Record<string, { autoApproveReadOnly: boolean }> } | null = null;
 const SDK_ROSTER_TTL_MS = 60_000;
 async function getSdkRoster(): Promise<{ tools: SdkRosterTool[]; serverPrefs: Record<string, { autoApproveReadOnly: boolean }> }> {
+  // Reuse a fresh successful cache — avoids a per-call refetch during long runs.
   if (sdkRoster && Date.now() - sdkRoster.at < SDK_ROSTER_TTL_MS) {
     return { tools: sdkRoster.tools, serverPrefs: sdkRoster.serverPrefs };
   }
+
+  let fetched: { tools: SdkRosterTool[]; serverPrefs: Record<string, { autoApproveReadOnly: boolean }> } | null = null;
   try {
     const r = await apiFetch("/api/agent/mcp/tools");
     const j = (await r.json()) as { success?: boolean; tools?: RawSdkRosterTool[]; serverPrefs?: Record<string, { autoApproveReadOnly: boolean }> };
-    if (j?.success) {
-      const tools: SdkRosterTool[] = (j.tools ?? []).map((t) => ({
+    if (j?.success && Array.isArray(j.tools)) {
+      const tools: SdkRosterTool[] = j.tools.map((t) => ({
         ...t,
         description: t.description ?? "",
         annotations: t.annotations ?? undefined,
       }));
-      sdkRoster = { at: Date.now(), tools, serverPrefs: j.serverPrefs ?? {} };
-      return { tools, serverPrefs: sdkRoster.serverPrefs };
+      fetched = { tools, serverPrefs: j.serverPrefs ?? {} };
     }
-  } catch {}
-  if (sdkRoster) return { tools: sdkRoster.tools, serverPrefs: sdkRoster.serverPrefs };
+  } catch {
+    // Network/timeout — leave fetched null.
+  }
+
+  // A successful fetch always wins (and is cached).
+  if (fetched) {
+    sdkRoster = { at: Date.now(), ...fetched };
+    return fetched;
+  }
+
+  // Fetch failed or returned no tools. Keep a still-fresh successful cache if we
+  // have one — the model's MCP section is built server-side from the snapshot
+  // (a separate path), so a transient client-side fetch failure must not mask tools
+  // the model can already see and call. Only fall through to empty when there's no
+  // usable cache at all.
+  if (sdkRoster && Date.now() - sdkRoster.at < SDK_ROSTER_TTL_MS) {
+    return { tools: sdkRoster.tools, serverPrefs: sdkRoster.serverPrefs };
+  }
   return { tools: [], serverPrefs: {} };
 }
 

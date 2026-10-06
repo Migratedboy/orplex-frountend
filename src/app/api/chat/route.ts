@@ -18,6 +18,7 @@ import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS, usesCompactTools } from "@/
 import { buildSystemPrompt } from "@/lib/master-prompt";
 import { buildMcpRoster, mcpPromptSection, toOpenAiFunctions } from "@/lib/mcp/tool-builder";
 import { listSnapshotToolsByServer } from "@/lib/mcp/tool-snapshot";
+import { refreshMissingSnapshots as refreshMissingMcpSnapshots } from "@/lib/mcp/roster-refresh";
 import { routeToModel } from "@/lib/model-router";
 import { preprocessMessages } from "@/lib/vision-preprocessor";
 import { recordProviderEvent } from "@/lib/provider-uptime";
@@ -62,9 +63,12 @@ export async function POST(request: NextRequest) {
 
     const mode = parsed.mode || "ask";
 
-    // Phase 5 (C5): one snapshot-based MCP roster for both surfaces — the
-    // system-prompt section and the tools array. Empty until a hub connect
-    // has written a tools/list snapshot, so this is a no-op pre-discovery.
+    // Phase 5 (C5) + Phase 9 self-heal: one snapshot-based MCP roster for both
+    // surfaces — the system-prompt section and the tools array. Trigger discovery
+    // for any connected server whose snapshot hasn't been written yet, so a
+    // just-connected server's tools are visible on the very next turn (not "next
+    // fetch"). Errors swallowed — an unreachable server is not a chat failure.
+    await refreshMissingMcpSnapshots(userId).catch(() => {});
     const mcpRoster = buildMcpRoster(await listSnapshotToolsByServer(userId).catch(() => []));
     const mcpSection = mcpPromptSection(mcpRoster);
 
