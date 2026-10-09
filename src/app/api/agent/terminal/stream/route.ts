@@ -1,28 +1,30 @@
 import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-
-// Block dangerous commands
-const BLOCKED = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=", ":(){ :|:& };:"];
-
-function isBlocked(cmd: string): boolean {
-  const lower = cmd.toLowerCase().trim();
-  return BLOCKED.some(b => lower.includes(b));
-}
+import { isCommandAllowed, buildSafeEnv } from "@/lib/exec-guard";
+import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
 
 export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions);
-  if (!session?.user) {
+  const userId = session?.user?.id;
+  if (!userId) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
   }
 
-  const { command } = await request.json();
-  if (!command || typeof command !== "string") {
+  const body = await request.json().catch(() => null);
+  const command = typeof body?.command === "string" ? body.command : "";
+  if (!command) {
     return new Response(JSON.stringify({ error: "No command" }), { status: 400 });
   }
+  if (command.length > 4000) {
+    return new Response(JSON.stringify({ error: "Command too long" }), { status: 400 });
+  }
 
-  if (isBlocked(command)) {
-    return new Response(JSON.stringify({ error: "Command blocked for safety" }), { status: 403 });
+  // Same screening as the exec route: the old substring denylist was
+  // bypassable (powershell -enc, curl|sh, del, env-prefix tricks).
+  const guard = isCommandAllowed(command);
+  if (!guard.allowed) {
+    return new Response(JSON.stringify({ error: `Command blocked for safety: ${guard.reason}` }), { status: 403 });
   }
 
   // SSE stream
@@ -69,17 +71,25 @@ export async function POST(request: NextRequest) {
 
       try {
         const { spawn } = await import("child_process");
-        const cwd = process.env.WORKSPACE_DIR || process.cwd();
+        // THIS user's registered workspace — never the server dir and never
+        // another user's checkout. Secrets stay out of the child env.
+        const workspace = getWorkspaceCwdForUser(userId);
+        const cwd = workspace || process.cwd();
 
         const proc = spawn(command, [], {
           shell: true,
           cwd,
-          env: { ...process.env, NODE_ENV: "development" },
+          env: buildSafeEnv() as NodeJS.ProcessEnv,
         });
         childProc = proc;
 
+        // Accumulated output is capped: a 30s verbose command could
+        // otherwise buffer gigabytes for the final `done` payload. Live
+        // chunks still stream uncapped; only the retained summary is cut.
+        const MAX_RETAINED = 512 * 1024;
         let stdout = "";
         let stderr = "";
+        let truncated = false;
         let killedByTimeout = false;
 
         const timeoutTimer = setTimeout(() => {
@@ -92,20 +102,26 @@ export async function POST(request: NextRequest) {
 
         proc.stdout?.on("data", (chunk: Buffer) => {
           const text = chunk.toString();
-          stdout += text;
+          if (stdout.length < MAX_RETAINED) {
+            stdout += text.slice(0, MAX_RETAINED - stdout.length);
+            if (stdout.length >= MAX_RETAINED) truncated = true;
+          }
           send("stdout", text);
         });
 
         proc.stderr?.on("data", (chunk: Buffer) => {
           const text = chunk.toString();
-          stderr += text;
+          if (stderr.length < MAX_RETAINED) {
+            stderr += text.slice(0, MAX_RETAINED - stderr.length);
+            if (stderr.length >= MAX_RETAINED) truncated = true;
+          }
           send("stderr", text);
         });
 
         proc.on("close", (code) => {
           clearTimeout(timeoutTimer);
           if (!killedByTimeout) {
-            send("done", JSON.stringify({ code, stdout, stderr }));
+            send("done", JSON.stringify({ code, stdout, stderr, truncated }));
           }
           finish();
         });

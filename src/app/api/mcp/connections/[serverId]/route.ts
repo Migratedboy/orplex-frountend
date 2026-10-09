@@ -6,8 +6,7 @@
 // row and its auto-approve preference survive for the next connect.
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { getMcpSession } from "@/lib/mcp-auth";
 import { disconnectConnection, setConnectionAutoApprove } from "@/lib/mcp/oauth/store";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +14,7 @@ export const dynamic = "force-dynamic";
 type RouteContext = { params: Promise<{ serverId: string }> };
 
 export async function PATCH(request: NextRequest, { params }: RouteContext) {
-  const session = await getServerSession(jwtOnlyOptions);
+  const session = await getMcpSession();
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
   }
@@ -36,7 +35,7 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
 }
 
 export async function DELETE(_request: NextRequest, { params }: RouteContext) {
-  const session = await getServerSession(jwtOnlyOptions);
+  const session = await getMcpSession();
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
   }

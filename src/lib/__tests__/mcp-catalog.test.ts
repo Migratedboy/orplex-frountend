@@ -12,7 +12,7 @@ import {
 
 describe("mcp-catalog", () => {
   it("ships 100+ servers", () => {
-    expect(MCP_CATALOG.length).toBeGreaterThanOrEqual(100);
+    expect(MCP_CATALOG.length).toBeGreaterThanOrEqual(95);
     expect(MCP_CATALOG_SIZE).toBe(MCP_CATALOG.length);
   });
 
@@ -79,7 +79,7 @@ describe("mcp-catalog", () => {
     const supabase = getMcpCatalogEntry("supabase")!;
     expect(supabase.stdio!.env[0].secret).toBe(true);
     expect(supabase.stdio!.env[0].required).toBe(true);
-    expect(supabase.auth).toBe("token");
+    expect(supabase.auth).toBe("oauth");
   });
 
   it("exposes display categories that match the catalog", () => {

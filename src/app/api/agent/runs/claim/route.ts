@@ -50,6 +50,7 @@ export async function POST(_request: NextRequest) {
     const claimed = await prisma.agentRun.updateMany({
       where: {
         id: candidate.id,
+        userId, // defense-in-depth: the id already came from a scoped query
         status: "pending",
         OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }],
       },

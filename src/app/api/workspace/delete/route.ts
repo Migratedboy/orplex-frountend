@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { deleteWorkspace } from "@/lib/workspace/workspace-manager";
+import { publicErrorMessage } from "@/lib/errors";
 
 export async function DELETE(request: NextRequest) {
   try {
@@ -21,7 +22,7 @@ export async function DELETE(request: NextRequest) {
     return Response.json({ success: true });
   } catch (error) {
     return Response.json(
-      { error: (error as Error).message || "Failed to delete workspace" },
+      { error: publicErrorMessage(error, "Failed to delete workspace") },
       { status: 500 },
     );
   }

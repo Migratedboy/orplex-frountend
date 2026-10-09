@@ -27,10 +27,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const pattern = typeof body.pattern === "string" ? body.pattern.trim() : "";
+  // Length + context caps: the header promises them and an uncapped
+  // context fans ripgrep output into megabytes of response.
+  const pattern = typeof body.pattern === "string" ? body.pattern.trim().slice(0, 500) : "";
   if (!pattern) {
     return NextResponse.json({ success: false, error: "pattern required" }, { status: 400 });
   }
+  const context =
+    typeof body.context === "number" && Number.isFinite(body.context)
+      ? Math.min(Math.max(Math.floor(body.context), 0), 20)
+      : undefined;
 
   const cwd = getWorkspaceCwdForUser(session.user.id);
   if (!cwd) {
@@ -45,7 +51,7 @@ export async function POST(request: NextRequest) {
     body.mode === "snippets"
       ? await codeSearch(cwd, pattern, {
           isRegex: body.isRegex === true,
-          context: typeof body.context === "number" ? body.context : undefined,
+          context,
         })
       : await grepSearch(cwd, pattern, { isRegex: body.isRegex === true });
   if (!result) {

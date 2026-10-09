@@ -106,10 +106,14 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { query } = await request.json();
-    if (!query || typeof query !== "string") {
+    const body = await request.json().catch(() => null);
+    const rawQuery = typeof body?.query === "string" ? body.query : "";
+    if (!rawQuery.trim()) {
       return NextResponse.json({ error: "No query provided" }, { status: 400 });
     }
+    // Cap the query: it becomes a third-party URL — megabytes of input
+    // mean megabytes of outbound request.
+    const query = rawQuery.trim().slice(0, 300);
 
     // Google-first chain; report which engine answered for debugging.
     // DuckDuckGo was removed per product decision — Google, then Bing only.
@@ -124,7 +128,8 @@ export async function POST(request: NextRequest) {
         const results = await engine.fn(query);
         return NextResponse.json({ results, query, engine: engine.name });
       } catch (err) {
-        lastError = `${engine.name}: ${(err as Error).message}`;
+        lastError = `${engine.name}`;
+        console.warn(`[search] ${engine.name} failed:`, (err as Error).message);
       }
     }
 
@@ -133,9 +138,7 @@ export async function POST(request: NextRequest) {
       { status: 502 }
     );
   } catch (err) {
-    return NextResponse.json(
-      { error: (err as Error).message, results: [] },
-      { status: 500 }
-    );
+    console.error("[search]", err instanceof Error ? err.message : err);
+    return NextResponse.json({ error: "Search failed", results: [] }, { status: 500 });
   }
 }

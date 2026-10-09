@@ -94,3 +94,5 @@ service-account*.json
 .model-test-results.json
 .orplex-workspaces/
 .env-backups/
+.vercel
+.env*

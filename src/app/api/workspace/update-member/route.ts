@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { updateMemberRole, hasRole } from "@/lib/workspace/workspace-manager";
 import type { WorkspaceRole } from "@/lib/workspace/workspace-manager";
+import { publicErrorMessage } from "@/lib/errors";
 
 export async function PUT(request: NextRequest) {
   try {
@@ -42,7 +43,7 @@ export async function PUT(request: NextRequest) {
     return Response.json({ member });
   } catch (error) {
     return Response.json(
-      { error: (error as Error).message || "Failed to update member role" },
+      { error: publicErrorMessage(error, "Failed to update member role") },
       { status: 500 },
     );
   }

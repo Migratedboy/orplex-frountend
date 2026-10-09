@@ -99,10 +99,11 @@ export function appendTaskAnchor(messages: { role: string; content: string }[], 
   return out;
 }
 
-// === Interleaved-replay repair (gpt-oss pathology, LIVE-VALIDATED) ====
+// === Interleaved-replay repair (gpt-oss pathology, LIVE-VALIDATED) ===
 // gpt-oss-120b occasionally emits a REPLAYED token mix into the thinking
 // channel: the same semantic content interleaved at near-identical offsets —
-// "The user has The user has provided tool provided tool results showing:\n//  results showing:" (live transcript). deduplicateWords only collapses
+// "The user has The user has provided tool provided tool results showing:\n
+//  results showing:" (live transcript). deduplicateWords only collapses
 // exact adjacent word pairs; this damage is PHRASE-level interleave. The
 // provider's healthy path is untouched — this only fires when the tell-tale
 // copy+overlap pattern actually exists, so it is safe on every fold site.
@@ -252,9 +253,11 @@ export function repairInterleavedReplay(text: string): string {
   if (repaired !== text) {
     repaired = deduplicateWords(repaired);
     // Fixpoint: overlapping corruptions can leave a second double behind the
-    // first repair's new seam. One bounded extra pass settles chains.
-    if (repairInterleavedReplay(repaired) !== repaired) {
-      repaired = repairInterleavedReplay(repaired);
+    // first repair's new seam. One bounded extra pass settles chains (result
+    // cached — the recursion is O(n·units), never run it twice per repair).
+    const secondPass = repairInterleavedReplay(repaired);
+    if (secondPass !== repaired) {
+      repaired = secondPass;
     }
   }
   return repaired;
@@ -356,6 +359,8 @@ export interface ToolCall {
   command?: string;
   url?: string;
   action?: string;
+  // skill_create title (text/content args already exist below)
+  title?: string;
   items?: string[];
   completed_index?: number;
   question?: string;
@@ -414,6 +419,75 @@ export interface StreamCallbacks {
   onThinking?: (thinking: string) => void;
 }
 
+// Split-deployment MCP visibility: the desktop instance is the ONLY owner of
+// MCP routes (C2 — /api/mcp/* and /api/agent/mcp/* are local-only), but in
+// cloud mode /api/chat forwards to the backend, whose database has none of
+// these rows. Without this, the backend builds an empty MCP roster: the model
+// sees no connector tools and falls back to web_search. Fix: every request
+// carries the local snapshot roster (validated + capped by the backend's zod
+// schema). Shape mirrors GET /api/agent/mcp/tools — names/descriptions/schemas
+// only, no tokens or credentials anywhere.
+interface McpRosterSnapshot {
+  success: boolean;
+  tools: Array<{ server: string; name: string; description?: string | null; inputSchema: unknown; annotations?: unknown }>;
+}
+let mcpRosterCache: { at: number; payload: McpRosterSnapshot["tools"] } | null = null;
+const MCP_ROSTER_TTL_MS = 60_000;
+const MCP_ROSTER_FETCH_TIMEOUT_MS = 3_000;
+async function loadMcpRosterPayload(): Promise<McpRosterSnapshot["tools"]> {
+  if (mcpRosterCache && Date.now() - mcpRosterCache.at < MCP_ROSTER_TTL_MS) return mcpRosterCache.payload;
+  try {
+    const res = await apiFetch("/api/agent/mcp/tools", { signal: AbortSignal.timeout(MCP_ROSTER_FETCH_TIMEOUT_MS) });
+    const j = (await res.json()) as McpRosterSnapshot;
+    if (j?.success && Array.isArray(j.tools) && j.tools.length > 0) {
+      mcpRosterCache = { at: Date.now(), payload: j.tools };
+      return mcpRosterCache.payload;
+    }
+  } catch {}
+  return mcpRosterCache?.payload ?? [];
+}
+
+/**
+ * Build the `mcpRemotes` payload the server validates: the worker's remotes
+ * (authoritative — fresh loadRemotes) plus any SDK-snapshot servers from the
+ * roster payload. For a server with no cached tools, revive the snapshot the
+ * way the connect flow does (upsertRemote) so the prompt advertises real
+ * tools instead of an empty list. Never sends credentials — names and schemas
+ * only. Errors per-server are swallowed; a broken registry never blocks chat.
+ */
+async function resolveLegacyRemotes(
+  fromWorker: Array<{ id: string; label: string; url: string; auth: "oauth" | "bearer" | "none"; tools?: Array<{ name: string; description?: string; inputSchema?: unknown }> }>,
+  roster?: { servers: Array<{ serverId: string; tools: unknown[] }> }
+): Promise<Array<{ id: string; label: string; url: string; auth: "oauth" | "bearer" | "none"; tools?: Array<{ name: string; description?: string; inputSchema?: unknown }> }>> {
+  const out = new Map<string, { id: string; label: string; url: string; auth: "oauth" | "bearer" | "none"; tools?: Array<{ name: string; description?: string; inputSchema?: unknown }> }>();
+  for (const r of fromWorker) {
+    if (r.tools && r.tools.length > 0) out.set(r.id, r);
+  }
+  // Desktop shell (window exists) — the registry is ours to read/revive.
+  if (typeof window === "undefined") return [...out.values()];
+  try {
+    const { loadRemotes, upsertRemote } = await import("./mcp/registry");
+    for (const server of roster?.servers ?? []) {
+      if (out.has(server.serverId)) continue;
+      const local = loadRemotes().find((r) => r.id === server.serverId);
+      if (!local) continue;
+      if (local.tools && local.tools.length > 0) {
+        out.set(local.id, { id: local.id, label: local.label, url: local.url, auth: local.auth, tools: local.tools });
+        continue;
+      }
+      const tools = (server.tools ?? []) as Array<{ name: string; description?: string; inputSchema?: unknown }>;
+      if (tools.length === 0) continue;
+      // Mirror the snapshot into localStorage (same effect as the connect
+      // flow) so the next prompt build has the tools without another fetch.
+      try {
+        upsertRemote({ ...local, tools: tools as NonNullable<typeof local.tools> });
+      } catch {}
+      out.set(local.id, { id: local.id, label: local.label, url: local.url, auth: local.auth, tools });
+    }
+  } catch {}
+  return [...out.values()];
+}
+
 export async function readStream(
   messages: { role: string; content: string }[],
   conversationId: string | null,
@@ -423,8 +497,14 @@ export async function readStream(
   signal?: AbortSignal | null,
   effort?: string,
   profile?: "full" | "compact",
-  model?: string
+  opts: {
+    model?: string;
+    /** Legacy-lane MCP remotes to advertise to the server-side prompt builder. */
+    mcpRemotes?: Array<{ id: string; label: string; url: string; auth: "oauth" | "bearer" | "none"; tools?: Array<{ name: string; description?: string; inputSchema?: unknown }> }>;
+  } = {}
 ): Promise<StreamResult> {
+  const model = opts.model;
+  const mcpRemotes = opts.mcpRemotes;
   const { onChunk, onThinking } = callbacks;
 
   const isAborted = () => signal?.aborted === true;
@@ -432,6 +512,32 @@ export async function readStream(
   // No silent retry loop: a 429 here is a hard quota/burst limit from /api/chat
   // (transient provider 429s are already retried server-side). Failing fast
   // surfaces the real message instead of hanging the agent for minutes.
+  // Gather the local MCP roster (≤3s, cached 60s) so the backend — which owns
+  // no MCP rows in split mode — can still show the user's connector tools to
+  // the model. A slow/absent server never blocks the chat: empty payload.
+  let mcpRoster: { servers: Array<{ serverId: string; tools: unknown[] }> } | undefined;
+  if (typeof window !== "undefined") {
+    try {
+      const tools = await loadMcpRosterPayload();
+      if (tools.length > 0) {
+        const byServer = new Map<string, unknown[]>();
+        for (const t of tools) {
+          const list = byServer.get(t.server) ?? [];
+          list.push({ name: t.name, description: t.description ?? "", inputSchema: t.inputSchema, annotations: t.annotations ?? undefined });
+          byServer.set(t.server, list);
+        }
+        mcpRoster = { servers: [...byServer.entries()].map(([serverId, list]) => ({ serverId, tools: list })) };
+      }
+    } catch {}
+  }
+
+  // The field /api/chat actually validates. Only for the DESKTOP app, which
+  // owns the localStorage registry — a browser tab's registry is unrelated, so
+  // sending it there would advertise phantom servers (I1). The SDK lane is
+  // covered server-side via Prisma; revive a legacy snapshot the way the
+  // connect flow does (upsertRemote) so a fresh/cold client advertises tools
+  // instead of an empty list (I2).
+
   const res = await apiFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -443,6 +549,9 @@ export async function readStream(
       effort: effort || undefined,
       profile: profile || undefined,
       model: model || undefined,
+      ...(typeof window !== "undefined" && typeof window.localStorage !== "undefined"
+        ? { mcpRemotes: await resolveLegacyRemotes(mcpRemotes ?? [], mcpRoster) }
+        : { mcpRoster }),
     }),
     signal: signal ?? undefined,
   });
@@ -459,7 +568,7 @@ export async function readStream(
   let cleanStreamed = ""; // incrementally deduped view handed to onChunk
   let thinkingContent = "";
   // Partial-event buffer: network chunks do NOT align with SSE events. A
-  // chunk can end mid-JSON ("data: {\"content\":\"hel"), and processing
+  // chunk can end mid-JSON ("data: {\\"content\\":\\"hel"), and processing
   // per-chunk lines silently dropped both halves — the delta vanished and
   // truncated native tool_call fragments never reassembled (the model's work
   // was discarded as an "empty response"). Incomplete tails wait here for

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
 import { setWorkspaceCwd, getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
+import { publicErrorMessage } from "@/lib/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +21,7 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json({ ok: true, cwd: getWorkspaceCwdForUser(userId) });
   } catch (error) {
-    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
+    return NextResponse.json({ error: publicErrorMessage(error, "Internal server error") }, { status: 500 });
   }
 }
 

@@ -47,12 +47,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { provider, apiKey, model } = body;
-    const label = typeof body?.label === "string" ? body.label.trim().slice(0, 60) : "";
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    }
+    const fields = body as Record<string, unknown>;
+    const { provider, apiKey, model } = fields;
+    const label = typeof fields.label === "string" ? fields.label.trim().slice(0, 60) : "";
 
-    if (!provider || !apiKey || !model) {
+    if (typeof provider !== "string" || !provider || typeof apiKey !== "string" || !apiKey || typeof model !== "string" || !model) {
       return NextResponse.json({ error: "provider, apiKey, and model are required" }, { status: 400 });
+    }
+    // Bound the secret before it touches encrypt/DB/network: megabytes of
+    // pasted text are never a valid key.
+    if (apiKey.length > 512 || model.length > 120 || provider.length > 40) {
+      return NextResponse.json({ error: "Field too long" }, { status: 400 });
     }
 
     const def = getProviderDef(provider);
@@ -143,11 +152,12 @@ export async function DELETE(request: NextRequest) {
     const id = searchParams.get("id");
     if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
 
-    // Ensure the key belongs to this user
-    const key = await prisma.userApiKey.findFirst({ where: { id, userId: session.user.id } });
-    if (!key) return NextResponse.json({ error: "Key not found" }, { status: 404 });
-
-    await prisma.userApiKey.delete({ where: { id } });
+    // Atomic ownership-scoped delete: check-then-delete races (and the
+    // unwieldy two-step) collapse into one statement that can only remove
+    // THIS user's key. count === 0 means missing-or-not-owned (same 404
+    // either way — never reveal which).
+    const deleted = await prisma.userApiKey.deleteMany({ where: { id, userId: session.user.id } });
+    if (deleted.count === 0) return NextResponse.json({ error: "Key not found" }, { status: 404 });
     return NextResponse.json({ success: true });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

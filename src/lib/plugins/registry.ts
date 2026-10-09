@@ -239,8 +239,12 @@ export async function onTaskStart(task: string): Promise<void> {
   await pluginRegistry.executeHooks("onTaskStart", { task });
 }
 
-export async function onTaskComplete(task: string, result: string): Promise<void> {
-  await pluginRegistry.executeHooks("onTaskComplete", { task, result });
+export async function onTaskComplete(
+  task: string,
+  result: string,
+  extra?: { files?: Record<string, string>; lanes?: Record<string, string>; finalStatus?: string }
+): Promise<void> {
+  await pluginRegistry.executeHooks("onTaskComplete", { task, result, files: extra?.files, lanes: extra?.lanes, finalStatus: extra?.finalStatus });
 }
 
 export async function onTaskFail(task: string, error: string): Promise<void> {

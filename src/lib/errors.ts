@@ -79,6 +79,20 @@ export function errorResponse(message: string, status: number = 500, details?: u
 
 // === Error Handler (for use in route handlers) ===
 
+/**
+ * Client-safe message for an UNEXPECTED error.
+ *
+ * Raw `error.message` leaks internals (Prisma clauses, absolute paths, SQL) to
+ * callers, so routes return a fixed fallback instead — but the real error is
+ * logged server-side, and deliberately-thrown operational errors (AppError)
+ * keep their user-facing message.
+ */
+export function publicErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof AppError && error.isOperational) return error.message;
+  console.error("[API Error]", error);
+  return fallback;
+}
+
 export function handleError(error: unknown): Response {
   if (error instanceof AppError) {
     return errorResponse(

@@ -29,7 +29,13 @@ export async function GET(request: NextRequest) {
     const url = new URL(request.url);
     const selfMachine = (url.searchParams.get("machine") || "").slice(0, 64);
     const cursor = (url.searchParams.get("cursor") || "").slice(0, 128);
-    const limit = Math.min(MAX_SYNC_ENTRIES_PER_PULL, Number(url.searchParams.get("limit")) || MAX_SYNC_ENTRIES_PER_PULL);
+    // Clamp both directions: negative/NaN/Infinity take values throw in
+    // Prisma (500) instead of returning rows.
+    const rawLimit = Number(url.searchParams.get("limit"));
+    const limit = Math.min(
+      MAX_SYNC_ENTRIES_PER_PULL,
+      Number.isFinite(rawLimit) ? Math.max(1, Math.floor(rawLimit)) : MAX_SYNC_ENTRIES_PER_PULL
+    );
 
     const rows = await prisma.syncEvent.findMany({
       where: { userId, ...(cursor ? { id: { gt: cursor } } : {}) },

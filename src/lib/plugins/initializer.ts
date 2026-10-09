@@ -87,7 +87,7 @@ export const PLUGIN_REGISTRY: PluginEntry[] = [
 // the enable/disable UI (localStorage) but no longer activates by default —
 // fewer activated plugins means fewer timers and open handles on low-spec
 // machines (8GB RAM is the published minimum-spec test case).
-const DEFAULT_ENABLED = ["logger", "cost-tracker", "secret-scanner", "path-traversal", "input-sanitizer"];
+const DEFAULT_ENABLED = ["logger", "cost-tracker", "secret-scanner", "path-traversal", "input-sanitizer", "pattern-learner"];
 
 // Load from localStorage if available
 function loadPluginState(): Set<string> {

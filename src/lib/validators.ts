@@ -58,7 +58,9 @@ export const chatMessageSchema = z.object({
     z.object({
       role: z.enum(["user", "assistant"]),
       content: z.string().max(500000, "Message too long"),
-      images: z.array(z.string()).optional(),
+      // Image data-URLs are megabytes each — bound count and size so one
+      // request can't OOM the route (the worker sends ≤2 shots per turn).
+      images: z.array(z.string().max(8_000_000, "Image too large")).max(10, "Too many images").optional(),
     })
   ).min(1, "Messages required").max(100, "Too many messages"),
   conversationId: z.string().nullable().optional(),
@@ -77,7 +79,28 @@ export const chatMessageSchema = z.object({
   // only providers serving this exact model may answer the request.
   model: z.string().max(200).optional(),
   // Top-level images — passed by background worker for vision preprocessing
-  images: z.array(z.string()).optional(),
+  images: z.array(z.string().max(8_000_000, "Image too large")).max(10, "Too many images").optional(),
+  // Legacy-lane MCP remotes (localStorage registry) — the client sends these
+  // so the server-side prompt builder can include them in the MCP section.
+  // SDK-lane remotes come from the Prisma snapshot; legacy remotes come from
+  // the client. Both are merged by buildLegacyAwareMcpSection below.
+  // Shape: { id, label, url, auth, tools? }[] — a subset of McpRemoteServer
+  // safe to serialize across the wire (no tokens).
+  mcpRemotes: z.array(
+    z.object({
+      id: z.string(),
+      label: z.string(),
+      url: z.string(),
+      auth: z.enum(["oauth", "bearer", "none"]),
+      tools: z.array(
+        z.object({
+          name: z.string(),
+          description: z.string().optional(),
+          inputSchema: z.unknown().optional(),
+        })
+      ).optional(),
+    })
+  ).optional(),
 });
 
 // Inferred type

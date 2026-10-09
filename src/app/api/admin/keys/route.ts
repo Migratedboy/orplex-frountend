@@ -117,22 +117,38 @@ export async function POST(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   try {
     await requireAdmin();
-    const body = await request.json();
-    const { id, isActive, priority, dailyLimit } = body;
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    }
+    const { id, isActive, priority, dailyLimit } = body as Record<string, unknown>;
 
-    if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
+    if (!id || typeof id !== "string") return NextResponse.json({ error: "id is required" }, { status: 400 });
 
-    const updateData: any = {};
-    if (isActive !== undefined) updateData.isActive = isActive;
-    if (priority !== undefined) updateData.priority = priority;
-    if (dailyLimit !== undefined) updateData.dailyLimit = dailyLimit;
+    // Type-check every field: a string priority/dailyLimit (or any other
+    // wrong type) would otherwise reach Prisma and 500.
+    const updateData: { isActive?: boolean; priority?: number; dailyLimit?: number } = {};
+    if (isActive !== undefined) {
+      if (typeof isActive !== "boolean") return NextResponse.json({ error: "isActive must be a boolean" }, { status: 400 });
+      updateData.isActive = isActive;
+    }
+    if (priority !== undefined) {
+      if (typeof priority !== "number" || !Number.isFinite(priority)) return NextResponse.json({ error: "priority must be a number" }, { status: 400 });
+      updateData.priority = Math.trunc(priority);
+    }
+    if (dailyLimit !== undefined) {
+      if (typeof dailyLimit !== "number" || !Number.isFinite(dailyLimit) || dailyLimit < 1) return NextResponse.json({ error: "dailyLimit must be a positive number" }, { status: 400 });
+      updateData.dailyLimit = Math.trunc(dailyLimit);
+    }
 
     const key = await prisma.apiKeyPool.update({ where: { id }, data: updateData });
 
     return NextResponse.json({ key: { id: key.id, provider: key.provider, isActive: key.isActive } });
   } catch (err: any) {
     const status = err.message === "Unauthorized" ? 401 : err.message === "Forbidden" ? 403 : 500;
-    return NextResponse.json({ error: err.message }, { status });
+    // Prisma internals stay server-side; the admin client gets a stable message.
+    if (status === 500) console.error("[admin keys PATCH]", err.message);
+    return NextResponse.json({ error: status === 500 ? "Update failed" : err.message }, { status });
   }
 }
 

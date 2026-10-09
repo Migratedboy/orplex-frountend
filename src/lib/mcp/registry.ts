@@ -42,7 +42,10 @@ export interface McpRemoteServer {
   auth: "oauth" | "bearer" | "none";
   bearerToken?: string;
   tokens?: McpTokens;
-  /** Cached tools/list result — refreshed on connect + before each run. */
+  /** Cached tools/list result — refreshed on connect + before each run.
+   *  In the legacy lane this is the authoritative tools list (localStorage).
+   *  In the SDK lane the Prisma snapshot is authoritative; this field is
+   *  a best-effort mirror kept in sync so both lanes render the same roster. */
   tools?: McpToolInfo[];
   lastConnectedAt?: number;
   lastError?: string;
@@ -89,6 +92,19 @@ export function updateTokens(id: string, tokens: McpTokens): McpRemoteServer | n
   srv.tokens = tokens;
   saveRemotes(list);
   return srv;
+}
+
+/** Mark a server as having NO tools in localStorage (clears a stale cache).
+ *  Used by the unified discovery path when a server is connected but its
+ *  tools/list returned empty or failed — so the prompt section doesn't show
+ *  phantom tools from a prior successful probe. */
+export function markRemoteToolsEmpty(id: string): void {
+  const list = loadRemotes();
+  const srv = list.find((r) => r.id === id);
+  if (srv) {
+    srv.tools = [];
+    saveRemotes(list);
+  }
 }
 
 /** Stable short id from the endpoint URL, e.g. "mcp-linear-app". */

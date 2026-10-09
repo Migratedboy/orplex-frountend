@@ -16,6 +16,47 @@
 
 import { BLOCKED_COMMANDS } from "./constants";
 
+// Environment variable names (substring, upper-cased) that must never reach
+// a child process — shared by every shell-executing route (exec, terminal,
+// terminal/stream). Single source of truth so the lists can't drift.
+const BLOCKED_ENV_KEYS = [
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AZURE_CLIENT_SECRET",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "NPM_TOKEN",
+  "DOCKER_PASSWORD",
+  "DATABASE_URL",
+  "NEXTAUTH_SECRET",
+  "JWT_SECRET",
+  "PRIVATE_KEY",
+  "SECRET_KEY",
+  "API_KEY",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "BUGSINK_DSN",
+  "E2B_API_KEY",
+];
+
+/**
+ * Inherit the environment for spawned build tools (npm/node/git resolve),
+ * minus secret-valued keys. Callers must NOT spread process.env directly.
+ * Cast to NodeJS.ProcessEnv at the spawn/exec call site (same as the exec
+ * route does) — @types/node's ProcessEnv cannot be constructed literally.
+ */
+export function buildSafeEnv(): Record<string, string> {
+  const safeEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    const upperKey = key.toUpperCase();
+    if (BLOCKED_ENV_KEYS.some((blocked) => upperKey.includes(blocked))) continue;
+    safeEnv[key] = value;
+  }
+  delete safeEnv.NODE_ENV;
+  return safeEnv;
+}
+
 /** True when the command should never reach a shell on this host. */
 export function isCommandAllowed(
   command: string

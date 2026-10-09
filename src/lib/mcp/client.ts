@@ -16,6 +16,8 @@ import {
   ensureFreshTokens,
   mcpToolName,
   updateTokens,
+  upsertRemote,
+  markRemoteToolsEmpty,
   type McpRemoteServer,
   type McpToolInfo,
 } from "./registry";

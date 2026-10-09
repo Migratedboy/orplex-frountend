@@ -43,8 +43,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       throw new ValidationError("Title too long", [{ field: "title", message: "Must be under 200 characters" }]);
     }
 
-    const conversation = await prisma.conversation.update({
+    // NOTE: update({ where: { id, userId } }) is invalid Prisma — where must
+    // be unique and (id, userId) has no unique constraint. Gate ownership
+    // first (same as DELETE below), then update by id.
+    const owned = await prisma.conversation.findFirst({
       where: { id, userId: session.user.id },
+      select: { id: true },
+    });
+    if (!owned) throw new NotFoundError("Conversation not found");
+
+    const conversation = await prisma.conversation.update({
+      where: { id },
       data: { title: body.title.trim() },
     });
 
@@ -63,13 +72,10 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) throw new UnauthorizedError();
 
-    // Check if conversation exists before deleting
-    const conversation = await prisma.conversation.findFirst({
-      where: { id, userId: session.user.id },
-    });
-    if (!conversation) throw new NotFoundError("Conversation not found");
-
-    await prisma.conversation.delete({ where: { id } });
+    // Atomic ownership-scoped delete (no check-then-act race; missing or
+    // foreign both 404 without revealing which).
+    const deleted = await prisma.conversation.deleteMany({ where: { id, userId: session.user.id } });
+    if (deleted.count === 0) throw new NotFoundError("Conversation not found");
 
     logRequest("DELETE", `/api/conversations/${id}`, start, 200);
     return successResponse({ deleted: true });

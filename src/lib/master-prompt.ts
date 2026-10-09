@@ -17,7 +17,8 @@
 
 import { M3_TOOL_DEFINITIONS } from "./tool-definitions";
 import { loadRemotes } from "./mcp/registry";
-import { buildMcpRoster, mcpPromptSection } from "./mcp/tool-builder";
+import { buildMcpRoster, mcpPromptSection, type BuilderTool } from "./mcp/tool-builder";
+import { upsertRemote } from "./mcp/registry";
 import { buildFailureDoctrineContext } from "./failure-memory";
 
 // ============================================================
@@ -46,6 +47,54 @@ export function buildMcpToolsSection(): string {
     if (tools.length === 0) return "";
     const serverMeta = Object.fromEntries(remotes.map((r) => [r.id, { label: r.label }]));
     return mcpPromptSection(buildMcpRoster(tools, { serverMeta }));
+  } catch {
+    return ""; // non-browser test env
+  }
+}
+
+/**
+ * Async variant for the worker path: like buildMcpToolsSection but, for any
+ * remote whose localStorage tools cache is empty, attempts a live discovery
+ * (discoverAndMirrorRemoteTools) so the prompt section shows the real tool
+ * set even when the connect flow's listTools() failed or hasn't run yet.
+ * Best-effort — a discovery failure leaves the remote listed but with no
+ * tools (honest), and mcp_call still works because it calls the server live.
+ */
+export async function buildMcpToolsSectionAsync(): Promise<string> {
+  try {
+    const remotes = loadRemotes();
+    const discovered: BuilderTool[] = [];
+    const serverMeta: Record<string, { label: string }> = {};
+    for (const r of remotes) {
+      serverMeta[r.id] = { label: r.label };
+      if (r.tools && r.tools.length > 0) {
+        for (const t of r.tools) {
+          discovered.push({ server: r.id, name: t.name, description: t.description ?? "", inputSchema: t.inputSchema, annotations: t.annotations });
+        }
+      } else {
+        // Empty cache — try a live discovery so the prompt sees real tools.
+        // Use the in-process client (withConnection + listTools) and write back
+        // to localStorage on success so the cache is fresh for next turn.
+        try {
+          const { withConnection } = await import("./mcp/client");
+          const tools = await withConnection(r, async (conn) => conn.listTools());
+          if (tools && tools.length > 0) {
+            upsertRemote({ ...r, tools: tools.map((t) => ({
+              name: t.name,
+              description: t.description ?? "",
+              inputSchema: t.inputSchema ?? { type: "object", properties: {} },
+            })) });
+            for (const t of tools) {
+              discovered.push({ server: r.id, name: t.name, description: t.description ?? "", inputSchema: t.inputSchema, annotations: t.annotations });
+            }
+          }
+        } catch {
+          // Discovery failed — leave the remote with no tools (honest).
+        }
+      }
+    }
+    if (discovered.length === 0) return "";
+    return mcpPromptSection(buildMcpRoster(discovered, { serverMeta }));
   } catch {
     return ""; // non-browser test env
   }
@@ -151,7 +200,7 @@ orient → plan → build → verify → repair → report
 5. REPAIR: on failure, fix the root cause (see Failure Doctrine), then re-verify. A verification that never re-ran is not a verification.
 6. REPORT: per the Output Contract.
 
-Turn economy: you have a limited number of turns. Spend them building, not narrating. If a safety limit fires mid-task, the user will be asked to continue — reset your counters by changing approach, not repeating.`;
+Turn economy: you have a limited number of turns. Spend them building, not narrating. If a safety limit fires mid-task, the user will be asked to continue — reset your counters by changing approach, not repeating. The loop breaker watches repeated calls: when a [LOOP BREAK] directive arrives, that call must not be re-sent — take a different action or report the blocker honestly.`;
 
 // ============================================================
 // §6 QUALITY BARS — deduplicated merge of the old blocks
@@ -298,7 +347,12 @@ const COMPACT_CORE = `You are Orplex Code, an elite agentic coding engineer. The
 - READ before write. PLAN (todo_list) before multi-file builds.
 - VERIFY before done — rerun verification after fixes.
 - Reasoning stays in the thinking channel; the answer is the clean report (what changed, how verified, what's next).
-- Never repeat a failing call unchanged; report failures honestly.`;
+- Never repeat a failing call unchanged; report failures honestly. Claims must match tool results: a file counts as changed only when a write/edit returned success.`;
+
+// MCP-note blocks appended after the roster when it rides a compact or ask
+// prompt — they only make sense TOGETHER (roster present, note present).
+const MCP_SESSION_NOTE = `The MCP CONNECTOR TOOLS roster above is still authoritative: call its tools with the built-in mcp_call (or direct mcp__<server>__<tool> when present in your function-calling list). Never claim MCP tools are unavailable.`;
+const MCP_ASK_NOTE = `You can call the connected MCP tools above. The function-calling list attached to this request includes the built-in mcp_call plus these servers' per-tool names — call them like any built-in tool; results arrive as tool_result. If the list IS absent on this provider, say what you would call and ask the user to switch to a code-capable mode — do not pretend the tools don't exist.`;
 
 // ============================================================
 // Composition API
@@ -314,11 +368,22 @@ export interface BuildPromptOptions {
   /** compact = for later turns in an ongoing task (repair/continue): same rules, 1/3 size */
   profile?: PromptProfile;
   capabilities?: { browser?: boolean };
+  /** Current task text for playbook retrieval (empty = no playbook injection). */
+  task?: string;
+  /** Playbook scope — the owning user id. Defaults to "default" (global). */
+  projectId?: string;
   /**
    * Pre-built MCP roster section (C5). Server lanes pass the snapshot-based
    * section from tool-builder; absent → the browser-lane localStorage build.
    */
   mcpSection?: string;
+  /**
+   * Async variant of mcpSection for the worker path: when present, the worker
+   * calls it to build the roster with live discovery for remotes whose
+   * localStorage tools cache is empty (so the prompt sees real tools even if
+   * the connect flow's listTools() failed or hasn't run yet).
+   */
+  mcpSectionAsync?: () => Promise<string>;
 }
 
 const EFFORT_STYLE: Record<PromptEffort, string> = {
@@ -340,23 +405,51 @@ export function adaptiveFailureDoctrine(): string {
 }
 
 /** Build the system prompt for a call. One function, one file, no drift. */
-export function buildSystemPrompt(opts: BuildPromptOptions): string {
+export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<string> {
   const { mode, effort, profile = "full", capabilities } = opts;
 
+  // MCP roster rides on EVERY profile/mode that can reach a tool call:
+  // compact turns (groq/nvidia repair + continue), lean providers, and
+  // ask-mode calls that still carry tools (chat route appends them).
+  // Empty roster → "" → no block, as before.
+  const MCP_SECTION = opts.mcpSection ?? (opts.mcpSectionAsync ? await opts.mcpSectionAsync() : buildMcpToolsSection());
+
+  // Playbook: evidence-backed learnings from previous verified runs in this
+  // workspace. Token-budgeted, only for cosine-similar matches. Server-only:
+  // the reader touches Prisma, which cannot run in the browser bundle (the
+  // browser lane injects playbooks via /api/playbook in background-worker
+  // instead). Empty → no block.
+  let PLAYBOOK_SECTION = "";
+  if (mode !== "ask" && typeof window === "undefined" && (opts.task || "").trim()) {
+    try {
+      const { searchPlaybooks, formatPlaybooksForPrompt } = await import("./playbook");
+      const playbookResults = await searchPlaybooks(opts.projectId || "default", opts.task as string, 3);
+      PLAYBOOK_SECTION = formatPlaybooksForPrompt(playbookResults) || "";
+    } catch {
+      PLAYBOOK_SECTION = "";
+    }
+  }
+
   if (profile === "compact") {
-    return `${COMPACT_CORE}${EFFORT_STYLE[effort ?? "medium"]}`;
+    // The playbook block rides compact turns too: it is small (top-3) and
+    // repair turns need past learnings most. Omitting it also wouldn't save
+    // the fetch, which already ran above.
+    return `${COMPACT_CORE}${MCP_SECTION ? "\n\n" + MCP_SECTION + "\n\n" + MCP_SESSION_NOTE : ""}${PLAYBOOK_SECTION ? "\n\n" + PLAYBOOK_SECTION : ""}${EFFORT_STYLE[effort ?? "medium"]}`;
   }
 
   if (mode === "ask") {
-    return [
+    const ask = [
       `You are Orplex Code, a helpful AI assistant.`,
       ASK_OVERLAY,
       FORMATTING_ASK,
       EFFORT_STYLE[effort ?? "medium"],
-    ].filter(Boolean).join("\n\n").trim();
+    ];
+    if (MCP_SECTION) {
+      ask.splice(2, 0, MCP_SECTION, MCP_ASK_NOTE);
+    }
+    return ask.filter(Boolean).join("\n\n").trim();
   }
 
-  const MCP_SECTION = opts.mcpSection ?? buildMcpToolsSection();
   const sections =
     mode === "plan"
       ? [
@@ -366,6 +459,7 @@ export function buildSystemPrompt(opts: BuildPromptOptions): string {
           TOOL_DOCTRINE,
           CLARIFICATION_DOCTRINE,
           ...(MCP_SECTION ? [MCP_SECTION] : []),
+          ...(PLAYBOOK_SECTION ? [PLAYBOOK_SECTION] : []),
           WORKFLOW,
           QUALITY_BARS,
           ENVIRONMENT,
@@ -381,6 +475,7 @@ export function buildSystemPrompt(opts: BuildPromptOptions): string {
           TOOL_DOCTRINE,
           CLARIFICATION_DOCTRINE,
           ...(MCP_SECTION ? [MCP_SECTION] : []),
+          ...(PLAYBOOK_SECTION ? [PLAYBOOK_SECTION] : []),
           WORKFLOW,
           QUALITY_BARS,
           ENVIRONMENT,
@@ -393,10 +488,4 @@ export function buildSystemPrompt(opts: BuildPromptOptions): string {
   return sections.concat(EFFORT_STYLE[effort ?? "medium"]).filter(Boolean).join("\n\n").trim();
 }
 
-// ============================================================
-// Deprecated aliases — old imports keep working during migration.
-// Remove after no importer remains.
-// ============================================================
 
-/** @deprecated use buildSystemPrompt({ mode: "code" }) */
-export const M3_SYSTEM_PROMPT_ALIAS = () => buildSystemPrompt({ mode: "code" });

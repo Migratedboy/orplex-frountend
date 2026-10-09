@@ -67,17 +67,36 @@ export async function POST(request: NextRequest) {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const body = await request.json();
-    const { conversationId, messages } = body;
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    }
+    const conversationId = typeof (body as { conversationId?: unknown }).conversationId === "string"
+      ? (body as { conversationId?: string }).conversationId as string
+      : undefined;
+    const rawMessages = Array.isArray((body as { messages?: unknown }).messages)
+      ? (body as { messages?: unknown }).messages as Array<{ role?: unknown; content?: unknown }>
+      : [];
 
     // Workspace folder the thread belongs to (open folder's NAME). Sanitized:
     // null/undefined/empty → null (Ungrouped), capped length, trimmed.
-    const rawWorkspace = typeof body.workspaceName === "string" ? body.workspaceName.trim() : "";
+    const rawWorkspace = typeof (body as { workspaceName?: unknown }).workspaceName === "string"
+      ? ((body as { workspaceName?: string }).workspaceName as string).trim()
+      : "";
     const workspaceName = rawWorkspace ? rawWorkspace.slice(0, 120) : null;
 
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    if (rawMessages.length === 0) {
       return NextResponse.json({ error: "Messages required" }, { status: 400 });
     }
+    if (rawMessages.length > 200) {
+      return NextResponse.json({ error: "Too many messages (max 200)" }, { status: 400 });
+    }
+    // Role allowlist + per-message caps: raw roles/content flow straight
+    // into Message rows — unbounded input is DB bloat.
+    const messages = rawMessages.map((m) => ({
+      role: m.role === "user" || m.role === "assistant" || m.role === "system" ? m.role : "user",
+      content: typeof m.content === "string" ? m.content.slice(0, 50_000) : "",
+    }));
 
     // Guard against FK violations from stale JWTs: a session token minted
     // before a DB reset can carry a userId that no longer exists. Upsert the
@@ -99,8 +118,17 @@ export async function POST(request: NextRequest) {
 
     let conv;
     if (conversationId) {
-      conv = await prisma.conversation.update({
+      // NOTE: where must be unique — (id, userId) is not. Gate ownership
+      // first, then update by id (same pattern as PATCH /conversations/[id]).
+      const owned = await prisma.conversation.findFirst({
         where: { id: conversationId, userId: session.user.id },
+        select: { id: true },
+      });
+      if (!owned) {
+        return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+      }
+      conv = await prisma.conversation.update({
+        where: { id: conversationId },
         data: {
           messages: { create: messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })) },
           // Keep the workspace tag fresh when provided (a thread opened with

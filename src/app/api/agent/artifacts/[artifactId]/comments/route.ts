@@ -15,11 +15,25 @@ export async function GET(
 ) {
   try {
     const session = await getServerSession(jwtOnlyOptions);
-    if (!session?.user) {
+    // NOTE: check .id, not just .user — a session without an id would make
+    // `where: { run: { userId: undefined } }` skip the filter and match ANY
+    // run, silently bypassing the ownership gate below.
+    if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { artifactId } = await params;
+    const userId = session.user.id;
+
+    // Ownership gate: artifacts belong to runs belong to users. Without
+    // this any logged-in user could read anyone's artifact comments.
+    const owned = await prisma.agentArtifact.findFirst({
+      where: { id: artifactId, run: { userId } },
+      select: { id: true },
+    });
+    if (!owned) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
 
     const comments = await prisma.comment.findMany({
       where: { artifactId },
@@ -43,15 +57,16 @@ export async function POST(
 ) {
   try {
     const session = await getServerSession(jwtOnlyOptions);
-    if (!session?.user) {
+    if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { artifactId } = await params;
-    const body = await request.json();
-    const { content, anchorX, anchorY } = body;
+    const userId = session.user.id;
+    const body = await request.json().catch(() => null);
+    const content = typeof body?.content === "string" ? body.content.trim().slice(0, 2000) : "";
 
-    if (!content || typeof content !== "string" || content.trim().length === 0) {
+    if (!content) {
       return NextResponse.json(
         { error: "Comment content is required" },
         { status: 400 }
@@ -63,9 +78,10 @@ export async function POST(
     const validAnchor = (v: unknown): v is number =>
       typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
 
-    // Verify artifact exists
-    const artifact = await prisma.agentArtifact.findUnique({
-      where: { id: artifactId },
+    // Verify artifact exists AND belongs to this user (same gate as GET —
+    // otherwise anyone could comment into anyone's run event log).
+    const artifact = await prisma.agentArtifact.findFirst({
+      where: { id: artifactId, run: { userId } },
     });
 
     if (!artifact) {
@@ -76,32 +92,44 @@ export async function POST(
     }
 
     // Create the comment (with optional pin position for visual annotations)
-    const hasAnchor = validAnchor(anchorX) && validAnchor(anchorY);
+    const hasAnchor = validAnchor(body?.anchorX) && validAnchor(body?.anchorY);
+    const anchorX = body?.anchorX;
+    const anchorY = body?.anchorY;
     const comment = await prisma.comment.create({
       data: {
         artifactId,
-        userId: (session.user as any).id || "unknown",
-        content: content.trim(),
+        userId,
+        content,
         ...(hasAnchor ? { anchorX, anchorY } : {}),
       },
     });
 
-    // Also append to the artifact's run event log for agent context
-    await prisma.runEvent.create({
-      data: {
-        runId: artifact.runId,
-        taskId: artifact.taskId || undefined,
-        sequence: Date.now() % 100000,
-        type: "comment",
-        payload: {
-          artifactId,
-          commentId: comment.id,
-          content: content.trim(),
-          ...(hasAnchor ? { anchorX, anchorY } : {}),
-          userId: (session.user as any).id || "unknown",
-        },
-      },
-    });
+    // Also append to the artifact's run event log for agent context.
+    // sequence has a @@unique([runId, sequence]) constraint and
+    // Date.now() % 100000 collides under concurrency — retry with a bump.
+    const baseSeq = Date.now() % 100000;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await prisma.runEvent.create({
+          data: {
+            runId: artifact.runId,
+            taskId: artifact.taskId || undefined,
+            sequence: (baseSeq + attempt) % 100000,
+            type: "comment",
+            payload: {
+              artifactId,
+              commentId: comment.id,
+              content,
+              ...(hasAnchor ? { anchorX, anchorY } : {}),
+              userId,
+            },
+          },
+        });
+        break;
+      } catch (err) {
+        if ((err as { code?: string })?.code !== "P2002" || attempt === 2) throw err;
+      }
+    }
 
     return NextResponse.json({ comment }, { status: 201 });
   } catch (err) {

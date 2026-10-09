@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { getMcpSession } from "@/lib/mcp-auth";
 import { listConnectedServers, connectServer, disconnectServer, setServerEnabled } from "@/lib/mcp-accounts";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +11,7 @@ export const dynamic = "force-dynamic";
  * DELETE /api/mcp/servers?serverId= — disconnect
  */
 export async function GET() {
-  const session = await getServerSession(jwtOnlyOptions);
+  const session = await getMcpSession();
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
   }
@@ -21,7 +20,7 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(jwtOnlyOptions);
+  const session = await getMcpSession();
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
   }
@@ -42,7 +41,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
-  const session = await getServerSession(jwtOnlyOptions);
+  const session = await getMcpSession();
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
   }
@@ -56,7 +55,7 @@ export async function PATCH(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const session = await getServerSession(jwtOnlyOptions);
+  const session = await getMcpSession();
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
   }

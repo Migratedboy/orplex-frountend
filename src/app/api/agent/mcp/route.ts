@@ -5,14 +5,13 @@
 // "legacy" keeps the pre-Phase-8 localStorage lane runnable (C8).
 
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { getMcpSession } from "@/lib/mcp-auth";
 import { resolveMcpLane } from "@/lib/mcp/gate";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const session = await getServerSession(jwtOnlyOptions);
+  const session = await getMcpSession();
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
   }

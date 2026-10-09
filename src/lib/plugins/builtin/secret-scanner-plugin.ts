@@ -24,20 +24,28 @@ const SECRET_PATTERNS = [
   { pattern: /(?:AWS_SECRET_ACCESS_KEY|aws_secret_access_key)\s*[=:]\s*["'][A-Za-z0-9/+=]{40}["']/gi, type: "AWS Secret" },
 ];
 
+/**
+ * Pure content check, shared by the hook below and the server executor
+ * (which invokes it directly — same patterns, no drift between lanes).
+ * Returns the matched secret kinds, or [] when clean.
+ */
+export function scanContentForSecrets(content: string): string[] {
+  if (!content) return [];
+  const found: string[] = [];
+  for (const { pattern, type } of SECRET_PATTERNS) {
+    pattern.lastIndex = 0;
+    if (pattern.test(content)) found.push(type);
+  }
+  return found;
+}
+
 const hooks: PluginHook[] = [
   {
     name: "beforeToolCall",
     handler: async (ctx: HookContext): Promise<HookResult> => {
       if (ctx.tool !== "write_file" && ctx.tool !== "edit_file") return { continue: true };
       const content = (ctx.args?.content as string) || (ctx.args?.new_text as string) || "";
-      if (!content) return { continue: true };
-
-      const found: string[] = [];
-      for (const { pattern, type } of SECRET_PATTERNS) {
-        pattern.lastIndex = 0;
-        if (pattern.test(content)) found.push(type);
-      }
-
+      const found = scanContentForSecrets(content);
       if (found.length > 0) {
         return {
           continue: false,

@@ -38,14 +38,19 @@ export async function POST(request: NextRequest) {
   const staggerMinutes = Number.isFinite(body.staggerMinutes)
     ? Math.min(Math.max(Math.floor(body.staggerMinutes), 1), MAX_STAGGER_MINUTES)
     : DEFAULT_STAGGER_MINUTES;
-  const priority = Number.isInteger(body.priority) ? (body.priority as number) : 0;
+  const rawPriority = Number.isInteger(body.priority) ? (body.priority as number) : 0;
+  const priority = Math.min(100, Math.max(-100, rawPriority));
+  const safePolicy = body.autonomyPolicy === "auto" ? "auto" : "approval";
   const modelOverride =
     typeof body.modelOverride === "string" && body.modelOverride.trim()
       ? body.modelOverride.trim().slice(0, 120)
       : null;
 
   const now = Date.now();
-  const first = body.startAt && !Number.isNaN(Date.parse(body.startAt)) ? Date.parse(body.startAt) : now;
+  // Clamp the schedule window: absurd startAt values (1970, year 9999) would
+  // create never-claimed or instantly-due runs that confuse the queue.
+  const parsedStart = body.startAt && !Number.isNaN(Date.parse(body.startAt)) ? Date.parse(body.startAt) : now;
+  const first = Math.min(Math.max(parsedStart, now - 3_600_000), now + 30 * 86_400_000);
 
   const created = [];
   try {
@@ -59,7 +64,7 @@ export async function POST(request: NextRequest) {
           status: "pending",
           workspace: ".",
           executionTarget: "server",
-          autonomyPolicy: typeof body.autonomyPolicy === "string" ? body.autonomyPolicy : "approval",
+          autonomyPolicy: safePolicy,
           ...(modelOverride ? { modelOverride } : {}),
           ...(priority !== 0 ? { priority } : {}),
           notBefore,
@@ -79,8 +84,8 @@ export async function POST(request: NextRequest) {
       created.push({ id: run.id, notBefore: notBefore.toISOString() });
     }
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    return NextResponse.json({ success: false, error: msg, created }, { status: 500 });
+    console.error("[runs batch]", error instanceof Error ? error.message : error);
+    return NextResponse.json({ success: false, error: "Failed to create runs", created }, { status: 500 });
   }
 
   return NextResponse.json({

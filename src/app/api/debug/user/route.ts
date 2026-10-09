@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
+import { publicErrorMessage } from "@/lib/errors";
 
 export async function GET() {
   try {
@@ -15,6 +16,6 @@ export async function GET() {
       image: session.user.image,
     });
   } catch (error) {
-    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
+    return NextResponse.json({ error: publicErrorMessage(error, "Internal server error") }, { status: 500 });
   }
 }

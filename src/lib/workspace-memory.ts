@@ -65,7 +65,13 @@ export function deriveMemories(input: CaptureInput): Array<{
   const written = Object.keys(input.writtenFiles || {}).slice(0, MAX_FILES_PER_ENTRY);
   const task = sanitizeText(input.task).slice(0, 120);
 
-  if (!input.writtenFiles || written.length === 0) return memories;
+  // Suggestion-only inputs (compaction-evicted facts, /remember pins) carry
+  // no files but still teach decisions/pitfalls below — only bail when there
+  // is neither file evidence nor suggestions. (The old unconditional return
+  // made captureFromCompaction a permanent no-op.)
+  const hasSuggestions =
+    (input.acceptedSuggestions?.length ?? 0) + (input.rejectedSuggestions?.length ?? 0) > 0;
+  if ((!input.writtenFiles || written.length === 0) && !hasSuggestions) return memories;
 
   // Stack: frameworks/libraries this workspace actually uses (evidence: files).
   const stackSignals = new Map<string, string[]>(); // signature → files

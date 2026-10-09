@@ -39,6 +39,10 @@ export async function POST(request: NextRequest) {
   // mode "verify" = the explicit, budget-guarded BYOK probe action.
   const mode = body?.mode === "verify" ? "verify" : "list";
 
+  // True only when keyId passed the ownership check below — the persist
+  // step must never fire for a keyId the caller doesn't own (sending both a
+  // raw apiKey and a victim's keyId would otherwise overwrite their cache).
+  let keyIdOwned = false;
   if (!apiKey && keyId) {
     // Stored-key path: only the owner's key, decrypted server-side.
     const stored = await prisma.userApiKey
@@ -47,7 +51,12 @@ export async function POST(request: NextRequest) {
     if (!stored) {
       return NextResponse.json({ success: false, error: "Key not found." }, { status: 404 });
     }
-    apiKey = decryptKey(stored.apiKey);
+    keyIdOwned = true;
+    try {
+      apiKey = decryptKey(stored.apiKey);
+    } catch {
+      return NextResponse.json({ success: false, error: "Stored key unreadable." }, { status: 500 });
+    }
   }
 
   if (!apiKey) {
@@ -133,14 +142,16 @@ export async function POST(request: NextRequest) {
 
   // Persist the listing for stored keys so the picker can serve it offline
   // of the provider (best-effort — listing already succeeded or failed).
+  // Ownership-scoped: only fires for a keyId verified above, never for a
+  // caller-supplied id paired with a raw apiKey.
   let persisted = false;
-  if (keyId) {
+  if (keyId && keyIdOwned) {
     persisted = await prisma.userApiKey
-      .update({
-        where: { id: keyId },
+      .updateMany({
+        where: { id: keyId, userId: session.user.id },
         data: { modelsCache: finalModels as unknown as object, modelsFetchedAt: new Date() },
       })
-      .then(() => true)
+      .then((r) => r.count > 0)
       .catch(() => false);
   }
 

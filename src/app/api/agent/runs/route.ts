@@ -30,7 +30,10 @@ export async function GET(request: NextRequest) {
   // The board + active badge poll this endpoint, so a sweep happens on read.
   await sweepStaleRuns(session.user.id).catch(() => {});
 
-  const limit = Math.min(parseInt(request.nextUrl.searchParams.get("limit") || "20", 10) || 20, 50);
+  // parseInt can yield NaN (→ fallback) or negatives (→ Prisma throw).
+  // Clamp to [1, 50] so a hostile ?limit= never 500s the board poll.
+  const rawLimit = parseInt(request.nextUrl.searchParams.get("limit") || "20", 10);
+  const limit = Math.min(50, Number.isFinite(rawLimit) ? Math.max(1, rawLimit) : 20);
   // Debug seam for BYOK: ?model=... previews the resolved model, never the key.
   const modelOverride = request.nextUrl.searchParams.get("model");
   const statusFilter = request.nextUrl.searchParams.get("status");
@@ -153,11 +156,17 @@ export async function POST(request: NextRequest) {
   }
 
   // BYOK per-task model + morning-queue scheduling on the single-spawn path.
+  // All enums validated: raw strings here would persist garbage the claim
+  // loop and executor never expect (fail-closed to known values).
   const modelOverride =
     typeof body.modelOverride === "string" && body.modelOverride.trim()
       ? body.modelOverride.trim().slice(0, 120)
       : null;
-  const priority = Number.isInteger(body.priority) ? (body.priority as number) : 0;
+  const sanePriority = Number.isInteger(body.priority) ? (body.priority as number) : 0;
+  const priority = Math.min(100, Math.max(-100, sanePriority));
+  const safeTarget = ["server", "client", "local", "none"].includes(executionTarget) ? executionTarget : "server";
+  const safePolicy = autonomyPolicy === "auto" ? "auto" : "approval";
+  const safeMode = ["ask", "plan", "code"].includes(mode) ? mode : "code";
   const notBefore =
     typeof body.notBefore === "string" && !Number.isNaN(Date.parse(body.notBefore))
       ? new Date(body.notBefore)
@@ -167,11 +176,11 @@ export async function POST(request: NextRequest) {
     const run = await prisma.agentRun.create({
       data: {
         userId: session.user.id,
-        prompt: prompt.trim(),
+        prompt: prompt.trim().slice(0, 20_000),
         status: "pending",
         workspace: ".",
-        executionTarget,
-        autonomyPolicy,
+        executionTarget: safeTarget,
+        autonomyPolicy: safePolicy,
         ...(modelOverride ? { modelOverride } : {}),
         ...(priority !== 0 ? { priority } : {}),
         ...(notBefore ? { notBefore } : {}),
@@ -186,8 +195,8 @@ export async function POST(request: NextRequest) {
         sequence: 0,
         type: "spawned",
         payload: {
-          prompt: prompt.trim(),
-          mode,
+          prompt: prompt.trim().slice(0, 20_000),
+          mode: safeMode,
           ...(modelOverride ? { model: modelOverride } : {}),
           ...(notBefore ? { scheduledFor: notBefore.toISOString() } : {}),
         },
@@ -196,7 +205,8 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, run });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    return NextResponse.json({ success: false, error: msg }, { status: 500 });
+    // Generic 500: Prisma internals must not reach the client.
+    console.error("[runs POST]", error instanceof Error ? error.message : error);
+    return NextResponse.json({ success: false, error: "Failed to create run" }, { status: 500 });
   }
 }

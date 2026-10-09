@@ -1,6 +1,10 @@
 // Prisma schema for Supabase (PostgreSQL)
-// Run: npx prisma db push (after setting DATABASE_URL in .env)
-// Or:  npx prisma migrate dev --name init
+// Run: npx -y prisma@5.22.0 db push (after setting DATABASE_URL in .env)
+// NOTE: the CLI version is pinned — this repo pins @prisma/client@5 and the
+// schema uses the v5 datasource format. A bare `npx prisma` resolves the v7
+// CLI, which rejects this file (P1012: `url` datasource property removed).
+// Do NOT add `prisma` to package.json unpinned; Dockerfile.deploy runs
+// `npm ci`, so any package.json change must come with a lockfile update.
 
 generator client {
   provider = "prisma-client-js"
@@ -311,6 +315,11 @@ model Learning {
   content     String   @db.Text // The actual learning text
   tags        String[] // Searchable tags for retrieval
   sourceRunId String? // Which agent run produced this learning
+  confidence  Float    @default(0.5)
+  verified    Boolean  @default(false)
+  useCount    Int      @default(1)
+  pinned      Boolean  @default(false)
+  kind        String   @default("learning")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

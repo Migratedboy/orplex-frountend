@@ -7,6 +7,12 @@ const TAG_LENGTH = 16;
 function getSecret(): Buffer {
   const secret = process.env.ENCRYPTION_SECRET;
   if (!secret || secret.length < 64) {
+    // Fail CLOSED in production: the old dev-fallback key is published in
+    // this repo, so any "encrypted" key would be decryptable by anyone.
+    // Refusing is the only safe behavior — set a 64+ hex ENCRYPTION_SECRET.
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("ENCRYPTION_SECRET is missing or too short (need 64+ hex chars) — refusing to encrypt with the dev key");
+    }
     // Development fallback — NOT for production
     return Buffer.from("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "hex");
   }

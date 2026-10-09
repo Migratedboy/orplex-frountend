@@ -11,6 +11,8 @@ declare global {
       revealPath?: (path: string) => Promise<boolean>;
       /** Resolve the absolute filesystem path of a File (Electron only). */
       getPathForFile?: (file: File) => string;
+      /** Absolute path of a workspace folder by name (main-process fallback). */
+      getPathForDirectory?: (name: string) => Promise<string>;
       versions: { electron: string; chrome: string; node: string };
       /** Real-browser preview (Electron only): native WebContentsView tabs. */
       preview?: {

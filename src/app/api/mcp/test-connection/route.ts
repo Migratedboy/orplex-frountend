@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { getMcpSession } from "@/lib/mcp-auth";
 import { getServerRunConfig, recordTestResult } from "@/lib/mcp-accounts";
 import { getMcpServerForRun, shutdownAllMcp } from "@/lib/mcp-client";
 import { syncToolSnapshot } from "@/lib/mcp/tool-snapshot";
@@ -15,7 +14,7 @@ export const maxDuration = 60;
  * probe session down so it never competes with the run-time budget.
  */
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(jwtOnlyOptions);
+  const session = await getMcpSession();
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
   }

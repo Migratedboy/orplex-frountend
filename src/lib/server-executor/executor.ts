@@ -16,6 +16,7 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { getWorkspaceCwdForUser, resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import { parseToolCalls, parseBareJsonToolCalls } from "@/lib/tool-text";
+import { createLoopStreaks, trackToolTurn, buildLoopBreakDirective } from "@/lib/loop-detect";
 import { isCommandAllowed } from "@/lib/exec-guard";
 import { createProviderAdapter, createAdapterForProvider, type AIProviderAdapter, type NativeToolDef, type NativeToolCall } from "@/lib/ai-providers";
 import { isRateLimitError, isTransientError } from "@/lib/retry";
@@ -73,6 +74,7 @@ const TOOL_WHITELIST = new Set([
   "read_file",
   "list_files",
   "search_code",
+  "code_search",
   "run_command",
   // Browser-as-sensor: navigate/read/click/type/console/screenshot plus the
   // advanced ops (find/wait/hover/select/tabs/network/evaluate) — the run
@@ -81,6 +83,7 @@ const TOOL_WHITELIST = new Set([
   "browser_read",
   "browser_click",
   "browser_type",
+  "browser_press",
   "browser_scroll",
   "browser_console",
   "browser_screenshot",
@@ -93,6 +96,15 @@ const TOOL_WHITELIST = new Set([
   "browser_evaluate",
   "use_skill",
   "scratchpad_update",
+  // Playbook + MCP discovery verbs: advertised in buildNativeToolDefs and
+  // the text prompt, so the text-protocol fallback must not drop them (a
+  // fully-filtered turn ends the run having executed nothing).
+  "playbook_search",
+  "skill_create",
+  "session_search",
+  "mcp_call",
+  "mcp_search_tools",
+  "mcp_describe_tool",
 ]);
 
 interface QueuedRun {
@@ -129,6 +141,9 @@ export function buildNativeToolDefs(mcpTools: McpToolDef[], remoteTools: Builder
     { name: "search_code", description: "Search the worktree (ripgrep-backed).", parameters: obj({ query: { type: "string" } }, ["query"]) },
     { name: "code_search", description: "Search with context: grouped per-file matching-line snippets plus a ready-made read_file offset/limit hint per match — locate regions without reading whole files.", parameters: obj({ query: { type: "string" }, context: { type: "number", description: "Context lines around each match (0-10, default 3)" } }, ["query"]) },
     { name: "use_skill", description: "Load the full instructions of a listed skill by name.", parameters: obj({ name_of_skill: { type: "string", description: "Skill name from the roster" } }, ["name_of_skill"]) },
+    { name: "playbook_search", description: "Search the playbook — evidence-backed learnings from previous verified runs. Use when starting work that may resemble past work.", parameters: obj({ query: { type: "string", description: "What you are trying to do" } }, ["query"]) },
+    { name: "skill_create", description: "Save a reusable skill to the playbook so future runs benefit. Use when you discover a procedure worth repeating.", parameters: obj({ title: { type: "string", description: "Short skill name" }, text: { type: "string", description: "The reusable procedure, self-contained" } }, ["title", "text"]) },
+    { name: "session_search", description: "Search past conversation messages. Use when the user refers to something discussed before.", parameters: obj({ query: { type: "string", description: "What to search past messages for" } }, ["query"]) },
     { name: "scratchpad_update", description: "Write to your private scratchpad (plan, hypotheses, findings, next move). Re-shown every turn, never a deliverable. Never store secrets.", parameters: obj({ section: { type: "string", description: "plan | hypotheses | findings | next" }, content: { type: "string", description: "New section content" } }, ["section", "content"]) },
     { name: "run_command", description: "Run a shell command in the worktree (screened; dangerous commands are refused).", parameters: obj({ command: { type: "string" } }, ["command"]) },
     { name: "browser_navigate", description: "Open a URL in the agent's SSRF-guarded headless browser. Returns HTTP status, title, and page summary.", parameters: obj({ url: { type: "string", description: "Full URL to load" } }, ["url"]) },
@@ -171,7 +186,7 @@ function parseFailoverChainEnv(): string[] {
   return parseFailoverChain(process.env.AI_FAILOVER, process.env.AI_PROVIDER || "nvidia", process.env);
 }
 
-function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBlock = "", skillRoster = "", mcpServers?: Array<{ name: string; description: string; toolCount: number }>, remoteTools: BuilderTool[] = []): string {
+function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBlock = "", skillRoster = "", playbookBlock = "", mcpServers?: Array<{ name: string; description: string; toolCount: number }>, remoteTools: BuilderTool[] = []): string {
   const lines = [
     `You are the Orplex Server Agent, executing a task in an isolated git worktree of the user's workspace.`,
     nativeMode
@@ -184,6 +199,9 @@ function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBl
     `- search_code { "name": "search_code", "query": "..." }`,
     `- code_search { "name": "code_search", "query": "..." } (grouped snippets + read_file hints — preferred for locating code)`,
     `- run_command { "name": "run_command", "command": "..." } (screened; dangerous commands are refused)`,
+    `- playbook_search { "name": "playbook_search", "query": "..." } (learnings from past verified runs — check before starting)`,
+    `- skill_create { "name": "skill_create", "title": "...", "text": "..." } (save a reusable procedure for future runs)`,
+    `- session_search { "name": "session_search", "query": "..." } (search past conversation messages)`,
     `- scratchpad_update { "name": "scratchpad_update", "section": "plan|hypotheses|findings|next", "content": "..." } (private working memory, re-shown every turn — record plan, findings, next move; never store secrets)`,
     `Keep a private scratchpad via scratchpad_update as you learn — todo discipline still applies; the scratchpad holds reasoning, not checkmarks.`,
   ];
@@ -192,6 +210,9 @@ function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBl
   }
   if (memoryBlock) {
     lines.push(``, `Project memory (user-authored conventions from orplex.md — follow these):`, memoryBlock);
+  }
+  if (playbookBlock) {
+    lines.push(``, `Playbook (learnings from previous verified runs — apply when relevant, ignore otherwise):`, playbookBlock);
   }
   if (mcpTools.length > 0 || remoteTools.length > 0) {
     const roster = buildMcpRoster([...mcpTools.map(toBuilderTool), ...remoteTools]);
@@ -359,6 +380,24 @@ async function listLocalFiles(root: string, rel = ""): Promise<string[]> {
   return out;
 }
 
+let serverHooksReady = false;
+
+/** Idempotent activation of the server-safe plugin subset (secret-scanner). */
+async function ensureServerHooks(): Promise<void> {
+  if (serverHooksReady) return;
+  serverHooksReady = true;
+  try {
+    const { activateSecretScanner } = await import("../plugins/builtin/secret-scanner-plugin");
+    const { pluginRegistry } = await import("../plugins/registry");
+    // Two-step like the production initializer: registration alone does NOT
+    // wire hooks — the activate closure runs only via activatePlugin.
+    await activateSecretScanner();
+    await pluginRegistry.activatePlugin("secret-scanner");
+  } catch {
+    serverHooksReady = false;
+  }
+}
+
 async function executeTool(
   call: { name: string; [k: string]: unknown },
   ctx: WorktreeContext,
@@ -381,6 +420,26 @@ async function executeTool(
   }
 ): Promise<string> {
   const name = call.name;
+
+  // Plugin beforeToolCall hooks, server lane. Only the secret-scanner is
+  // activated here (see ensureServerHooks below) — it is pure, stateless,
+  // and closes the one gap the executor's native guards don't cover
+  // (hardcoded secrets into merged branches). Deliberately NOT the full
+  // bundle: response-cache would serve stale results, git-auto-commit would
+  // pollute review branches, task-queue conflicts with server pacing, and
+  // input-sanitizer/path-traversal are subsumed by isCommandAllowed plus the
+  // executor's own resolve-based worktree containment.
+  try {
+    await ensureServerHooks();
+    const { beforeToolCall } = await import("../plugins/registry");
+    const gated = await beforeToolCall(name, call as Record<string, unknown>);
+    if ((gated as { _blocked?: boolean })._blocked) {
+      return "refused by secret policy: file content appears to contain a hardcoded secret — use environment variables instead.";
+    }
+  } catch {
+    // Hook infrastructure must never break tool dispatch; a hook failure
+    // fails open here (the write still runs through all native guards).
+  }
 
   // Pre-write auto checkpoint: BEFORE the first mutating write to a file
   // (and after cooldown/cap/RAM gates), snapshot the tree so rewind can
@@ -567,6 +626,58 @@ async function executeTool(
     }
     scratchpad.update(section as ScratchpadSection, content.slice(0, 2000));
     return `recorded ${section} (${content.length} chars). It will be re-shown every turn.`;
+  }
+
+  // playbook_search / skill_create / session_search — the Playbook loop,
+  // served in-process (no HTTP hop): the executor IS the server, so it
+  // calls the library directly (the browser lane goes through /api/*).
+  if (name === "playbook_search" && typeof call.query === "string") {
+    try {
+      const { searchPlaybooks } = await import("../playbook");
+      const hits = await searchPlaybooks(mcpExtras?.userId || "default", call.query.slice(0, 500), 5);
+      if (hits.length === 0) return "No matching playbook entries found.";
+      return hits.map((h) => `- [${h.pattern}] ${h.content} (confidence: ${Math.round(h.confidence * 100)}%)`).join("\n");
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
+  }
+
+  if (name === "skill_create") {
+    try {
+      const title = typeof call.title === "string" ? call.title.slice(0, 100) : "";
+      const text = (typeof call.text === "string" ? call.text : typeof call.content === "string" ? call.content : "").slice(0, 2000);
+      if (!title || !text) return "error: title and text are required";
+      const { mergeOrCreate } = await import("../playbook");
+      const entry = await mergeOrCreate(mcpExtras?.userId || "default", {
+        pattern: "skill",
+        content: `${title}: ${text}`,
+        tags: ["skill", title.toLowerCase()],
+        evidence: { source: "skill_create" },
+      });
+      return `Created skill "${title}" (confidence: ${Math.round((entry?.confidence ?? 0.5) * 100)}%)`;
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
+  }
+
+  if (name === "session_search" && typeof call.query === "string") {
+    try {
+      const userId = mcpExtras?.userId;
+      if (!userId) return "error: session search needs a user context";
+      const msgs = await prisma.message.findMany({
+        where: {
+          conversation: { userId },
+          content: { contains: call.query.slice(0, 200), mode: "insensitive" },
+        },
+        include: { conversation: { select: { title: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      });
+      if (msgs.length === 0) return "No matching messages found.";
+      return msgs.map((m) => `- [${m.conversation.title}] ${m.content.slice(0, 120)}`).join("\n");
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
   }
 
   if (name === "read_file" && typeof call.path === "string") {
@@ -855,6 +966,11 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
   // Flips when the provider rejects the function-calling request shape —
   // the rest of the run then uses the text protocol.
   let nativeBroken = false;
+  // Loop breaker (parity with the client worker — loop-detect.ts): without
+  // it a stuck model burned all TURN_LIMIT turns re-sending the same call.
+  const loopStreaks = createLoopStreaks();
+  let loopBreakAttempted = false;
+  let lastToolResults = "";
 
   try {
     ctx = await createIsolatedContext(workDir, run.id);
@@ -910,14 +1026,25 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
     // snapshot. Workspace/account stdio configs win on name conflicts; in
     // ORPLEX_MCP=legacy this list stays empty (rollback safety, C8).
     // Phase 9 self-heal: discover any connected server whose snapshot hasn't
-    // been written yet, so freshly-connected connectors are visible on the first
-    // run (not "the next snapshot write"). Errors swallowed.
+    // been written yet OR is stale, so freshly-connected connectors (and
+    // servers whose tools changed since the last snapshot) are visible on the
+    // first run and on every run thereafter. Errors swallowed.
     let remoteTools: BuilderTool[] = [];
+    let mcpServerSummaries: Array<{ name: string; description: string; toolCount: number }> = [];
     try {
       if (resolveMcpLane(process.env.ORPLEX_MCP) === "sdk") {
         const stdioNames = new Set(Object.keys(mcpRunConfigs));
         await refreshMissingMcpSnapshots(run.userId).catch(() => {});
-        remoteTools = (await listSnapshotToolsByServer(run.userId)).filter((t) => !stdioNames.has(t.server));
+        const snapshotTools = (await listSnapshotToolsByServer(run.userId)).filter((t) => !stdioNames.has(t.server));
+        remoteTools = snapshotTools;
+        // Build server summaries from the snapshot so the prompt shows what each
+        // connected server IS (not just its tool names).
+        const merged = buildMcpRoster(snapshotTools);
+        mcpServerSummaries = merged.servers.map((s) => ({
+          name: s.name,
+          description: getMcpCatalogEntry(s.name)?.description ?? "",
+          toolCount: s.toolCount,
+        }));
       }
     } catch {}
 
@@ -929,6 +1056,17 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       loadUserSkills(workDir).catch(() => []),
     ]);
     const skillRoster = renderSkillRoster(skills);
+
+    // Playbook: evidence-backed learnings from previous verified runs,
+    // retrieved once per run for the task at hand (not per turn).
+    // Token-budgeted, only for cosine-similar matches; empty → omitted.
+    let playbookBlock = "";
+    try {
+      const { searchPlaybooks, formatPlaybooksForPrompt } = await import("../playbook");
+      playbookBlock = formatPlaybooksForPrompt(await searchPlaybooks(run.userId, run.prompt.slice(0, 500), 3)) || "";
+    } catch {
+      playbookBlock = "";
+    }
 
     // Summarizing compaction for server runs (see compaction.ts): evicted
     // turns become a <context_so_far> block instead of being truncated away.
@@ -943,6 +1081,10 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
     });
 
     const nativeDefs = buildNativeToolDefs(mcpTools, remoteTools);
+
+    // Build the system prompt WITH the refreshed MCP section so the model
+    // sees every connected server and its tools on the very first run.
+    const executorMcpSection = remoteTools.length > 0 ? mcpPromptSection(buildMcpRoster(remoteTools)) : "";
 
     // Failover chain: primary adapter first, then the opt-in chain on
     // rate/quota errors (retries already exhausted inside the adapter).
@@ -1013,6 +1155,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
           nativeMode,
           memoryBlock,
           skillRoster,
+          playbookBlock,
           [
             ...Object.keys(mcpRunConfigs).map((serverId) => ({
               name: getMcpCatalogEntry(serverId)?.name ?? serverId,
@@ -1020,11 +1163,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
               toolCount: mcpTools.filter((t) => t.server === serverId).length,
             })),
             // SDK-lane OAuth connectors (Phase 8): summarized alongside stdio.
-            ...[...new Set(remoteTools.map((t) => t.server))].map((serverId) => ({
-              name: getMcpCatalogEntry(serverId)?.name ?? serverId,
-              description: getMcpCatalogEntry(serverId)?.description ?? "OAuth connector",
-              toolCount: remoteTools.filter((t) => t.server === serverId).length,
-            })),
+            ...mcpServerSummaries,
           ],
           remoteTools
         ) },
@@ -1081,6 +1220,23 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         break; // plain-text answer = done
       }
 
+      // Streak-based loop detection — BEFORE dispatch, so a tripped call never
+      // executes. First trip = one evidence-laden strategy change; a second
+      // trip (the model ignored the evidence) = honest early stop with the
+      // work that exists committed on the branch.
+      const loopVerdict = trackToolTurn(loopStreaks, calls as Array<{ name?: string }>);
+      if (loopVerdict.loop) {
+        if (loopBreakAttempted) {
+          await emit(run.id, "loop-stopped", { reason: loopVerdict.reason }).catch(() => {});
+          summary = `Stopped early: the agent kept repeating ${loopVerdict.reason} after a strategy-change instruction. Work so far is committed on branch ${ctx.branch} for review.`;
+          break;
+        }
+        loopBreakAttempted = true;
+        await emit(run.id, "loop-break", { reason: loopVerdict.reason }).catch(() => {});
+        transcript.push({ role: "user", content: buildLoopBreakDirective(loopVerdict, lastToolResults) });
+        continue;
+      }
+
       const results: string[] = [];
       for (const call of calls) {
         // use_skill resolves against the discovered skill list before dispatch.
@@ -1096,6 +1252,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         results.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
       }
       const scratchBlock = renderScratchpadBlock(scratch);
+      lastToolResults = results.join("\n");
       transcript.push({ role: "user", content: results.join("\n") + (scratchBlock ? `\n${scratchBlock}` : "") });
     }
 
@@ -1139,6 +1296,10 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       }
     } catch {}
 
+    // Playbook evidence: did the browser verification lane run clean?
+    // null = lane never ran (the derive gate then refuses to learn);
+    // false = ran red. Set inside the lane block below.
+    let verifyPass: boolean | null = null;
     if (
       writtenPaths.length > 0 &&
       looksLikeUiWork(writtenPaths) &&
@@ -1147,6 +1308,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       !isMemoryPressureHigh()
     ) {
       await prisma.agentRun.update({ where: { id: run.id }, data: { status: "verifying" } }).catch(() => {});
+      verifyPass = false; // lane ran; flips true only on a clean pass below
       const { verifyUI } = await import("@/lib/browser-verification");
       const { readFile: rf, stat: st } = await import("fs/promises");
       const pkgRaw = await rf(join(ctx.worktreeDir, "package.json"), "utf8").catch(() => null);
@@ -1265,6 +1427,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
           summary += `\n\nBrowser verification failed (console errors) — see the verification artifact for review.`;
         }
       } else if (verifyResult?.success) {
+        verifyPass = true;
         summary += `\n\nBrowser verification passed (rendered without console errors).`;
       }
 
@@ -1306,6 +1469,41 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         if (pr.url) {
           await emit(run.id, "pr-opened", { via: pr.via, url: pr.url });
         }
+      }
+    }
+
+    // Playbook learning: derive evidence-gated entries from this run and
+    // merge them (repeat evidence raises confidence, contradictions decay).
+    // Best-effort — learning must never fail a completed run. The derive
+    // gate refuses unverified runs (browser lane must have passed), so only
+    // proven work teaches.
+    if (writtenPaths.length > 0) {
+      try {
+        const { readFile: readWritten } = await import("fs/promises");
+        const { join: joinRun } = await import("path");
+        const files: Record<string, string> = {};
+        for (const p of writtenPaths.slice(0, 8)) {
+          try {
+            const c = await readWritten(joinRun(ctx.worktreeDir, p), "utf8");
+            files[p] = c.slice(0, 20000);
+          } catch {
+            // Unreadable (deleted/moved post-write) — skip the file, keep the rest.
+          }
+        }
+        if (Object.keys(files).length > 0) {
+          const { deriveFromRun, mergeOrCreate } = await import("../playbook");
+          const derived = deriveFromRun({
+            task: run.prompt,
+            files,
+            lanes: { browser: verifyPass === true ? "pass" : verifyPass === false ? "fail" : undefined },
+            finalStatus: "done",
+          });
+          for (const entry of derived) {
+            await mergeOrCreate(run.userId, entry, run.id).catch(() => null);
+          }
+        }
+      } catch {
+        // Learning never fails a run.
       }
     }
 

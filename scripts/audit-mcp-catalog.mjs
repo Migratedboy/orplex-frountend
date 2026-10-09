@@ -521,7 +521,7 @@ function buildReport({ mod, entries, candidates, packages, stat, probes, generat
   lines.push("## Notes");
   lines.push("");
   lines.push("- The probe is intentionally shallow: it proves the endpoint speaks MCP (or demands auth) and that packages exist — it does not enumerate tools. The Connectors panel's test-connection (`listTools`) is the deep check.");
-  lines.push("- `auth=none` on mcp-remote entries is reported as a warning, not fixed here: OAuth for those stdio proxies runs inside `@anthropic-ai/mcp-remote`, and any hint change belongs with the Connectors UI work (Phase 7).");
+  lines.push("- OAuth for the `mcp-remote` stdio proxies runs inside `@anthropic-ai/mcp-remote`; those entries carry an `oauth: {}` hint so the panel prompts for a browser sign-in, and the audit's `auth=none` + http(s)-arg warning no longer fires (no `remote`, so the stdio env form and Save stay visible).");
   lines.push("- Living spec: `docs/MCP-OAUTH.md` §8.");
   lines.push("");
   return lines.join("\n");

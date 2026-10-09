@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
 import { getRecentChanges, computeDiff } from "@/lib/file-history";
+import { publicErrorMessage } from "@/lib/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,6 @@ export async function GET() {
       })),
     });
   } catch (error) {
-    return NextResponse.json({ changes: [], error: (error as Error).message }, { status: 500 });
+    return NextResponse.json({ changes: [], error: publicErrorMessage(error, "Internal server error") }, { status: 500 });
   }
 }

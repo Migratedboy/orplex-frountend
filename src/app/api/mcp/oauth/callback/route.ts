@@ -8,8 +8,7 @@
 // /api/mcp/oauth/complete instead (see electron/mcp-bridge.ts).
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { getMcpSession } from "@/lib/mcp-auth";
 import { completeAuthorization } from "@/lib/mcp/oauth/flow";
 import { refreshServerSnapshot } from "@/lib/mcp/roster-refresh";
 
@@ -32,7 +31,7 @@ function html(title: string, detail: string, status: number): NextResponse {
 }
 
 export async function GET(request: NextRequest) {
-  const session = await getServerSession(jwtOnlyOptions);
+  const session = await getMcpSession();
   if (!session?.user?.id) {
     return html("Sign in required", "Open Orplex and sign in, then start the connection again.", 401);
   }

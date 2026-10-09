@@ -179,6 +179,49 @@ export const M3_TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "playbook_search",
+      description: "Search the playbook — evidence-backed learnings from previous verified tasks in this workspace. Use when starting a task that may resemble past work.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What you are trying to do (matched semantically against past learnings)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "skill_create",
+      description: "Save a reusable skill to the playbook so future tasks benefit. Use when you discover a procedure worth repeating.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Short skill name" },
+          text: { type: "string", description: "The reusable procedure, self-contained" },
+        },
+        required: ["title", "text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "session_search",
+      description: "Search past conversation messages in this workspace. Use when the user refers to something discussed before.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What to search past messages for" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "undo_last_change",
       description: "Undo the last file write (restore previous version).",
       parameters: {
@@ -619,6 +662,12 @@ export const GROQ_TOOL_NAMES = [
   // same risk gate + lane as a direct mcp__ call. Use mcp_search_tools /
   // mcp_describe_tool to discover tools and get exact schemas.
   "mcp_call",
+  // Playbook tools are text-light (short query in, few lines out) and fit
+  // the TPM budget — lean lanes get the same ## PLAYBOOK prompt block, so
+  // they must also get the tools to act on it.
+  "playbook_search",
+  "skill_create",
+  "session_search",
 ] as const;
 
 export const GROQ_TOOL_DEFINITIONS = M3_TOOL_DEFINITIONS.filter((t: any) =>

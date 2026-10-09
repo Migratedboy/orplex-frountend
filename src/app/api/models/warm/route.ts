@@ -24,9 +24,11 @@ async function progressPayload(forceKick: boolean) {
 
   const progress = getWakeProgress();
   if (coldIds.length > 0 && !progress.running) {
-    // Fire-and-forget: a wake cycle runs many minutes; never block.
-    if (forceKick) void forceWakeColdModels();
-    else void wakeColdModels();
+    // Fire-and-forget: a wake cycle runs many minutes; never block. The
+    // .catch keeps a synchronous throw inside the kick from becoming an
+    // unhandled rejection (the route's try only covers awaited work).
+    if (forceKick) void forceWakeColdModels().catch(() => {});
+    else void wakeColdModels().catch(() => {});
   }
 
   return {

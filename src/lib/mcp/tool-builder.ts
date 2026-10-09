@@ -50,11 +50,14 @@ export interface McpRoster {
   schemaChars: number;
 }
 
+// Always-on MCP discovery tools: even under the cap the model gets
+// mcp_search_tools + mcp_describe_tool so it can find and learn tools that
+// aren't shown in the prompt roster (small servers, servers added after the
+// prompt was built, stale snapshot scenarios).
 export const MCP_TOOL_CAP = 40;
 export const MCP_DESC_MAX = 300;
 export const MCP_ROSTER_DESC_MAX = 200;
 export const MCP_NAMES_ONLY_DESC_MAX = 160;
-
 export const MCP_SEARCH_TOOL = "mcp_search_tools";
 export const MCP_DESCRIBE_TOOL = "mcp_describe_tool";
 
@@ -140,7 +143,7 @@ export function buildMcpRoster(
           parameters: toParameters(t.inputSchema),
         }
   );
-  const metaDefs: McpModelToolDef[] = overCap ? META_TOOL_DEFS.map((d) => ({ ...d })) : [];
+  const metaDefs: McpModelToolDef[] = META_TOOL_DEFS.map((d) => ({ ...d }));
 
   const groups = new Map<string, McpServerSummary>();
   for (const t of deduped) {
@@ -208,7 +211,7 @@ export function mcpPromptSection(roster: McpRoster): string {
         lines.push(`- \`${mcpToolName(t.server, t.name)}\` — ${normalizeDescription(t.description, MCP_NAMES_ONLY_DESC_MAX)}`);
       }
     }
-    return `## MCP CONNECTOR TOOLS — ${roster.toolCount} external tools
+    return `## MCP CONNECTOR TOOLS — ${roster.toolCount} external tools (tool list is summarized; discover the rest with mcp_search_tools)
 
 The connected MCP servers expose more tools than fit in full here. Every tool name is listed; schemas are names-only. Get exact parameters with \`${MCP_DESCRIBE_TOOL}\` (pass the full name) and find tools by keyword with \`${MCP_SEARCH_TOOL}\`. Call MCP tools with the built-in mcp_call tool: mcp_call({serverId: "<server id>", tool: "<tool name>", arguments: {…}}). The server id is the MCP server name from MCP connectors; the tool name is one of the names listed below. Results arrive as tool_result.
 
@@ -227,7 +230,7 @@ ${lines.join("\n")}`;
 
   return `## MCP CONNECTOR TOOLS — ${roster.toolCount} external tools
 
-The user's connected MCP servers expose the tools below. If your function-calling list includes a server's per-tool names, call them directly like built-in tools; results arrive as tool_result. If your function-calling list does NOT include a server's per-tool names (lean/TPM-constrained providers), call them with the built-in tool mcp_call: mcp_call({serverId: "<server id>", tool: "<tool name>", arguments: {…}}). The server id is the MCP server name shown in MCP connectors (e.g. "supabase", "linear", "filesystem"); the tool name is the server's tool (e.g. "list_tables", "create_issue"). Results arrive as tool_result. Never invent server ids or tool names.
+The user's connected MCP servers expose the tools below. If your function-calling list includes a server's per-tool names, call them directly like built-in tools; results arrive as tool_result. If your function-calling list does NOT include a server's per-tool names (lean/TPM-constrained providers), call them with the built-in tool mcp_call: mcp_call({serverId: "<server id>", tool: "<tool name>", arguments: {…}}). The server id is the MCP server name shown in MCP connectors (e.g. "supabase", "linear", "filesystem"); the tool name is the server's tool (e.g. "list_tables", "create_issue"). Results arrive as tool_result. Never invent server ids or tool names. Even tools not listed here are callable — discover them with mcp_search_tools({ query: "..." }) and read their exact parameters with mcp_describe_tool({ tool: "mcp__<server>__<tool>" }).
 
 ${lines.join("\n")}`;
 }

@@ -5,6 +5,9 @@ const nextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   compress: true,
+  // The bottom-corner "dev" badge overlaps the composer area in screenshots —
+  // errors are still surfaced by the overlay/console, so hide the badge.
+  devIndicators: false,
   headers: async () => [
     {
       source: "/(.*)",

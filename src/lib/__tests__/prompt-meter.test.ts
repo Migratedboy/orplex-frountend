@@ -16,12 +16,12 @@ import {
 } from "../prompt-meter";
 import { buildSystemPrompt } from "../master-prompt";
 
-beforeEach(() => {
+beforeEach(async () => {
   resetPromptMeter();
   // Real master-prompt sizes so the math reflects the live prompts
   calibratePromptSizes(
-    buildSystemPrompt({ mode: "code" }).length,
-    buildSystemPrompt({ mode: "code", profile: "compact" }).length
+    (await buildSystemPrompt({ mode: "code" })).length,
+    (await buildSystemPrompt({ mode: "code", profile: "compact" })).length
   );
 });
 

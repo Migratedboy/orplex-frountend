@@ -13,6 +13,43 @@
 
 let initialized = false;
 
+// ---------------------------------------------------------------------------
+// Optional @sentry/nextjs loader
+//
+// A LITERAL `import("@sentry/nextjs")` is resolved by the bundler at build
+// time, and this package is deliberately not a dependency (see header) —
+// Turbopack therefore failed the whole production build with
+// "Module not found: Can't resolve '@sentry/nextjs'" at three call sites.
+// Going through a runtime specifier keeps the package genuinely optional:
+// installed → used, absent → the caller's fallback runs.
+// ---------------------------------------------------------------------------
+
+const SENTRY_PACKAGE = "@sentry/nextjs";
+
+interface SentryScopeLike {
+  setComponent(name?: string): void;
+  setTag(key: string, value: string): void;
+  setUser(user: Record<string, unknown>): void;
+  setExtras(extras: Record<string, unknown>): void;
+}
+
+interface SentryLike {
+  init(options: Record<string, unknown>): void;
+  withScope(callback: (scope: SentryScopeLike) => void): void;
+  captureException(error: unknown): void;
+  captureMessage(message: string, level?: string): void;
+}
+
+/** Resolves to null (never rejects) when the SDK is not installed. */
+async function loadSentry(): Promise<SentryLike | null> {
+  try {
+    const specifier = SENTRY_PACKAGE;
+    return (await import(/* webpackIgnore: true */ specifier)) as SentryLike;
+  } catch {
+    return null;
+  }
+}
+
 interface ErrorContext {
   component?: string;
   action?: string;
@@ -36,23 +73,23 @@ export function initErrorTracking(): void {
 
   // Try to dynamically import the Sentry SDK (same protocol as Bugsink)
   // If not installed, fall back to console-only logging
-  import("@sentry/nextjs")
-    .then((Sentry) => {
-      Sentry.init({
-        dsn,
-        environment: process.env.NODE_ENV || "development",
-        tracesSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 1.0,
-        replaysSessionSampleRate: 0,
-        replaysOnErrorSampleRate: 0.5,
-        integrations: [],
-      });
-      initialized = true;
-      console.log("[error-tracking] Initialized with Bugsink.");
-    })
-    .catch(() => {
+  loadSentry().then((Sentry) => {
+    if (!Sentry) {
       console.log("[error-tracking] @sentry/nextjs not installed - using console-only fallback.");
       initConsoleFallback();
+      return;
+    }
+    Sentry.init({
+      dsn,
+      environment: process.env.NODE_ENV || "development",
+      tracesSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 1.0,
+      replaysSessionSampleRate: 0,
+      replaysOnErrorSampleRate: 0.5,
+      integrations: [],
     });
+    initialized = true;
+    console.log("[error-tracking] Initialized with Bugsink.");
+  });
 }
 
 /**
@@ -89,19 +126,16 @@ export function reportError(error: Error, context: ErrorContext = {}): void {
 
   // Send to Bugsink if available
   if (initialized && typeof window !== "undefined") {
-    import("@sentry/nextjs")
-      .then((Sentry) => {
-        Sentry.withScope((scope: any) => {
-          if (context.component) scope.setComponent(context.component);
-          if (context.action) scope.setTag("action", context.action);
-          if (context.userId) scope.setUser({ id: context.userId });
-          if (context.extra) scope.setExtras(context.extra);
-          Sentry.captureException(error);
-        });
-      })
-      .catch(() => {
-        // SDK not available - already logged to console
+    loadSentry().then((Sentry) => {
+      if (!Sentry) return; // SDK not available - already logged to console
+      Sentry.withScope((scope) => {
+        if (context.component) scope.setComponent(context.component);
+        if (context.action) scope.setTag("action", context.action);
+        if (context.userId) scope.setUser({ id: context.userId });
+        if (context.extra) scope.setExtras(context.extra);
+        Sentry.captureException(error);
       });
+    });
   }
 }
 
@@ -116,16 +150,13 @@ export function reportMessage(
   console.log(`[error-tracking:${level}]`, message, context);
 
   if (initialized && typeof window !== "undefined") {
-    import("@sentry/nextjs")
-      .then((Sentry) => {
-        Sentry.withScope((scope: any) => {
-          if (context.component) scope.setComponent(context.component);
-          if (context.extra) scope.setExtras(context.extra);
-          Sentry.captureMessage(message, level);
-        });
-      })
-      .catch(() => {
-        // SDK not available
+    loadSentry().then((Sentry) => {
+      if (!Sentry) return; // SDK not available
+      Sentry.withScope((scope) => {
+        if (context.component) scope.setComponent(context.component);
+        if (context.extra) scope.setExtras(context.extra);
+        Sentry.captureMessage(message, level);
       });
+    });
   }
 }

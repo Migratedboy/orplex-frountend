@@ -39,11 +39,19 @@ export async function POST(request: NextRequest) {
   try {
     const ip = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "unknown";
 
-    // Start auth, rate limit, and body parse in parallel (no dependencies between them)
+    // Start auth, rate limit, and body parse in parallel (no dependencies between them).
+    // NOTE: the JSON parse carries its own .catch — a malformed body must
+    // 400 below, not reject the whole Promise.all into a 500.
     const [session, body] = await Promise.all([
       getServerSession(authOptions).catch(() => null),
-      request.json(),
+      request.json().catch(() => null),
     ]);
+    if (!body || typeof body !== "object") {
+      return NextResponse.json(
+        { success: false, message: "Invalid input. Please check all fields and try again." },
+        { status: 400 }
+      );
+    }
 
     const rateLimit = checkRateLimit(`bug-report:${ip}`);
     if (!rateLimit.allowed) {

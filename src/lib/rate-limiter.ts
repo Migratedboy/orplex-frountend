@@ -177,40 +177,56 @@ export async function getUsageStats() {
   const weekStart = new Date(todayStart);
   weekStart.setDate(weekStart.getDate() - 7);
 
-  const [todayLogs, weekLogs, topUsers] = await Promise.all([
-    prisma.usageLog.findMany({ where: { createdAt: { gte: todayStart } } }),
-    prisma.usageLog.findMany({ where: { createdAt: { gte: weekStart } } }),
-    prisma.usageLog.groupBy({
-      by: ["userId"],
-      where: { createdAt: { gte: todayStart } },
-      _count: { id: true },
-      orderBy: { _count: { id: "desc" } },
-      take: 10,
-    }),
-  ]);
+  // Aggregates in the database — the old version did findMany() over a full
+  // day plus a full week of rows just to .length() them, which is O(rows) of
+  // RAM on every admin page view. Response shape is unchanged.
+  const [byProviderRows, byModelRows, latency, uniqueUsers, weekRequests, topUsers] =
+    await Promise.all([
+      prisma.usageLog.groupBy({
+        by: ["provider"],
+        where: { createdAt: { gte: todayStart } },
+        _count: { _all: true },
+      }),
+      prisma.usageLog.groupBy({
+        by: ["model"],
+        where: { createdAt: { gte: todayStart } },
+        _count: { _all: true },
+      }),
+      prisma.usageLog.aggregate({
+        where: { createdAt: { gte: todayStart } },
+        _avg: { latencyMs: true },
+      }),
+      prisma.usageLog.groupBy({
+        by: ["userId"],
+        where: { createdAt: { gte: todayStart } },
+        _count: { _all: true },
+      }),
+      prisma.usageLog.count({ where: { createdAt: { gte: weekStart } } }),
+      prisma.usageLog.groupBy({
+        by: ["userId"],
+        where: { createdAt: { gte: todayStart } },
+        _count: { id: true },
+        orderBy: { _count: { id: "desc" } },
+        take: 10,
+      }),
+    ]);
 
-  const todayRequests = todayLogs.length;
   const byProvider: Record<string, number> = {};
   const byModel: Record<string, number> = {};
-  let totalLatency = 0;
-
-  for (const log of todayLogs) {
-    byProvider[log.provider] = (byProvider[log.provider] || 0) + 1;
-    byModel[log.model] = (byModel[log.model] || 0) + 1;
-    totalLatency += log.latencyMs;
+  let todayRequests = 0;
+  for (const row of byProviderRows) {
+    byProvider[row.provider] = row._count._all;
+    todayRequests += row._count._all;
   }
-
-  const weekRequests = weekLogs.length;
-  const uniqueUsersToday = new Set(todayLogs.map((l) => l.userId)).size;
+  for (const row of byModelRows) byModel[row.model] = row._count._all;
 
   return {
     today: {
       totalRequests: todayRequests,
       byProvider,
       byModel,
-      uniqueUsers: uniqueUsersToday,
-      avgLatencyMs:
-        todayRequests > 0 ? Math.round(totalLatency / todayRequests) : 0,
+      uniqueUsers: uniqueUsers.length,
+      avgLatencyMs: Math.round(latency._avg.latencyMs || 0),
     },
     thisWeek: {
       totalRequests: weekRequests,
@@ -266,18 +282,22 @@ export function checkRateLimit(key: string): {
     };
   }
 
-  // Initialize new window
-  cache.set(cacheKey, { count: 1, expiresAt });
+  // Initialize new window. Upsert, not create: a restart mid-window hits the
+  // unique (key, windowStart) constraint, and the swallowed error meant the
+  // first request of the new process never reached the DB — the "survives
+  // restarts" guarantee only held from the second request on.
   prisma.rateLimitWindow
-    .create({
-      data: {
-        key: cacheKey,
-        windowStart,
-        count: 1,
-        expiresAt: new Date(expiresAt),
-      },
+    .upsert({
+      where: { key_windowStart: { key: cacheKey, windowStart } },
+      update: { count: { increment: 1 } },
+      create: { key: cacheKey, windowStart, count: 1, expiresAt: new Date(expiresAt) },
+    })
+    .then((row) => {
+      const entry = cache.get(cacheKey);
+      if (entry && now <= entry.expiresAt) entry.count = row.count;
     })
     .catch(() => {});
+  cache.set(cacheKey, { count: 1, expiresAt });
   return { allowed: true, remaining: RATE_LIMIT_MAX - 1, resetAt: expiresAt };
 }
 

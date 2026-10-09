@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
 import { PLUGIN_REGISTRY, getEnabledPlugins, enablePlugin, disablePlugin } from "@/lib/plugins/initializer";
+import { publicErrorMessage } from "@/lib/errors";
 
 export async function GET() {
   try {
@@ -18,7 +19,7 @@ export async function GET() {
 
     return NextResponse.json({ plugins });
   } catch (error) {
-    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
+    return NextResponse.json({ error: publicErrorMessage(error, "Internal server error") }, { status: 500 });
   }
 }
 
@@ -42,6 +43,6 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, name, enabled });
   } catch (error) {
-    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
+    return NextResponse.json({ error: publicErrorMessage(error, "Internal server error") }, { status: 500 });
   }
 }

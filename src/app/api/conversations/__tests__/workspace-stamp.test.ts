@@ -19,7 +19,7 @@ jest.mock("@/lib/auth", () => ({ jwtOnlyOptions: {} }));
 jest.mock("@/lib/prisma", () => ({
   prisma: {
     user: { upsert: jest.fn().mockResolvedValue({}) },
-    conversation: { update: jest.fn(), create: jest.fn() },
+    conversation: { update: jest.fn(), create: jest.fn(), findFirst: jest.fn() },
   },
 }));
 
@@ -28,7 +28,7 @@ import { prisma } from "@/lib/prisma";
 
 const prismaMock = prisma as unknown as {
   user: { upsert: jest.Mock };
-  conversation: { update: jest.Mock; create: jest.Mock };
+  conversation: { update: jest.Mock; create: jest.Mock; findFirst: jest.Mock };
 };
 const mockedSession = getServerSession as jest.Mock;
 
@@ -43,6 +43,7 @@ beforeEach(() => {
   mockedSession.mockResolvedValue({ user: { id: "user-1" } });
   prismaMock.conversation.create.mockResolvedValue({ id: "new-conv" });
   prismaMock.conversation.update.mockResolvedValue({ id: "existing-conv" });
+  prismaMock.conversation.findFirst.mockResolvedValue({ id: "existing-conv" });
 });
 
 describe("POST /api/conversations — workspaceName stamping", () => {
@@ -84,9 +85,14 @@ describe("POST /api/conversations — workspaceName stamping", () => {
       workspaceName: "logo",
     }));
 
+    // Ownership is gated first (findFirst), then the update runs by id —
+    // update({ where: { id, userId } }) is invalid Prisma (not unique).
+    expect(prismaMock.conversation.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "existing-conv", userId: "user-1" } })
+    );
     expect(prismaMock.conversation.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "existing-conv", userId: "user-1" },
+        where: { id: "existing-conv" },
         data: expect.objectContaining({ workspaceName: "logo" }),
       })
     );
@@ -101,6 +107,16 @@ describe("POST /api/conversations — workspaceName stamping", () => {
     const call = prismaMock.conversation.update.mock.calls[0][0];
     expect(call.data).not.toHaveProperty("workspaceName");
     expect(call.data.messages).toBeDefined();
+  });
+
+  it("UPDATE 404s on a conversation owned by someone else", async () => {
+    prismaMock.conversation.findFirst.mockResolvedValue(null);
+    const res = await POST(makePost({
+      conversationId: "existing-conv",
+      messages: [{ role: "user", content: "more" }],
+    }));
+    expect(res.status).toBe(404);
+    expect(prismaMock.conversation.update).not.toHaveBeenCalled();
   });
 
   it("requires authentication", async () => {

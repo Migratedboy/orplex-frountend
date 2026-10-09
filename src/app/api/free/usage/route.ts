@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { hasQuota, getUsage, FREE_TIER } from "@/lib/free-tier/quota-manager";
+import { publicErrorMessage } from "@/lib/errors";
 
 export async function GET(request: NextRequest) {
   try {
@@ -35,7 +36,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     return Response.json(
-      { error: (error as Error).message || "Failed to get usage" },
+      { error: publicErrorMessage(error, "Failed to get usage") },
       { status: 500 }
     );
   }

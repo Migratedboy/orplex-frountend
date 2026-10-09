@@ -47,6 +47,30 @@ export async function register(): Promise<void> {
     /* catalog is best-effort; the picker re-kicks on fetch */
   }
 
+  // Graceful shutdown: SIGTERM/SIGINT handlers (drain, disconnect Prisma).
+  try {
+    const { startGracefulShutdown } = await import("@/lib/graceful-shutdown");
+    startGracefulShutdown();
+  } catch (err) {
+    console.error("[shutdown] failed to start:", (err as Error).message);
+  }
+
+  // Daily usage-counter reset cron (advisory-lock guarded)
+  try {
+    const { startDailyResetCron } = await import("@/lib/cron-reset");
+    startDailyResetCron();
+  } catch (err) {
+    console.error("[cron-reset] failed to start:", (err as Error).message);
+  }
+
+  // Daily backup cron
+  try {
+    const { startBackupCron } = await import("@/lib/backup");
+    startBackupCron();
+  } catch (err) {
+    console.error("[backup] failed to start cron:", (err as Error).message);
+  }
+
   const cloudMode = process.env.ORPLEX_API_URL || process.env.NEXT_PUBLIC_API_URL;
   if (cloudMode) {
     console.log("[executor] disabled in cloud mode — backend handles all runs");

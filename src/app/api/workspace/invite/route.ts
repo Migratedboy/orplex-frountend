@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { addMember, hasRole } from "@/lib/workspace/workspace-manager";
+import { publicErrorMessage } from "@/lib/errors";
 
 export async function POST(request: NextRequest) {
   try {
@@ -47,7 +48,7 @@ export async function POST(request: NextRequest) {
     return Response.json({ member });
   } catch (error) {
     return Response.json(
-      { error: (error as Error).message || "Failed to invite member" },
+      { error: publicErrorMessage(error, "Failed to invite member") },
       { status: 500 }
     );
   }

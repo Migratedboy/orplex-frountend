@@ -25,6 +25,7 @@ import { spawn, type SpawnOptions } from "node:child_process";
 import { appendFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { publicErrorMessage } from "@/lib/errors";
 
 interface ServeEntry {
   pid: number;
@@ -113,7 +114,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = await request.json();
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return Response.json({ error: "Invalid body" }, { status: 400 });
+    }
     const action = body.action === "stop" ? "stop" : "start";
 
     if (action === "stop") {
@@ -140,6 +144,15 @@ export async function POST(request: NextRequest) {
 
     const command = typeof body.command === "string" ? body.command : "";
     if (!command) return Response.json({ error: "No command provided" }, { status: 400 });
+    if (command.length > 4000) return Response.json({ error: "Command too long" }, { status: 400 });
+
+    // Per-user serve cap: detached servers never exit on their own — without
+    // a cap one user can fork-bomb the host.
+    let ownedCount = 0;
+    for (const entry of serves.values()) if (entry.userId === userId) ownedCount++;
+    if (ownedCount >= 3) {
+      return Response.json({ error: "Too many running servers (max 3) — stop one first" }, { status: 429 });
+    }
 
     const guard = isCommandAllowed(command);
     if (!guard.allowed) {
@@ -262,7 +275,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     return Response.json(
-      { error: (error as Error).message || "Internal error" },
+      { error: publicErrorMessage(error, "Internal error") },
       { status: 500 }
     );
   }

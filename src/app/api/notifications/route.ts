@@ -44,7 +44,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: false, notifications: [], unread: 0 }, { status: 401 });
   }
   const userId = session.user.id;
-  const limit = Math.min(parseInt(request.nextUrl.searchParams.get("limit") || "30", 10) || 30, 100);
+  // parseInt can yield NaN (→ fallback) or negatives (→ Prisma throw).
+  const rawLimit = parseInt(request.nextUrl.searchParams.get("limit") || "30", 10);
+  const limit = Math.min(100, Number.isFinite(rawLimit) ? Math.max(1, rawLimit) : 30);
   const since = parseSince(request.nextUrl.searchParams.get("since"));
 
   try {

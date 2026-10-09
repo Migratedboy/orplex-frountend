@@ -188,10 +188,14 @@ export async function getProviderHealth(): Promise<
     openUntil: Date | null;
   }> = [];
 
+  const dbByName = new Map(dbStates.map((s) => [s.provider, s]));
   for (const name of allProviders) {
     const state = states.get(name);
-    const failures = state?.failures ?? 0;
-    const isOpen = state?.isOpen ?? false;
+    const db = dbByName.get(name);
+    // In-memory first (freshest this session), DB as the restart fallback —
+    // without it a restart reports open circuits as healthy.
+    const failures = state?.failures ?? db?.failures ?? 0;
+    const isOpen = state?.isOpen ?? db?.isOpen ?? false;
 
     let status: string;
     if (isOpen) {
@@ -207,7 +211,11 @@ export async function getProviderHealth(): Promise<
       status,
       failures,
       isOpen,
-      openUntil: state?.openUntil ? new Date(state.openUntil) : null,
+      openUntil: state?.openUntil
+        ? new Date(state.openUntil)
+        : db?.openUntil
+          ? new Date(db.openUntil)
+          : null,
     });
   }
 

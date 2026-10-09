@@ -5,15 +5,14 @@
 // tokens never leave the server.
 
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { getMcpSession } from "@/lib/mcp-auth";
 import { listSnapshotToolsByServer, loadMcpServerPrefsDb } from "@/lib/mcp/tool-snapshot";
 import { refreshMissingSnapshots } from "@/lib/mcp/roster-refresh";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const session = await getServerSession(jwtOnlyOptions);
+  const session = await getMcpSession();
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
   }

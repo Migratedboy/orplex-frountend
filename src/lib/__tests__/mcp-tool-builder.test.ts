@@ -34,7 +34,13 @@ describe("buildMcpRoster", () => {
       properties: { a: { type: "string" }, b: { type: "number" } },
       required: ["a"],
     });
-    expect(roster.metaDefs).toHaveLength(0);
+    // Meta-discovery tools (mcp_search_tools, mcp_describe_tool) are now
+    // always present so the model can find tools not shown in the roster
+    // (small servers, servers added after the prompt was built). Under the
+    // cap they sit alongside full-schema defs; over the cap they're the only
+    // schema path plus names-only for every real tool.
+    expect(roster.metaDefs).toHaveLength(2);
+    expect(roster.metaDefs.map((d) => d.name)).toEqual([MCP_SEARCH_TOOL, MCP_DESCRIBE_TOOL]);
     expect(roster.schemaChars).toBeGreaterThan(0);
   });
 
@@ -94,7 +100,7 @@ describe("buildMcpRoster", () => {
 });
 
 describe("mcpPromptSection", () => {
-  it("renders the historical per-server format under the cap", () => {
+  it("renders the per-server format under the cap with always-on discovery tools", () => {
     const roster = buildMcpRoster(
       [tool(1), { ...tool(3), server: "linear", name: "issue" }],
       { serverMeta: { github: { label: "GitHub" } } }
@@ -105,7 +111,10 @@ describe("mcpPromptSection", () => {
     expect(section).toContain("`mcp__github__tool_1`(a, b) — Tool number 1");
     expect(section).toContain('### Server "linear"');
     expect(section).toContain("`mcp__linear__issue`(a, b)");
-    expect(section).not.toContain(MCP_SEARCH_TOOL);
+    // Discovery tools are now always present (even under the cap) so the
+    // model can find tools not shown in the prompt roster.
+    expect(section).toContain(MCP_SEARCH_TOOL);
+    expect(section).toContain(MCP_DESCRIBE_TOOL);
   });
 
   it("lists every name plus meta-tool guidance over the cap", () => {
@@ -174,5 +183,44 @@ describe("executeMcpMetaTool", () => {
   it("rejects unknown meta tool names and missing tool args", () => {
     expect(executeMcpMetaTool("mcp_frobnicate", {}, tools)).toContain("unknown meta tool");
     expect(executeMcpMetaTool(MCP_DESCRIBE_TOOL, {}, tools)).toContain('requires "tool"');
+  });
+});
+
+// === E2E: the exact payload the worker sends → what the model's prompt sees ===
+// Regression for the two-half-wired bug: the worker built `mcpRemotes` but the
+// reader sent a `mcpRoster` field the zod schema silently dropped, so legacy
+// (localStorage) connectors never reached the prompt and the AI could not see
+// the user's connected servers or their tools.
+describe("legacy remotes reach the prompt (worker payload → chat route)", () => {
+  it("a legacy remote's tools appear in the MCP prompt section", () => {
+    // Shaped exactly like chat/route.ts: validators parse → BuilderTool[] → roster.
+    const parsed = {
+      mcpRemotes: [
+        {
+          id: "demo",
+          label: "Demo Server",
+          url: "https://example.com/mcp",
+          auth: "bearer" as const,
+          tools: [{ name: "demo_tool", description: "Does a demo", inputSchema: { type: "object", properties: {} } }],
+        },
+      ],
+    };
+    const legacyTools: BuilderTool[] = (parsed.mcpRemotes ?? []).flatMap((r) =>
+      (r.tools ?? []).map((t) => ({
+        server: r.id,
+        name: t.name,
+        description: t.description ?? "",
+        inputSchema: t.inputSchema ?? { type: "object", properties: {} },
+      }))
+    );
+    const roster = buildMcpRoster(legacyTools, {
+      serverMeta: Object.fromEntries(legacyTools.map((t) => [t.server, { label: "Demo Server" }])),
+    });
+    const section = mcpPromptSection(roster);
+
+    expect(roster.toolCount).toBe(1);
+    expect(roster.defs[0].name).toBe("mcp__demo__demo_tool");
+    expect(section).toContain("demo_tool");
+    expect(section).toContain("Demo Server");
   });
 });

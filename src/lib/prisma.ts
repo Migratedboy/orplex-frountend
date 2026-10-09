@@ -29,9 +29,13 @@ function buildPrismaClient() {
   });
 }
 
+// Reuse one client per process (HMR / repeated module evaluation must not
+// open a second pool), and remember whether WE were the first evaluator so
+// the shutdown handlers below are registered exactly once.
+const hadClient = !!globalForPrisma.prisma;
 export const prisma = globalForPrisma.prisma || buildPrismaClient();
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+if (!hadClient) globalForPrisma.prisma = prisma;
 
 // Graceful shutdown handler (Node.js pattern 11)
 // Clean up database connections on process termination
@@ -42,8 +46,14 @@ const gracefulShutdown = async (signal: string) => {
   process.exit(0);
 };
 
-// Register shutdown handlers only once
-if (!globalForPrisma.prisma) {
+// Register shutdown handlers only once PER PROCESS. The old guard read
+// `globalForPrisma.prisma` AFTER the assignment above, so it was never true
+// in dev — Ctrl+C never disconnected cleanly — and always true in prod.
+// Jest workers must not register: a signal listener keeps the worker's event
+// loop alive and reintroduces the leaked-handle hangs `forceExit` papers over.
+const shutdownFlag = globalThis as unknown as { __orplexPrismaShutdown?: boolean };
+if (!shutdownFlag.__orplexPrismaShutdown && process.env.JEST_WORKER_ID === undefined) {
+  shutdownFlag.__orplexPrismaShutdown = true;
   process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
   process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 }

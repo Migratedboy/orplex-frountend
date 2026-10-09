@@ -25,14 +25,16 @@ AI coding assistant with streaming chat, conversation history, file context, OAu
 - **Keyboard Shortcuts** - Ctrl+K search, Ctrl+N new chat, Esc stop generation
 - **Mobile Responsive** - Hamburger menu, responsive layout
 
-## In Development
+## Where to look next
 
-- Real agent loop with tool execution (read/write/edit files, run commands)
-- Repository indexing and code search
-- Test runner integration
-- Git integration and PR creation
-- Code diff viewer with accept/reject
-- Task persistence and history
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the Electron shell, agent runtime,
+  API layer, and data stores actually fit together (the source of truth).
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** / **[SECURITY.md](SECURITY.md)** —
+  workflow and vulnerability reporting.
+
+> This section used to list the agent loop, git integration, code review, and
+> task persistence as "in development". All of them ship now — see Current
+> Features above.
 
 ## Getting Started
 

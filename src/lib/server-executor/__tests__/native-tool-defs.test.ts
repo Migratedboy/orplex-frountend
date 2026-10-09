@@ -21,6 +21,23 @@ describe("buildNativeToolDefs", () => {
     expect(sp.parameters).toMatchObject({ required: ["section", "content"] });
   });
 
+  it("exposes the playbook tools with required args", () => {
+    const defs = buildNativeToolDefs([]);
+    const names = defs.map((d) => d.name);
+    expect(names).toEqual(
+      expect.arrayContaining(["playbook_search", "skill_create", "session_search"])
+    );
+    expect(defs.find((d) => d.name === "playbook_search")!.parameters).toMatchObject({
+      required: ["query"],
+    });
+    expect(defs.find((d) => d.name === "skill_create")!.parameters).toMatchObject({
+      required: ["title", "text"],
+    });
+    expect(defs.find((d) => d.name === "session_search")!.parameters).toMatchObject({
+      required: ["query"],
+    });
+  });
+
   it("maps MCP tools to the mcp__server__tool convention with their schema", () => {
     const defs = buildNativeToolDefs([
       { server: "fs", name: "search", description: "Search files", inputSchema: { type: "object", properties: { q: { type: "string" } }, required: ["q"] } },
@@ -33,7 +50,14 @@ describe("buildNativeToolDefs", () => {
 
   it("degrades a non-object MCP inputSchema to a safe empty schema", () => {
     const defs = buildNativeToolDefs([{ server: "x", name: "t", description: "d", inputSchema: "garbage" }]);
-    expect(defs[defs.length - 1].parameters).toEqual({ type: "object", properties: {} });
+    // The last def is now mcp_describe_tool (always-on meta tool). The MCP
+    // tool's own schema is the second-to-last def; it degrades to the empty
+    // object schema.
+    const mcpDef = defs.find((d) => d.name === "mcp__x__t")!;
+    expect(mcpDef.parameters).toEqual({ type: "object", properties: {} });
+    // Always-on meta tools are present.
+    expect(defs.some((d) => d.name === "mcp_search_tools")).toBe(true);
+    expect(defs.some((d) => d.name === "mcp_describe_tool")).toBe(true);
   });
 
   it("merges SDK-lane snapshot tools (remoteTools) with stdio defs", () => {

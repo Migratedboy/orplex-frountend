@@ -129,7 +129,12 @@ export async function enforceDailyQuota(
     };
   }
 
-  await incrementUserQuota(userId);
+  try {
+    await incrementUserQuota(userId);
+  } catch {
+    // Fail-open like the burst limiter: a quota-write failure must never
+    // turn an allowed request into a 500 (the check above already passed).
+  }
   return { ok: true };
 }
 
@@ -158,7 +163,11 @@ export function validateRequestBody(
       ),
     };
   }
-  return { ok: true, data: parsed.data, userId: "" };
+  return {
+    ok: true,
+    data: parsed.data as ChatMessageInput & { mcpRemotes?: Array<{ id: string; label: string; url: string; auth: "oauth" | "bearer" | "none"; tools?: Array<{ name: string; description?: string; inputSchema?: unknown }> }> },
+    userId: "",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -376,10 +385,10 @@ export async function fetchWithProviderRetry(
       if ((res.status === 429 || res.status >= 500) && attempt < maxAttempts) {
         // Free-tier providers send retry-after up to 60s; honoring it fully
         // can stall a chat for minutes. Cap the wait and fail over quickly.
-        const retryAfter = Math.min(
-          parseInt(res.headers.get("retry-after") || "3", 10),
-          10,
-        );
+        // NOTE: a garbage header parses to NaN, and Math.min(NaN, 10) is NaN
+        // → setTimeout(NaN) fires immediately (hot retry loop). Guard it.
+        const retryAfterRaw = parseInt(res.headers.get("retry-after") || "3", 10);
+        const retryAfter = Math.min(Number.isFinite(retryAfterRaw) ? Math.max(retryAfterRaw, 1) : 3, 10);
         await new Promise((r) => setTimeout(r, retryAfter * 1000));
         continue;
       }

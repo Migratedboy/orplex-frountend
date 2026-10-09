@@ -20,9 +20,8 @@ describe("buildToolRoster", () => {
 });
 
 describe("buildSystemPrompt — code mode (full)", () => {
-  const prompt = buildSystemPrompt({ mode: "code" });
-
-  it("contains all ten sections in priority order", () => {
+  it("contains all ten sections in priority order", async () => {
+    const prompt = await buildSystemPrompt({ mode: "code" });
     const sections = [
       "You are Orplex Code",
       "## PRIME DIRECTIVES",
@@ -43,41 +42,45 @@ describe("buildSystemPrompt — code mode (full)", () => {
     }
   });
 
-  it("teaches the verify-until-PASS loop and the own-browser suite", () => {
+  it("teaches the verify-until-PASS loop and the own-browser suite", async () => {
+    const prompt = await buildSystemPrompt({ mode: "code" });
     expect(prompt).toContain("verify_app");
     expect(prompt).toContain("browser_read");
     expect(prompt).toContain("browser_console");
   });
 
-  it("has NO contradiction: formatting section never instructs code fences for building", () => {
+  it("has NO contradiction: formatting section never instructs code fences for building", async () => {
+    const prompt = await buildSystemPrompt({ mode: "code" });
     const formatting = prompt.slice(prompt.indexOf("## FORMATTING"));
     // The only fence mention must carry the restriction, not an instruction to use them.
     expect(formatting).toMatch(/ONLY when the user explicitly asked/);
   });
 
-  it("does not claim a stale tool count anywhere", () => {
+  it("does not claim a stale tool count anywhere", async () => {
+    const prompt = await buildSystemPrompt({ mode: "code" });
     // The old prompt said "14 tools" — any number that isn't the live length is a bug.
     expect(prompt).not.toMatch(/\b(13|14|15) tools\b/);
     expect(prompt).toContain(`${M3_TOOL_DEFINITIONS.length} tools`);
   });
 
-  it("does not contradict autonomy with approval demands", () => {
+  it("does not contradict autonomy with approval demands", async () => {
+    const prompt = await buildSystemPrompt({ mode: "code" });
     // The old SAFETY block demanded approval before every write — fighting the product.
     expect(prompt).not.toContain("ALWAYS ask for approval before running commands or writing files");
   });
 });
 
 describe("buildSystemPrompt — plan mode overlay", () => {
-  it("produces a planning prompt, not an implementation prompt", () => {
-    const prompt = buildSystemPrompt({ mode: "plan" });
+  it("produces a planning prompt, not an implementation prompt", async () => {
+    const prompt = await buildSystemPrompt({ mode: "plan" });
     expect(prompt).toContain("## PLAN MODE");
     expect(prompt).toContain("Do not write implementation files");
   });
 });
 
 describe("buildSystemPrompt — ask mode", () => {
-  it("is lean, toolless, and forbids file creation", () => {
-    const prompt = buildSystemPrompt({ mode: "ask" });
+  it("is lean, toolless, and forbids file creation", async () => {
+    const prompt = await buildSystemPrompt({ mode: "ask" });
     expect(prompt).toContain("no tools, no file writes");
     expect(prompt).toContain("CODE mode");
     expect(prompt).not.toContain("## TOOL DOCTRINE");
@@ -85,14 +88,14 @@ describe("buildSystemPrompt — ask mode", () => {
 });
 
 describe("buildSystemPrompt — compact profile", () => {
-  const full = buildSystemPrompt({ mode: "code" });
-  const compact = buildSystemPrompt({ mode: "code", profile: "compact" });
-
-  it("is meaningfully smaller (< 40% of full)", () => {
+  it("is meaningfully smaller (< 40% of full)", async () => {
+    const full = await buildSystemPrompt({ mode: "code" });
+    const compact = await buildSystemPrompt({ mode: "code", profile: "compact" });
     expect(compact.length).toBeLessThan(full.length * 0.4);
   });
 
-  it("preserves the five essentials that keep behavior stable", () => {
+  it("preserves the five essentials that keep behavior stable", async () => {
+    const compact = await buildSystemPrompt({ mode: "code", profile: "compact" });
     expect(compact).toContain("write_file");
     expect(compact).toContain("todo_list");
     expect(compact).toContain("VERIFY");
@@ -100,35 +103,35 @@ describe("buildSystemPrompt — compact profile", () => {
     expect(compact).toContain("failing call");
   });
 
-  it("works for every mode and effort without throwing", () => {
+  it("works for every mode and effort without throwing", async () => {
     for (const mode of ["ask", "code", "plan"] as const) {
       for (const effort of ["low", "medium", "high"] as const) {
         for (const profile of ["full", "compact"] as const) {
-          expect(() => buildSystemPrompt({ mode, effort, profile })).not.toThrow();
+          await expect(buildSystemPrompt({ mode, effort, profile })).resolves.toBeDefined();
         }
       }
     }
   });
 
-  it("applies the effort style block when effort is low or high", () => {
-    expect(buildSystemPrompt({ mode: "code", effort: "low" })).toContain("CONCISE");
-    expect(buildSystemPrompt({ mode: "code", effort: "high" })).toContain("THOROUGH");
-    expect(buildSystemPrompt({ mode: "code", effort: "medium" })).not.toContain("CONCISE");
+  it("applies the effort style block when effort is low or high", async () => {
+    expect(await buildSystemPrompt({ mode: "code", effort: "low" })).toContain("CONCISE");
+    expect(await buildSystemPrompt({ mode: "code", effort: "high" })).toContain("THOROUGH");
+    expect(await buildSystemPrompt({ mode: "code", effort: "medium" })).not.toContain("CONCISE");
   });
 });
 
 describe("runtime directives moved from the worker", () => {
-  it("covers the plan-first gate, force-tools, truncation, and repair prompts", () => {
+  it("covers the plan-first gate, force-tools, truncation, and repair prompts", async () => {
     expect(SPARC_PLAN_DIRECTIVE).toContain("todo_list");
     expect(SPARC_PLAN_DIRECTIVE).toContain("gate WILL block");
     expect(FORCE_TOOLS_DIRECTIVE).toContain("write_file NOW");
     expect(FORCE_BROWSER_TOOLS_DIRECTIVE).toContain("browser_navigate NOW");
     expect(FORCE_BROWSER_TOOLS_DIRECTIVE).toContain("Do NOT write Selenium");
-    expect(buildSystemPrompt({ mode: "code" })).toContain("auto-attached");
-    expect(buildSystemPrompt({ mode: "code" })).toContain("<tool_call>");
-    expect(buildSystemPrompt({ mode: "code" })).toContain("## SCRATCHPAD");
-    expect(buildSystemPrompt({ mode: "plan" })).toContain("## SCRATCHPAD");
-    expect(buildSystemPrompt({ mode: "ask" })).not.toContain("## SCRATCHPAD");
+    expect(await buildSystemPrompt({ mode: "code" })).toContain("auto-attached");
+    expect(await buildSystemPrompt({ mode: "code" })).toContain("<tool_call>");
+    expect(await buildSystemPrompt({ mode: "code" })).toContain("## SCRATCHPAD");
+    expect(await buildSystemPrompt({ mode: "plan" })).toContain("## SCRATCHPAD");
+    expect(await buildSystemPrompt({ mode: "ask" })).not.toContain("## SCRATCHPAD");
     expect(truncationContinue("src/app.tsx")).toContain("src/app.tsx");
     expect(truncationContinue(undefined)).not.toContain("undefined");
     expect(qualityReviewDirective("- line 3: any")).toContain("- line 3: any");

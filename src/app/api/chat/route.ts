@@ -16,9 +16,10 @@ import { sseTransform } from "@/lib/ai-providers";
 import { isMockAiEnabled, createMockProviderStream } from "@/lib/mock-ai";
 import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS, usesCompactTools } from "@/lib/tool-definitions";
 import { buildSystemPrompt } from "@/lib/master-prompt";
-import { buildMcpRoster, mcpPromptSection, toOpenAiFunctions } from "@/lib/mcp/tool-builder";
+import { buildMcpRoster, mcpPromptSection, toOpenAiFunctions, type BuilderTool } from "@/lib/mcp/tool-builder";
 import { listSnapshotToolsByServer } from "@/lib/mcp/tool-snapshot";
 import { refreshMissingSnapshots as refreshMissingMcpSnapshots } from "@/lib/mcp/roster-refresh";
+import { getMcpCatalogEntry } from "@/lib/mcp-catalog";
 import { routeToModel } from "@/lib/model-router";
 import { preprocessMessages } from "@/lib/vision-preprocessor";
 import { recordProviderEvent } from "@/lib/provider-uptime";
@@ -69,7 +70,26 @@ export async function POST(request: NextRequest) {
     // just-connected server's tools are visible on the very next turn (not "next
     // fetch"). Errors swallowed — an unreachable server is not a chat failure.
     await refreshMissingMcpSnapshots(userId).catch(() => {});
-    const mcpRoster = buildMcpRoster(await listSnapshotToolsByServer(userId).catch(() => []));
+    const sdkTools = await listSnapshotToolsByServer(userId).catch(() => []);
+    // Legacy-lane remotes (localStorage client) are sent by the worker in the
+    // request body so the server-side prompt can include them. The legacy lane
+    // dispatches through the in-process client (findRemote + withConnection) but
+    // needs the prompt to tell the model the tools exist. Merge both stores so
+    // the model sees every connected server regardless of lane.
+    const legacyTools: BuilderTool[] = (parsed.mcpRemotes ?? []).flatMap((r) =>
+      (r.tools ?? []).map((t) => ({
+        server: r.id,
+        name: t.name,
+        description: t.description ?? "",
+        inputSchema: t.inputSchema ?? { type: "object", properties: {} },
+      }))
+    );
+    const mcpRoster = buildMcpRoster([...sdkTools, ...legacyTools], {
+      serverMeta: Object.fromEntries(
+        [...sdkTools, ...legacyTools]
+          .map((t) => [t.server, { label: getMcpCatalogEntry(t.server)?.name ?? t.server }])
+      ),
+    });
     const mcpSection = mcpPromptSection(mcpRoster);
 
     // --- Step 5: Build messages (with vision preprocessing) ---
@@ -173,11 +193,13 @@ export async function POST(request: NextRequest) {
             // The Master Prompt: one composed source of truth per mode —
             // full doctrine on turn 1, compact on repair/continue turns
             // (profile arrives from the worker via the request body).
-            content: buildSystemPrompt({
+            content: await buildSystemPrompt({
               mode,
               effort,
               profile: isGroq ? "compact" : parsed.profile === "compact" ? "compact" : "full",
               capabilities: { browser: true },
+              task: userPrompt,
+              projectId: userId,
               mcpSection,
             }),
           },

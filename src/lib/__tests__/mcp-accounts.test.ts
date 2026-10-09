@@ -128,11 +128,11 @@ describe("listConnectedServers (masking)", () => {
 
   it("masks connection strings too (they are marked secret in the catalog)", async () => {
     mocked.findMany.mockResolvedValue([
-      row({ serverId: "postgres", env: { POSTGRES_CONNECTION_STRING: encryptKey("postgres://u:p@h/db") } }) as never,
+      row({ serverId: "postgres", env: { DATABASE_URI: encryptKey("postgres://u:p@h/db") } }) as never,
     ]);
     const servers = await listConnectedServers(USER);
-    expect(servers[0].secretsSet).toContain("POSTGRES_CONNECTION_STRING");
-    expect(servers[0].env.POSTGRES_CONNECTION_STRING).not.toContain("postgres://");
+    expect(servers[0].secretsSet).toContain("DATABASE_URI");
+    expect(servers[0].env.DATABASE_URI).not.toContain("postgres://");
   });
 });
 

@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { FREE_TIER } from "@/lib/free-tier/quota-manager";
+import { publicErrorMessage } from "@/lib/errors";
 
 export async function POST(_request: NextRequest) {
   try {
@@ -83,7 +84,7 @@ export async function POST(_request: NextRequest) {
     });
   } catch (error) {
     return Response.json(
-      { error: (error as Error).message || "Signup failed" },
+      { error: publicErrorMessage(error, "Signup failed") },
       { status: 500 },
     );
   }

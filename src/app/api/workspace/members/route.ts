@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getWorkspaceMembers, hasRole } from "@/lib/workspace/workspace-manager";
+import { publicErrorMessage } from "@/lib/errors";
 
 export async function GET(request: NextRequest) {
   try {
@@ -28,7 +29,7 @@ export async function GET(request: NextRequest) {
     return Response.json({ members });
   } catch (error) {
     return Response.json(
-      { error: (error as Error).message || "Failed to get members" },
+      { error: publicErrorMessage(error, "Failed to get members") },
       { status: 500 }
     );
   }

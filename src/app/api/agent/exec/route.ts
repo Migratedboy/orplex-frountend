@@ -14,31 +14,11 @@
 import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
-import { isCommandAllowed } from "@/lib/exec-guard";
+import { isCommandAllowed, buildSafeEnv } from "@/lib/exec-guard";
 import { TIMEOUTS, LIMITS } from "@/lib/constants";
 import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
 import { dispatchSandbox, isSandboxConfigured } from "@/lib/ci-sandbox";
-
-// Environment variables to strip — never pass secrets to child processes
-const BLOCKED_ENV_KEYS = [
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "AZURE_CLIENT_SECRET",
-  "GITHUB_TOKEN",
-  "GH_TOKEN",
-  "NPM_TOKEN",
-  "DOCKER_PASSWORD",
-  "DATABASE_URL",
-  "NEXTAUTH_SECRET",
-  "JWT_SECRET",
-  "PRIVATE_KEY",
-  "SECRET_KEY",
-  "API_KEY",
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "BUGSINK_DSN",
-  "E2B_API_KEY",
-];
+import { publicErrorMessage } from "@/lib/errors";
 
 /**
  * Kill switch for hosted deployments. Set AGENT_EXEC_DISABLED=1 anywhere the
@@ -48,23 +28,6 @@ const BLOCKED_ENV_KEYS = [
  */
 export function checkExecEnabled(): boolean {
   return process.env.AGENT_EXEC_DISABLED !== "1";
-}
-
-function buildSafeEnv(): Record<string, string> {
-  const safeEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined) continue;
-    const upperKey = key.toUpperCase();
-    if (BLOCKED_ENV_KEYS.some((blocked) => upperKey.includes(blocked))) continue;
-    safeEnv[key] = value;
-  }
-  // Do NOT pin NODE_ENV: the executed project may be production or development.
-  // Pinning "development" made every spawned build/tool behave like a dev
-  // process (extra debug output, different bundler modes) regardless of what
-  // the workspace actually is. Callers that need a specific mode set it
-  // explicitly in their command.
-  delete safeEnv.NODE_ENV;
-  return safeEnv;
 }
 
 export async function POST(request: NextRequest) {
@@ -150,7 +113,12 @@ export async function POST(request: NextRequest) {
           typeof timeout === "number" && timeout > 0 ? timeout : TIMEOUTS.SANDBOX_EXEC,
           TIMEOUTS.SANDBOX_EXEC
         ),
-        maxBuffer: maxBuffer || LIMITS.EXEC_BUFFER,
+        // Clamp caller-supplied maxBuffer: an unbounded buffer (e.g. 1e9)
+        // lets one command OOM the server. Never exceed the platform cap.
+        maxBuffer: Math.min(
+          typeof maxBuffer === "number" && maxBuffer > 0 ? maxBuffer : LIMITS.EXEC_BUFFER,
+          LIMITS.EXEC_BUFFER
+        ),
         cwd,
         env: safeEnv as NodeJS.ProcessEnv,
         shell: isWin ? (process.env.ComSpec || "cmd.exe") : "/bin/sh",
@@ -204,7 +172,7 @@ export async function POST(request: NextRequest) {
     }
   } catch (error) {
     return Response.json(
-      { error: (error as Error).message || "Internal error" },
+      { error: publicErrorMessage(error, "Internal error") },
       { status: 500 }
     );
   }

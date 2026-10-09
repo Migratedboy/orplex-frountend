@@ -57,7 +57,19 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
     tokenUsage?: number;
     retries?: number;
   } = {};
-  if (result !== undefined) checkpoint.result = result;
+  // Bound the checkpoint payload: an unbounded `result` JSON bloats the row.
+  if (result !== undefined) {
+    let size = 0;
+    try {
+      size = JSON.stringify(result)?.length ?? 0;
+    } catch {
+      return NextResponse.json({ success: false, error: "result is not JSON-serializable" }, { status: 400 });
+    }
+    if (size > 256 * 1024) {
+      return NextResponse.json({ success: false, error: "result too large (256 KB cap)" }, { status: 413 });
+    }
+    checkpoint.result = result;
+  }
   if (typeof tokenUsage === "number" && tokenUsage >= 0) checkpoint.tokenUsage = tokenUsage;
   if (typeof retries === "number" && retries >= 0) checkpoint.retries = retries;
 

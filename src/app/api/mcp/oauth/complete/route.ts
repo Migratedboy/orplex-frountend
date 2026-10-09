@@ -7,8 +7,7 @@
 // bind it to the session user, exchange through the SDK's finishAuth.
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { getMcpSession } from "@/lib/mcp-auth";
 import { completeAuthorization, type CompleteErrorCode } from "@/lib/mcp/oauth/flow";
 import { refreshServerSnapshot } from "@/lib/mcp/roster-refresh";
 
@@ -23,7 +22,7 @@ function statusFor(code: CompleteErrorCode): number {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(jwtOnlyOptions);
+  const session = await getMcpSession();
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
   }
