@@ -78,7 +78,7 @@ npm run electron:dist# package installers (NSIS / DMG / AppImage)
 
 | Piece | File | What it does |
 |---|---|---|
-| Main process | `electron/main.ts` | Owns the Next child process, embedded Postgres bootstrap (`scripts/local-db.mjs`, port 5433; skipped entirely in `ORPLEX_LIGHTWEIGHT=1` mode), single-instance lock, port takeover, IPC for preview + agent browser, tray wiring |
+| Main process | `electron/main.ts` | Owns the Next child process, embedded Postgres bootstrap (`scripts/local-db.mjs`, port 5433; skipped entirely in `ORPLEX_LIGHTWEIGHT=1` mode), single-instance lock, port takeover, IPC for preview + agent browser, tray wiring, graceful shutdown (SIGTERM/SIGINT cleanup registry, cron-reset + backup cron in instrumentation) |
 | Preload bridge | `electron/preload.ts` | `window.orplexDesktop`: `preview.*` (create/navigate/bounds/show/back/forward/reload/screenshot/events), `agentBrowser.*` (show/showId/getId/navigate/read/elements/interact+ref/console/find/waitFor/hover/select/tabs/network/screenshot(fullPage,viewport)/evaluate), `openExternal`, `getPathForFile`, versions |
 | Tray | `electron/tray.ts` | Static template icon + native notifications; polls the local run-board summary and fires on status transitions only |
 | Window | `electron/main.ts` | 1440×900, dark background, menu (View/Edit roles), `window.open` → OS browser |
@@ -288,6 +288,7 @@ instead of hanging.
 | Failure memory | `failure-memory.ts` | Cross-turn/cross-task record of real failures feeding the doctrine |
 | Run ledger | `run-ledger.ts` | Browser client over Postgres (`task_runs`/`task_failures`) — learning survives restarts |
 | Semantic cache | `semantic-cache.ts` | Very similar past tasks offered as reference context |
+| Playbook | `playbook.ts` | Learning loop: derive patterns from completed runs, merge into searchable playbooks, inject into prompts via `## PLAYBOOK` section (server-only, gated) |
 | Vector/eval memory | `eval/` | (Earlier RAG/pgvector/sona façades were removed and replaced by workspace-memory.) |
 
 ## 10. Models & Providers
@@ -346,6 +347,12 @@ instead of hanging.
 - **MCP**: `mcp-client.ts` (150-line wire-protocol stdio client, low-spec
   budget), `mcp-gateway.ts` + `/api/mcp` (token-gated, timing-safe) with
   `scripts/orplex-mcp-server.mjs` stdio proxy — drive Orplex from any MCP host.
+  Hardened: argv/URL validation in connectServer, spawn re-check, session key
+  by user, Electron SSRF gates, OAuth verifier encryption, scope wipe on
+  needs_reauth/disconnect, verify-fail wipes grant, strict risk booleans,
+  catalog OAuth entries fixed, plugin-bundles prototype guards, hub waiter
+  settlement, transport regex fix, native arg pass-through, executor
+  target-wins ordering.
 
 ## 12. Terminal & Dev Servers
 
@@ -453,6 +460,25 @@ production); workspaces with owner/admin/member roles
 (`/api/workspace/*`, `/api/workspaces/*` incl. parallel-workspace
 create/destroy/merge); users' own API keys per provider; quotas per tier.
 
+**Security posture**:
+- 7-day session maxAge with daily rotation (`updateAge: 24h`) — stolen cookies
+  expire within a week even if the user never signs out.
+- `allowDangerousEmailAccountLinking` disabled — OAuth providers cannot
+  auto-link to existing accounts by email.
+- Desktop OAuth flow uses double-submit cookie binding (`orplex_desktop_flow`)
+  to prevent login CSRF — only the browser that initiated the flow can arm
+  the one-time code.
+- Desktop auth routes are rate-limited by client IP (`clientIp()` helper:
+  x-real-ip first, x-forwarded-for fallback).
+- Admin surface fails closed: `ADMIN_USER_IDS` unset in production denies all
+  admin access (loudly, so it reads as misconfiguration).
+- MarkdownRenderer allowlists `https:`/`mailto:` for links and
+  `https:`/`data:image/` for images — `javascript:`/`data:` URIs are stripped.
+- Electron `setWindowOpenHandler` only allows `http(s):` URLs — `file:`,
+  `javascript:`, and custom schemes are denied.
+- Sync hub signatures use timing-safe comparison (double-hash) — no timing
+  oracle for HMAC verification.
+
 ## 17. Quality Infrastructure
 
 - **Eval harness**: `eval/` — 52 tasks across 10 categories (type errors,
@@ -489,7 +515,7 @@ create/destroy/merge); users' own API keys per provider; quotas per tier.
   agent command hook (`ORPLEX_SWE_AGENT_CMD`) and verifies green. Documented
   caveat: measures the dataset's own test commands on plain clones — not the
   official dockerized evaluation.
-- **Tests**: 107 Jest suites (~1000 tests) under `src/**/__tests__`; Playwright
+- **Tests**: 123 Jest suites (~1205 tests) under `src/**/__tests__`; Playwright
   E2E (`e2e/chat.spec.ts`, `e2e/seed.spec.ts`) using the mock-AI seam.
 - **Custom ESLint rules**: `tools/eslint-rules/`; wiring auditor
   (`scripts/audit-wiring.mjs`).
@@ -635,7 +661,10 @@ create/destroy/merge); users' own API keys per provider; quotas per tier.
 | `storage-service.ts` / `sync-transport.ts` / `checkpoint-sync.ts` | Content blobs / peer sync |
 | `audit-bundle.ts` | Hash-chained flight recorder |
 | `run-sync.ts` | Live→AgentRun mirroring |
-| `rate-limiter.ts` / `rate-limit-store.ts` | Sliding-window limits |
+| `rate-limiter.ts` / `rate-limit-store.ts` | Sliding-window limits + `clientIp()` helper |
+| `desktop-auth.ts` | Desktop OAuth one-time codes + flow cookie binding |
+| `playbook.ts` | Learning loop: derive/merge/search playbooks from completed runs |
+| `admin-auth.ts` | Admin gate (fails closed in production when unset) |
 | `dev-seed.ts` / `client-signatures.ts` | Dev data / signatures |
 | `user-hooks.ts` / `user-skills.ts` | User extension files |
 
@@ -692,6 +721,7 @@ claim, `[id]`, `[id]/approve`, `[id]/events`, `[id]/export` (+verify),
 **Free tier**: `signup`, `usage`, `/api/user/quota`.
 **Interop**: `/api/mcp` (token-gated gateway), `/api/sync/push|pull`,
 `/api/search` (Google→Bing chain), `/api/plugins` (registry).
+**Learning**: `/api/playbook` (+`[id]`, `capture`), `/api/session-search`.
 
 ## Electron, CLI, Extension, Scripts, E2E
 
