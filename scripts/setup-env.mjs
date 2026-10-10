@@ -34,7 +34,7 @@ const GENERATORS = {
 };
 
 // Required to boot (fail --check when missing).
-const REQUIRED = ["DATABASE_URL", "NEXTAUTH_SECRET"];
+const REQUIRED = ["DATABASE_URL", "DIRECT_URL", "NEXTAUTH_SECRET"];
 // Required in real production (warn, don't fail — CI/dev don't need them).
 const PROD_WARN = ["ENCRYPTION_SECRET"];
 // At least one of these should exist (warn only).
@@ -44,7 +44,7 @@ const PROVIDER_KEYS = ["NVIDIA_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "
 const LOCALHOST_RE = /localhost|127\.0\.0\.1|user:password|changeme|example\.com/i;
 // Keys pushed by --vercel (everything else stays local-only).
 const VERCEL_PUSH_KEYS = new Set([
-  "NEXTAUTH_SECRET", "NEXTAUTH_URL", "DATABASE_URL", "ENCRYPTION_SECRET",
+  "NEXTAUTH_SECRET", "NEXTAUTH_URL", "DATABASE_URL", "DIRECT_URL", "ENCRYPTION_SECRET",
   "ADMIN_USER_IDS", "CRON_SECRET", "MIN_SUPPORTED_APP_VERSION",
   "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "NVIDIA_API_KEY", "GROQ_API_KEY", "AI_PROVIDER",
   "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET",

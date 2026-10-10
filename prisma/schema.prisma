@@ -13,10 +13,11 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  // NOTE: no directUrl — env("DIRECT_URL") hard-fails validate/generate/runtime
-  // whenever the var is unset (P1012), and .env edits are out of bounds.
-  // Hosted migration (backend mirror) adds directUrl + supplies DIRECT_URL
-  // inline at that time. Tracked as C4 in docs/MCP-OAUTH.md.
+  // Direct (non-pooled) connection for migrations: `prisma migrate deploy`
+  // uses advisory locks, which fail on transaction-mode poolers. Runtime
+  // keeps using the pooler URL above. DIRECT_URL must be set everywhere
+  // DATABASE_URL is (local .env, Vercel dashboard, CI).
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
