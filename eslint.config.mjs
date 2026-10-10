@@ -26,5 +26,7 @@ export default defineConfig([
       "no-unix-shell-in-exec/no-unix-shell-in-exec": "error",
     },
   },
-  globalIgnores([".next/**", "node_modules/**", "docs-site/.docusaurus/**", "docs-site/build/**", "logo/**", "electron-dist/**", "release/**", "tmp/**"]),
+  // .cloud-fix/ is a stale, divergent snapshot of the app (not built, not
+  // imported, not shipped) — linting it just hides the real findings.
+  globalIgnores([".next/**", "node_modules/**", "docs-site/.docusaurus/**", "docs-site/build/**", "logo/**", "electron-dist/**", "release/**", "tmp/**", ".cloud-fix/**"]),
 ]);

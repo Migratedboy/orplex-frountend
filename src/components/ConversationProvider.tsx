@@ -42,23 +42,43 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchConversations = useCallback(() => {
-    if (!session?.user?.id) return;
+  const fetchConversations = useCallback(async (signal?: AbortSignal) => {
+    if (!session?.user?.id) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
-    apiFetch("/api/conversations")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.conversations) setConversations(data.conversations);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+    try {
+      const res = await apiFetch("/api/conversations", { signal });
+      if (signal?.aborted) return;
+      if (!res.ok) {
+        setLoading(false); // keep last good list, but never spin forever
+        return;
+      }
+      const data = await res.json();
+      if (signal?.aborted) return;
+      if (data.conversations) setConversations(data.conversations);
+    } catch {
+      // Keep last good state on network failure.
+    } finally {
+      if (!signal?.aborted) setLoading(false);
+    }
   }, [session?.user?.id]);
 
-  // Fetch on mount, when session changes, and every 30s for background updates
+  // Fetch on mount, when session changes, and every 30s for background updates.
+  // Aborted on unmount/session change so a slow list can't overwrite fresh
+  // state; overlapping polls are skipped so responses can't land out of order.
   useEffect(() => {
-    fetchConversations();
-    const interval = setInterval(fetchConversations, 30000);
-    return () => clearInterval(interval);
+    const ctrl = new AbortController();
+    let busy = false;
+    const tick = () => {
+      if (ctrl.signal.aborted || busy) return;
+      busy = true;
+      void fetchConversations(ctrl.signal).finally(() => { busy = false; });
+    };
+    tick();
+    const interval = setInterval(tick, 30000);
+    return () => { clearInterval(interval); ctrl.abort(); };
   }, [fetchConversations]);
 
   const renameConversation = useCallback(async (id: string, title: string) => {
@@ -67,11 +87,14 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       prev.map((c) => (c.id === id ? { ...c, title } : c))
     );
     try {
-      await apiFetch(`/api/conversations/${id}`, {
+      // NOTE: apiFetch only throws on network failure — HTTP 4xx/5xx must be
+      // checked explicitly or the optimistic update wrongly persists.
+      const res = await apiFetch(`/api/conversations/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
       });
+      if (!res.ok) fetchConversations(); // revert on rejection
     } catch {
       // Revert on failure
       fetchConversations();
@@ -82,7 +105,8 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     // Optimistic update — remove from local state immediately.
     setConversations((prev) => prev.filter((c) => c.id !== id));
     try {
-      await apiFetch(`/api/conversations/${id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/conversations/${id}`, { method: "DELETE" });
+      if (!res.ok) fetchConversations(); // revert on rejection
     } catch {
       // Revert on failure
       fetchConversations();

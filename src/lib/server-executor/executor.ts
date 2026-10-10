@@ -529,7 +529,7 @@ async function executeTool(
 
     if (mcpRunConfigs && mcpRunConfigs[parsed.server]) {
       try {
-        const handle = await getMcpServerForRun(parsed.server, mcpRunConfigs);
+        const handle = await getMcpServerForRun(parsed.server, mcpRunConfigs, mcpExtras?.userId ?? "unknown");
         return await handle.callTool(parsed.tool, call as Record<string, unknown>);
       } catch (err) {
         return `error: ${(err as Error).message.slice(0, 500)}`;
@@ -583,7 +583,7 @@ async function executeTool(
 
       if (mcpRunConfigs && mcpRunConfigs[parsed.server]) {
         try {
-          const handle = await getMcpServerForRun(parsed.server, mcpRunConfigs);
+          const handle = await getMcpServerForRun(parsed.server, mcpRunConfigs, mcpExtras?.userId ?? "unknown");
           return await handle.callTool(parsed.tool, args);
         } catch (err) {
           return `error: ${(err as Error).message.slice(0, 500)}`;
@@ -1009,7 +1009,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         ensureMcpReaper();
         for (const serverName of Object.keys(mcpRunConfigs)) {
           try {
-            const handle = await getMcpServerForRun(serverName, mcpRunConfigs);
+            const handle = await getMcpServerForRun(serverName, mcpRunConfigs, run.userId);
             const tools = await handle.listTools();
             mcpTools = mcpTools.concat(tools);
           } catch (err) {
@@ -1207,7 +1207,11 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       });
 
       const calls = nativeCalls.length > 0
-        ? nativeCalls.map((c) => ({ name: c.name, ...c.args }))
+        // Target wins: a model argument literally named "name" must never
+        // overwrite the dispatch target (the sibling lanes strip it the
+        // same way; a legit `name` parameter stays undeliverable via flat
+        // calls — known limitation, documented at the dispatch sites).
+        ? nativeCalls.map((c) => ({ ...c.args, name: c.name }))
         : parseToolCalls(text)
             // Bare-JSON recovery: weak OpenAI-compatible models sometimes drop the
             // XML wrapper and emit a tool-call JSON object instead (live-observed:

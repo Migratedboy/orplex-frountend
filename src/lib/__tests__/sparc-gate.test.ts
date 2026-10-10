@@ -8,7 +8,7 @@
  *   2. A write_file before any planning is blocked with a gate message.
  *   3. After todo_list, the write goes through.
  */
-import { runInBackground } from "../background-worker";
+import { runInBackground, setFileSystemAccess } from "../background-worker";
 import { getCurrentTask, abortCurrentTask } from "../background-chat";
 import { waitFor } from "./helpers";
 
@@ -53,6 +53,16 @@ describe("SPARC plan-first gate (complex CODE tasks)", () => {
   beforeEach(() => {
     chatFetchCount = 0;
     chatBodies = [];
+    // The no-workspace guard refuses writes without registered FS access —
+    // this worker test simulates an open folder with stub file ops.
+    setFileSystemAccess(
+      async () => "[Error: not found]",
+      async () => true,
+      async () => false,
+      [],
+      {},
+      "test-workspace"
+    );
     global.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/chat")) {

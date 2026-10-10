@@ -22,6 +22,10 @@ function splitDeploymentCookies(): Partial<Record<string, CookieOption>> | undef
       ...(sameSite === "none" ? { sameSite: "none" as const } : {}),
       path: "/",
       secure: useSecure,
+      // Overriding cookies replaces NextAuth's whole cookie definition —
+      // without this the session token loses its HttpOnly flag and any XSS
+      // can steal it.
+      httpOnly: true,
     },
   });
   return {
@@ -84,12 +88,18 @@ export const authOptions: NextAuthOptions = {
           GitHubProvider({
             clientId: process.env.GITHUB_CLIENT_ID,
             clientSecret: process.env.GITHUB_CLIENT_SECRET,
-            allowDangerousEmailAccountLinking: true,
+            // NOTE: allowDangerousEmailAccountLinking is deliberately OFF —
+            // with it, anyone can register a GitHub account on a victim's
+            // email and inherit their Google-linked Orplex account (GitHub
+            // does not require the email be verified for the link). Default
+            // NextAuth behavior (verified-email-only linking) applies.
           }),
         ]
       : []),
   ],
-  session: { strategy: "jwt", maxAge: 30 * 24 * 60 * 60 },
+  // 7-day sessions, refreshed on daily use: a stolen JWT dies within a week
+  // instead of a month, and active users never notice the rotation.
+  session: { strategy: "jwt", maxAge: 7 * 24 * 60 * 60, updateAge: 24 * 60 * 60 },
   pages: { signIn: "/auth/signin" },
   ...(SPLIT_COOKIES ? { cookies: SPLIT_COOKIES } : {}),
   callbacks: {
@@ -118,7 +128,7 @@ export const jwtOnlyOptions: NextAuthOptions = {
   // providers is required by NextAuthOptions type but unused for JWT verification.
   // Empty array — getServerSession only reads secret + session callback.
   providers: [],
-  session: { strategy: "jwt", maxAge: 30 * 24 * 60 * 60 },
+  session: { strategy: "jwt", maxAge: 7 * 24 * 60 * 60, updateAge: 24 * 60 * 60 },
   pages: { signIn: "/auth/signin" },
   ...(SPLIT_COOKIES ? { cookies: SPLIT_COOKIES } : {}),
   callbacks: jwtCallbacks,

@@ -37,8 +37,17 @@ const SKIP_PARTS = new Set(["node_modules", ".next", "coverage", ".git", ".docus
 // tasks — the agent is supposed to create those routes); refs are exact.
 const REF_ALLOWLIST_FILES = ["src/lib/eval/**"];
 // api-base.test.ts exercises the fetch-seam with deliberately fake routes
-// (they assert URL construction, never a real handler).
-const REF_ALLOWLIST = new Set(["/api/ping", "/api/x"]);
+// (they assert URL construction, never a real handler). proxy-mcp-local.test.ts
+// feeds the proxy deliberately fake leaf paths too: what it asserts is that
+// /api/mcp/* never gets rewritten and that non-MCP paths always do — the
+// handlers behind those fixtures don't exist by design.
+const REF_ALLOWLIST = new Set([
+  "/api/ping",
+  "/api/x",
+  "/api/agent/mcp-tools-backup",
+  "/api/mcpx",
+  "/api/mcp/connections/supabase/disconnect",
+]);
 
 const strict = process.argv.includes("--strict");
 
@@ -61,9 +70,15 @@ function walk(dir, acc = []) {
 }
 
 // "/api/a/[id]/b" becomes "/api/a/STAR/b" (STAR = literal * segment);
+// a catch-all [...slug] becomes GLOB-GLOB-GLOB (GLOB = swallows the rest),
+// because /api/auth/[...nextauth] really does own every depth beneath it;
 // also used to normalize bracket-style doc references like "/api/agent/runs/[id]/export".
 function normalizeDynamicSegments(p) {
-  return p.replace(/\[([^\]]+)\]/g, "*").replace(/\/+$/, "").replace(/\*\/+\*/g, "*");
+  return p
+    .replace(/\[\.{3}([^\]]+)\]/g, "**")
+    .replace(/\[([^\]]+)\]/g, "*")
+    .replace(/\/+$/, "")
+    .replace(/\*\/+\*/g, "*");
 }
 
 /** Collapse template interpolation, strip the query string. */
@@ -73,12 +88,30 @@ function normalizeRef(raw) {
   return normalizeDynamicSegments(q >= 0 ? p.slice(0, q) : p);
 }
 
-/** Does a (normalized) reference point at a (normalized) route pattern? */
+/**
+ * Does a (normalized) reference point at a (normalized) route pattern?
+ *
+ * Three shapes have to work:
+ *   - exact / same-depth dynamic: /api/agent/runs/r1 → /api/agent/runs/*
+ *   - catch-all routes:           /api/auth/callback/google → /api/auth/**
+ *     (a `**` segment owns every remaining depth, as long as ≥1 segment is left)
+ *   - subtree prefix refs:        "/api/auth/" (a proxy rewrite constant) →
+ *     any route under /api/auth/… — handled by refCoversRoute below.
+ */
 function refMatchesRoute(ref, route) {
   const a = ref.split("/");
   const b = route.split("/");
-  if (a.length !== b.length) return false;
-  return a.every((seg, i) => seg === b[i] || b[i] === "*");
+  for (let i = 0; i < b.length; i++) {
+    if (b[i] === "**") return a.length > i; // [...catch-all] needs ≥1 segment left
+    if (i >= a.length) return false;
+    if (a[i] !== b[i] && b[i] !== "*") return false;
+  }
+  return a.length === b.length;
+}
+
+/** ref → route, allowing a reference to name a whole subtree of routes. */
+function refCoversRoute(ref, route) {
+  return refMatchesRoute(ref, route) || route.startsWith(`${ref}/`);
 }
 
 /** Tiny glob: ** crosses directories, * does not. */
@@ -143,7 +176,7 @@ const allowed = [];
 const matched = [];
 
 for (const [ref, locs] of [...refs.entries()].sort()) {
-  if ([...routes.keys()].some((route) => refMatchesRoute(ref, route))) {
+  if ([...routes.keys()].some((route) => refCoversRoute(ref, route))) {
     matched.push(ref);
     continue;
   }
@@ -155,7 +188,7 @@ for (const [ref, locs] of [...refs.entries()].sort()) {
 // ── direction 2: routes → references ────────────────────────────────────
 
 const referencedRoutes = [...routes.keys()].filter((route) =>
-  [...refs.keys()].some((ref) => refMatchesRoute(ref, route)),
+  [...refs.keys()].some((ref) => refCoversRoute(ref, route)),
 );
 const unreferenced = [...routes.keys()].filter((r) => !referencedRoutes.includes(r)).sort();
 

@@ -3,8 +3,11 @@
 import { useState } from "react";
 import MarkdownRenderer from "./MarkdownRenderer";
 import ThinkingCard from "./ThinkingCard";
-import { IconRefresh } from "./Icons";
+import ToolChain from "./ToolChain";
+import ClarificationCard from "./ClarificationCard";
+import { IconRefresh, IconChevronUp, IconChevronDown } from "./Icons";
 import { parseContent, type ContentSegment } from "@/lib/message-content";
+import { buildChainGroups } from "@/lib/tool-chain";
 
 // === Collapsible text for long content ===
 
@@ -27,10 +30,17 @@ function CollapsibleText({ content }: { content: string }) {
     <div className="collapsible-text">
       <MarkdownRenderer content={expanded ? content : preview + "…"} />
       <button
+        type="button"
         className="collapsible-text-btn"
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
       >
         {expanded ? "Show less" : `Show all (${wordCount} words)`}
+        {expanded ? (
+          <IconChevronUp size={15} className="collapsible-text-chevron" />
+        ) : (
+          <IconChevronDown size={15} className="collapsible-text-chevron" />
+        )}
       </button>
     </div>
   );
@@ -38,89 +48,9 @@ function CollapsibleText({ content }: { content: string }) {
 
 // === Types & parser live in @/lib/message-content (pure, unit-testable) ===
 
-// === Tool config ===
-
-const TOOL_CONFIG: Record<string, { label: string; color: string }> = {
-  read_file: { label: "Read File", color: "#3B82F6" },
-  write_file: { label: "Write File", color: "#F97316" },
-  list_files: { label: "List Files", color: "#8B5CF6" },
-  search_code: { label: "Search", color: "#06B6D4" },
-  run_command: { label: "Run Command", color: "#EF4444" },
-};
-
-function getToolConfig(name: string) {
-  return TOOL_CONFIG[name] || { label: name, color: "#71717A" };
-}
-
-// === Components ===
-
-function ToolCallCard({ segment }: { segment: ContentSegment }) {
-  const [expanded, setExpanded] = useState(false);
-  const config = getToolConfig(segment.name || "");
-  const args = segment.content;
-
-  return (
-    <div className="tool-card">
-      <button className="tool-card-header" onClick={() => setExpanded(!expanded)}>
-        <div className="tool-card-left">
-          <div className="tool-card-indicator" style={{ background: config.color }} />
-          <span className="tool-card-label">{config.label}</span>
-          {segment.path && <span className="tool-card-path">{segment.path}</span>}
-        </div>
-        <div className="tool-card-right">
-          <span className="tool-card-chevron">{expanded ? "−" : "+"}</span>
-        </div>
-      </button>
-      {expanded && (
-        <div className="tool-card-body">
-          <pre className="tool-card-args">{args}</pre>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ToolResultCard({ segment }: { segment: ContentSegment }) {
-  const [expanded, setExpanded] = useState(false);
-  const preview = segment.content.slice(0, 120);
-  const hasMore = segment.content.length > 120;
-
-  return (
-    <div className="tool-result-card">
-      <button className="tool-result-header" onClick={() => hasMore && setExpanded(!expanded)}>
-        <div className="tool-result-left">
-          <span className="tool-result-label">Result</span>
-          <span className="tool-result-preview">{expanded ? "" : preview}{!expanded && hasMore ? "…" : ""}</span>
-        </div>
-        {hasMore && <span className="tool-card-chevron">{expanded ? "−" : "+"}</span>}
-      </button>
-      {expanded && (
-        <div className="tool-result-body">
-          <pre className="tool-result-full">{segment.content}</pre>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StatusPill({ segment }: { segment: ContentSegment }) {
-  return (
-    <div className="tool-status-pill">
-      <div className="tool-status-dot tool-status-dot--active" />
-      <span className="tool-status-text">{segment.action}</span>
-      <span className="tool-status-file">{segment.path}</span>
-    </div>
-  );
-}
-
-function ResultPill({ segment, type }: { segment: ContentSegment; type: "success" | "error" }) {
-  return (
-    <div className={`tool-result-pill tool-result-pill--${type}`}>
-      <div className={`tool-result-dot tool-result-dot--${type}`} />
-      <span className="tool-result-text">{segment.detail}</span>
-    </div>
-  );
-}
+// === Tool calls render as one connector-lined chain (see ToolChain) ===
+// Status/result segments never reach the solo path below — buildChainGroups
+// folds them (plus any adjacent reasoning) into a chain group.
 
 function InterruptedNotice() {
   return (
@@ -153,7 +83,20 @@ function FailedNotice({ onRetry, retrying }: { onRetry?: () => void; retrying?: 
 
 // === Main component ===
 
-export default function MessageContent({ content, isThinking = false, onRetry, retrying = false }: { content: string; isThinking?: boolean; onRetry?: () => void; retrying?: boolean }) {
+export default function MessageContent({
+  content,
+  isThinking = false,
+  runLive = false,
+  onRetry,
+  retrying = false,
+}: {
+  content: string;
+  isThinking?: boolean;
+  /** The turn is still running — pending tool rows keep their running state. */
+  runLive?: boolean;
+  onRetry?: () => void;
+  retrying?: boolean;
+}) {
   const segments = parseContent(content);
 
   // If no segments but thinking is active, show empty thinking pill
@@ -170,6 +113,7 @@ export default function MessageContent({ content, isThinking = false, onRetry, r
 
   // Check if any thinking segment exists
   const hasThinking = segments.some(s => s.type === "thinking");
+  const groups = buildChainGroups(segments, isThinking);
 
   return (
     <div className="message-content-mixed">
@@ -177,25 +121,28 @@ export default function MessageContent({ content, isThinking = false, onRetry, r
       {isThinking && !hasThinking && (
         <ThinkingCard content="" isThinking={true} />
       )}
-      {segments.map((segment, i) => {
-        const isLastThinking = segment.type === "thinking" && i === segments.length - 1;
+      {groups.map((group, i) => {
+        if (group.type === "chain") {
+          return <ToolChain key={`chain-${i}`} items={group.items} runLive={runLive} />;
+        }
+        const segment: ContentSegment = group.segment;
         switch (segment.type) {
           case "text":
             return <CollapsibleText key={i} content={segment.content} />;
           case "thinking":
-            return <ThinkingCard key={i} content={segment.content} isThinking={isThinking && isLastThinking} />;
-          case "tool_call":
-            return <ToolCallCard key={i} segment={segment} />;
-          case "tool_result":
-            return <ToolResultCard key={i} segment={segment} />;
-          case "status":
-            return <StatusPill key={i} segment={segment} />;
-          case "success":
-            return <ResultPill key={i} segment={segment} type="success" />;
-          case "error":
-            return <ResultPill key={i} segment={segment} type="error" />;
+            return (
+              <ThinkingCard
+                key={i}
+                content={segment.content}
+                isThinking={Boolean(group.live)}
+              />
+            );
           case "interrupted":
             return <InterruptedNotice key={i} />;
+          case "clarified":
+            return segment.data ? (
+              <ClarificationCard key={i} compact data={segment.data} />
+            ) : null;
           case "failed":
             return <FailedNotice key={i} onRetry={onRetry} retrying={retrying} />;
           default:

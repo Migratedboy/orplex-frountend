@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { IconChevronRight, IconCheck, IconX, IconFile, IconTerminal, IconSearch } from "./Icons";
+import ToolChain from "./ToolChain";
+import { rowFromToolCall, type ChainItem } from "@/lib/tool-chain";
 
 interface ToolCallProps {
   tool: string;
@@ -10,54 +10,18 @@ interface ToolCallProps {
   success?: boolean;
 }
 
-const TOOL_CONFIG: Record<string, { color: string; Icon: React.ComponentType<{ size?: number; className?: string }> }> = {
-  read_file: { color: "#3b82f6", Icon: IconFile },
-  list_files: { color: "#3b82f6", Icon: IconFile },
-  search_code: { color: "#3b82f6", Icon: IconSearch },
-  write_file: { color: "#f59e0b", Icon: IconFile },
-  write_file_chunk: { color: "#f59e0b", Icon: IconFile },
-  edit_file: { color: "#f59e0b", Icon: IconFile },
-  run_command: { color: "#ef4444", Icon: IconTerminal },
-  run_in_sandbox: { color: "#ef4444", Icon: IconTerminal },
-  web_search: { color: "#8b5cf6", Icon: IconSearch },
-  take_screenshot: { color: "#8b5cf6", Icon: IconSearch },
-};
-
+/**
+ * Tool call from the structured agent-event stream (the same single row the
+ * transcript chain renders: icon on the line, status dot, name, mono args,
+ * right-aligned state, chevron). Renders as a one-item chain.
+ */
 export default function ToolCallDisplay({ tool, args, result, success }: ToolCallProps) {
-  const [expanded, setExpanded] = useState(false);
-  const config = TOOL_CONFIG[tool] || { color: "#6b7280", Icon: IconTerminal };
-  const { color, Icon: ToolIcon } = config;
+  const content = JSON.stringify({ name: tool, ...(args ?? {}) });
+  const row = rowFromToolCall({ type: "tool_call", content, name: tool });
+  if (result) row.detail = [row.detail, result].filter(Boolean).join("\n\n");
+  if (success === true) row.state = "success";
+  else if (success === false) row.state = "error";
 
-  return (
-    <div className="tool-call-display" style={{ borderLeftColor: color }}>
-      <button
-        className="tool-call-header"
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-        aria-label={`${expanded ? "Collapse" : "Expand"} tool call: ${tool}`}
-      >
-        <span className="tool-call-icon" style={{ color }}>
-          <ToolIcon size={14} />
-        </span>
-        <span className="tool-call-name" style={{ color }}>{tool}</span>
-        {args && (
-          <span className="tool-call-args">
-            {Object.entries(args).map(([k, v]) => (
-              <span key={k} className="tool-call-arg">
-                {k}: {typeof v === "string" ? (v.length > 40 ? v.slice(0, 40) + "..." : v) : JSON.stringify(v)}
-              </span>
-            ))}
-          </span>
-        )}
-        <span className={`tool-call-status ${success ? "success" : success === false ? "error" : ""}`}>
-          {success === true ? <IconCheck size={12} /> : success === false ? <IconX size={12} /> : <IconChevronRight size={12} />}
-        </span>
-      </button>
-      {expanded && result && (
-        <pre className={`tool-call-result ${success ? "success" : "error"}`}>
-          {result}
-        </pre>
-      )}
-    </div>
-  );
+  const items: ChainItem[] = [{ type: "tool", row }];
+  return <ToolChain items={items} runLive={success === undefined} />;
 }

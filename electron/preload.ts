@@ -20,6 +20,15 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
       return "";
     }
   },
+  /**
+   * Fallback for the workspace path: webUtils.getPathForFile needs a File the
+   * renderer obtained from a real handle, which can come back empty for a
+   * probe file. The main process then asks natively with a folder NAME
+   * (unique per device in practice) so folder-open can still register an
+   * absolute cwd. Empty string when unresolvable — never a guess.
+   */
+  getPathForDirectory: (name: string) =>
+    ipcRenderer.invoke("orplex:path-for-directory", name) as Promise<string>,
   /** App version from package.json (shown in Settings/About). */
   versions: {
     electron: process.versions.electron || "",

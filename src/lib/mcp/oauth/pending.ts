@@ -85,9 +85,15 @@ export async function getPendingByState(state: string) {
   return prisma.mcpOAuthPending.findUnique({ where: { state } });
 }
 
-/** PKCE verifier for the current leg (server-side only; never logged). */
+/**
+ * PKCE verifier for the current leg (server-side only; never logged).
+ * Stored AES-encrypted like every other credential — a DB dump plus an
+ * intercepted `code` must not yield a live exchange (10-min TTL alone is
+ * not a credential boundary).
+ */
 export async function setPendingCodeVerifier(state: string, codeVerifier: string): Promise<void> {
-  await prisma.mcpOAuthPending.update({ where: { state }, data: { codeVerifier } });
+  const { encryptKey } = await import("@/lib/key-encryption");
+  await prisma.mcpOAuthPending.update({ where: { state }, data: { codeVerifier: encryptKey(codeVerifier) } });
 }
 
 /** Where the SDK sent the browser + resolved issuer (set pre-redirect). */

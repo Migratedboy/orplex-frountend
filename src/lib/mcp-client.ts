@@ -128,9 +128,24 @@ class StdioMcpServer implements McpServerHandle {
     // Windows: npx/uvx are .cmd shims — spawn needs a shell to resolve them
     // (bare spawn("npx") dies instantly with ENOENT → EPIPE on first write).
     // Absolute .exe paths skip the shim. On POSIX the direct spawn is right.
+    // Defense in depth for rows saved before the connect-time gate: refuse
+    // shell metacharacters here too (fail closed with a re-save hint).
+    for (const a of cfg.args ?? []) {
+      if (typeof a !== "string" || a.length > 2048 || /[";&|$`()\n\r<>^%!]/.test(a)) {
+        throw new Error(
+          `MCP server "${this.server}" has unsafe stored arguments — re-save the connector to pass the safety check`
+        );
+      }
+    }
     const useShell = process.platform === "win32" && !/\.exe$/i.test(cfg.command);
     const command = useShell ? "cmd" : cfg.command;
-    const args = useShell ? ["/d", "/s", "/c", cfg.command, ...(cfg.args ?? [])] : (cfg.args ?? []);
+    // Quote args carrying whitespace (e.g. "C:\My Tools\x") so they survive
+    // as single argv elements; metacharacters were rejected above, so the
+    // quotes cannot be broken out of.
+    const quote = (a: string) => (/\s/.test(a) ? `"${a}"` : a);
+    const args = useShell
+      ? ["/d", "/s", "/c", cfg.command, ...(cfg.args ?? []).map(quote)]
+      : (cfg.args ?? []);
 
     this.proc = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -281,11 +296,13 @@ export async function getMcpServer(server: string): Promise<McpServerHandle> {
 
 // ── Per-run (account) sessions ─────────────────────────────────────────────
 
-/** Sessions for account-connected servers are keyed by resolved config, so
- *  two users connecting the same server name never share a process, while
- *  the same user's identical config across runs IS reused. */
-function accountSessionKey(server: string, cfg: McpServerConfig): string {
-  return `acct:${server}:${createHash("sha1").update(JSON.stringify(cfg)).digest("hex").slice(0, 12)}`;
+/** Sessions for account-connected servers are keyed by user + resolved
+ *  config: two users never share a process even with byte-identical configs
+ *  (the key previously omitted the principal, so no-secret servers like
+ *  duckduckgo/fetch were shared cross-user), while the same user's identical
+ *  config across runs IS reused. */
+function accountSessionKey(server: string, cfg: McpServerConfig, userId: string): string {
+  return `acct:${userId}:${server}:${createHash("sha1").update(JSON.stringify(cfg)).digest("hex").slice(0, 12)}`;
 }
 
 /**
@@ -295,13 +312,14 @@ function accountSessionKey(server: string, cfg: McpServerConfig): string {
  */
 export async function getMcpServerForRun(
   server: string,
-  runConfigs: Record<string, McpServerConfig>
+  runConfigs: Record<string, McpServerConfig>,
+  userId: string
 ): Promise<McpServerHandle> {
   const cfg = runConfigs[server];
   if (!cfg) {
     throw new Error(`MCP server "${server}" is not connected for this account (manage connectors in the app)`);
   }
-  const key = accountSessionKey(server, cfg);
+  const key = accountSessionKey(server, cfg, userId);
   const cached = sessions.get(key);
   if (cached) {
     // A dead session (crashed child / failed probe) must not be reused.
@@ -344,6 +362,26 @@ export function ensureMcpReaper(): void {
     // Never hold the event loop open just for reaping.
     (reapTimer as unknown as { unref?: () => void }).unref?.();
   }
+}
+
+/**
+ * Shut down exactly one account session (probe cleanup). Other users' and
+ * other servers' sessions are untouched. If a live run happens to share the
+ * session, it respawns on next use (dead-session check in getMcpServerForRun)
+ * and its in-flight calls fail fast via shutdown()'s pending rejection.
+ */
+export async function shutdownAccountSession(
+  server: string,
+  runConfigs: Record<string, McpServerConfig>,
+  userId: string
+): Promise<void> {
+  const cfg = runConfigs[server];
+  if (!cfg) return;
+  const key = accountSessionKey(server, cfg, userId);
+  const entry = sessions.get(key);
+  if (!entry) return;
+  sessions.delete(key);
+  await entry.handle.shutdown().catch(() => {});
 }
 
 /** Kill everything (executor shutdown / tests). */

@@ -39,12 +39,16 @@ export interface McpRiskHint {
  * /api/agent/mcp/tools roster) — one shape, one classification.
  */
 export function mcpRiskHintFrom(
-  annotations: { readOnlyHint?: boolean; destructiveHint?: boolean } | null | undefined,
+  annotations: { readOnlyHint?: unknown; destructiveHint?: unknown } | null | undefined,
   serverAutoApproveReadOnly?: boolean
 ): McpRiskHint {
+  // Strict booleans only: a hostile server sending readOnlyHint: 1 | "yes"
+  // | {} must never earn auto-approve through truthiness (fail closed).
   return {
-    ...(annotations?.readOnlyHint !== undefined ? { readOnlyHint: annotations.readOnlyHint } : {}),
-    ...(annotations?.destructiveHint !== undefined ? { destructiveHint: annotations.destructiveHint } : {}),
+    ...(annotations?.readOnlyHint === true ? { readOnlyHint: true } : {}),
+    ...(annotations?.readOnlyHint === false ? { readOnlyHint: false } : {}),
+    ...(annotations?.destructiveHint === true ? { destructiveHint: true } : {}),
+    ...(annotations?.destructiveHint === false ? { destructiveHint: false } : {}),
     ...(serverAutoApproveReadOnly ? { serverAutoApproveReadOnly: true } : {}),
   };
 }
@@ -138,13 +142,15 @@ export function classifyRisk(
   //    auto-approve toggle only ever unlocks tools the server itself
   //    declared readOnly; destructiveHint → elevated tier.
   if (toolName.startsWith("mcp__")) {
-    if (mcp?.destructiveHint) {
+    // Strict === true throughout: malformed hints (1, "yes", {}) must fail
+    // closed, never unlock auto-approve via truthiness.
+    if (mcp?.destructiveHint === true) {
       return { level: "high", reason: "MCP tool declared destructive by its server", autoApprovable: false };
     }
-    if (mcp?.readOnlyHint && mcp.serverAutoApproveReadOnly) {
+    if (mcp?.readOnlyHint === true && mcp.serverAutoApproveReadOnly) {
       return { level: "low", reason: "MCP read-only tool — auto-approved for this server", autoApprovable: true };
     }
-    if (mcp?.readOnlyHint) {
+    if (mcp?.readOnlyHint === true) {
       return { level: "medium", reason: "MCP tool marked read-only by its server", autoApprovable: false };
     }
     return { level: "medium", reason: "MCP connector tool — external side effects", autoApprovable: false };

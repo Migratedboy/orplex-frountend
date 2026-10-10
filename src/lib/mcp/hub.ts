@@ -127,7 +127,7 @@ interface HubSession {
   failures: number;
   nextRetryAt: number;
   inflight: number;
-  waiters: Array<() => void>;
+  waiters: Array<{ wake: () => void; fail: (err: Error) => void }>;
   tools?: HubTool[];
   toolsAt: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -445,15 +445,21 @@ async function acquire(s: HubSession, timeoutMs: number): Promise<void> {
   }
   await new Promise<void>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const waiter = () => {
-      if (timer) clearTimeout(timer);
-      s.inflight += 1;
-      resolve();
+    const waiter = {
+      wake: () => {
+        if (timer) clearTimeout(timer);
+        s.inflight += 1;
+        resolve();
+      },
+      fail: (err: Error) => {
+        if (timer) clearTimeout(timer);
+        const i = s.waiters.indexOf(waiter);
+        if (i >= 0) s.waiters.splice(i, 1);
+        reject(err);
+      },
     };
     const timeout = () => {
-      const i = s.waiters.indexOf(waiter);
-      if (i >= 0) s.waiters.splice(i, 1);
-      reject(new McpHubError("call_timeout", `"${s.serverId}" busy — timed out waiting for a free slot`));
+      waiter.fail(new McpHubError("call_timeout", `"${s.serverId}" busy — timed out waiting for a free slot`));
     };
     timer = setTimeout(timeout, timeoutMs);
     timer.unref?.();
@@ -464,13 +470,27 @@ async function acquire(s: HubSession, timeoutMs: number): Promise<void> {
 function release(s: HubSession): void {
   s.inflight = Math.max(0, s.inflight - 1);
   const next = s.waiters.shift();
-  if (next) next();
+  if (next) next.wake();
   armIdle(s);
+}
+
+/**
+ * Settle every queued waiter with an error (server closed/shutdown).
+ * Previously the queue was dropped silently and waiters hung until their
+ * own call timeout (up to 30s) — disconnect appeared to hang.
+ */
+function settleWaiters(s: HubSession, err: Error): void {
+  const pending = s.waiters.splice(0, s.waiters.length);
+  for (const w of pending) {
+    try {
+      w.fail(err);
+    } catch {}
+  }
 }
 
 // ── failure mapping for calls on a live session ─────────────────────────────
 
-const TRANSPORTISH = /fetch failed|ECONN|socket|network|terminated|stream closed|aborted|timed? ?out|HTTP [45]\d\d/i;
+const TRANSPORTISH = /fetch failed|failed to fetch|load failed|ECONNRESET|ENOTFOUND|EAI_AGAIN|ECONN|socket hang up|network|terminated|stream closed|aborted|timed? ?out/i;
 
 async function mapCallFailure(s: HubSession, e: unknown): Promise<never> {
   const msg = errorMessage(e);
@@ -489,7 +509,13 @@ async function mapCallFailure(s: HubSession, e: unknown): Promise<never> {
     s.nextRetryAt = Date.now() + hubBackoffMs(s.failures);
     throw new McpHubError("call_timeout", msg, s.nextRetryAt);
   }
-  if (e instanceof TypeError || TRANSPORTISH.test(msg)) {
+  // NOTE: deliberately NOT `e instanceof TypeError` — a bare TypeError also
+  // covers programming bugs in result mapping, and closing a healthy session
+  // over those masks the bug while burning backoff. Transport death is
+  // recognized by network error codes/messages instead (including the
+  // browser's "Failed to fetch" wording, which differs from node's). Tool
+  // payload text that merely mentions HTTP statuses must NOT trip this.
+  if (TRANSPORTISH.test(msg)) {
     // The pipe broke — drop the session so the next attempt reconnects.
     await closeSession(s);
     s.failures += 1;
@@ -553,6 +579,11 @@ export async function hubListTools(
       inputSchema?: unknown;
       annotations?: HubTool["annotations"];
     }>;
+    if (tools.length > HUB_MAX_TOOLS) {
+      // Ops signal: the live roster silently narrows past the cap while the
+      // persisted snapshot keeps the full list — log the divergence.
+      console.warn(`[mcp-hub] ${s.serverId}: live roster capped at ${HUB_MAX_TOOLS} of ${tools.length} tools`);
+    }
     s.tools = tools.slice(0, HUB_MAX_TOOLS).map((t) => ({
       name: t.name,
       description: t.description ?? "",
@@ -622,7 +653,7 @@ export async function hubCloseServer(userId: string, serverId: string): Promise<
   s.failures = 0;
   s.nextRetryAt = 0;
   s.lastError = undefined;
-  s.waiters = [];
+  settleWaiters(s, new McpHubError("call_failed", `"${serverId}" disconnected while calls were queued`));
   await closeSession(s);
 }
 
@@ -632,6 +663,7 @@ export async function hubShutdown(): Promise<void> {
   sessions.clear();
   for (const s of all) {
     if (s.idleTimer) clearTimeout(s.idleTimer);
+    settleWaiters(s, new McpHubError("call_failed", "MCP hub shutting down"));
     if (s.client) await s.client.close().catch(() => {});
   }
 }

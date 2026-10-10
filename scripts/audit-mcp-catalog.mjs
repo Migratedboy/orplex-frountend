@@ -130,11 +130,12 @@ function collectPackages(entries) {
 
 // ── static checks ───────────────────────────────────────────────────────────
 
-// Shell metacharacters that matter if a launcher ever spawns with a shell.
-// `<`/`>` are excluded on purpose: placeholder args like `--project-ref=<ref>`
-// and `/absolute/path/to/folder` are template text, and spawn(command, args)
-// runs without a shell.
-const SHELL_META = /[;|&`\n\r$]/;
+// Shell metacharacters that matter when a launcher spawns with a shell.
+// `<`/`>`/`%`/`!`/`^` are included: on Windows the spawn goes through
+// `cmd /s /c`, where they are redirection/expansion operators — placeholder
+// args like `--project-ref=<ref>` are template text that must be replaced
+// before save (connectServer now rejects them), never spawned literally.
+const SHELL_META = /[;|&`\n\r$<>^%!]/;
 
 function staticChecks(mod, entries, candidates) {
   const errors = [];
@@ -180,7 +181,12 @@ function staticChecks(mod, entries, candidates) {
       }
       const all = [e.stdio.command, ...(e.stdio.args ?? [])];
       for (const s of all) {
-        if (SHELL_META.test(String(s))) {
+        // Strip `<placeholder>` spans first: template text (e.g. supabase's
+        // --project-ref=<project-ref>) is legal in the catalog because
+        // connectServer rejects unsupplied placeholders at save time — the
+        // spawn layer must never see them literally.
+        const deTemplated = String(s).replace(/<[^>]{1,60}>/g, "");
+        if (SHELL_META.test(deTemplated)) {
           errors.push(`${label}: shell metacharacter in stdio command/args: ${JSON.stringify(s)}`);
         }
       }

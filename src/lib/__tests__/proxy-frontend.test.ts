@@ -111,6 +111,12 @@ describe("backend rewrites (cloud reachable)", () => {
     const res = await handler(req("/api/auth/callback/google?code=abc"));
     expect(res.headers.get("x-middleware-rewrite")).toContain("code=abc");
   });
+
+  it("keeps /api/system/memory local (must read THIS machine's RAM, not the backend host)", async () => {
+    const res = await handler(req("/api/system/memory"));
+    expect(res.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(res.status).toBe(200);
+  });
 });
 
 describe("cloud unreachable (offline)", () => {

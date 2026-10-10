@@ -12,10 +12,52 @@
 import { prisma } from "@/lib/prisma";
 import { decryptKey, encryptKey, maskKey } from "@/lib/key-encryption";
 import { getMcpCatalogEntry, type McpCatalogEntry } from "@/lib/mcp-catalog";
+import { checkMcpUrl } from "@/lib/mcp/ssrf-fetch";
+import { withConnectionLock } from "@/lib/mcp/oauth/store";
+import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
 import type { McpServerConfig } from "@/lib/mcp-client";
 
 export const MAX_MCP_SERVERS_PER_RUN = 2; // mirrors mcp-client MAX_SERVERS
 const MAX_SERVERS_PER_USER = 20;
+
+// ── Connector input validation ────────────────────────────────────────
+// Stored argv reaches `cmd /s /c` on Windows (mcp-client.ts) with minimal
+// quoting, so validation here is the primary gate; the spawn layer
+// re-checks (defense in depth for rows saved before this gate existed).
+const MAX_CONNECTOR_ARGS = 32;
+const MAX_ARG_CHARS = 2048;
+const MAX_ENV_VALUE_CHARS = 8192;
+// Shell metacharacters (cmd + POSIX): quotes, separators, substitution,
+// redirection, expansion, control chars. Legit argv elements (paths, flags,
+// key=value, URLs) never need these.
+const ARG_UNSAFE = /[";&|$`()\n\r<>^%!]/;
+
+/** True for `scheme://…` values (URLs), as opposed to paths/flags. */
+function looksLikeUrl(value: string): boolean {
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value);
+}
+
+/**
+ * Validate one user-supplied argv element. `catalogUrls` are the entry's own
+ * URL args (trusted verbatim); any OTHER URL must pass the SSRF policy.
+ * Returns an error string, or null when clean. Exported for the spawn-time
+ * re-check in mcp-client.ts.
+ */
+export function connectorArgError(arg: string, catalogUrls: Set<string>): string | null {
+  if (arg.length > MAX_ARG_CHARS) return `argument too long (max ${MAX_ARG_CHARS} chars)`;
+  if (ARG_UNSAFE.test(arg)) return `argument contains shell metacharacters: ${arg.slice(0, 60)}`;
+  if (looksLikeUrl(arg)) {
+    if (/^https?:\/\//i.test(arg)) {
+      if (!catalogUrls.has(arg)) {
+        const verdict = checkMcpUrl(arg);
+        if (!verdict.allowed) return `URL blocked by SSRF policy: ${verdict.reason}`;
+      }
+    } else {
+      return `only http(s) URLs allowed in arguments: ${arg.slice(0, 80)}`;
+    }
+  }
+  return null;
+}
 
 /** Which env vars of a catalog entry are secrets (never returned raw). */
 function secretKeys(entry: McpCatalogEntry): Set<string> {
@@ -121,7 +163,20 @@ export async function connectServer(
     return { ok: false, status: 400, error: `${entry.name} connects over OAuth — no token/stdio path to save` };
   }
   const stdio = entry.stdio;
+  // Serialize read-modify-write per connector: two concurrent saves would
+  // otherwise interleave prevEnv reads and drop each other's secrets.
+  return withConnectionLock(`mcp-stdio:${userId}:${serverId}`, () =>
+    connectServerInner(userId, serverId, input, entry, stdio)
+  );
+}
 
+async function connectServerInner(
+  userId: string,
+  serverId: string,
+  input: { label?: string; env?: Record<string, unknown>; args?: unknown[]; enabled?: boolean },
+  entry: McpCatalogEntry,
+  stdio: NonNullable<McpCatalogEntry["stdio"]>
+): Promise<ConnectResult> {
   const count = await prisma.mcpServerConfig.count({ where: { userId } });
   const existing = await prisma.mcpServerConfig.findUnique({ where: { userId_serverId: { userId, serverId } } });
   if (!existing && count >= MAX_SERVERS_PER_USER) {
@@ -132,6 +187,11 @@ export async function connectServer(
   const prevEnv = existing && existing.env && typeof existing.env === "object" ? (existing.env as Record<string, string>) : {};
   const envOut: Record<string, string> = {};
   const supplied = input.env ?? {};
+  for (const [k, v] of Object.entries(supplied)) {
+    if (typeof v === "string" && v.length > MAX_ENV_VALUE_CHARS) {
+      return { ok: false, status: 400, error: `value for ${k} too long (max ${MAX_ENV_VALUE_CHARS} chars)` };
+    }
+  }
   for (const spec of stdio.env) {
     const raw = supplied[spec.name];
     if (typeof raw === "string" && raw.trim() !== "") {
@@ -140,12 +200,58 @@ export async function connectServer(
       envOut[spec.name] = prevEnv[spec.name]; // blank → keep stored value
     }
   }
+  // Required env must be present after merge — a row that can never launch
+  // must fail here with names, not at probe time with a cryptic spawn error.
+  const missing = stdio.env.filter((s) => s.required && !envOut[s.name]).map((s) => s.name);
+  if (missing.length > 0) {
+    return { ok: false, status: 400, error: `missing required values: ${missing.join(", ")}` };
+  }
 
-  const args = Array.isArray(input.args) && input.args.every((a) => typeof a === "string")
-    ? (input.args as string[])
-    : existing
-      ? (Array.isArray(existing.args) ? (existing.args as string[]) : stdio.args)
-      : stdio.args;
+  const catalogUrls = new Set((stdio.args ?? []).filter(looksLikeUrl));
+  let resolvedArgs: string[];
+  if (input.args !== undefined) {
+    if (!Array.isArray(input.args) || !input.args.every((a) => typeof a === "string")) {
+      return { ok: false, status: 400, error: "args must be an array of strings" };
+    }
+    if (input.args.length > MAX_CONNECTOR_ARGS) {
+      return { ok: false, status: 400, error: `too many arguments (max ${MAX_CONNECTOR_ARGS})` };
+    }
+    for (const a of input.args as string[]) {
+      const problem = connectorArgError(a, catalogUrls);
+      if (problem) return { ok: false, status: 400, error: problem };
+    }
+    resolvedArgs = input.args as string[];
+  } else if (existing && Array.isArray(existing.args)) {
+    // Re-validate previously stored rows too (saved before this gate
+    // existed): a dangerous stored row must not survive a re-save untouched.
+    resolvedArgs = existing.args as string[];
+    for (const a of resolvedArgs) {
+      if (typeof a !== "string") return { ok: false, status: 400, error: "stored arguments are corrupt — supply fresh args" };
+      const problem = connectorArgError(a, catalogUrls);
+      if (problem) return { ok: false, status: 400, error: `stored ${problem} — supply corrected args` };
+    }
+  } else {
+    resolvedArgs = stdio.args;
+    // Catalog defaults can carry `<placeholder>` template text (supabase's
+    // `--project-ref=<project-ref>`). Saving that verbatim would store an
+    // argument the spawn layer must refuse — fail here instead, naming the
+    // exact placeholder to replace.
+    const template = resolvedArgs.find((a) => /<[^>]{1,60}>/.test(a));
+    if (template) {
+      const token = template.match(/<[^>]{1,60}>/)?.[0] ?? "<...>";
+      return { ok: false, status: 400, error: `connector needs your real value for ${token} — supply args with the placeholder replaced` };
+    }
+  }
+  // A bare "." means "the server's cwd" — always the wrong directory.
+  // Substitute the user's registered workspace; refuse when none is open.
+  if (resolvedArgs.includes(".")) {
+    const cwd = getWorkspaceCwdForUser(userId);
+    if (!cwd) {
+      return { ok: false, status: 400, error: "this connector needs a workspace folder path — open a folder first, or supply an absolute path" };
+    }
+    resolvedArgs = resolvedArgs.map((a) => (a === "." ? cwd : a));
+  }
+  const args = resolvedArgs;
 
   const row = await prisma.mcpServerConfig.upsert({
     where: { userId_serverId: { userId, serverId } },

@@ -44,7 +44,8 @@ export interface McpRoster {
   servers: McpServerSummary[];
   /** Model-facing defs: full schemas under the cap, names-only over it. */
   defs: McpModelToolDef[];
-  /** mcp_search_tools + mcp_describe_tool — present ONLY when overCap. */
+  /** mcp_search_tools + mcp_describe_tool — always present (discovery works
+   *  under and over the cap); do NOT gate these on overCap. */
   metaDefs: McpModelToolDef[];
   /** Serialized chars of defs + metaDefs — the meter's MCP-schema count (C10). */
   schemaChars: number;

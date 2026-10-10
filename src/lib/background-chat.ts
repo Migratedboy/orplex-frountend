@@ -4,6 +4,7 @@
 
 import { trackTaskStart, trackTaskEnd } from "./run-sync";
 import { normalizeThinkingBlocks } from "./stream-reader";
+import { clearPlanLatch } from "./plan-gate";
 
 // === Types ===
 
@@ -520,14 +521,16 @@ export function completeTask(finalContent?: string) {
   // bell inbox (3s toast on arrival, then stored with an unread badge).
   const summary = buildCompletionSummary(completedTask);
   sendNotification("Orplex Agent", summary);
-  void import("./notify-client").then(({ notifyUser }) =>
-    notifyUser({
-      type: "success",
-      title: "Agent task completed",
-      message: `${completedTask.userMessage.slice(0, 80)} — ${summary}`,
-      source: "runs",
-    })
-  );
+  void import("./notify-client")
+    .then(({ notifyUser }) =>
+      notifyUser({
+        type: "success",
+        title: "Agent task completed",
+        message: `${completedTask.userMessage.slice(0, 80)} — ${summary}`,
+        source: "runs",
+      })
+    )
+    .catch(() => {});
 
   // Clear task after a delay — but only if no new task has started.
   // unref so browser-task housekeeping never holds a Node process/Jest worker open.
@@ -551,6 +554,15 @@ export function failTask(error: string) {
   currentTask.completedAt = Date.now();
   const failedId = currentTask.id;
   const failedTask = currentTask;
+  // Plan latch must not outlive the task — task ids never repeat, so an
+  // uncleared latch is pure map growth for the session lifetime.
+  try { clearPlanLatch(failedId); } catch {}
+  // Report to error tracker (Bugsink/console) — never breaks the fail path.
+  void import("./error-tracking")
+    .then(({ reportError }) =>
+      reportError(new Error(error), { component: "background-worker", action: "failTask" })
+    )
+    .catch(() => {});
   // Status change — flush any pending display update IMMEDIATELY.
   notifyScheduled = false;
   notify();
@@ -565,14 +577,16 @@ export function failTask(error: string) {
   sendNotification("Orplex Agent", `Task failed: ${error}${progress}`);
   // Durable bell notification for the failure too — same 3s-toast-then-badge
   // flow as completions, so run outcomes are always visible in the inbox.
-  void import("./notify-client").then(({ notifyUser }) =>
-    notifyUser({
-      type: "error",
-      title: "Agent task failed",
-      message: `${failedTask.userMessage.slice(0, 80)} — ${error.slice(0, 200)}${progress}`,
-      source: "runs",
-    })
-  );
+  void import("./notify-client")
+    .then(({ notifyUser }) =>
+      notifyUser({
+        type: "error",
+        title: "Agent task failed",
+        message: `${failedTask.userMessage.slice(0, 80)} — ${error.slice(0, 200)}${progress}`,
+        source: "runs",
+      })
+    )
+    .catch(() => {});
 
   const failCleanupTimer = setTimeout(() => {
     if (currentTask && currentTask.id === failedId && currentTask.status === "error") {
@@ -587,6 +601,8 @@ export function cancelTask(options: { abort?: boolean } = {}) {
   if (!currentTask) return;
 
   const cancelledId = currentTask.id;
+  // Same latch hygiene as failTask — cancelled plan tasks must not leak.
+  try { clearPlanLatch(cancelledId); } catch {}
 
   if (options.abort) {
     // User pressed Stop (or New Chat while running) — kill the in-flight
@@ -661,18 +677,24 @@ function buildCompletionSummary(task: BackgroundTask): string {
 }
 
 async function sendNotification(title: string, body: string) {
-  // Request permission if not granted
-  if (typeof window !== "undefined" && "Notification" in window) {
-    if (Notification.permission === "default") {
-      await Notification.requestPermission();
+  // Never throws: callers fire-and-forget this, so a denial or a throw
+  // would surface as an unhandled rejection.
+  try {
+    // Request permission if not granted
+    if (typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "default") {
+        await Notification.requestPermission();
+      }
+      if (Notification.permission === "granted") {
+        new Notification(title, {
+          body,
+          icon: "/logo.png",
+          badge: "/logo.png",
+          tag: "orplex-agent",
+        });
+      }
     }
-    if (Notification.permission === "granted") {
-      new Notification(title, {
-        body,
-        icon: "/logo.png",
-        badge: "/logo.png",
-        tag: "orplex-agent",
-      });
-    }
+  } catch {
+    // OS notifications are best-effort; the bell inbox is the durable path.
   }
 }

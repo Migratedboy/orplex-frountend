@@ -65,6 +65,11 @@ export function screenTerminalCommand(raw: unknown): string | null {
     [/vssadmin/, "shadow-copy tampering"],
     [/cipher\s+\/w/, "secure wipe"],
     [/format\s+[a-z]:/, "disk format"],
+    [/\b(?:rd|rmdir)\b[^&|;]*\/s/, "recursive remove"],
+    [/\bdel(?:\.exe)?\b[^&|;]*\/s/, "recursive delete"],
+    [/\berase\b[^&|;]*\/s/, "recursive erase"],
+    [/\bdeltree\b/, "legacy recursive delete"],
+    [/remove-item\b[^&|;]*-recurse/, "recursive remove-item"],
     [/curl[^|]*\|\s*(sh|bash|powershell|cmd)/, "pipe-to-shell download"],
     [/wget[^|]*\|\s*(sh|bash)/, "pipe-to-shell download"],
     [/powershell.*-enc(odedcommand)?\s/, "encoded powershell payload"],
@@ -184,7 +189,18 @@ export function registerTerminalIpc(getWindow: GetWindow): void {
       const refusal = screenTerminalCommand(args?.command);
       if (refusal) return { ok: false, error: refusal };
       const cwd = resolveTerminalCwd(args?.cwd);
-      if (!cwd) return { ok: false, error: "no workspace folder open — open a folder first" };
+      // Be precise: a folder may well be open and this still fails when the
+      // renderer could not resolve its ABSOLUTE path (the File System Access
+      // API exposes no paths). Saying "open a folder first" sent users hunting
+      // for a folder that was already open.
+      if (!cwd) {
+        return {
+          ok: false,
+          error: args?.cwd
+            ? `the workspace path "${String(args.cwd)}" is not a reachable directory — the folder may have moved, been renamed, or be on a disconnected drive. Re-open the folder from the sidebar.`
+            : "no workspace folder path is registered — open a folder (sidebar → Open, or Ctrl+O) and retry.",
+        };
+      }
       const timeoutMs = Math.min(
         Math.max(Number(args?.timeoutMs) || DEFAULT_TIMEOUT_MS, 1000),
         MAX_TIMEOUT_MS
@@ -259,7 +275,14 @@ export function registerTerminalIpc(getWindow: GetWindow): void {
       const refusal = screenTerminalCommand(args?.command);
       if (refusal) return { ok: false, error: refusal };
       const cwd = resolveTerminalCwd(args?.cwd);
-      if (!cwd) return { ok: false, error: "no workspace folder open — open a folder first" };
+      if (!cwd) {
+        return {
+          ok: false,
+          error: args?.cwd
+            ? `the workspace path "${String(args.cwd)}" is not a reachable directory — the folder may have moved, been renamed, or be on a disconnected drive. Re-open the folder from the sidebar.`
+            : "no workspace folder path is registered — open a folder (sidebar → Open, or Ctrl+O) and retry.",
+        };
+      }
       const command = (args!.command as string).trim();
       const port = parseServePort(command);
       const isWin = process.platform === "win32";

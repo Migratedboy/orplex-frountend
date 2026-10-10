@@ -226,7 +226,7 @@ export default function AdminPage() {
                 <td>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <div className="admin-bar">
-                      <div style={{ width: `${Math.min(100, (key.usageToday / key.dailyLimit) * 100)}%`, height: "100%", background: key.usageToday / key.dailyLimit > 0.8 ? "#ef4444" : key.usageToday / key.dailyLimit > 0.5 ? "#f59e0b" : "#22c55e", borderRadius: 3 }} />
+                      <div style={{ width: `${key.dailyLimit > 0 ? Math.min(100, (key.usageToday / key.dailyLimit) * 100) : 0}%`, height: "100%", background: key.dailyLimit > 0 && key.usageToday / key.dailyLimit > 0.8 ? "#ef4444" : key.dailyLimit > 0 && key.usageToday / key.dailyLimit > 0.5 ? "#f59e0b" : "#22c55e", borderRadius: 3 }} />
                     </div>
                     <span>{key.usageToday}/{key.dailyLimit}</span>
                   </div>

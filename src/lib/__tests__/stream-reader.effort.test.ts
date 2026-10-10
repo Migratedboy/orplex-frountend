@@ -181,7 +181,7 @@ describe("readStream model contract", () => {
       null,
       "medium",
       "full",
-      "qwen/qwen3.8-27b:free"
+      { model: "qwen/qwen3.8-27b:free" }
     );
 
     expect(api.chatBodies).toHaveLength(1);

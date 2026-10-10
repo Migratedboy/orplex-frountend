@@ -9,12 +9,17 @@
   --bm-line: #3f3f46;
   --bm-font: 14px;
   --bm-row: 36px;
-  --bm-indent: 40px;
+  --bm-indent: 32px;
   --bm-line-w: 1.5;
   --bm-draw: 400ms;
   --bm-fold: 300ms;
   --bm-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  --bm-muted: color-mix(in srgb, var(--bm-ink) 55%, transparent);
+  /* Ink ladder: top-level rows sit at --bm-ink-strong, nested children one
+     step dimmer at --bm-muted, so the hierarchy reads at a glance. */
+  --bm-ink-strong: color-mix(in srgb, var(--bm-ink) 90%, transparent);
+  --bm-muted: color-mix(in srgb, var(--bm-ink) 72%, transparent);
+  --bm-active-bg: rgba(255, 107, 0, 0.09);
+  --bm-hover-bg: rgba(255, 255, 255, 0.05);
 
   position: relative;
   display: flex;
@@ -69,11 +74,12 @@
   gap: 8px;
   width: 100%;
   margin: 0;
-  padding: 9px 0;
+  padding: 9px 10px;
   border: 0;
+  border-left: 2px solid transparent;
   border-radius: 8px;
   background: none;
-  color: var(--bm-muted);
+  color: var(--bm-ink-strong);
   font: inherit;
   font-size: calc(var(--bm-font) + 1px);
   font-weight: 500;
@@ -81,12 +87,12 @@
   cursor: pointer;
   outline: none;
   -webkit-tap-highlight-color: transparent;
-  transition: color 200ms ease, background-color 150ms ease;
+  transition: color 140ms ease-out, background-color 140ms ease-out, border-color 140ms ease-out;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .branched-menu__head:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--bm-hover-bg);
   }
 }
 
@@ -98,9 +104,17 @@
   font-size: calc(var(--bm-font) + 2px);
 }
 
-.branched-menu__section[data-open] .branched-menu__head,
+.branched-menu__section[data-open] .branched-menu__head {
+  color: var(--bm-ink);
+}
+
+/* Active leaf: orange-tinted pill + 2px left accent + brighter text.
+   Only one row can carry data-active at a time (active is a single value). */
 .branched-menu__head[data-active] {
   color: var(--bm-ink);
+  font-weight: 600;
+  background: var(--bm-active-bg);
+  border-left-color: var(--bm-accent);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -169,8 +183,9 @@
   width: 100%;
   height: var(--bm-row);
   margin: 0;
-  padding: 0 0 0 var(--bm-indent);
+  padding: 0 10px 0 calc(var(--bm-indent) - 2px);
   border: 0;
+  border-left: 2px solid transparent;
   border-radius: 8px;
   background: none;
   color: var(--bm-muted);
@@ -180,19 +195,21 @@
   outline: none;
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
-  transition: color 200ms ease, background-color 150ms ease;
+  transition: color 140ms ease-out, background-color 140ms ease-out, border-color 140ms ease-out;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .branched-menu__item:hover {
     color: var(--bm-ink);
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--bm-hover-bg);
   }
 }
 
 .branched-menu__item[data-active] {
-  color: var(--bm-accent);
-  font-weight: 500;
+  color: var(--bm-ink);
+  font-weight: 600;
+  background: var(--bm-active-bg);
+  border-left-color: var(--bm-accent);
 }
 
 .branched-menu__icon {
@@ -231,6 +248,11 @@ html:not(.dark) .branched-menu__head:hover {
   }
 
   .branched-menu__reach {
+    transition: none;
+  }
+
+  .branched-menu__head,
+  .branched-menu__item {
     transition: none;
   }
 }

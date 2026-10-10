@@ -29,7 +29,9 @@ const PRIVATE_HOST_PATTERNS: RegExp[] = [
   /^10\./, // RFC1918
   /^172\.(1[6-9]|2\d|3[01])\./, // RFC1918
   /^::1$/, // IPv6 loopback (bracket-stripped)
+  /^::$/, // IPv6 unspecified — never a fetch target
   /^f[cd]/i, // IPv6 unique-local
+  /^fe[89ab]/i, // IPv6 link-local fe80::/10
 ];
 
 /** 127.0.0.0/8 in any dotted form plus localhost and [::1]. */

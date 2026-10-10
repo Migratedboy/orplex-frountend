@@ -36,6 +36,58 @@ interface FetchResult {
 
 const CONTENT_TIMEOUT_MS = 12_000;
 const OAUTH_WAIT_MS = 5 * 60_000;
+/** Cap on renderer-supplied passthrough bodies (no multi-MB exfiltration). */
+const MAX_PASSTHROUGH_BODY = 1 * 1024 * 1024;
+
+/**
+ * Local mirror of src/lib/mcp/ssrf-fetch.ts hostname policy (electron/
+ * can't import src/ — tsconfig rootDir. Keep the two in sync by hand:
+ * http(s) only, loopback allowed (local dev servers), private/link-local/
+ * metadata/CGNAT blocked, public hosts require https).
+ * Returns an error string, or null when the URL may be fetched.
+ */
+function mcpFetchUrlError(raw: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return "Invalid URL";
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return "Only http(s) URLs are allowed";
+  const host = u.hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  if (!host) return "URL has no host";
+  if (
+    host === "localhost" ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    /^127(\.\d{1,3}){3}$/.test(host)
+  ) {
+    return null; // loopback: local dev servers are first-class
+  }
+  if (
+    /^169\.254\./.test(host) ||
+    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^10\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    /^::$/.test(host) ||
+    /^f[cd]/i.test(host) ||
+    /^fe[89ab]/i.test(host)
+  ) {
+    return `Private/link-local host blocked: ${host}`;
+  }
+  if (u.protocol === "http:") return `Plain http to public host — https required (${host})`;
+  return null;
+}
+
+/** Origin equality for pinning derived endpoints to their metadata source. */
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return false;
+  }
+}
 
 function parseWWWAuthenticate(header: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};
@@ -103,7 +155,10 @@ async function discoverAuthorizationServers(serverUrl: string): Promise<{ asUrls
       const www = parseWWWAuthenticate(probe.headers["www-authenticate"]);
       scopeHint = www.scope;
       resourceParam = www.resource;
-      if (www.resource_metadata) {
+      if (www.resource_metadata && !mcpFetchUrlError(www.resource_metadata)) {
+        // NOTE: server-controlled URL — gated by policy above. A blocked
+        // metadata URL simply yields no AS URLs from this hint (fall through
+        // to well-known probing below).
         const rm = await fetchText(www.resource_metadata);
         if (rm.status === 200) {
           const j = JSON.parse(rm.text) as { authorization_servers?: string[]; scopes_supported?: string[]; resource?: string };
@@ -195,64 +250,97 @@ async function registerClient(meta: AsMetadata, redirectUri: string, label: stri
 }
 
 /**
- * Single-use loopback server (RFC 8252). Binds first so the redirect URI can
- * carry the actual port, then waits for the provider's callback. Resolves
- * with { code } or { error }; always closes itself.
+ * Single-use loopback server (RFC 8252). Binds port 0 FIRST and hands back
+ * the OS-assigned port so the redirect URI carries the actual port — there
+ * is deliberately no probe-then-rebind step (that leaves a window where a
+ * local process could squat the port and steal the OAuth code).
+ * Resolves with { code } or { error }; always closes itself.
  */
-function authorizeViaLoopback(
-  port: number,
-  authorizeUrl: string,
+function bindOAuthCallback(
   state: string
-): Promise<{ code?: string; error?: string }> {
+): Promise<{ port: number; wait: Promise<{ code?: string; error?: string }>; close: () => void }> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const server = http.createServer((req, res) => {
-      try {
-        const u = new URL(req.url ?? "/", "http://127.0.0.1");
-        if (u.pathname !== "/callback") {
-          res.writeHead(404).end();
-          return;
-        }
-        const code = u.searchParams.get("code");
-        const err = u.searchParams.get("error");
-        const gotState = u.searchParams.get("state");
-        const ok = !err && !!code && gotState === state;
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(
-          ok
-            ? `<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;background:#141414;color:#eee;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:#ff6b00">&#10003; Orplex connected</h2><p style="color:#9aa">You can close this tab and return to the app.</p></div></body>`
-            : `<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;background:#141414;color:#eee;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><h2>Connection failed</h2><p style="color:#9aa">${err ?? "missing code"} — return to the app and try again.</p></div></body>`
-        );
-        const finish = () => {
-          if (settled) return;
-          settled = true;
-          server.close(() => {});
-          resolve(ok ? { code: code! } : { error: err ?? "missing code" });
-        };
-        setTimeout(finish, 100); // let the response flush before closing
-      } catch (e) {
-        res.writeHead(500).end();
-        if (!settled) {
-          settled = true;
-          server.close(() => {});
-          reject(e as Error);
-        }
-      }
-    });
-    server.on("error", (e) => {
-      if (!settled) {
-        settled = true;
-        reject(e);
-      }
-    });
-    server.listen(port, "127.0.0.1");
-    setTimeout(() => {
-      if (!settled) {
+    let server: http.Server;
+    const wait = new Promise<{ code?: string; error?: string }>((resolveWait, rejectWait) => {
+      const finish = (value: { code?: string; error?: string }, isError: boolean) => {
+        if (settled) return;
         settled = true;
         server.close(() => {});
-        reject(new Error("Timed out waiting for the browser sign-in (5 min). Complete the sign-in in the browser that opened, or try again."));
-      }
-    }, OAUTH_WAIT_MS);
+        if (isError) rejectWait(new Error(value.error ?? "OAuth callback failed"));
+        else resolveWait(value);
+      };
+      const timer = setTimeout(
+        () => finish({ error: "Timed out waiting for the browser sign-in (5 min). Complete the sign-in in the browser that opened, or try again." }, true),
+        OAUTH_WAIT_MS
+      );
+      const done = (value: { code?: string; error?: string }) => {
+        clearTimeout(timer);
+        finish(value, false);
+      };
+      const fail = (e: unknown) => {
+        clearTimeout(timer);
+        finish({ error: (e as Error)?.message ?? String(e) }, true);
+      };
+      let listening = false;
+      server = http.createServer((req, res) => {
+        try {
+          const u = new URL(req.url ?? "/", "http://127.0.0.1");
+          if (u.pathname !== "/callback") {
+            res.writeHead(404).end();
+            return;
+          }
+          const code = u.searchParams.get("code");
+          const err = u.searchParams.get("error");
+          const gotState = u.searchParams.get("state");
+          const ok = !err && !!code && gotState === state;
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(
+            ok
+              ? `<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;background:#141414;color:#eee;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:#ff6b00">&#10003; Orplex connected</h2><p style="color:#9aa">You can close this tab and return to the app.</p></div></body>`
+              : `<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;background:#141414;color:#eee;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><h2>Connection failed</h2><p style="color:#9aa">${err ?? "missing code"} — return to the app and try again.</p></div></body>`
+          );
+          // Single-use: only a MATCHED callback settles the flow. Unmatched
+          // hits (port scans, stray probes) get their response above but must
+          // not destroy the pending sign-in — the 5-minute timer is the
+          // backstop, not every stray request.
+          if (ok || gotState === state) {
+            setTimeout(() => done(ok ? { code: code! } : { error: err ?? "missing code" }), 100); // let the response flush
+          }
+        } catch (e) {
+          try {
+            res.writeHead(500).end();
+          } catch {}
+          fail(e);
+        }
+      });
+      server.on("error", (e) => {
+        // A bind failure must reject the outer setup promise (not just the
+        // wait) or the caller hangs forever awaiting a port that never comes.
+        if (!listening) {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+          }
+          reject(e);
+          return;
+        }
+        fail(e);
+      });
+      server.listen(0, "127.0.0.1", () => {
+        listening = true;
+        const port = (server.address() as { port: number }).port;
+        resolve({
+          port,
+          wait,
+          close: () => {
+            try {
+              server.close(() => {});
+            } catch {}
+          },
+        });
+      });
+    });
   });
 }
 
@@ -370,8 +458,11 @@ export function registerMcpIpc(): void {
                 error: error ?? undefined,
                 error_description: errorDescription ?? undefined,
               });
+              // Single-use: a MATCHED callback settles the flow. Unmatched
+              // hits (scans, stray probes) must not destroy a pending
+              // sign-in — the 5-minute timer is the backstop, not them.
+              setTimeout(closeLoopback, 150);
             }
-            setTimeout(closeLoopback, 150); // single-use: first /callback settles it
           } catch {
             res.writeHead(500).end();
             setTimeout(closeLoopback, 150);
@@ -395,6 +486,14 @@ export function registerMcpIpc(): void {
     async (_e, params: { authUrl?: string }): Promise<{ ok: boolean; error?: string }> => {
       if (!loopback) return { ok: false, error: "No prepared loopback listener — call mcpOAuth.prepare() first." };
       if (!params.authUrl) return { ok: false, error: "Missing authUrl" };
+      // The auth URL is renderer-supplied: enforce https (loopback http is
+      // fine for local dev servers) and refuse private/intranet targets, so
+      // a compromised renderer cannot turn the OS browser into an intranet
+      // prober or file opener. Origin-pinning to the AS is enforced on the
+      // SDK path (fetchAsMetadata + endpoint pins); here the browser itself
+      // shows the user where they are signing in.
+      const blocked = mcpFetchUrlError(params.authUrl);
+      if (blocked) return { ok: false, error: `Blocked by URL policy: ${blocked}` };
       let state: string | null;
       try {
         state = new URL(params.authUrl).searchParams.get("state");
@@ -409,18 +508,25 @@ export function registerMcpIpc(): void {
   );
 
   // Generic HTTP passthrough so the renderer's MCP JSON-RPC client avoids
-  // CORS on remote servers. http(s) only, 30s ceiling.
+  // CORS on remote servers. SSRF-gated (same policy as the server lane),
+  // method-allowlisted, body-capped, 30s ceiling.
   ipcMain.handle(
     "orplex:mcp-request",
     async (_e, params: { url: string; method?: string; headers?: Record<string, string>; body?: string }) => {
       try {
-        const url = new URL(params.url);
-        if (url.protocol !== "https:" && url.protocol !== "http:") {
-          throw new Error("Only http(s) URLs are allowed");
+        if (typeof params.url !== "string") throw new Error("Missing url");
+        const blocked = mcpFetchUrlError(params.url);
+        if (blocked) throw new Error(`Blocked by URL policy: ${blocked}`);
+        const method = (params.method ?? "GET").toUpperCase();
+        if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(method)) {
+          throw new Error(`HTTP method not allowed: ${method}`);
+        }
+        if (typeof params.body === "string" && params.body.length > MAX_PASSTHROUGH_BODY) {
+          throw new Error("Request body too large");
         }
         const r = await fetchText(
           params.url,
-          { method: params.method ?? "GET", headers: params.headers, body: params.body },
+          { method, headers: params.headers, body: params.body },
           30_000
         );
         return { ok: true, status: r.status, headers: r.headers, text: r.text };
@@ -435,38 +541,54 @@ export function registerMcpIpc(): void {
   // exchange. The renderer only supplies the server URL.
   ipcMain.handle("orplex:mcp-oauth-authorize", async (_e, params: { serverUrl: string; label?: string }): Promise<OAuthResult> => {
     try {
+      if (typeof params.serverUrl !== "string") return { ok: false, error: "Missing serverUrl" };
+      const entryBlocked = mcpFetchUrlError(params.serverUrl);
+      if (entryBlocked) return { ok: false, error: `Blocked by URL policy: ${entryBlocked}` };
       const serverUrl = new URL(params.serverUrl).toString();
       const { asUrls, scopeHint, resourceParam } = await discoverAuthorizationServers(serverUrl);
       let lastError = "No OAuth-capable authorization server found for this MCP server.";
 
       for (const asUrl of asUrls) {
+        // Discovered URLs come from server-controlled JSON — gate each one,
+        // and pin every derived endpoint to the AS origin so a rogue
+        // metadata document cannot redirect registration, auth, or token
+        // exchange to an attacker origin.
+        const asBlocked = mcpFetchUrlError(asUrl);
+        if (asBlocked) {
+          lastError = `Authorization server blocked by URL policy: ${asBlocked}`;
+          continue;
+        }
+        const asOrigin = new URL(asUrl).origin;
         const meta = await fetchAsMetadata(asUrl);
         if (!meta) {
           lastError = `No OAuth metadata at ${asUrl}`;
           continue;
         }
+        if (!sameOrigin(meta.authorization_endpoint, asOrigin) || !sameOrigin(meta.token_endpoint, asOrigin)) {
+          lastError = `Authorization server metadata points outside its own origin — refusing (possible rogue metadata)`;
+          continue;
+        }
+        if (meta.registration_endpoint && !sameOrigin(meta.registration_endpoint, asOrigin)) {
+          lastError = `Registration endpoint points outside the authorization server origin — refusing`;
+          continue;
+        }
 
-        // Bind the loopback server first — the registered redirect URI must
-        // carry the actual (OS-assigned) port.
-        const port = await new Promise<number>((resolve, reject) => {
-          const probe = http.createServer();
-          probe.on("error", reject);
-          probe.listen(0, "127.0.0.1", () => {
-            const p = (probe.address() as { port: number }).port;
-            probe.close(() => resolve(p));
-          });
-        });
-        const redirectUri = `http://127.0.0.1:${port}/callback`;
+        // Bind the loopback server FIRST — the registered redirect URI must
+        // carry the actual (OS-assigned) port, with no probe-then-rebind
+        // window for a local squatter to steal the OAuth code.
+        const state = crypto.randomBytes(16).toString("base64url");
+        const bound = await bindOAuthCallback(state);
+        const redirectUri = `http://127.0.0.1:${bound.port}/callback`;
 
         const client = await registerClient(meta, redirectUri, params.label ?? "");
         if (!client) {
+          bound.close();
           lastError = `The authorization server (${asUrl}) does not support dynamic client registration, and no pre-registered client is configured for it.`;
           continue;
         }
 
         const verifier = crypto.randomBytes(48).toString("base64url");
         const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
-        const state = crypto.randomBytes(16).toString("base64url");
 
         const authorizeUrl = new URL(meta.authorization_endpoint);
         authorizeUrl.searchParams.set("response_type", "code");
@@ -482,7 +604,7 @@ export function registerMcpIpc(): void {
 
         await shell.openExternal(authorizeUrl.toString());
 
-        const cb = await authorizeViaLoopback(port, authorizeUrl.toString(), state);
+        const cb = await bound.wait;
         if (cb.error) {
           lastError = `Sign-in failed: ${cb.error}`;
           continue;
@@ -508,7 +630,12 @@ export function registerMcpIpc(): void {
     "orplex:mcp-oauth-refresh",
     async (_e, params: { serverUrl: string; refreshToken: string; clientId: string; clientSecret?: string; tokenEndpoint?: string }): Promise<OAuthResult> => {
       try {
-        let tokenEndpoint = params.tokenEndpoint;
+        // A stored tokenEndpoint comes from the renderer's persisted
+        // connection — policy-gate it (a tampered store must not redirect
+        // refresh grants). Falls back to fresh discovery below.
+        let tokenEndpoint = params.tokenEndpoint && !mcpFetchUrlError(params.tokenEndpoint)
+          ? params.tokenEndpoint
+          : undefined;
         if (!tokenEndpoint) {
           const { asUrls } = await discoverAuthorizationServers(params.serverUrl);
           for (const asUrl of asUrls) {

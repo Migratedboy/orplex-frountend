@@ -245,6 +245,23 @@ export async function getUsageStats() {
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 20;
 
+/**
+ * Best-effort client IP for THROTTLING keys (never for auth decisions).
+ * Prefers x-real-ip (set — and overwritten — by the edge, not spoofable);
+ * falls back to the leftmost x-forwarded-for entry, which a client CAN
+ * spoof to rotate buckets. Fine for abuse friction, not a security boundary.
+ */
+export function clientIp(request: Request): string {
+  try {
+    const real = request.headers.get("x-real-ip");
+    if (real && real.trim()) return real.trim().slice(0, 64);
+    const first = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+    return (first || "unknown").slice(0, 64);
+  } catch {
+    return "unknown";
+  }
+}
+
 export function checkRateLimit(key: string): {
   allowed: boolean;
   remaining: number;

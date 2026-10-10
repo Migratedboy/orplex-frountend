@@ -178,6 +178,9 @@ export async function markNeedsReauth(userId: string, serverId: string, reason?:
       tokensCiphertext: null,
       tokenType: null,
       expiresAt: null,
+      // The grant is dead — its scope display must die with it, or the UI
+      // shows permissions that no longer exist. Issuer (the server) stays.
+      scope: null,
       failureReason: (reason ?? "authorization revoked").slice(0, 300),
     });
   });
@@ -227,6 +230,9 @@ export async function disconnectConnection(userId: string, serverId: string): Pr
       expiresAt: null,
       clientId: null,
       clientSecret: null,
+      // Fully unlinked: no grant, no server binding left to display.
+      scope: null,
+      issuer: null,
       failureReason: null,
     });
     return true;
@@ -251,7 +257,9 @@ export async function saveConnectionCredentials(input: SaveCredentialsInput): Pr
     const data: Record<string, unknown> = {
       clientId: input.clientId,
       clientSecret: input.clientSecret ? encryptKey(input.clientSecret) : null,
-      failureReason: null,
+      // NOTE: failureReason is NOT cleared here — a DCR re-registration is
+      // not proof of health. It clears in saveConnectionTokens, when tokens
+      // actually land and status flips to connected.
     };
     if (input.issuer) data.issuer = input.issuer;
     const row = await ensureConnectionRow(userId, serverId, { url: input.url, transport: input.transport });
@@ -317,6 +325,27 @@ export async function listConnections(userId: string): Promise<SafeConnection[]>
   }));
 }
 
-export async function getConnection(userId: string, serverId: string) {
-  return findConnection(userId, serverId);
+/**
+ * Single connection, projected to the safe shape (no ciphertext/client
+ * secret — use loadConnectionTokens/loadConnectionCredentials for those).
+ * Currently no production callers; the projection exists so a future one
+ * cannot leak secrets by accident.
+ */
+export async function getConnection(userId: string, serverId: string): Promise<SafeConnection | null> {
+  const r = await findConnection(userId, serverId);
+  if (!r) return null;
+  return {
+    serverId: r.serverId,
+    url: r.url,
+    transport: r.transport,
+    status: r.status as McpConnectionStatus,
+    issuer: r.issuer,
+    scope: r.scope,
+    expiresAt: r.expiresAt,
+    lastTestAt: r.lastTestAt,
+    lastTestOk: r.lastTestOk,
+    autoApproveReadOnly: r.autoApproveReadOnly,
+    failureReason: r.failureReason ?? null,
+    updatedAt: r.updatedAt,
+  };
 }

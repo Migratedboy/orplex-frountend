@@ -87,6 +87,10 @@ export function describeEvent(type: string, payload: unknown): { label: string; 
       return typeof p.branch === "string" ? { label: p.branch } : null;
     case "compacted":
       return { label: `context compacted at ${formatTokens(Number(p.tokensBefore))} tokens` };
+    case "loop-break":
+      return { label: "loop detected — forcing a strategy change", detail: String(p.reason ?? "").slice(0, 200) };
+    case "loop-stopped":
+      return { label: "stopped early — repeated loop", detail: String(p.reason ?? "").slice(0, 200) };
     case "mcp-tools-loaded":
       return { label: `${String(p.count ?? 0)} MCP tool(s) from ${Array.isArray(p.servers) ? p.servers.join(", ") : "server"}` };
     case "mcp-server-error":

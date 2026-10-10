@@ -13,7 +13,8 @@ orchestration with a Manager board, workspace memory, plugins/skills/MCP, and a
 full admin/observability layer.
 
 Stack: TypeScript everywhere, Next.js App Router, Prisma + PostgreSQL
-(Supabase-compatible, plus an embedded local Postgres for desktop), NextAuth
+(hosted Supabase for the cloud backend; an optional embedded local Postgres
+for desktop/offline mode — skipped in lightweight mode), NextAuth
 (Google/GitHub OAuth + dev bypass), Tailwind, Playwright (verification + E2E),
 Electron 41.
 
@@ -22,6 +23,7 @@ Electron 41.
 ```
 npm run dev          # fetch fonts → compile electron main → launch Electron
                      # Electron: single-instance lock → start embedded Postgres
+                     #           (skipped when ORPLEX_LIGHTWEIGHT=1)
                      #           → spawn `next dev` (port 5000) as child
                      #           → wait for HTTP → open BrowserWindow
 npm start            # same, against a production build
@@ -50,10 +52,10 @@ npm run electron:dist# package installers (NSIS / DMG / AppImage)
 │  Manager board · Settings · History · Plugins · Admin          │
 │  Context providers → hooks → background chat worker (client)   │
 └──────────────────────────┬─────────────────────────────────────┘
-                           │ HTTP / SSE  (src/proxy.ts gatekeeper)
-┌──────────────────────────┴─────────────────────────────────────┐
-│                Next.js API layer (79 route handlers)           │
-│  /api/chat · /api/agent/* (22) · /api/admin/* (6) · auth ·     │
+                           │ HTTP / SSE  (src/proxy.ts — auth + cloud forward)
+┌──────────────────────────┴─────────────────────────────┐
+│                Next.js API layer (87 route handlers)           │
+│  /api/chat · /api/agent/* (38) · /api/admin/* (6) · auth ·     │
 │  conversations · settings · workspaces · sync · MCP · models   │
 └──────────────────────────┬─────────────────────────────────────┘
                            │
@@ -76,7 +78,7 @@ npm run electron:dist# package installers (NSIS / DMG / AppImage)
 
 | Piece | File | What it does |
 |---|---|---|
-| Main process | `electron/main.ts` | Owns the Next child process, embedded Postgres bootstrap (`scripts/local-db.mjs`, port 5433), single-instance lock, port takeover, IPC for preview + agent browser, tray wiring |
+| Main process | `electron/main.ts` | Owns the Next child process, embedded Postgres bootstrap (`scripts/local-db.mjs`, port 5433; skipped entirely in `ORPLEX_LIGHTWEIGHT=1` mode), single-instance lock, port takeover, IPC for preview + agent browser, tray wiring |
 | Preload bridge | `electron/preload.ts` | `window.orplexDesktop`: `preview.*` (create/navigate/bounds/show/back/forward/reload/screenshot/events), `agentBrowser.*` (show/showId/getId/navigate/read/elements/interact+ref/console/find/waitFor/hover/select/tabs/network/screenshot(fullPage,viewport)/evaluate), `openExternal`, `getPathForFile`, versions |
 | Tray | `electron/tray.ts` | Static template icon + native notifications; polls the local run-board summary and fires on status transitions only |
 | Window | `electron/main.ts` | 1440×900, dark background, menu (View/Edit roles), `window.open` → OS browser |
@@ -170,16 +172,30 @@ singleton (survives navigation/reload via `background-chat.ts` snapshots):
 - **Streaming**: `stream-reader.ts` parses native `tool_calls` + thinking and
   legacy XML tags; `tool-text.ts` dedups word-repetition pathologies, strips
   redundant fences, normalizes thinking blocks, repairs interleaved replays.
-- **Safety caps**: 120 tool turns, same-tool loop detection, write caps — each
-  becomes an interactive "keep going?" question (max 5 extensions) instead of a
-  silent death.
+- **Safety caps**: 120 tool turns, streak-based loop detection
+  (`loop-detect.ts` — identical call 3x, same target with noisy args 4x, the
+  same multi-call turn 3x, or one state-changing tool 5 turns in a row — all
+  trip BEFORE dispatch; read-only exploration is exempt from the tool streak).
+  Loop trips self-heal once with an evidence-carrying `[LOOP BREAK]` directive
+  (repeated call + its last result + "no progress claims without a successful
+  write/edit"); a second trip stops the task with an honest note. Write and
+  turn caps still become a "keep going?" question (max 5 extensions).
 - **Anti-laziness gates**: FORCE-TOOLS nudge when a build request produced no
   writes; SPARC plan-first gate (plan + read before write) on complex tasks.
+- **Scratchpad**: `scratchpad_update` writes private working memory
+  (plan/hypotheses/findings/next) re-injected into every turn
+  (`scratchpad.ts`) — complex tasks start seeded, others get a
+  `[SCRATCHPAD]` nudge at turn 2; the RightPanel Scratch tab renders it.
+  Never a user-facing deliverable; the server executor gets the same tool.
 - **Modes**: ask · code · plan (hard plan-approval gate before any write) ·
   self-review pass with one repair turn after the loop.
 - **Failure learning**: `failure-memory.ts` + persistent `run-ledger.ts`
   (Postgres via API) re-seed new tasks with what actually failed last time;
   `master-prompt.ts` renders the Adaptive Failure Doctrine.
+- **Low-memory honesty**: `memory-note.ts` probes the local
+  `/api/system/memory` route (500 ms budget, degrades to null) and the worker
+  appends "Low memory: system RAM at NN% used" to failure messages, so
+  RAM-pressure deaths say why they happened.
 
 ## 5. Tool Belt (what the agent can do)
 
@@ -190,7 +206,7 @@ singleton (survives navigation/reload via `background-chat.ts` snapshots):
 `run_in_sandbox`, `undo_last_change` (serve commands passed to `run_command` are
 auto-detected and detached — there is no separate serve tool),
 `web_search` (Google→Bing RSS chain, `/api/search`), `take_screenshot`,
-`preview_browser`, `verify_app`, `todo_list`, `ask_question`, plus the full
+`preview_browser`, `verify_app`, `todo_list`, `ask_question`, `scratchpad_update`, plus the full
 `browser_*` set. Every tool result is explicit XML — unknown tools error
 instead of hanging.
 
@@ -374,23 +390,41 @@ instead of hanging.
   envelopes move checkpoint refs and file-history between machines via a hub.
 - **Blob storage**: `storage-service.ts` — content-addressed sha256 chunks
   (local `.orplex/storage/` or any S3-compatible endpoint), dedup + GC.
+- **Local database (optional)**: the desktop shell boots an embedded
+  Postgres (`.localpg/`, port 5433) for local-only/offline mode. Cloud
+  setups set `ORPLEX_LIGHTWEIGHT=1` (repo `.env`) to skip it — ~30s faster
+  boot and one less failure class (port conflicts, stale clusters). Nothing
+  in cloud mode needs it: page loads, local-only routes, and the full jest
+  suite pass with port 5433 down.
 - **Deploy targets**: Vercel (`vercel.json`), Fly (`fly.toml`), Railway,
   Render, Docker (`Dockerfile.deploy`, `Containerfile`, `podman-compose.yml`);
   split-frontend/API mode via `NEXT_PUBLIC_API_BASE_URL` (`api-base.ts`).
-- **HTTP gatekeeper**: `src/proxy.ts` (formerly middleware.ts) — Edge JWT page
-  auth, dynamic credentialed CORS, CSRF (content-type/XRW + origin checks),
-  request-ID/timing headers, CSP.
+- **HTTP gatekeeper + cloud API forward**: `src/proxy.ts` (formerly
+  middleware.ts) — Edge JWT page auth, dynamic credentialed CORS, CSRF
+  (content-type/XRW + origin checks), request-ID/timing headers, CSP.
+  EVERY `/api/*` request is rewritten to the cloud backend (`ORPLEX_API_URL`,
+  else `NEXT_PUBLIC_API_BASE_URL`) so the browser stays same-origin —
+  first-party cookies, zero CORS — while the real handlers run in the cloud;
+  with no origin configured the local handlers serve instead.
+  `LOCAL_ONLY_API_ROUTES` opts machine-local diagnostics out (currently
+  `/api/system/memory` — the cloud would report Vercel's RAM, not the
+  user's). Auth-heartbeat forwards fail soft as JSON 503 instead of the
+  plain-text 500 that breaks the next-auth client; a cached HEAD probe
+  (30s ok / 5s fail) gates the rewrite decision.
 
 ## 15. UI Surface (every panel & page)
 
 - **Chat page** (`/`): ChatInput (attachments, drag-drop, images, model
-  picker), MessageList/MessageContent/MarkdownRenderer, ThinkingCard
+  picker), PromptBar (slash skill menu + model picker, 50-row chunked
+  scroll-to-load menus), MessageList/MessageContent/MarkdownRenderer,
+  ThinkingCard
   (collapsible reasoning), ToolCallDisplay, ThoughtStream/ThoughtLine,
   QuestionCard (agent questions), ApprovalDialog, TodoBar, QuotaIndicator,
   PromptMeterStrip, WelcomeSection + Onboarding, VirtualList (long chats),
   LatticeLoader, ProgressBar, Skeletons.
 - **RightPanel**: Queue · Changes (hunk review) · Files (tree + filter) ·
-  Preview (native browser) · Terminal (persistent shell). Resizable grip
+  Preview (native browser) · Terminal (persistent shell) · Scratch (agent
+  working memory). Resizable grip
   (double-click reset), tab persistence, per-tab error boundary.
 - **Manager** (`/manager`): RunBoard (batch, approvals, missions, provider
   badge), RunTimeline, RunLiveStatus, QueueRunnerProvider (idle-tab claimer).
@@ -455,7 +489,7 @@ create/destroy/merge); users' own API keys per provider; quotas per tier.
   agent command hook (`ORPLEX_SWE_AGENT_CMD`) and verifies green. Documented
   caveat: measures the dataset's own test commands on plain clones — not the
   official dockerized evaluation.
-- **Tests**: 90+ Jest suites (~925 tests) under `src/**/__tests__`; Playwright
+- **Tests**: 107 Jest suites (~1000 tests) under `src/**/__tests__`; Playwright
   E2E (`e2e/chat.spec.ts`, `e2e/seed.spec.ts`) using the mock-AI seam.
 - **Custom ESLint rules**: `tools/eslint-rules/`; wiring auditor
   (`scripts/audit-wiring.mjs`).
@@ -506,6 +540,9 @@ create/destroy/merge); users' own API keys per provider; quotas per tier.
 | `compaction-memory.ts` | Facts captured from evictions |
 | `failure-memory.ts` | Adaptive failure doctrine state |
 | `run-ledger.ts` | Persistent run/failure ledger client |
+| `scratchpad.ts` | Agent private working memory (plan/hypotheses/findings/next), re-shown every turn |
+| `loop-detect.ts` | Streak loop detection (identical-call + same-target + repeated-turn + same-tool, O(1)) + `[LOOP BREAK]` directive builder |
+| `memory-note.ts` | Low-memory failure annotation (local `/api/system/memory`, degrades to null) |
 | `prompt-meter.ts` | Full-vs-compact token accounting |
 | `tpm-pacer.ts` | Global TPM token bucket |
 | `queue-runner.ts` | Idle-tab claiming of scheduled runs |
@@ -602,14 +639,15 @@ create/destroy/merge); users' own API keys per provider; quotas per tier.
 | `dev-seed.ts` / `client-signatures.ts` | Dev data / signatures |
 | `user-hooks.ts` / `user-skills.ts` | User extension files |
 
-## `src/components/` (73)
+## `src/components/` (77)
 
 Chat: `ChatInput`, `MessageList`, `MessageContent`, `MarkdownRenderer`,
 `ThinkingCard`, `ThoughtStream`, `ThoughtLine`, `ToolCallDisplay`,
 `QuestionCard`, `ApprovalDialog`, `TodoBar`, `VirtualList`, `WelcomeSection`,
 `Onboarding`, `ModeSelector`, `PromptBar`, `QuotaIndicator`, `PromptMeterStrip`,
 `FileUpload`, `DragDropZone`, `FilePreviewModal`.
-Right panel: `RightPanel` (browser/tabs/changes/files/terminal), `DiffView`,
+Right panel: `RightPanel` (browser/tabs/changes/files/terminal/scratch),
+`DiffView`,
 `CodeEditor`, `Terminal`.
 Runs: `AgentManager`, `RunBoard`, `RunTimeline`, `RunLiveStatus`, `StepList`,
 `AgentProgress`, `AgentActivityLog`, `ReviewStrip`, `BranchReviewPanel`,
@@ -625,19 +663,19 @@ Families: `ui/` (`AgentStatus`, `AISuggestions`, `FileTree`,
 `SplitView`, `TaskProgress`), `loader/` (`BootGate`, `BrandSpinner`,
 `GeometricLoader`).
 
-## `src/hooks/` (11)
+## `src/hooks/` (13)
 
 `useChatSession`, `useBackgroundChat`, `useConversation`, `useMessages`,
 `useFileSystem`, `useFileProcessor`, `useHunkDecisions`,
 `useKeyboardShortcuts`, `useActiveRunCount`, `useBootProgress`,
-`useReducedMotion`.
+`useReducedMotion`, `useProjects`, `useScratchpad`.
 
-## API Routes (79 handlers)
+## API Routes (87 handlers)
 
 **Core**: `/api/chat` (+`/chat/fast`), `/api/conversations` (+`[id]`),
 `/api/health`, `/api/auth/[...nextauth]`, `/api/debug/user`, `/api/dev/session`,
 `/api/notifications`, `/api/bug-report`, `/api/open-external`,
-`/api/localhost-probe`.
+`/api/localhost-probe`, `/api/system/memory` (local-only, never forwarded).
 **Models/keys/settings**: `/api/models/available`, `/api/models/warm`
 (cold-start wake engine), `/api/settings`, `/api/settings/keys` (+`/models`).
 **Workspaces**: `/api/workspace` (+create/delete/invite/members/update-member),
@@ -721,3 +759,7 @@ UI writes detected → pick dev command → free-port check (4310)
   semantics, lanes, memory, and board events.
 - **Honest failures**: every lane surfaces infrastructure-failure distinctly
   from app failure; no silent degradation.
+- **Same-origin API, cloud handlers**: the browser only ever calls `/api/*`
+  on its own origin; `proxy.ts` forwards everything to the cloud backend
+  (zero CORS in the app) and opts machine-local routes out via
+  `LOCAL_ONLY_API_ROUTES`.

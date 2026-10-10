@@ -118,6 +118,16 @@ describe("FORCE TOOLS gate — writes before the text-only turn", () => {
   beforeEach(() => {
     chatCount = 0;
     chatBodies = [];
+    // The no-workspace guard refuses writes without registered FS access —
+    // this worker test simulates an open folder with stub file ops.
+    setFileSystemAccess(
+      async () => "[Error: not found]",
+      async () => true,
+      async () => false,
+      [],
+      {},
+      "test-workspace"
+    );
     global.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/chat")) {

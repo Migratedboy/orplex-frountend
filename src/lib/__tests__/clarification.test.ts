@@ -114,4 +114,13 @@ describe("tool roster", () => {
   it("exports a skip sentinel distinct from any real answer", () => {
     expect(CLARIFICATION_SKIP).toBe("__orplex_clarification_skip__");
   });
+
+  it("keeps the playbook tools in the lean (Groq/NVIDIA) set", () => {
+    // Lean lanes render the ## PLAYBOOK block, so the tools must be callable
+    // there too — a typo here would silently drop them from the lean roster.
+    for (const name of ["playbook_search", "skill_create", "session_search"]) {
+      expect(GROQ_TOOL_NAMES).toContain(name);
+      expect(M3_TOOL_DEFINITIONS.some((t: any) => t.function?.name === name)).toBe(true);
+    }
+  });
 });

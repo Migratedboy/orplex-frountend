@@ -153,7 +153,16 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
       err.name = "McpPendingVerifierMissing";
       throw err;
     }
-    return row.codeVerifier;
+    // Stored encrypted (see setPendingCodeVerifier); a decrypt failure is
+    // treated exactly like a missing verifier, never surfaced raw.
+    try {
+      const { decryptKey } = await import("@/lib/key-encryption");
+      return decryptKey(row.codeVerifier);
+    } catch {
+      const err = new Error(`MCP OAuth: no pending PKCE verifier for state (serverId=${this.opts.serverId})`);
+      err.name = "McpPendingVerifierMissing";
+      throw err;
+    }
   }
 
   async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {

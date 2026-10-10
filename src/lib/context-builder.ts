@@ -29,8 +29,15 @@ function buildFileTreeString(nodes: any[], depth = 0): string {
 // Check if message is a simple greeting
 const SIMPLE_PATTERNS = /^(hi|hello|hey|thanks|thank you|ok|yes|no|help|bye|sup|yo|hola|howdy|cool|nice|great|awesome|perfect)/i;
 
-/** Resolve a relative import path to an absolute file path */
-function resolveImport(fromFile: string, importPath: string): string | null {
+/**
+ * Resolve a relative import path against the KNOWN workspace paths (the
+ * entries being scored — no filesystem access here). Returns the first
+ * candidate+extension present in the set, else the bare normalized path.
+ * NOTE: the old version returned on the first loop iteration ("" ext), so
+ * resolved paths never matched real files and the importedBy hub-boost was
+ * always 0.
+ */
+function resolveImport(fromFile: string, importPath: string, knownPaths: Set<string>): string | null {
   const dir = fromFile.replace(/\/[^/]+$/, "");
   const parts = (dir ? dir + "/" : "") + importPath;
   // Normalize path segments
@@ -43,8 +50,8 @@ function resolveImport(fromFile: string, importPath: string): string | null {
   // Try common extensions
   const exts = ["", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js"];
   for (const ext of exts) {
-    // We can't check filesystem here, just return the normalized path
-    return candidate + ext;
+    const full = candidate + ext;
+    if (knownPaths.has(full)) return full;
   }
   return candidate;
 }
@@ -117,6 +124,7 @@ export function buildM3Context(
     .slice(0, 15);
 
   // Build import graph: which files import which
+  const knownPaths = new Set(entries.map(([p]) => p));
   const importGraph = new Map<string, Set<string>>();
   for (const [path, content] of entries) {
     const imports = new Set<string>();
@@ -125,7 +133,7 @@ export function buildM3Context(
       const imported = m[1];
       // Resolve relative imports
       if (imported.startsWith("./") || imported.startsWith("../")) {
-        const resolved = resolveImport(path, imported);
+        const resolved = resolveImport(path, imported, knownPaths);
         if (resolved) imports.add(resolved);
       }
     }

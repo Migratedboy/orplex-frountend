@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
-import { armDesktopCode, getDesktopCode } from "@/lib/desktop-auth";
+import { armDesktopCode, checkDesktopFlow, getDesktopCode, DESKTOP_FLOW_COOKIE } from "@/lib/desktop-auth";
+import { checkRateLimit, clientIp } from "@/lib/rate-limiter";
 
 export const dynamic = "force-dynamic";
 
@@ -15,9 +16,29 @@ function page(body: string): NextResponse {
 }
 
 export async function GET(request: Request) {
+  const rl = checkRateLimit(`desktop-finish:${clientIp(request)}`);
+  if (!rl.allowed) {
+    return page(`<h2 style="color:#ff6b00">Too many sign-in attempts</h2><p style="color:#9aa">Wait a minute and try again.</p>`);
+  }
   const code = new URL(request.url).searchParams.get("code") || "";
   const entry = getDesktopCode(code);
   if (!entry) return page(`<h2 style="color:#ff6b00">Link expired</h2><p style="color:#9aa">Return to the app and start sign-in again.</p>`);
+
+  // Login-CSRF defense: only the browser that minted the code (holder of
+  // the HttpOnly flow cookie) may arm it. A cross-site lure carries no
+  // cookie → same generic "expired" page (never reveal why).
+  const cookieHeader = request.headers.get("cookie") || "";
+  const flowToken = cookieHeader
+    .split(";")
+    .map((c) => c.trim().split("="))
+    .find(([k]) => k === DESKTOP_FLOW_COOKIE)?.[1];
+  let flowOk = false;
+  try {
+    flowOk = checkDesktopFlow(code, flowToken ? decodeURIComponent(flowToken) : null);
+  } catch {
+    flowOk = false;
+  }
+  if (!flowOk) return page(`<h2 style="color:#ff6b00">Link expired</h2><p style="color:#9aa">Return to the app and start sign-in again.</p>`);
 
   const session = await getServerSession(jwtOnlyOptions);
   if (!session?.user) {

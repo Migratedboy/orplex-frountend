@@ -41,6 +41,8 @@ export const IconMoon = (p: IconProps) => <Ms name="dark_mode" {...p} />;
 export const IconBell = (p: IconProps) => <Ms name="notifications" {...p} />;
 export const IconEdit = (p: IconProps) => <Ms name="edit" {...p} />;
 export const IconTrash = (p: IconProps) => <Ms name="delete" {...p} />;
+/** Sign out — used by the sidebar footer's icon-only control. */
+export const IconLogout = (p: IconProps) => <Ms name="logout" {...p} />;
 
 /** MCP connectors: the user-supplied plug SVG (rounded servers under a
  *  two-prong plug). Drawn inline — not part of the Material Symbols font. */
@@ -125,6 +127,8 @@ export const IconFilePlus = (p: IconProps) => <Ms name="note_add" {...p} />;
 export const IconTerminal = (p: IconProps) => <Ms name="terminal" {...p} />;
 export const IconBrain = (p: IconProps) => <Ms name="neurology" {...p} />;
 export const IconChevronDown = (p: IconProps) => <Ms name="keyboard_arrow_down" {...p} />;
+/** Chevron up — paired with IconChevronDown for expand/collapse disclosure. */
+export const IconChevronUp = (p: IconProps) => <Ms name="keyboard_arrow_up" {...p} />;
 export const IconChevronRight = (p: IconProps) => <Ms name="chevron_right" {...p} />;
 export const IconCircle = (p: IconProps) => <Ms name="radio_button_unchecked" {...p} />;
 export const IconLoader = (p: IconProps) => <Ms name="progress_activity" {...p} />;

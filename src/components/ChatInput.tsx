@@ -36,6 +36,9 @@ interface ChatInputProps {
   clearFailedModels?: () => void;
   /** Re-arms the picker with the swapped model (persists per conversation). */
   onRetryModelSwap?: (nextModelId: string, failedModelIds: string[]) => void;
+  /** True after the user pressed Stop — the composer acknowledges it without
+   *  blocking the next send (the input stays live). */
+  stopped?: boolean;
 }
 
 const MODES: (PromptBarMode & { agentMode: AgentMode })[] = [
@@ -146,13 +149,14 @@ function savePickers(conversationId: string | null | undefined, state: PickerSta
   }
 }
 
-export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, failedModels, clearFailedModels, onRetryModelSwap }: ChatInputProps) {
+export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, failedModels, clearFailedModels, onRetryModelSwap, stopped = false }: ChatInputProps) {
   const files = useFileProcessor();
   const [busy, setBusy] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const clearRef = useRef<(() => void) | null>(null);
   const controlsRef = useRef<{ clear: () => void; setText: (t: string) => void } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
   // === Verified model catalog (fetched when the model menu opens) + recents ===
   const [catalogModels, setCatalogModels] = useState<PromptBarModel[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -160,6 +164,16 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   // Mirror for use inside loadCatalog's closure without re-creating it.
   const userModelsRef = useRef<PromptBarModel[]>([]);
   const catalogInFlight = useRef(false);
+  // Retry-timer + unmount guards: the catalog retry loop below can schedule
+  // up to 120 × 5s retries (~10 min). Without cancellation they keep firing
+  // (and setState) after unmount and waste network.
+  const catalogTimers = useRef<number[]>([]);
+  const catalogCancelled = useRef(false);
+  useEffect(() => () => {
+    catalogCancelled.current = true;
+    catalogTimers.current.forEach((t) => clearTimeout(t));
+    catalogTimers.current = [];
+  }, []);
   // BYOK models (from the user's stored keys' model listings) + the keys
   // revision marker that tells us when to refetch (new/removed keys).
   const [userModels, setUserModels] = useState<PromptBarModel[]>([]);
@@ -206,7 +220,14 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
       catalogInFlight.current = false;
       setCatalogLoading(false);
     };
+    const later = (fn: () => void) => {
+      if (catalogCancelled.current) return;
+      catalogTimers.current.push(window.setTimeout(() => {
+        if (!catalogCancelled.current) fn();
+      }, 5000));
+    };
     const tryFetch = (attempt: number) => {
+      if (catalogCancelled.current) return;
       apiFetch("/api/models/available")
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
         .then((j: {
@@ -277,14 +298,16 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
           // probe sweep runs in the background — keep polling until the real
           // catalog lands (a full sweep can take ~10 minutes). Every poll
           // re-kicks the sweep in case the server cold-started without one.
+          if (catalogCancelled.current) { finish(); return; }
           if (attempt < 120) {
             apiFetch("/api/models/warm", { method: "POST" }).catch(() => {});
-            window.setTimeout(() => tryFetch(attempt + 1), 5000);
+            later(() => tryFetch(attempt + 1));
           } else finish();
         })
         .catch(() => {
+          if (catalogCancelled.current) { finish(); return; }
           // Network/auth hiccup: a few retries, then keep the fallback list.
-          if (attempt < 3) window.setTimeout(() => tryFetch(attempt + 1), 5000);
+          if (attempt < 3) later(() => tryFetch(attempt + 1));
           else finish();
         });
     };
@@ -455,8 +478,28 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     return () => document.removeEventListener("paste", handlePaste);
   }, [files]);
 
+  // The composer floats over the message list, so the list's bottom padding,
+  // the run cards' clearance, and the empty-state hero all reserve the bar's
+  // height via --composer-h. Publish the measured height (and keep it in sync
+  // as chips, the queue, or extra input lines grow the bar) so that clearance
+  // is exact rather than a guess.
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    const root = document.documentElement;
+    const apply = () => root.style.setProperty("--composer-h", `${Math.round(el.getBoundingClientRect().height)}px`);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      root.style.removeProperty("--composer-h");
+    };
+  }, []);
+
   return (
-    <div className="chat-input-bar">
+    <>
+    <div className="chat-input-bar" ref={barRef}>
       <div className="chat-input-inner">
         <div className="ws-switcher-row">
           <WorkspaceSwitcher />
@@ -558,6 +601,13 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             className="prompt-bar--chat"
           />
         </div>
+        {stopped && !isWorking && (
+          <div className="chat-stop-note" role="status">
+            <span className="ms ms-sm" aria-hidden="true">stop_circle</span>
+            <span>Stopped</span>
+            <span className="chat-stop-note-hint">Send again to continue</span>
+          </div>
+        )}
         {queue.length > 0 && (
           <div className="queue-indicator">
             <div className="queue-header">
@@ -582,7 +632,6 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
           </div>
         )}
         <QuotaIndicator />
-        <ConnectorsPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
         <p className="chat-disclaimer">Orplex Agent can make mistakes. Verify important information.</p>
         {onFastAnswer && lastUserMessage && isStreaming && (
           <div className="fast-answer-bar">
@@ -598,5 +647,12 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
         )}
       </div>
     </div>
+    {/* The connectors dialog is a fixed, full-screen overlay. The bar now
+        carries a backdrop-filter, which would make the bar the containing
+        block for that overlay (clamping it to the composer) — so it renders
+        as a sibling of the bar instead. Same tree depth for the rest of the
+        app, and the bar's filtered box never contains a fixed layer. */}
+    <ConnectorsPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
+    </>
   );
 }

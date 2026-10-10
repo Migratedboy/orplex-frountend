@@ -93,7 +93,7 @@ export default function BranchedMenu({
   lineColor,
   width = 240,
   rowHeight = 36,
-  indent = 40,
+  indent = 32,
   trunk = 14,
   radius = 10,
   lineWidth = 1.5,

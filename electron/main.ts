@@ -8,7 +8,8 @@
  * server; the UI talks to the hosted backend over HTTPS. Both vars come
  * from the repo-root .env via the loader at the top of this file.
  */
-import { app, BrowserWindow, shell, Menu, dialog, ipcMain, WebContentsView, session } from "electron";
+import { app, BrowserWindow, shell, Menu, dialog, ipcMain, WebContentsView, session, nativeImage } from "electron";
+import { homedir } from "node:os";
 import { spawn, ChildProcess } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
@@ -96,7 +97,7 @@ const gotTheLock = app.requestSingleInstanceLock();
 // by AppUserModelId + exe. Set as early as possible so the shell never
 // associates this process with electron.exe's default icon.
 try {
-  app.setAppUserModelId("tech.orplex.app");
+  app.setAppUserModelId("tech.orplex.code.desktop");
 } catch {}
 if (!gotTheLock) {
   app.quit();
@@ -532,9 +533,52 @@ async function ensureLocalDb(): Promise<void> {
   process.stdout.write("[db] local postgres is up\n");
 }
 
+// === APP ICON ===============================================================
+// Finds the icon on disk no matter where the code runs from: compiled output
+// (dist-electron), the electron/ source folder, or a packaged app's resources.
+// Windows needs the .ico for a crisp taskbar icon; PNG is the fallback.
+function resolveIconPath(): string | undefined {
+  const names = process.platform === "win32" ? ["icon.ico", "icon.png"] : ["icon.png", "icon.ico"];
+  // Start points: compiled dir, app root, cwd, packaged resources. From each,
+  // walk UP a few levels and probe the usual icon folders at every level.
+  const starts = [__dirname, app.getAppPath(), process.cwd(), process.resourcesPath || ""];
+  const subs = ["", "assets", "electron", path.join("electron", "assets"), "build", "public", "resources"];
+  const seen = new Set<string>();
+  for (const name of names) {
+    for (const start of starts) {
+      if (!start) continue;
+      let dir = start;
+      for (let up = 0; up < 5; up++) {
+        for (const sub of subs) {
+          const candidate = path.join(dir, sub, name);
+          if (seen.has(candidate)) continue;
+          seen.add(candidate);
+          try {
+            if (fs.existsSync(candidate)) return candidate;
+          } catch {}
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+    }
+  }
+  process.stdout.write(`[icon] NOT FOUND. __dirname=${__dirname} appPath=${app.getAppPath()} cwd=${process.cwd()}\n`);
+  return undefined;
+}
+
 function createWindow(): void {
   // Crash detection: start dirty; the clean-quit handler flips it to true.
   writeSessionState(false);
+  const iconPath = resolveIconPath();
+  const appIcon = iconPath ? nativeImage.createFromPath(iconPath) : undefined;
+  try {
+    const bytes = iconPath ? fs.statSync(iconPath).size : 0;
+    const sz = appIcon ? appIcon.getSize() : { width: 0, height: 0 };
+    process.stdout.write(
+      `[icon] picked=${iconPath ?? "NONE"} bytes=${bytes} empty=${appIcon ? appIcon.isEmpty() : "n/a"} size=${sz.width}x${sz.height}\n`
+    );
+  } catch {}
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -546,26 +590,7 @@ function createWindow(): void {
     autoHideMenuBar: true,
     // Orplex logo for the window + taskbar. On Windows an .ico carries the
     // full size range (16–256) so the taskbar renders crisply; PNG elsewhere.
-    icon: (() => {
-      try {
-        const fs = require("fs") as typeof import("fs");
-        const ico = path.join(__dirname, "assets", "icon.ico");
-        const png = path.join(__dirname, "assets", "icon.png");
-        const picked =
-          process.platform === "win32" && fs.existsSync(ico)
-            ? ico
-            : fs.existsSync(png)
-              ? png
-              : undefined;
-        process.stdout.write(
-          `[icon] dir=${__dirname} ico=${fs.existsSync(ico)} png=${fs.existsSync(png)} picked=${picked ?? "NONE"}\n`
-        );
-        return picked;
-      } catch (err) {
-        process.stdout.write(`[icon] resolve failed: ${String((err as Error)?.message || err)}\n`);
-        return undefined;
-      }
-    })(),
+    icon: appIcon,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -575,14 +600,38 @@ function createWindow(): void {
     },
   });
 
+  if (appIcon && !appIcon.isEmpty()) {
+    try {
+      mainWindow.setIcon(appIcon);
+    } catch {}
+    // Windows: pin the taskbar identity + icon explicitly so the shell stops
+    // showing electron.exe's default icon (needs a real .ico path).
+    if (process.platform === "win32" && iconPath && /\.ico$/i.test(iconPath)) {
+      try {
+        mainWindow.setAppDetails({
+          appId: "tech.orplex.code.desktop",
+          appIconPath: iconPath,
+          appIconIndex: 0,
+          relaunchDisplayName: "Orplex Code",
+        });
+      } catch (err) {
+        process.stdout.write(`[icon] setAppDetails failed: ${String((err as Error)?.message || err)}\n`);
+      }
+    }
+  }
+
   mainWindow.once("ready-to-show", () => {
+    if (appIcon && !appIcon.isEmpty()) mainWindow?.setIcon(appIcon);
     mainWindow?.setTitle("Orplex Code");
     mainWindow?.show();
   });
 
   // Open target=_blank / window.open in the OS browser, not a new Electron window.
+  // Only http(s): anything else (file:, javascript:, custom schemes) is denied.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (/^https?:\/\//i.test(url)) {
+      shell.openExternal(url);
+    }
     return { action: "deny" };
   });
 
@@ -684,6 +733,51 @@ ipcMain.handle("orplex:reveal-path", async (_e, path: string) => {
     return !errMsg;
   } catch {
     return false;
+  }
+});
+
+/**
+ * Resolve a workspace folder's ABSOLUTE path from its name. The renderer has
+ * no path access (File System Access API), and webUtils.getPathForFile can
+ * come back empty for a probe file created through a handle — in which case
+ * folder-open could not register a cwd and every terminal/verification call
+ * failed with "no workspace folder open" while a folder was plainly open.
+ * Bounded search of the usual roots (home first — that is where users keep
+ * projects); returns "" when nothing matches, never a guess.
+ */
+ipcMain.handle("orplex:path-for-directory", async (_e, name: string) => {
+  if (typeof name !== "string" || !name || /[\\/]/.test(name) || name === "." || name === "..") return "";
+  try {
+    const { readdir, stat } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const roots = [homedir(), app.getPath("documents"), app.getPath("desktop")];
+    const isDir = async (p: string) => {
+      try {
+        return (await stat(p)).isDirectory();
+      } catch {
+        return false;
+      }
+    };
+    for (const root of roots) {
+      const direct = join(root, name);
+      if (await isDir(direct)) return direct;
+      // One level down covers the common ~/Projects/<repo> and ~/code/<repo> layouts.
+      let entries: string[] = [];
+      try {
+        entries = await readdir(root, { withFileTypes: true }).then((es) =>
+          es.filter((e) => e.isDirectory()).map((e) => e.name)
+        );
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        const nested = join(root, entry, name);
+        if (await isDir(nested)) return nested;
+      }
+    }
+    return "";
+  } catch {
+    return "";
   }
 });
 
@@ -1375,7 +1469,7 @@ app.whenReady().then(async () => {
   // (AppUserModelId is set at module top, before ready — kept here as a
   // no-op-safe reaffirm for the packaged appId parity.)
   try {
-    app.setAppUserModelId("tech.orplex.app");
+    app.setAppUserModelId("tech.orplex.code.desktop");
   } catch {}
 
   // Desktop sign-in: register the orplex:// protocol handler and the IPC
@@ -1475,4 +1569,36 @@ app.whenReady().then(async () => {
   } catch {
     // Tray is cosmetic — never block startup on it.
   }
+
+  // Graceful shutdown (wires the graceful-shutdown doctrine into the
+  // Electron teardown): SIGTERM/SIGINT kill the Next children first so no
+  // orphaned node process holds the ports, then exit. The Next server
+  // process runs its own shutdown path (SIGTERM → cleanup → Prisma
+  // disconnect) via src/lib/graceful-shutdown.ts. Implemented inline here
+  // because electron/tsconfig.json scopes rootDir to electron/ — importing
+  // src modules would break the Electron build.
+  const shutdownMain = (signal: string) => {
+    try {
+      process.stdout.write(`[shutdown] main received ${signal} — stopping children\n`);
+      try {
+        killAllTerminalChildren();
+      } catch {}
+      for (const child of [nextProcess, apiProcess]) {
+        if (child && !child.killed) {
+          try {
+            if (process.platform === "win32") {
+              spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
+            } else {
+              child.kill("SIGTERM");
+            }
+          } catch {}
+        }
+      }
+      writeSessionState(true);
+    } finally {
+      app.exit(0);
+    }
+  };
+  process.on("SIGTERM", () => shutdownMain("SIGTERM"));
+  process.on("SIGINT", () => shutdownMain("SIGINT"));
 });

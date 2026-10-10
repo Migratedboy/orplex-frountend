@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMcpSession } from "@/lib/mcp-auth";
 import { getServerRunConfig, recordTestResult } from "@/lib/mcp-accounts";
-import { getMcpServerForRun, shutdownAllMcp } from "@/lib/mcp-client";
+import { getMcpServerForRun } from "@/lib/mcp-client";
 import { syncToolSnapshot } from "@/lib/mcp/tool-snapshot";
 
 export const dynamic = "force-dynamic";
@@ -31,14 +31,18 @@ export async function POST(request: NextRequest) {
 
   const started = Date.now();
   try {
-    const handle = await getMcpServerForRun(serverId, { [serverId]: cfg });
+    const handle = await getMcpServerForRun(serverId, { [serverId]: cfg }, session.user.id);
     const tools = await handle.listTools();
     await recordTestResult(session.user.id, serverId, true);
     // Phase 9: this probe already ran a real tools/list — persist it as the
     // Phase 5 roster so prompts/tools counts don't wait for another trigger.
     void syncToolSnapshot(session.user.id, serverId, tools).catch(() => {});
-    // Drop the probe session so the run-time 2-server budget stays free.
-    await shutdownAllMcp();
+    // Drop ONLY the probe session so the run-time 2-server budget stays
+    // free — shutting down everything would kill other users' live run
+    // sessions and concurrent probes (a shared live session respawns
+    // on next use, so this is safe even when shared).
+    const { shutdownAccountSession } = await import("@/lib/mcp-client");
+    await shutdownAccountSession(serverId, { [serverId]: cfg }, session.user.id);
     return NextResponse.json({
       success: true,
       ok: true,
@@ -50,7 +54,8 @@ export async function POST(request: NextRequest) {
     const message = (err as Error).message.slice(0, 400);
     await recordTestResult(session.user.id, serverId, false).catch(() => {});
     try {
-      await shutdownAllMcp();
+      const { shutdownAccountSession } = await import("@/lib/mcp-client");
+      await shutdownAccountSession(serverId, { [serverId]: cfg }, session.user.id);
     } catch {}
     return NextResponse.json({ success: true, ok: false, error: message, latencyMs: Date.now() - started });
   }

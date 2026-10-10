@@ -60,7 +60,12 @@ describe("connectServer", () => {
     mocked.findUnique.mockResolvedValue(null);
     (mocked.upsert as jest.Mock).mockImplementation(async ({ create }) => create);
 
-    const res = await connectServer(USER, "supabase", { env: { SUPABASE_ACCESS_TOKEN: "plain-token" } });
+    // Supabase's catalog template carries a <project-ref> placeholder — a
+    // connect without real args is rejected at save (not at probe time).
+    const res = await connectServer(USER, "supabase", {
+      env: { SUPABASE_ACCESS_TOKEN: "plain-token" },
+      args: ["-y", "@supabase/mcp-server-supabase", "--project-ref=myref"],
+    });
     expect(res.ok).toBe(true);
 
     const stored = (mocked.upsert.mock.calls[0][0] as { create: { env: Record<string, string> } }).create.env;
@@ -114,7 +119,8 @@ describe("listConnectedServers (masking)", () => {
     expect(servers).toHaveLength(1);
     const s = servers[0];
     expect(s.secretsSet).toContain("SUPABASE_ACCESS_TOKEN");
-    expect(s.env.SUPABASE_ACCESS_TOKEN).toContain("...");
+    // Last-4 only (never first-6/last-4): identifies the key, useless for guessing.
+    expect(s.env.SUPABASE_ACCESS_TOKEN).toBe("••••oken");
     expect(s.env.SUPABASE_ACCESS_TOKEN).not.toContain("sb_secret_token");
   });
 

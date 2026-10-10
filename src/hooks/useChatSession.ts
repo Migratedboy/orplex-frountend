@@ -10,7 +10,7 @@ import { useFileSystemContext } from "@/components/FileSystemProvider";
 import { FileNode } from "./useFileSystem";
 import { buildWorkspaceContext } from "@/lib/client-signatures";
 import { listFilesUnderPath, parseToolCalls, replaceLastStatus } from "@/lib/tool-text";
-import { subscribeBackgroundChat, abortCurrentTask, readTaskSnapshot, clearTaskSnapshot, getCurrentTask, type BackgroundTask } from "@/lib/background-chat";
+import { subscribeBackgroundChat, abortCurrentTask, readTaskSnapshot, clearTaskSnapshot, getCurrentTask, deriveRunPhase, runPhaseLabel, type BackgroundTask, type RunPhase } from "@/lib/background-chat";
 import { normalizeThinkingBlocks } from "@/lib/stream-reader";
 import { stampFailedMessage, findFailedExchange, userTypedText } from "@/lib/message-retry";
 import { formatFileSize } from "@/lib/file-utils";
@@ -46,6 +46,23 @@ const STATUS = {
 
 const MAX_TOOL_TURNS = 6;
 
+/** A task this silent is dead, not "still thinking" — see the stall watchdog. */
+const STALL_TIMEOUT_MS = 6 * 60 * 1000;
+
+/**
+ * Label for a live run phase. The worker stamps generic per-turn placeholders
+ * ("Thinking…", "Processing…") as the status detail — surfacing those in the
+ * tail would put a SECOND thinking label on screen next to the Thinking block,
+ * so they fall back to the phase's own wording. Real detail (rate-limit waits,
+ * "Reading src/app/page.tsx…") is kept verbatim.
+ */
+function describeRunPhase(phase: RunPhase, detail: string): string {
+  const d = detail.trim();
+  if (!d) return runPhaseLabel(phase);
+  if (/^(thinking|processing)\b/i.test(d)) return runPhaseLabel(phase);
+  return d;
+}
+
 export interface QueuedPrompt {
   id: string;
   text: string;
@@ -76,6 +93,41 @@ export function useChatSession() {
   const [bgTask, setBgTask] = useState<BackgroundTask | null>(null);
   const [thinking, setThinking] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  // === Per-turn run phase (UI-only view of the task store) =================
+  // Every run-status surface renders from these three: the end-of-stream tail,
+  // the sidebar card, and the composer's Stop/Stopped state. Terminal phases
+  // are held briefly (see phaseTimerRef) so the tail can fade instead of
+  // vanishing, then fall back to "idle".
+  const [runPhase, setRunPhase] = useState<RunPhase>("idle");
+  const [runLabel, setRunLabel] = useState("");
+  const [stopped, setStopped] = useState(false);
+  const phaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The Stop note is transient — acknowledge the stop, then get out of the way.
+  const stoppedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearStoppedTimer = () => {
+    if (stoppedTimerRef.current) {
+      clearTimeout(stoppedTimerRef.current);
+      stoppedTimerRef.current = null;
+    }
+  };
+  /** Surface the Stop note for a few seconds, then let it retire itself. */
+  const showStoppedNote = () => {
+    clearStoppedTimer();
+    setStopped(true);
+    stoppedTimerRef.current = setTimeout(() => {
+      setStopped(false);
+      stoppedTimerRef.current = null;
+    }, 8000);
+  };
+  // Last time the active task produced ANY update — a stream that goes silent
+  // for the whole stall window is dead, not "still thinking".
+  const lastActivityRef = useRef(0);
+  const clearPhaseTimer = () => {
+    if (phaseTimerRef.current) {
+      clearTimeout(phaseTimerRef.current);
+      phaseTimerRef.current = null;
+    }
+  };
   const [queue, setQueue] = useState<QueuedPrompt[]>([]);
   const queueRef = useRef<QueuedPrompt[]>([]);
   const thinkingRef = useRef(false);
@@ -109,10 +161,38 @@ export function useChatSession() {
   useEffect(() => {
     return subscribeBackgroundChat((task) => {
       // Only set bgTask to active tasks — terminal/done/error/cancelled/null clears it
-      const isActive = task && (task.status === "streaming" || task.status === "tool_executing" || task.status === "awaiting_approval");
+      const isActive = task && (task.status === "streaming" || task.status === "tool_executing" || task.status === "awaiting_approval" || task.status === "waiting_for_input");
       const isStreaming = task && (task.status === "streaming" || task.status === "tool_executing");
       setBgTask(isActive ? task : null);
       setStreaming(!!isStreaming);
+
+      // Run phase for the UI. Active tasks mirror the store on every notify;
+      // terminal tasks hold their outcome briefly so the tail indicator can
+      // fade out, then settle back to "idle". A null task leaves the current
+      // phase alone (its own hold timer owns the fade).
+      if (isActive && task) {
+        lastActivityRef.current = Date.now();
+        clearPhaseTimer();
+        const phase = deriveRunPhase(task);
+        setRunPhase(phase);
+        setRunLabel(describeRunPhase(phase, task.statusDetail));
+        clearStoppedTimer();
+        setStopped(false);
+      } else if (task) {
+        const phase = deriveRunPhase(task);
+        clearPhaseTimer();
+        setRunPhase(phase);
+        setRunLabel(
+          phase === "stopped" ? "Stopped"
+            : phase === "error" ? (task.statusDetail || "Failed")
+              : "Done"
+        );
+        phaseTimerRef.current = setTimeout(() => {
+          setRunPhase("idle");
+          setRunLabel("");
+          phaseTimerRef.current = null;
+        }, 1500);
+      }
 
       if (!isActive) {
         setThinking(false);
@@ -242,6 +322,35 @@ export function useChatSession() {
     });
   }, []);
 
+  // === Stall watchdog ======================================================
+  // The worker resolves every run it owns (completeTask / failTask / abort),
+  // but a stream that dies without ever reaching the worker — dropped network,
+  // a hung provider socket — would otherwise leave the tail indicator and the
+  // sidebar dot pulsing forever. Any task update resets the clock; six silent
+  // minutes means the run is dead, so abort it and let the normal Stop path
+  // resolve the UI to "stopped". Pending questions / approvals are never
+  // stalled out: waiting on the user is not silence.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const task = getCurrentTask();
+      if (!task) return;
+      const phase = deriveRunPhase(task);
+      if (phase !== "thinking" && phase !== "running_tool" && phase !== "streaming") return;
+      if (task.status === "awaiting_approval") return;
+      if (task.question && !task.question.answered) return;
+      if (Date.now() - lastActivityRef.current < STALL_TIMEOUT_MS) return;
+      abortCurrentTask();
+      setRunPhase("stopped");
+      setRunLabel("No response — run stopped");
+      showStoppedNote();
+    }, 15000);
+    return () => {
+      clearInterval(id);
+      clearPhaseTimer();
+      clearStoppedTimer();
+    };
+  }, []);
+
   // Listen for New Chat event from sidebar
   useEffect(() => {
     const handler = () => {
@@ -251,6 +360,10 @@ export function useChatSession() {
       setBgTask(null);
       setThinking(false);
       setStreaming(false);
+      clearPhaseTimer();
+      setRunPhase("idle");
+      setRunLabel("");
+      setStopped(false);
       // Navigate to / if not already there — use Next.js router for instant client-side nav
       if (window.location.pathname !== "/") {
         router.push("/");
@@ -421,6 +534,13 @@ export function useChatSession() {
 
     setAgentStatus(STATUS.thinking);
     setThinking(true);
+    // Fresh run — any prior terminal phase / Stop note is history now.
+    clearPhaseTimer();
+    clearStoppedTimer();
+    setRunPhase("idle");
+    setRunLabel("");
+    setStopped(false);
+    lastActivityRef.current = Date.now();
 
     // ALL modes (ask, code, plan) go through the background worker
     // which uses native NVIDIA tool calling with M3_TOOL_DEFINITIONS.
@@ -568,6 +688,17 @@ export function useChatSession() {
       setStreaming(false);
       setAgentStatus("");
       setBgTask(null);
+      // Stopped is a real outcome: pin it so the tail + composer note render
+      // it (the store's own notify already reported the abort a tick earlier).
+      clearPhaseTimer();
+      setRunPhase("stopped");
+      setRunLabel("Stopped");
+      showStoppedNote();
+      phaseTimerRef.current = setTimeout(() => {
+        setRunPhase("idle");
+        setRunLabel("");
+        phaseTimerRef.current = null;
+      }, 1500);
       // User pressed Stop — whatever failed before, THIS stop is the latest
       // word. The auto-retry swap must not fire on the next send.
       setFailedModels({});
@@ -575,13 +706,28 @@ export function useChatSession() {
     agentEvents: [],
     agentRunning: (bgTask?.status === "streaming" || bgTask?.status === "tool_executing"),
     isStreaming: streaming || thinking,
+    // Per-turn run state for the tail indicator + composer Stop note.
+    runPhase,
+    runLabel,
+    stopped,
     isEmpty: msg.isEmpty,
     bgTask,
     todos: bgTask?.todos || [],
-    question: bgTask?.question && !bgTask.question.answered ? bgTask.question : null,
+    // Legacy QuestionCard question (ask_question / safety prompt). The
+    // ask_clarification tool renders as the message-stream card instead.
+    question: bgTask?.question && !bgTask.question.answered && bgTask.question.kind !== "clarification" ? bgTask.question : null,
+    // Pending ask_clarification question — the tail ClarificationCard owns it
+    // until the user answers or skips (answered records live in the
+    // transcript as [CLARIFIED] markers, not here).
+    clarification: bgTask?.question && bgTask.question.kind === "clarification" && !bgTask.question.answered ? bgTask.question : null,
+    clarificationAskCount: bgTask?.clarificationCount ?? 0,
     answerQuestion: async (answer: string) => {
       const { answerQuestion: answerFn } = await import("@/lib/background-chat");
       answerFn(answer);
+    },
+    skipClarification: async () => {
+      const { answerQuestion: answerFn, CLARIFICATION_SKIP } = await import("@/lib/background-chat");
+      answerFn(CLARIFICATION_SKIP);
     },
     // Queue
     queue,

@@ -1,13 +1,21 @@
 import { NextResponse } from "next/server";
 import { encode } from "next-auth/jwt";
 import { consumeDesktopCode } from "@/lib/desktop-auth";
+import { checkRateLimit, clientIp } from "@/lib/rate-limiter";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
-const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
+// Matches authOptions session maxAge (7 days, refreshed on use).
+const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 
 export async function POST(request: Request) {
+  // UUID guessing + JWT minting must be throttled: unlimited attempts would
+  // let an attacker brute-force codes and mint sessions at will.
+  const rl = checkRateLimit(`desktop-exchange:${clientIp(request)}`);
+  if (!rl.allowed) {
+    return NextResponse.json({ error: "Too many attempts — wait a minute" }, { status: 429 });
+  }
   let code = "";
   try {
     code = String((await request.json())?.code || "");
@@ -47,8 +55,11 @@ export async function POST(request: Request) {
 
     const response = NextResponse.json({ ok: true, user: { id: user.id, email: user.email, name: user.name } });
     const base = { httpOnly: true, sameSite: "lax" as const, path: "/", maxAge: SESSION_MAX_AGE };
-    // Plain name: what the app's Edge proxy check reads.
-    response.cookies.set("next-auth.session-token", token, { ...base, secure: false });
+    // Plain name: what the app's Edge proxy check reads. Secure in
+    // production (plain-HTTP would expose the JWT to sniffers); plain HTTP
+    // allowed only for local dev.
+    const secure = process.env.NODE_ENV === "production";
+    response.cookies.set("next-auth.session-token", token, { ...base, secure });
     // Prefixed name: what NextAuth in production reads. Chromium accepts
     // Secure cookies on localhost, so this lands on the app's origin too.
     response.cookies.set("__Secure-next-auth.session-token", token, { ...base, secure: true });

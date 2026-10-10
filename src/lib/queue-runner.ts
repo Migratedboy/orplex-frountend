@@ -27,8 +27,12 @@ const PARALLEL_SAFE_MODES = new Set(["ask", "plan"]);
  */
 function getConcurrency(): number {
   if (typeof window === "undefined") return 1;
-  const n = parseInt(localStorage.getItem("orplex.queue.concurrency") || "1", 10);
-  return Number.isFinite(n) ? Math.min(Math.max(n, 1), 3) : 1;
+  try {
+    const n = parseInt(localStorage.getItem("orplex.queue.concurrency") || "1", 10);
+    return Number.isFinite(n) ? Math.min(Math.max(n, 1), 3) : 1;
+  } catch {
+    return 1; // storage blocked — serial fallback, never throw into the poll
+  }
 }
 
 /** Same surface the chat page passes to runInBackground (subset it uses). */
@@ -63,11 +67,11 @@ function snapshotTaskEnd(runId: string): "completed" | "failed" {
 }
 
 async function claimAndRun(): Promise<void> {
-  if (activeRuns >= getConcurrency()) return;
-  activeRuns++;
   let detached = false;
 
   try {
+    if (activeRuns >= getConcurrency()) return;
+    activeRuns++;
     const res = await apiFetch("/api/agent/runs/claim", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -77,6 +81,7 @@ async function claimAndRun(): Promise<void> {
     const run = data?.run;
     if (!run) {
       consecutiveFailures = 0;
+      activeRuns--; // release the slot — an empty poll must never consume it
       return; // queue empty — stay idle
     }
 
@@ -132,7 +137,7 @@ export function startQueueRunner(): void {
     // Never claim while a chat task occupies the foreground loop.
     if (getCurrentTask()) return;
     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) return;
-    void claimAndRun();
+    void claimAndRun().catch(() => {});
   }, CLAIM_POLL_MS);
   timer.unref?.();
 }

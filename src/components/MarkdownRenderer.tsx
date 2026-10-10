@@ -144,6 +144,10 @@ export default function MarkdownRenderer({ content }: Props) {
           }
           return <p className="md-paragraph">{children}</p>;
         },
+        hr() {
+          // Thematic break → app hairline; the UA default is a heavy 3D rule.
+          return <hr className="md-hr" />;
+        },
         ul({ children }) {
           return <ul className="md-list">{children}</ul>;
         },
@@ -160,7 +164,10 @@ export default function MarkdownRenderer({ content }: Props) {
           return <h3 className="md-h3">{children}</h3>;
         },
         a({ href, children }) {
-          return <a href={href} className="md-link" target="_blank" rel="noopener noreferrer">{children}</a>;
+          // Only allow safe URL schemes — javascript:, data:, vbscript: in a
+          // link would execute in the app's origin on click.
+          const safe = /^(https?:|mailto:)/i.test(href || "");
+          return <a href={safe ? href : undefined} className="md-link" target="_blank" rel="noopener noreferrer">{children}</a>;
         },
         blockquote({ children }) {
           return <blockquote className="md-blockquote">{children}</blockquote>;
@@ -180,7 +187,8 @@ export default function MarkdownRenderer({ content }: Props) {
         img({ src, alt }) {
           // Markdown like `![]()` produces src="" — rendering it would make the
           // browser re-fetch the whole page (and trip the Next.js dev warning).
-          if (!src) return null;
+          // Also block javascript:/data: URIs — they execute in the app's origin.
+          if (!src || !/^(https?:|data:image\/)/i.test(src)) return null;
           return (
             <div className="md-image-wrap">
               <img src={src} alt={alt || ""} className="md-image" loading="lazy" />

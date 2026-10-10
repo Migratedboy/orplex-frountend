@@ -54,6 +54,23 @@
   display: none; /* Chrome/Safari/Edge */
 }
 
+/* Slash menu (commands + the 100+ skill templates): same infinite-scroll
+   contract as the model menu — fixed compact panel (~7 rows), rows stream in
+   50 at a time as you scroll, "Show more" footer as the fallback. Without a
+   height cap the menu grows past the viewport top and the bottom skills
+   become unreachable (it anchors above the composer). */
+.prompt-bar__menu[data-kind='slash'] {
+  max-height: 264px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* old Edge/IE */
+}
+
+.prompt-bar__menu[data-kind='slash']::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/Edge */
+}
+
 /* Model-menu search box (recently-used view when empty). Stays pinned while
    the row list scrolls beneath it. */
 .prompt-bar__search {
@@ -101,7 +118,7 @@
   white-space: nowrap;
 }
 
-/* "Show more" footer of the model menu's infinite scroll. */
+/* "Show more" footer of the chunked menus' infinite scroll (model + slash). */
 .prompt-bar__more {
   justify-content: center;
   color: var(--pb-muted);
@@ -219,6 +236,47 @@
 
 .prompt-bar__row-check[data-on] {
   opacity: 1;
+}
+
+/* Creator mark on model rows (16px, flex-shrink:0 so it never squishes).
+   Muted at rest, foreground on the hovered/highlighted row. The row gap is
+   10px — the -3px pull lands icon→label at 7px. */
+.prompt-bar__provider {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--pb-muted);
+  transition: color 140ms ease-out;
+}
+.prompt-bar__row .prompt-bar__provider {
+  margin-right: -3px;
+}
+.prompt-bar__row:hover .prompt-bar__provider,
+.prompt-bar__row[aria-selected='true'] .prompt-bar__provider {
+  color: var(--pb-ink);
+}
+
+/* Mono-caps creator header separating runs of same-creator models. */
+.prompt-bar__group {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 6px 8px 2px;
+  color: var(--pb-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.prompt-bar__glow + .prompt-bar__group,
+.prompt-bar__search + .prompt-bar__group {
+  margin-top: 0;
+  padding-top: 0;
 }
 
 .prompt-bar__empty {
@@ -454,6 +512,24 @@
   color: var(--pb-spark);
 }
 
+/* Model trigger: creator mark at foreground-80%, label ellipses rather than
+   widening the bar on narrow screens (pick gap is 4px → +2px lands at 6px). */
+.prompt-bar__pick--model {
+  min-width: 0;
+  max-width: min(180px, 52%);
+  overflow: hidden;
+}
+.prompt-bar__pick--model .prompt-bar__provider {
+  margin-right: 2px;
+  color: color-mix(in srgb, var(--pb-ink) 80%, transparent);
+}
+.prompt-bar__pick-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .prompt-bar__menu[data-kind='effort'] {
   right: auto;
   width: 248px;
@@ -635,6 +711,94 @@
   --pb-radius: 12px;
   flex: 1;
   min-width: 0;
+}
+
+/* Chat composer shell: hairline border, rounded-xl, soft resting shadow.
+   The border is a neutral tint in light mode and a 8%-white tint in dark. */
+.prompt-bar--chat .prompt-bar__field {
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.09);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  padding: 11px 12px;
+  gap: 10px;
+  transition:
+    border-color 180ms ease-out,
+    box-shadow 180ms ease-out,
+    background-color 180ms ease-out;
+}
+
+.prompt-bar--chat .prompt-bar__field:hover {
+  border-color: rgba(0, 0, 0, 0.14);
+}
+
+/* Focus ring: 1px orange ring at ~40% + a 20px blurred halo at 15%. */
+.prompt-bar--chat .prompt-bar__field:focus-within {
+  border-color: rgba(255, 107, 0, 0.55);
+  box-shadow:
+    0 0 0 1px rgba(255, 107, 0, 0.4),
+    0 0 20px 0 rgba(255, 107, 0, 0.15);
+}
+
+.dark .prompt-bar--chat .prompt-bar__field {
+  background: var(--pb-bg);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.dark .prompt-bar--chat .prompt-bar__field:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.dark .prompt-bar--chat .prompt-bar__field:focus-within {
+  border-color: rgba(255, 107, 0, 0.55);
+  box-shadow:
+    0 0 0 1px rgba(255, 107, 0, 0.4),
+    0 0 20px 0 rgba(255, 107, 0, 0.15);
+}
+
+/* Send goes orange only when there is something to send. */
+.prompt-bar--chat .prompt-bar__send[data-armed] {
+  background: #ff6b00;
+  color: #fff;
+}
+
+.prompt-bar--chat .prompt-bar__send[data-armed]:hover {
+  background: #ff7d1f;
+}
+
+.prompt-bar--chat .prompt-bar__send:not([data-armed]) {
+  background: color-mix(in srgb, var(--pb-ink) 8%, var(--pb-bg));
+  color: color-mix(in srgb, var(--pb-ink) 45%, var(--pb-bg));
+}
+
+/* Stop state: the glyph has morphed to a square, so the button reads as Stop
+   (brand fill + soft halo) instead of "send armed". The composer stays live —
+   click it and the next send is one Enter away. */
+.prompt-bar--chat .prompt-bar__send[data-busy] {
+  background: var(--brand);
+  color: #fff;
+  animation: pb-stop-halo 1.6s ease-in-out infinite;
+}
+
+.prompt-bar--chat .prompt-bar__send[data-busy]:hover {
+  background: var(--brand-vivid);
+}
+
+@keyframes pb-stop-halo {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 45%, transparent);
+  }
+
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prompt-bar__send[data-busy] {
+    animation: none;
+  }
 }
 
 .prompt-bar--chat .prompt-bar__menu {

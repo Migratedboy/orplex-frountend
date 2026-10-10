@@ -244,6 +244,15 @@ export async function completeAuthorization(input: CompleteInput): Promise<Compl
     await client.connect(makeTransport(entry, provider));
     return { status: "connected", serverId: pending.serverId };
   } catch (e) {
+    // The grant is dead on arrival: wipe it and flag re-auth instead of
+    // leaving bad tokens stored (the next attempt would otherwise reuse
+    // them and loop on the same failure).
+    const { markNeedsReauth } = await import("./store");
+    await markNeedsReauth(
+      pending.userId,
+      pending.serverId,
+      `stored session rejected: ${errorMessage(e).slice(0, 200)}`
+    ).catch(() => {});
     return { status: "error", code: "verify_failed", error: `Signed in, but the MCP server rejected the session: ${errorMessage(e)}` };
   } finally {
     await client.close().catch(() => {});

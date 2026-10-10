@@ -1,6 +1,6 @@
 "use client";
 
-import { isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { animate, useMotionValue, useMotionValueEvent, useReducedMotion } from "motion/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -19,10 +19,17 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import "./PromptBar.css";
+import { ProviderMark, modelCreatorId, modelCreatorLabel } from "./ProviderIcons";
 
 type AnyIcon = unknown;
 
-const ARROW_UP = [12, 4.5, 18.5, 11, 14.25, 11, 14.25, 19.5, 9.75, 19.5, 9.75, 11, 5.5, 11];
+// Send icon: paper plane `M3.5 3.5L21 12L3.5 20.5L7 12Z` as a 7-point closed
+// polygon (4 vertices + 3 edge midpoints) so pathAt can morph it into SQUARE
+// with the same point-by-point interpolation the old arrow used. Order follows
+// the original path traversal: tip -> nose -> tail -> notch -> back to tip.
+const PLANE = [3.5, 3.5, 12.25, 7.75, 21, 12, 12.25, 16.25, 3.5, 20.5, 7, 12, 5.25, 7.75];
+// Crease line `M7 12H21` — visible in the send state, fades out as the glyph morphs to the stop square.
+const CREASE = "M7 12H21";
 const SQUARE = [12, 6, 18, 6, 18, 12, 18, 18, 6, 18, 6, 12, 6, 6];
 const EASE_IN_OUT: [number, number, number, number] = [0.77, 0, 0.175, 1];
 const LINE = 22;
@@ -101,6 +108,24 @@ const DEFAULT_MODES: PromptBarMode[] = [
 ];
 const DEFAULT_EFFORTS = ["Low", "Medium", "High", "Extra", "Max"];
 
+/**
+ * Bucket models by CREATOR (never the hosting platform). Bucket order follows
+ * each creator's first appearance and the original order is preserved inside a
+ * bucket, so grouping is stable. The result replaces `list` wholesale — cursor,
+ * rowRefs and keyboard nav all index it, so what's rendered and what's
+ * highlighted can never drift apart.
+ */
+function groupByCreator(rows: PromptBarModel[]): PromptBarModel[] {
+  const buckets = new Map<string, PromptBarModel[]>();
+  for (const row of rows) {
+    const id = modelCreatorId(row);
+    const bucket = buckets.get(id);
+    if (bucket) bucket.push(row);
+    else buckets.set(id, [row]);
+  }
+  return buckets.size > 1 ? Array.from(buckets.values()).flat() : rows;
+}
+
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 const pathAt = (a: number[], b: number[], t: number) => {
   let d = "";
@@ -133,6 +158,7 @@ function SendGlyph({ busy, morphDuration, squash, tilt }: { busy: boolean; morph
   const reduce = useReducedMotion();
   const svgRef = useRef<SVGSVGElement | null>(null);
   const pathRef = useRef<SVGPathElement | null>(null);
+  const creaseRef = useRef<SVGPathElement | null>(null);
   const dir = useRef(busy ? 1 : -1);
   const t = useMotionValue(busy ? 1 : 0);
 
@@ -149,7 +175,11 @@ function SendGlyph({ busy, morphDuration, squash, tilt }: { busy: boolean; morph
   }, [busy, morphDuration, reduce, t]);
 
   useMotionValueEvent(t, "change", (v: number) => {
-    pathRef.current?.setAttribute("d", pathAt(ARROW_UP, SQUARE, v));
+    pathRef.current?.setAttribute("d", pathAt(PLANE, SQUARE, v));
+    // Send state renders the icon as a pure outline (fill:none); the stop square
+    // fills in as the morph completes so the stop button keeps its solid look.
+    pathRef.current?.setAttribute("fill-opacity", v.toFixed(3));
+    creaseRef.current?.setAttribute("stroke-opacity", (1 - v).toFixed(3));
     const goo = reduce ? 0 : Math.sin(v * Math.PI);
     const sx = 1 - squash * goo;
     if (svgRef.current) {
@@ -157,6 +187,7 @@ function SendGlyph({ busy, morphDuration, squash, tilt }: { busy: boolean; morph
     }
   });
 
+  const v0 = t.get();
   return (
     <svg
       ref={svgRef}
@@ -165,10 +196,12 @@ function SendGlyph({ busy, morphDuration, squash, tilt }: { busy: boolean; morph
       aria-hidden="true"
       fill="currentColor"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="1.6"
       strokeLinejoin="round"
+      strokeLinecap="round"
     >
-      <path ref={pathRef} d={pathAt(ARROW_UP, SQUARE, t.get())} />
+      <path ref={pathRef} d={pathAt(PLANE, SQUARE, v0)} fillOpacity={v0} />
+      <path ref={creaseRef} d={CREASE} fill="none" strokeOpacity={1 - v0} />
     </svg>
   );
 }
@@ -294,8 +327,9 @@ export default function PromptBar({
   const [active, setActive] = useState(0);
   const [listening, setListening] = useState(false);
   const [pressed, setPressed] = useState(false);
-  // Infinite scroll for the (potentially hundreds-long) model list: render
-  // 50 rows per chunk and grow as the menu scrolls near the bottom.
+  // Infinite scroll for the (potentially hundreds-long) model and slash-skill
+  // lists: render 50 rows per chunk and grow as the menu scrolls near the
+  // bottom.
   const [renderLimit, setRenderLimit] = useState(MODEL_CHUNK);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -323,7 +357,7 @@ export default function PromptBar({
   // Grow the rendered chunk when the menu scrolls near the bottom (infinite
   // scroll without an IntersectionObserver dependency).
   const onMenuScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    if (open !== "model") return;
+    if (open !== "model" && open !== "slash") return;
     const el = e.currentTarget;
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 60) {
       setRenderLimit((c) => Math.min(c + MODEL_CHUNK, Math.max(c, list.length)));
@@ -332,8 +366,8 @@ export default function PromptBar({
   // New menu open or new search → back to the first chunk.
   useEffect(() => {
     setRenderLimit(MODEL_CHUNK);
-  }, [open, modelQuery]);
-  const list = useMemo<PromptBarSource[] | PromptBarCommand[] | PromptBarModel[] | PromptBarMode[]>(() => {
+  }, [open, modelQuery, query]);
+  const filtered = useMemo<PromptBarSource[] | PromptBarCommand[] | PromptBarModel[] | PromptBarMode[]>(() => {
     if (open === "at") return sources.filter((s) => s.name.toLowerCase().includes(query));
     if (open === "slash") return commands.filter((c) => c.name.replace(/^\//, "").toLowerCase().startsWith(query));
     if (open === "model") {
@@ -355,7 +389,26 @@ export default function PromptBar({
     if (open === "mode") return modes;
     return [];
   }, [open, query, sources, commands, models, modes, modelQuery, recentModels]);
+  // The model menu is grouped by creator; every other menu keeps its order.
+  const list = useMemo<PromptBarSource[] | PromptBarCommand[] | PromptBarModel[] | PromptBarMode[]>(
+    () => (open === "model" ? groupByCreator(filtered as PromptBarModel[]) : filtered),
+    [filtered, open]
+  );
   const cursor = Math.min(active, Math.max(0, list.length - 1));
+  // Keyboard nav walks the FULL list — pull the next chunk into the DOM when
+  // the cursor reaches the edge of what's rendered (model + slash menus).
+  const ensureCursorRendered = (next: number) => {
+    if (open !== "model" && open !== "slash") return;
+    setRenderLimit((c) => (next >= c ? Math.ceil((next + 1) / MODEL_CHUNK) * MODEL_CHUNK : c));
+  };
+  // What actually renders: the model and slash-skill menus stream in
+  // MODEL_CHUNK rows (plus one group header per creator run); every other
+  // menu shows its full list. Widened to the shared shape so one row type
+  // covers every menu kind.
+  const chunked = open === "model" || open === "slash";
+  const rows = (
+    chunked ? list.slice(0, renderLimit) : list
+  ) as (PromptBarSource & PromptBarCommand & PromptBarModel & PromptBarMode)[];
   const canSend = draft.trim().length > 0 || attachments.length > 0 || canSendExtra;
   const armed = busy || canSend;
   const level = efforts[effortIndex] ?? "";
@@ -633,7 +686,9 @@ export default function PromptBar({
     if (open && list.length) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
-        setActive((cursor + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length);
+        const next = (cursor + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length;
+        setActive(next);
+        ensureCursorRendered(next);
         return;
       }
       if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
@@ -759,7 +814,9 @@ export default function PromptBar({
                     onKeyDown={(e) => {
                       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                         e.preventDefault();
-                        setActive((c) => (cursor + (e.key === "ArrowDown" ? 1 : list.length - 1)) % Math.max(1, list.length));
+                        const next = (cursor + (e.key === "ArrowDown" ? 1 : list.length - 1)) % Math.max(1, list.length);
+                        setActive(next);
+                        ensureCursorRendered(next);
                       } else if ((e.key === "Enter" || e.key === "Tab") && list.length > 0) {
                         e.preventDefault();
                         pick(list[cursor]);
@@ -775,15 +832,22 @@ export default function PromptBar({
                 </div>
               ) : null}
               <span ref={glowRef} className="prompt-bar__glow" aria-hidden="true" />
-              {(list as (PromptBarSource & PromptBarCommand & PromptBarModel)[])
-                .slice(0, open === "model" ? renderLimit : list.length)
-                .map((row, i) => (
+              {rows.map((row, i) => {
+                const groupLabel = open === "model" ? modelCreatorLabel(row) : null;
+                const startsGroup =
+                  groupLabel !== null && (i === 0 || modelCreatorId(rows[i - 1]) !== modelCreatorId(row));
+                return (
+                  <Fragment key={row.key}>
+                    {startsGroup ? (
+                      <div className="prompt-bar__group" role="presentation">
+                        {groupLabel}
+                      </div>
+                    ) : null}
                 <button
-                  key={row.key}
+                  type="button"
                   ref={(el) => {
                     rowRefs.current[i] = el;
                   }}
-                  type="button"
                   role="option"
                   aria-selected={i === cursor}
                   className="prompt-bar__row"
@@ -792,6 +856,11 @@ export default function PromptBar({
                   onClick={() => pick(row)}
                 >
                   {open === "at" ? <span className="prompt-bar__row-icon">{renderIcon(row.icon, 15)}</span> : null}
+                  {open === "model" ? (
+                    <span className="prompt-bar__provider">
+                      <ProviderMark model={row} />
+                    </span>
+                  ) : null}
                   <span className="prompt-bar__row-name">{row.name}</span>
                   {row.description ? <span className="prompt-bar__row-desc">{row.description}</span> : null}
                   {open === "model" && row.detail ? <span className="prompt-bar__row-detail">{row.detail}</span> : null}
@@ -812,14 +881,16 @@ export default function PromptBar({
                     </>
                   ) : null}
                 </button>
-                ))}
+                  </Fragment>
+                );
+              })}
               {open === "model" && modelsLoading ? (
                 <div className="prompt-bar__model-loading" role="status" aria-live="polite">
                   <span className="prompt-bar__model-loading-spinner" aria-hidden="true" />
                   <span>Fetching verified models…</span>
                 </div>
               ) : null}
-              {open === "model" && list.length > renderLimit ? (
+              {chunked && list.length > renderLimit ? (
                 <button
                   type="button"
                   className="prompt-bar__row prompt-bar__more"
@@ -927,7 +998,7 @@ export default function PromptBar({
           {models.length > 0 ? (
             <button
               type="button"
-              className="prompt-bar__pick"
+              className="prompt-bar__pick prompt-bar__pick--model"
               aria-label="Choose model"
               aria-expanded={modelOpen}
               data-on={modelOpen ? "" : undefined}
@@ -937,7 +1008,7 @@ export default function PromptBar({
                 setModeOpen(false);
                 setEffortOpen(false);
                 setModelQuery("");
-                setActive(Math.max(0, models.findIndex((m) => m.key === model?.key)));
+                setActive(Math.max(0, list.findIndex((m) => m.key === model?.key)));
                 const opening = !modelOpen;
                 setModelOpen(opening);
                 if (opening) {
@@ -951,7 +1022,10 @@ export default function PromptBar({
                 }
               }}
             >
-              <span>{model?.name}</span>
+              <span className="prompt-bar__provider">
+                <ProviderMark model={model} />
+              </span>
+              <span className="prompt-bar__pick-label">{model?.name}</span>
               <HugeiconsIcon icon={ArrowDown01Icon} size={12} strokeWidth={2.4} />
             </button>
           ) : null}
@@ -1004,6 +1078,7 @@ export default function PromptBar({
             disabled={!armed}
             aria-label={busy ? "Stop" : "Send"}
             data-armed={armed ? "" : undefined}
+            data-busy={busy ? "" : undefined}
             data-pressed={pressed ? "" : undefined}
             onMouseDown={(e) => e.preventDefault()}
             onPointerDown={down}

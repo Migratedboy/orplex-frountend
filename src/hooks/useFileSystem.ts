@@ -4,6 +4,10 @@ import { useState, useCallback, useRef } from "react";
 import { useToast } from "@/components/Toast";
 
 import { apiFetch } from "@/lib/api-base";
+// Type-only: the runtime module stays behind the dynamic import below (code
+// splitting), but the outcome type is the real one — and unlike
+// `Awaited<ReturnType<typeof import(...)>>` it parses for React Compiler.
+import type { ReopenOutcome } from "@/lib/project-reopen";
 export interface FileNode {
   name: string;
   path: string;
@@ -135,63 +139,101 @@ export function useFileSystem() {
   /**
    * Attach a directory handle as the ACTIVE workspace — the one shared path
    * for both the picker (openFolder) and project re-open (reopenProject):
-   * scan tree → set state → persist handle (IndexedDB) → register the
-   * absolute path server-side (/api/agent/workspace-cwd). Returns the file
+   * resolve the absolute path → persist handle (IndexedDB) → register the
+   * path server-side (/api/agent/workspace-cwd) → scan tree. Returns the file
    * count so callers can surface a toast.
+   *
+   * NOTE (Freebuff model): no bulk read here. Files stay on disk; the AI reads
+   * what it needs on demand (read_file windows oversized files), search runs
+   * server-side on disk (ripgrep → git grep → node scan via /api/agent/grep),
+   * and the in-memory cache is only the bounded hot-set of files actually
+   * touched. Opening a huge folder is instant.
    */
   const openFolderHandle = useCallback(async (handle: FileSystemDirectoryHandle): Promise<{ fileCount: number }> => {
     fileHandlesRef.current.clear();
     setFileContents({});
-
-    const tree = await scanDirectory(handle);
     setDirectoryHandle(handle);
     setDirectoryName(handle.name);
-    setFileTree(tree);
 
-    // NOTE (Freebuff model): no bulk read here. Files stay on disk; the AI
-    // reads what it needs on demand (read_file windows oversized files),
-    // search runs server-side on disk (ripgrep → git grep → node scan via
-    // /api/agent/grep), and the in-memory cache is only the bounded hot-set
-    // of files actually touched. Opening a huge folder is instant.
-
-    // Persist the handle so the Projects list can re-open this folder after a
-    // restart with a single permission click (project-registry.ts).
+    // Resolve the ABSOLUTE path from the directory handle BEFORE anything
+    // else. The old flow derived it from a file in fileHandlesRef AFTER a
+    // scan that SKIPS whole subtrees (node_modules, .git, .next, dist, ...).
+    // A workspace whose root held only ignored entries registered no path at
+    // all, so the desktop terminal and the AI's auto-verification failed with
+    // "no workspace folder open" while the folder was visibly open. Deriving
+    // it from the handle removes that dependency.
+    // The File System Access API never exposes paths, so Electron's
+    // webUtils.getPathForFile is the only source — getPathForFile is Electron-
+    // only, which also means the probe below never runs in a plain browser.
+    let absPath = "";
     try {
-      const { saveProjectHandle, rememberProject: rememberRosterProject } = await import("@/lib/project-registry");
-      await saveProjectHandle(handle.name, handle);
-      rememberRosterProject(window.localStorage, handle.name);
-    } catch {}
-
-    // Register the ABSOLUTE path server-side so agent terminal commands
-    // (npm install, node server.js, …) run in THIS folder. The File System
-    // Access API never exposes paths, so derive it from an indexed file via
-    // Electron's webUtils.getPathForFile (empty outside Electron — the
-    // server then falls back to its own cwd).
-    try {
-      let absPath = "";
-      for (const fileHandle of fileHandlesRef.current.values()) {
-        const f = await fileHandle.getFile();
-        const p = await (window as any).orplexDesktop?.getPathForFile?.(f);
-        if (p) {
-          absPath = p.replace(/[\\/][^\\/]+$/, ""); // strip filename → directory
-          break;
+      const bridge = (window as any).orplexDesktop;
+      if (bridge?.getPathForFile) {
+        // A created-then-removed probe file is deterministic (the root may
+        // hold no regular files we can name) and leaves nothing behind.
+        const probeName = ".orplex-path-probe";
+        let probeHandle: any = null;
+        try {
+          probeHandle = await (handle as any).getFileHandle?.(probeName, { create: true });
+        } catch {}
+        if (probeHandle) {
+          try {
+            const p = await bridge.getPathForFile(await probeHandle.getFile());
+            if (p) absPath = String(p).replace(/[\\/][^\\/]+$/, ""); // strip filename → directory
+          } finally {
+            try { await (handle as any).removeEntry?.(probeName); } catch {}
+          }
         }
       }
-      if (absPath) {
-        // Remember the path on the roster entry (context menu → Reveal in
-        // Explorer). Electron only; harmless no-op elsewhere.
-        try {
-          const { setProjectPath } = await import("@/lib/project-registry");
-          setProjectPath(window.localStorage, handle.name, absPath);
-        } catch {}
+      // getPathForFile came back empty — ask the main process by folder name.
+      if (!absPath && bridge?.getPathForDirectory) {
+        const p = await bridge.getPathForDirectory(handle.name);
+        if (p) absPath = String(p);
+      }
+    } catch {}
+    // Never leave the probe behind, whatever failed above.
+    try { await (handle as any).removeEntry?.(".orplex-path-probe"); } catch {}
+    // Remember the path on the roster entry NOW: resolveDesktopCwd reads
+    // `lastPath` from there to hand the desktop terminal its cwd, and project
+    // re-open reads it back for Reveal in Explorer.
+    if (absPath) {
+      try {
+        const { setProjectPath } = await import("@/lib/project-registry");
+        setProjectPath(window.localStorage, handle.name, absPath);
+      } catch {}
+    }
+
+    const tree = await scanDirectory(handle);
+    setFileTree(tree);
+
+    // Register the absolute path server-side so agent terminal commands
+    // (npm install, node server.js, ...) run in THIS folder. Empty outside
+    // Electron — the server then falls back to its own cwd.
+    if (absPath) {
+      try {
         const res = await apiFetch("/api/agent/workspace-cwd", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path: absPath }),
         });
-        if (res.ok) toast(`Terminal commands will run in "${absPath}"`, "success");
+        if (res.ok) {
+          toast(`Terminal commands will run in "${absPath}"`, "success");
+        } else {
+          // Silent failure here was invisible: the folder looked open, yet no
+          // cwd was registered, so every later command (AI or manual) failed
+          // with a misleading "open a folder first". Say what actually broke.
+          const detail = await res.json().catch(() => null);
+          toast(
+            `Could not register "${absPath}" as the workspace (HTTP ${res.status}${
+              (detail as { error?: string } | null)?.error ? ` — ${(detail as { error?: string }).error}` : ""
+            }). AI and manual commands will fail until this succeeds.`,
+            "error"
+          );
+        }
+      } catch {
+        toast(`Could not register "${absPath}" as the workspace — is the app server reachable?`, "error");
       }
-    } catch {}
+    }
 
     return { fileCount: fileHandlesRef.current.size };
   }, [scanDirectory, toast]);
@@ -245,7 +287,7 @@ export function useFileSystem() {
     // The reopen contract is "never throws" — chunk-load failures of the
     // dynamic imports or any unexpected error become a failed outcome (the
     // project row stays listed), not an uncaught rejection.
-    let outcome: Awaited<ReturnType<typeof import("@/lib/project-reopen").reopenProject>>;
+    let outcome: ReopenOutcome;
     try {
       const { loadProjectHandle, requestHandlePermission, touchProject } = await import("@/lib/project-registry");
       const { reopenProject: runReopen } = await import("@/lib/project-reopen");

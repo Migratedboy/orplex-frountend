@@ -93,6 +93,8 @@ describe("describeEvent", () => {
   it("describes resilience and queue events", () => {
     expect(describeEvent("requeued-after-restart", { requeue: 2 })?.label).toContain("attempt 2");
     expect(describeEvent("compacted", { tokensBefore: 5400 })?.label).toContain("5.4k");
+    expect(describeEvent("loop-break", { reason: "Looping on read_file (same target 4x in a row)" })?.label).toContain("loop detected");
+    expect(describeEvent("loop-stopped", { reason: "Looping on run_command (5x in a row)" })?.label).toContain("stopped early");
     expect(describeEvent("run-finished", { changedFiles: 1, provider: "nvidia" })?.label).toBe("1 file(s) changed · nvidia");
   });
 

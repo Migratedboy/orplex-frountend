@@ -14,6 +14,14 @@ export const PLUGIN_MANIFEST = "orplex-plugin.json";
 export const MAX_PLUGIN_SKILLS = 32;
 export const MAX_HOOK_ENTRIES = 20;
 export const MAX_HOOK_COMMAND_CHARS = 500;
+export const MAX_PLUGIN_MCP_SERVERS = 10;
+/** Server/hook keys must be plain identifiers — never `__proto__` et al. */
+const SAFE_KEY = /^[a-z0-9-_]{1,64}$/i;
+
+/** Plain-object accumulator without a prototype (JSON.parse can carry `__proto__` keys). */
+function freshRecord<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
 
 export interface PluginManifest {
   name: string;
@@ -163,16 +171,21 @@ export async function installPlugin(
   let mergedHooks = 0;
   if (plugin.hooks && typeof plugin.hooks === "object") {
     const hooksFile = join(orplexDir, "hooks.json");
-    let existing: Record<string, unknown[]> = {};
+    let existing: Record<string, unknown[]> = freshRecord<unknown[]>();
     try {
-      existing = JSON.parse(await readFile(hooksFile, "utf8"));
+      const parsed = JSON.parse(await readFile(hooksFile, "utf8"));
+      if (parsed && typeof parsed === "object") {
+        for (const [k, v] of Object.entries(parsed)) {
+          if (SAFE_KEY.test(k) && Array.isArray(v)) existing[k] = v;
+        }
+      }
     } catch {
       // start fresh — a corrupt user file must not block install
     }
     const incoming = plugin.hooks as Record<string, unknown>;
     let total = Object.values(existing).reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0);
     for (const [event, entries] of Object.entries(incoming)) {
-      if (!Array.isArray(entries)) continue;
+      if (!SAFE_KEY.test(event) || !Array.isArray(entries)) continue;
       if (!existing[event]) existing[event] = [];
       for (const entry of entries) {
         if (total >= MAX_HOOK_ENTRIES) {
@@ -191,16 +204,33 @@ export async function installPlugin(
   let mergedMcp = 0;
   if (plugin.mcp && typeof plugin.mcp === "object") {
     const mcpFile = join(orplexDir, "mcp.json");
-    let existing: Record<string, unknown> = {};
+    let existing: Record<string, unknown> = freshRecord<unknown>();
     try {
-      existing = JSON.parse(await readFile(mcpFile, "utf8"));
+      const parsed = JSON.parse(await readFile(mcpFile, "utf8"));
+      if (parsed && typeof parsed === "object") {
+        for (const [k, v] of Object.entries(parsed)) {
+          if (SAFE_KEY.test(k)) existing[k] = v;
+        }
+      }
     } catch {
       // start fresh
     }
     for (const [server, config] of Object.entries(plugin.mcp as Record<string, unknown>)) {
-      if (existing[server]) {
+      if (!SAFE_KEY.test(server)) {
+        warnings.push(`mcp server name '${String(server).slice(0, 40)}' rejected — use letters, numbers, - or _`);
+        continue;
+      }
+      if (typeof config !== "object" || config === null || typeof (config as { command?: unknown }).command !== "string") {
+        warnings.push(`mcp server '${server}' skipped — config needs a string command`);
+        continue;
+      }
+      if (Object.prototype.hasOwnProperty.call(existing, server)) {
         warnings.push(`mcp server '${server}' already exists — kept user version`);
         continue;
+      }
+      if (mergedMcp >= MAX_PLUGIN_MCP_SERVERS) {
+        warnings.push(`mcp cap (${MAX_PLUGIN_MCP_SERVERS}) reached — some servers skipped`);
+        break;
       }
       existing[server] = config;
       mergedMcp++;

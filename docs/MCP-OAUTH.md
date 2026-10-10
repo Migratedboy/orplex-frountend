@@ -376,7 +376,7 @@ halves:
 - `netlify-mcp` → `@netlify/mcp`, `apify-mcp-server` →
   `@apify/actors-mcp-server` (official vendor packages, registry-verified).
 
-**Open findings (in the report; decisions deferred to Phase 7):**
+**Findings recorded in Phase 6 — all since resolved by the catalog repair; `npm run audit:mcp` is now clean (96/96 packages, 23/23 remotes, 7/7 docs, 0 warnings) and the dead/deprecated packages below were swapped for live ones (see `MCP-CATALOG-AUDIT.md`):**
 
 - `mcp.elastic.co` is NXDOMAIN — Elastic ships no public endpoint; its
   servers proxy *your* cluster (`@elastic/mcp-server-elasticsearch` + env,
@@ -396,8 +396,8 @@ halves:
   `@circleci/mcp-server-circleci`, `@browserbasehq/mcp-server-browserbase`,
   `@neondatabase/mcp-server-neon` (npm deprecation text names successors).
 - Wikipedia has no official hosted MCP (third-party candidates only).
-- 14 mcp-remote entries still carry `auth=none` — OAuth runs inside
-  mcp-remote; the hint rework belongs to Phase 7's UI.
+- ✅ Resolved: the `auth=none` warnings — OAuth runs inside
+  mcp-remote, so those entries now carry an `oauth: {}` hint. The UI is unchanged (no `remote`, so the stdio form and Save stay visible) and the audit's `auth=none` + http(s)-arg warning is gone.
 
 ### Phase 7 - Connectors panel: statuses, C6 toggle, browser sign-in
 

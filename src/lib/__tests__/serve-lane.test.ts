@@ -81,7 +81,11 @@ describe("diagnosePortConflict — actionable hints on EADDRINUSE", () => {
 });
 
 describe("master prompt — server doctrine", () => {
-  const prompt = buildSystemPrompt({ mode: "code" });
+  // buildSystemPrompt is async (live MCP discovery for the worker path).
+  let prompt = "";
+  beforeAll(async () => {
+    prompt = await buildSystemPrompt({ mode: "code" });
+  });
 
   it("teaches the detached serve lane and forbids shell background tricks", () => {
     expect(prompt).toContain("DETACHED");

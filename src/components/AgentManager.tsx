@@ -363,40 +363,54 @@ export default function AgentManager() {
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
 
   // Fetch runs
-  const fetchRuns = useCallback(async () => {
+  const fetchRuns = useCallback(async (signal?: AbortSignal) => {
     try {
       const params = new URLSearchParams({ limit: "50" });
       if (filter === "active") params.set("status", "active");
-      const res = await apiFetch(`/api/agent/runs?${params}`);
+      const res = await apiFetch(`/api/agent/runs?${params}`, { signal });
+      if (signal?.aborted) return;
+      if (!res.ok) {
+        setLoading(false); // keep last good list, but never spin forever
+        return;
+      }
       const data = await res.json();
+      if (signal?.aborted) return;
       if (data.success) {
         setRuns(data.runs || []);
       }
-    } catch {}
-    setLoading(false);
+    } catch {
+      // Keep last good state on network failure.
+    } finally {
+      if (!signal?.aborted) setLoading(false);
+    }
   }, [filter]);
 
   // Fetch notifications
-  const fetchNotifications = useCallback(async () => {
+  const fetchNotifications = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await apiFetch("/api/agent/notifications?limit=20");
+      const res = await apiFetch("/api/agent/notifications?limit=20", { signal });
+      if (!res.ok || signal?.aborted) return;
       const data = await res.json();
+      if (signal?.aborted) return;
       if (data.success) {
         setNotifications(data.notifications || []);
       }
     } catch {}
   }, []);
 
-  // Initial fetch + polling
+  // Initial fetch + polling, with in-flight guard and abort on unmount.
   useEffect(() => {
     setLoading(true);
-    fetchRuns();
-    fetchNotifications();
-    const interval = setInterval(() => {
-      fetchRuns();
-      fetchNotifications();
-    }, 5000);
-    return () => clearInterval(interval);
+    const ctrl = new AbortController();
+    let busy = false;
+    const tick = () => {
+      if (ctrl.signal.aborted || busy) return;
+      busy = true;
+      void Promise.all([fetchRuns(ctrl.signal), fetchNotifications(ctrl.signal)]).finally(() => { busy = false; });
+    };
+    tick();
+    const interval = setInterval(tick, 5000);
+    return () => { clearInterval(interval); ctrl.abort(); };
   }, [fetchRuns, fetchNotifications]);
 
   // Provider badge (free tier vs BYOK) — fetched once.

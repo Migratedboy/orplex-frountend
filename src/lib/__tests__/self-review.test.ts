@@ -9,7 +9,7 @@
  *   call 3: model returns the fixed file
  *   → fix is executed and the transcript reports "Self-review passed"
  */
-import { runInBackground } from "../background-worker";
+import { runInBackground, setFileSystemAccess } from "../background-worker";
 import { getCurrentTask, abortCurrentTask } from "../background-chat";
 import { waitFor } from "./helpers";
 
@@ -46,6 +46,16 @@ describe("CODE-mode self-review pass", () => {
   beforeEach(() => {
     chatFetchCount = 0;
     chatBodies = [];
+    // The no-workspace guard refuses writes without registered FS access —
+    // these worker tests simulate an open folder with stub file ops.
+    setFileSystemAccess(
+      async () => "[Error: not found]",
+      async () => true,
+      async () => false,
+      [],
+      {},
+      "test-workspace"
+    );
     global.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/chat")) {

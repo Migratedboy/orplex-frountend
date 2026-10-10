@@ -2,6 +2,7 @@
 
 import { Suspense, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { apiFetch } from "@/lib/api-base";
 import { useToast } from "@/components/Toast";
 import { useChatSession } from "@/hooks/useChatSession";
 import { AgentMode } from "@/components/ModeSelector";
@@ -101,7 +102,7 @@ export default function ChatPage() {
     }
 
     try {
-      const res = await fetch("/api/chat/fast", {
+      const res = await apiFetch("/api/chat/fast", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: [{ role: "user", content: userMessage }] }),
@@ -184,6 +185,12 @@ export default function ChatPage() {
               agentEvents={session.agentEvents}
               agentRunning={session.agentRunning}
               agentStatus={fastLoading ? "Fast model answering…" : session.agentStatus}
+              runPhase={fastLoading ? "streaming" : session.runPhase}
+              runLabel={fastLoading ? "Fast model answering…" : session.runLabel}
+              clarification={session.clarification}
+              clarificationAskCount={session.clarificationAskCount}
+              onAnswerClarification={session.answerQuestion}
+              onSkipClarification={session.skipClarification}
               onFastAnswer={handleFastAnswer}
               onRetryMessage={handleRetry}
               retryingIdx={retryingIdx}
@@ -220,6 +227,7 @@ export default function ChatPage() {
           onQueueClear={session.clearQueue}
           failedModels={session.failedModels}
           clearFailedModels={session.clearFailedModels}
+          stopped={session.stopped}
           onRetryModelSwap={(nextId, failed) => {
             const label = failed[0] ?? "the previous model";
             toast(`Model failed — retrying with ${nextId.split("/").pop() ?? nextId} (was ${label.split("/").pop() ?? label})`, "info");

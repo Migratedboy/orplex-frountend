@@ -236,24 +236,41 @@ export default function RunBoard() {
   const [filter, setFilter] = useState<"all" | "active">("all");
   const router = useRouter();
 
-  const fetchRuns = useCallback(async () => {
+  const fetchRuns = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await apiFetch(`/api/agent/runs?limit=30${filter === "active" ? "&status=active" : ""}`);
+      const res = await apiFetch(`/api/agent/runs?limit=30${filter === "active" ? "&status=active" : ""}`, { signal });
+      if (signal?.aborted) return;
+      if (!res.ok) {
+        setLoading(false); // keep last good list, but never spin forever
+        return;
+      }
       const data = await res.json();
+      if (signal?.aborted) return;
       if (data.success) {
         setRuns(data.runs || []);
         setSummary(data.summary || null);
       }
-    } catch {}
-    setLoading(false);
+    } catch {
+      // Keep last good state on network failure.
+    } finally {
+      if (!signal?.aborted) setLoading(false);
+    }
   }, [filter]);
 
-  // Initial fetch + poll every 5s while anything is active
+  // Initial fetch + poll every 5s while anything is active. In-flight guard
+  // (no overlapping polls resolving out of order) + abort on unmount.
   useEffect(() => {
     setLoading(true);
-    fetchRuns();
-    const interval = setInterval(fetchRuns, 5000);
-    return () => clearInterval(interval);
+    const ctrl = new AbortController();
+    let busy = false;
+    const tick = () => {
+      if (ctrl.signal.aborted || busy) return;
+      busy = true;
+      void fetchRuns(ctrl.signal).finally(() => { busy = false; });
+    };
+    tick();
+    const interval = setInterval(tick, 5000);
+    return () => { clearInterval(interval); ctrl.abort(); };
   }, [fetchRuns]);
 
   const openRun = useCallback((runId: string) => {
@@ -320,7 +337,7 @@ export default function RunBoard() {
                 onClick={() => setFilter("active")}
               >Active{summary && summary.active > 0 ? ` (${summary.active})` : ""}</button>
             </div>
-            <button className="board-refresh" onClick={fetchRuns} title="Refresh">
+            <button className="board-refresh" onClick={() => void fetchRuns()} title="Refresh">
               <IconRefresh size={14} />
             </button>
           </div>

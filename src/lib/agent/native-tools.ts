@@ -350,8 +350,13 @@ export async function dispatchToolCall(
     }
     const { dispatchMcpToolCall, dispatchMcpToolCallSdk } = await import("../mcp/dispatch");
     const impl = lane === "legacy" ? dispatchMcpToolCall : dispatchMcpToolCallSdk;
+    // NOTE: a model-supplied parameter literally named "name" must never
+    // clobber the mcp__<server>__<tool> dispatch target (the server lane
+    // already strips it the same way).
+    const restArgs = { ...args };
+    delete restArgs.name;
     return impl(
-      { name: mcpName, ...args } as { name: string } & Record<string, unknown>,
+      { ...restArgs, name: mcpName } as { name: string } & Record<string, unknown>,
       {
         setStatus: ctx.setStatus,
         appendDisplay: ctx.appendDisplay,
@@ -487,9 +492,26 @@ export async function dispatchToolCall(
   }
 
   // ── ASK mode is read-only ─────────────────────────────────────────────
-  if (ctx.mode === "ask" && ["write_file", "write_file_chunk", "edit_file", "batch_edit", "undo_file"].includes(call.name)) {
+  if (ctx.mode === "ask" && ["write_file", "write_file_chunk", "edit_file", "batch_edit", "undo_last_change"].includes(call.name)) {
     result(`<tool_result name="${call.name}">error — file modifications are disabled in ask mode. Present the code in your response text instead.</tool_result>\n`);
     ctx.replaceStatus(`[BLOCKED] ${call.name} — disabled in ask mode`);
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: true };
+  }
+
+  // ── No workspace → no build (truthful refusal) ────────────────────────
+  // The renderer only provides fs.writeFile when a real folder is open. When
+  // it is absent (fresh chat, folder closed, or a server lane with no
+  // registered workspace) the audit path fell through to an IN-MEMORY
+  // virtualFS: write_file reported "success" and the agent announced created
+  // files, but nothing was ever written to disk — and the very next terminal
+  // command failed with "no workspace folder open", which is what made the two
+  // symptoms look unrelated. Refuse instead, and name the real blocker.
+  // Server lanes always pass fs.writeFile, so they are unaffected; ask mode is
+  // already refused above.
+  if (!ctx.fs.writeFile && ["write_file", "write_file_chunk", "edit_file", "batch_edit", "undo_last_change", "undo_file"].includes(call.name)) {
+    result(`<tool_result name="${call.name}">error — no folder is open, so there is nowhere to write. Nothing was written. Ask the user to open a folder (sidebar → Open, or Ctrl+O), then retry the same call.</tool_result>\n`);
+    ctx.replaceStatus(`[BLOCKED] ${call.name} — no folder open`);
     ctx.syncDisplay();
     return { resultXml: toolResults, blocked: true };
   }
@@ -572,8 +594,29 @@ export async function dispatchToolCall(
     ctx.syncDisplay();
 
     const existing = (await ctx.fs.readFile?.(call.path).catch(() => "")) || "";
-    const newContent = existing + call.content;
     const chunkLines = call.content.split("\n").length;
+    // Approval gate (parity with write_file): appending to a file the agent
+    // did NOT create this task modifies foreign content — needs approval.
+    // Chunks appended to agent-owned files stay auto-approved.
+    if (existing && !ctx.counters.writtenFiles.has(call.path)) {
+      ctx.setStatus("awaiting_approval", `Waiting for approval: append ${call.path}`);
+      ctx.appendDisplay(`appending [${call.path}] — awaiting approval\n`);
+      ctx.syncDisplay();
+      const approved = await requestApproval(
+        "write_file",
+        `Append to ${call.path} (${chunkLines} lines)`,
+        { path: call.path, existed: true },
+        computeDiff("", call.content)
+      );
+      if (!approved) {
+        ctx.stats.rejectedAction();
+        result(`<tool_result name="write_file_chunk" path="${call.path}">rejected by user — do not write this file again without permission; adjust your approach.</tool_result>\n`);
+        ctx.replaceStatus(`[BLOCKED] User rejected append to \`${call.path}\``);
+        ctx.syncDisplay();
+        return { resultXml: toolResults, blocked: true };
+      }
+    }
+    const newContent = existing + call.content;
     const totalLines = newContent.split("\n").length;
     let success = false;
     if (ctx.fs.writeFile) {
@@ -1094,6 +1137,11 @@ export async function dispatchToolCall(
       ctx.store.clearTodos();
       result(`<tool_result name="todo_list" action="clear">Cleared todo list</tool_result>\n`);
       ctx.replaceStatus(`[OK] Todo list cleared`);
+    } else {
+      // Unknown/missing action (or create/update without items): an EMPTY
+      // result tells the model nothing happened and burns turns. Say so.
+      result(`<tool_result name="todo_list">error — action must be one of create (with items), update (with items), complete (with completed_index), or clear. Got: "${action || "(missing)"}"</tool_result>\n`);
+      ctx.replaceStatus(`[FAIL] todo_list: invalid action "${action || "(missing)"}"`);
     }
     ctx.syncDisplay();
     return { resultXml: toolResults, blocked: false };
@@ -1556,8 +1604,82 @@ export async function dispatchToolCall(
     return { resultXml: toolResults, blocked: false };
   }
 
+  // ── session_search ───────────────────────────────────────────────────
+  // Server-read via API: the browser worker never touches Prisma directly.
+  if (call.name === "session_search") {
+    try {
+      const query = (call.query || "").toString().slice(0, 500);
+      if (!query) {
+        result(`<tool_result name="session_search">error: query is required</tool_result>\n`);
+      } else {
+        const res = await apiFetch(`/api/session-search?q=${encodeURIComponent(query)}`);
+        const data = (await res.json()) as { results?: Array<{ conversationTitle: string; content: string; createdAt: string }> };
+        const results = data.results ?? [];
+        if (results.length === 0) {
+          result(`<tool_result name="session_search">No matching messages found.</tool_result>\n`);
+        } else {
+          const lines = results.map((r) => `- [${r.conversationTitle}] ${r.content.slice(0, 120)}`);
+          result(`<tool_result name="session_search">\n${lines.join("\n")}\n</tool_result>\n`);
+        }
+      }
+    } catch (err) {
+      result(`<tool_result name="session_search">error: ${(err as Error).message}</tool_result>\n`);
+    }
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+
+  // ── playbook_search ──────────────────────────────────────────────────
+  // Server-read via API: the browser worker never touches Prisma directly.
+  if (call.name === "playbook_search") {
+    try {
+      const query = (call.query || "").toString().slice(0, 500);
+      if (!query) {
+        result(`<tool_result name="playbook_search">error: query is required</tool_result>\n`);
+      } else {
+        const res = await apiFetch(`/api/playbook?q=${encodeURIComponent(query)}`);
+        const data = (await res.json()) as { results?: Array<{ pattern: string; content: string; confidence: number }> };
+        const results = data.results ?? [];
+        if (results.length === 0) {
+          result(`<tool_result name="playbook_search">No matching playbook entries found.</tool_result>\n`);
+        } else {
+          const lines = results.map((r) => `- [${r.pattern}] ${r.content} (confidence: ${Math.round(r.confidence * 100)}%)`);
+          result(`<tool_result name="playbook_search">\n${lines.join("\n")}\n</tool_result>\n`);
+        }
+      }
+    } catch (err) {
+      result(`<tool_result name="playbook_search">error: ${(err as Error).message}</tool_result>\n`);
+    }
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+
+  // ── skill_create ──────────────────────────────────────────────────────
+  // Server-write via API: the browser worker never touches Prisma directly.
+  if (call.name === "skill_create") {
+    try {
+      const title = (call.title || "").toString().slice(0, 100);
+      const text = (call.text || call.content || "").toString().slice(0, 2000);
+      if (!title || !text) {
+        result(`<tool_result name="skill_create">error: title and text are required</tool_result>\n`);
+      } else {
+        const res = await apiFetch("/api/playbook", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, text }),
+        });
+        const data = (await res.json()) as { entry?: { confidence: number } };
+        result(`<tool_result name="skill_create">Created skill "${title}" (confidence: ${Math.round((data.entry?.confidence ?? 0.5) * 100)}%)</tool_result>\n`);
+      }
+    } catch (err) {
+      result(`<tool_result name="skill_create">error: ${(err as Error).message}</tool_result>\n`);
+    }
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+
   // ── Unknown / not-implemented tool ────────────────────────────────────
-    result(`<tool_result name="${call.name || "unknown"}">error — this tool is not available in this environment. Use one of: read_file, list_files, write_file, write_file_chunk, edit_file, batch_edit, search_code, code_search, run_command, run_in_sandbox, undo_last_change, take_screenshot, todo_list, ask_question, ask_clarification, scratchpad_update, preview_browser, verify_app, web_search, or browser_* tools.</tool_result>\n`);
+    result(`<tool_result name="${call.name || "unknown"}">error — this tool is not available in this environment. Use one of: read_file, list_files, write_file, write_file_chunk, edit_file, batch_edit, search_code, code_search, run_command, run_in_sandbox, undo_last_change, take_screenshot, todo_list, ask_question, ask_clarification, scratchpad_update, preview_browser, verify_app, web_search, playbook_search, skill_create, session_search, or browser_* tools.</tool_result>\n`);
   ctx.replaceStatus(`[WARN] Tool "${call.name}" is not available here`);
   ctx.syncDisplay();
   return { resultXml: toolResults, blocked: false };

@@ -70,11 +70,12 @@ export function useNotificationCenter() {
 
   const markRead = useCallback(async (id?: string) => {
     try {
-      await apiFetch("/api/notifications", {
+      const res = await apiFetch("/api/notifications", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(id ? { id } : { all: true }),
       });
+      if (!res.ok) return; // server rejected — keep local state truthful
       setNotifications((prev) => prev.map((n) => (!id || n.id === id ? { ...n, read: true } : n)));
       setUnread((u) => (id ? Math.max(0, u - 1) : 0));
     } catch {}
@@ -168,7 +169,7 @@ export default function TopBar({ title = "Orplex Code", onBugReport, onTogglePan
       </div>
       <div className="topbar-actions">
         <div className="topbar-search" ref={searchRef}>
-          <IconSearch size={14} className="topbar-search-icon" />
+          <IconSearch size={15} className="topbar-search-icon" />
           <input
             className="topbar-search-input"
             placeholder="Search conversations… (Ctrl+K)"
@@ -196,17 +197,17 @@ export default function TopBar({ title = "Orplex Code", onBugReport, onTogglePan
                 transform: panelOpen ? "none" : "scaleX(-1)",
               }}
             >
-              <IconPanel size={16} />
+              <IconPanel size={18} />
             </span>
           </button>
         )}
         {onBugReport && (
           <button onClick={onBugReport} className="topbar-btn topbar-bug-btn">
-            <IconBug size={14} /> <span className="topbar-btn-label">Report Bug</span>
+            <IconBug size={17} /> <span className="topbar-btn-label">Report Bug</span>
           </button>
         )}
         <button onClick={toggle} className="topbar-icon-btn" title={dark ? "Light Mode" : "Dark Mode"} aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}>
-          {dark ? <IconSun size={16} /> : <IconMoon size={16} />}
+          {dark ? <IconSun size={18} /> : <IconMoon size={18} />}
         </button>
         {/* Notification center: fresh items toast for 3s, then live here
             behind the bell with a persistent unread badge. */}
@@ -218,7 +219,7 @@ export default function TopBar({ title = "Orplex Code", onBugReport, onTogglePan
             aria-expanded={showNotifs}
             title={unread ? `${unread} unread notification${unread === 1 ? "" : "s"}` : "Notifications"}
           >
-            <IconBell size={16} />
+            <IconBell size={18} />
             {unread > 0 && <span className="notif-badge">{unread > 99 ? "99+" : unread}</span>}
           </button>
           {showNotifs && (
@@ -243,7 +244,10 @@ export default function TopBar({ title = "Orplex Code", onBugReport, onTogglePan
                     <div
                       key={n.id}
                       className={`notif-dropdown-item ${n.read ? "" : "notif-dropdown-item-unread"}`}
-                      onClick={() => void markRead(n.id)}
+                      // Only fire for unread rows: markRead decrements the
+                      // badge optimistically, so clicking a read row (or
+                      // double-clicking) would miscount.
+                      onClick={() => { if (!n.read) void markRead(n.id); }}
                       style={{ cursor: "pointer", borderLeft: n.read ? undefined : "2px solid #f97316" }}
                       title={n.read ? undefined : "Mark as read"}
                     >

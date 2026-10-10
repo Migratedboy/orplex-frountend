@@ -391,6 +391,15 @@ export interface ToolCall {
   viewpoint?: string;
   // scratchpad_update
   section?: string;
+  // mcp_call (native path carries these as args; the dispatch target itself
+  // always comes from the function name, never from these fields)
+  serverId?: string;
+  tool?: string;
+  arguments?: unknown;
+  // use_skill / skill helpers
+  name_of_skill?: string;
+  skill_name?: string;
+  skill_content?: string;
 }
 
 // (deduplicateWords, parseToolCalls and replaceLastStatus moved to
@@ -661,28 +670,36 @@ export async function readStream(
     signal?.removeEventListener("abort", onAbort);
   }
 
-  // Finalize accumulated native tool calls
+  // Finalize accumulated native tool calls.
+  // Pass through every KNOWN ToolCall field — but never `name`: the dispatch
+  // target comes from the function name, never from model args (a parameter
+  // literally named "name" must not clobber it). The old field-by-field list
+  // silently dropped newer tools' args (browser refs, scratchpad section,
+  // skill title, verify dev_command…), breaking them on native providers.
+  const TOOL_ARG_FIELDS = [
+    "path", "content", "old_text", "new_text", "offset", "limit", "context",
+    "query", "command", "url", "action", "title", "items", "completed_index",
+    "question", "options", "allow_free_text", "allow_freetext", "edits",
+    "timeout", "dev_command", "port", "interactions", "selector", "ref",
+    "text", "key", "amount", "code", "role", "value", "time", "timeoutMs",
+    "index", "fullPage", "viewpoint", "section", "serverId", "tool",
+    "arguments", "skill_name", "skill_content", "name_of_skill",
+  ] as const;
   const nativeToolCalls: ToolCall[] = [];
   for (const [, acc] of accumulatorMap) {
     if (acc.name) {
       const call: ToolCall = { name: acc.name };
       if (acc.arguments) {
         try {
-          const args = JSON.parse(acc.arguments);
-          if (args.path) call.path = args.path;
-          if (args.content) call.content = args.content;
-          if (args.old_text) call.old_text = args.old_text;
-          if (args.new_text) call.new_text = args.new_text;
-          if (args.query) call.query = args.query;
-          if (args.command) call.command = args.command;
-          if (args.url) call.url = args.url;
-          if (args.action) call.action = args.action;
-          if (args.items) call.items = args.items;
-          if (args.completed_index !== undefined) call.completed_index = args.completed_index;
-          if (args.question) call.question = args.question;
-          if (args.options) call.options = args.options;
-          if (args.allow_free_text !== undefined) call.allow_free_text = args.allow_free_text;
-          if (args.edits && Array.isArray(args.edits)) call.edits = args.edits;
+          const args = JSON.parse(acc.arguments) as Record<string, unknown>;
+          if (args && typeof args === "object") {
+            for (const f of TOOL_ARG_FIELDS) {
+              const v = args[f];
+              if (v === undefined) continue;
+              if ((f === "edits" || f === "items" || f === "options" || f === "interactions") && !Array.isArray(v)) continue;
+              (call as unknown as Record<string, unknown>)[f] = v;
+            }
+          }
         } catch {}
       }
       nativeToolCalls.push(call);

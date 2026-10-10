@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
+import { apiFetch } from "@/lib/api-base";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useToast } from "@/components/Toast";
@@ -57,7 +58,7 @@ function WarmModelsCard({ toast }: { toast: (msg: string, type?: "info" | "error
 
   const poll = useCallback(async (force = false) => {
     try {
-      const res = await fetch("/api/models/warm", {
+      const res = await apiFetch("/api/models/warm", {
         method: force ? "POST" : "GET",
         headers: force ? { "Content-Type": "application/json" } : undefined,
         body: force ? JSON.stringify({ force: true }) : undefined,
@@ -175,7 +176,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
 
   const fetchKeys = async () => {
     try {
-      const res = await fetch("/api/settings/keys");
+      const res = await apiFetch("/api/settings/keys");
       if (res.ok) { const data = await res.json(); setKeys(data.keys); }
     } catch {} finally { setLoading(false); }
   };
@@ -199,7 +200,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
     setModelsLoading(true);
     setModelsError("");
     try {
-      const res = await fetch("/api/settings/keys/models", {
+      const res = await apiFetch("/api/settings/keys/models", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider: selectedDef.id, apiKey: apiKey.trim() }),
@@ -225,7 +226,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
     setAddStatus("Testing key...");
     setAddWarning("");
     try {
-      const res = await fetch("/api/settings/keys", {
+      const res = await apiFetch("/api/settings/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider: selectedDef.id, apiKey: apiKey.trim(), model: model.trim() || selectedDef.fallbackModel }),
@@ -246,7 +247,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
 
   const deleteKey = async (id: string) => {
     if (!confirm("Remove this API key?")) return;
-    await fetch(`/api/settings/keys?id=${id}`, { method: "DELETE" });
+    await apiFetch(`/api/settings/keys?id=${id}`, { method: "DELETE" });
     toast("Key removed", "success");
     fetchKeys();
   };
@@ -295,7 +296,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                         onClick={async () => {
                           setModelsLoading(true);
                           try {
-                            const res = await fetch("/api/settings/keys/models", {
+                            const res = await apiFetch("/api/settings/keys/models", {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({ provider: key.provider, keyId: key.id }),
@@ -315,7 +316,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                           if (!confirm(`Verify models for ${key.providerLabel || key.provider}?\n\nThis sends a tiny test request to up to 12 models using your key (small credit cost).`)) return;
                           setModelsLoading(true);
                           try {
-                            const res = await fetch("/api/settings/keys/models", {
+                            const res = await apiFetch("/api/settings/keys/models", {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({ provider: key.provider, keyId: key.id, mode: "verify" }),
@@ -575,7 +576,7 @@ function SettingsCostTab() {
 
   const fetchSpend = async () => {
     try {
-      const res = await fetch("/api/agent/spend");
+      const res = await apiFetch("/api/agent/spend");
       const json = await res.json();
       if (res.ok && json.success) {
         setData(json);
@@ -591,7 +592,7 @@ function SettingsCostTab() {
 
   const fetchUptime = async () => {
     try {
-      const res = await fetch("/api/agent/uptime");
+      const res = await apiFetch("/api/agent/uptime");
       const json = await res.json();
       if (res.ok && json.success) setUptime(json.summary as UptimeSummary);
     } catch {
@@ -714,14 +715,14 @@ function ResetRecoveryTab({ toast }: { toast: (msg: string, type?: "info" | "err
     setBusy("runs");
     setResult(null);
     try {
-      const res = await fetch("/api/agent/runs?limit=50");
+      const res = await apiFetch("/api/agent/runs?limit=50");
       const data = await res.json();
       const runs: Array<{ id: string; isActive: boolean; status: string }> = data?.runs || [];
       const targets = runs.filter((r) => r.isActive);
       let ok = 0;
       for (const r of targets) {
         try {
-          const del = await fetch(`/api/agent/runs/${r.id}`, { method: "DELETE" });
+          const del = await apiFetch(`/api/agent/runs/${r.id}`, { method: "DELETE" });
           if (del.ok) ok++;
         } catch {}
       }
@@ -848,7 +849,7 @@ export default function SettingsPage() {
   const saveProfile = async () => {
     setSaving(true);
     try {
-      await fetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+      await apiFetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
       await update();
       setSaved(true);
       toast("Profile saved", "success");

@@ -6,7 +6,7 @@
 import { recordChange, computeDiff } from "./file-history";
 import { analyzeCodeQuality } from "./code-quality-checker";
 import { quickQualityCheck } from "./reflection-loop";
-import { requestApproval } from "./approval-store";
+import { requestApproval, type ApprovalType } from "./approval-store";
 import { planGateBlocks, planGateMessage, approvePlan, rejectPlan, isPlanRejected, clearPlanLatch } from "./plan-gate";
 import { classifyRisk } from "./risk-classifier";
 import { virtualFS } from "./virtual-fs";
@@ -14,6 +14,7 @@ import { beforeToolCall, afterToolCall, onFileWrite, onFileEdit, onTaskStart, on
 import { initializePlugins, isPluginEnabled } from "./plugins/initializer";
 import { TIMEOUTS, LIMITS, isBlockedCommand } from "./constants";
 import { readStream, deduplicateWords, dedupeStreamedChunk, replaceLastStatus, parseToolCalls, normalizeThinkingBlocks, stripRedundantFences, appendTaskAnchor, repairInterleavedReplay, type ToolCall, type StreamResult } from "./stream-reader";
+import { createLoopStreaks, trackToolTurn, buildLoopBreakDirective } from "./loop-detect";
 import { SPARC_PLAN_DIRECTIVE, FORCE_TOOLS_DIRECTIVE, FORCE_BROWSER_TOOLS_DIRECTIVE, SAFETY_CONTINUE_DIRECTIVE, qualityReviewDirective, SELF_REVIEW_DIRECTIVE, verificationRepairDirective, browserRepairDirective, truncationContinue, adaptiveFailureDoctrine } from "./master-prompt";
 import { recordFailure, recordRepairAttempt, clearFailures } from "./failure-memory";
 import { startTaskMeter, recordPromptCall, formatSavingsSummary, logTaskMeter, calibratePromptSizes, computeTaskSavings } from "./prompt-meter";
@@ -33,6 +34,7 @@ import {
 } from "./scratchpad";
 import { searchCache, cacheResponse, invalidateByFileChange } from "./semantic-cache";
 import { stampFailedMessage } from "./message-retry";
+import { lowMemoryNote } from "./memory-note";
 
 let _pluginsInitialized = false;
 import {
@@ -70,10 +72,9 @@ const TPM_LIMIT = 8000; // Groq free tier (gpt-oss-120b, on_demand)
 const TPM_SAFETY = 400; // counting-error margin
 // Calibrate the prompt meter with the REAL master-prompt sizes (once per load).
 try {
-  calibratePromptSizes(
-    buildSystemPrompt({ mode: "code" }).length,
-    buildSystemPrompt({ mode: "code", profile: "compact" }).length
-  );
+  const p = await buildSystemPrompt({ mode: "code" });
+  const cp = await buildSystemPrompt({ mode: "code", profile: "compact" });
+  calibratePromptSizes(p.length, cp.length);
 } catch {}
 
 const SYSTEM_PROMPT_TOKENS = 3300; // CODE-mode stack: M3 + techniques + enhanced (added by /api/chat)
@@ -188,7 +189,8 @@ async function callModel(
   effort?: string,
   profile: "full" | "compact" = "full",
   meterInfo?: { taskId: string; turn: number; why: string },
-  model?: string
+  model?: string,
+  mcpRemotes?: Array<{ id: string; label: string; url: string; auth: "oauth" | "bearer" | "none"; tools?: Array<{ name: string; description?: string; inputSchema?: unknown }> }>
 ): Promise<StreamResult> {
   const estimate = (ms: { role: string; content: string }[]) => ms.reduce((s, m) => s + estimateTokens(m.content), 0);
   // Task anchor: trimming drops oldest-first, which on long loops evicted the
@@ -231,7 +233,8 @@ async function callModel(
       const sizes = getPromptSizes();
       const contextChars = fitted.reduce((s, m) => s + (m.content || "").length, 0);
       // C10: MCP schemas ride in the tools array every call — count them on
-      // the system side via the shared builder's schemaChars.
+      // the system side via the shared builder's schemaChars. Include legacy
+      // remotes (localStorage) so the meter accounts for them too.
       const { loadRemotes } = await import("./mcp/registry");
       const { buildMcpRoster } = await import("./mcp/tool-builder");
       const toolSchemaChars = buildMcpRoster(
@@ -258,6 +261,23 @@ async function callModel(
       });
     } catch {}
   }
+  // Send legacy-lane remotes to /api/chat so the server-side prompt builder
+  // can include them in the MCP section (the model needs to KNOW the tools
+  // exist to call them — dispatch alone isn't enough).
+  let sendMcpRemotes = mcpRemotes;
+  try {
+    const { loadRemotes } = await import("./mcp/registry");
+    const remotes = loadRemotes();
+    if (remotes.length > 0) {
+      sendMcpRemotes = remotes.map((r) => ({
+        id: r.id,
+        label: r.label,
+        url: r.url,
+        auth: r.auth,
+        tools: r.tools?.map((t) => ({ name: t.name, description: t.description ?? undefined, inputSchema: t.inputSchema ?? undefined })) ?? undefined,
+      }));
+    }
+  } catch {}
   await reserveTokenWindow(estimate(fitted));
   // Transient-blip retry: LIVE-VALIDATED (run 4) — a dropped connection
   // ("fetch failed") on call #2 killed an otherwise-healthy task after it had
@@ -265,7 +285,7 @@ async function callModel(
   // this and the token-window pressure path below. Abort never retries.
   const attempt = async (msgs: { role: string; content: string }[]): Promise<StreamResult> => {
     try {
-      return await readStream(msgs, conversationId, callbacks, mode, images, signal, effort, profile, model);
+      return await readStream(msgs, conversationId, callbacks, mode, images, signal, effort, profile, { model, mcpRemotes: sendMcpRemotes });
     } catch (err) {
       if (signal?.aborted) throw err;
       const { isTransientError } = await import("./retry");
@@ -273,7 +293,7 @@ async function callModel(
       await new Promise((r) => setTimeout(r, 1500));
       updateTaskStatus("tool_executing", "Connection blip — retrying…");
       emitActivity({ type: "status", message: "Provider blip — retrying once", agent: "coder" });
-      return await readStream(msgs, conversationId, callbacks, mode, images, signal, effort, profile, model);
+      return await readStream(msgs, conversationId, callbacks, mode, images, signal, effort, profile, { model, mcpRemotes: sendMcpRemotes });
     }
   };
   try {
@@ -442,29 +462,30 @@ export function diagnosePortConflict(command: string, output: string): string {
  * setQuestion). Shared by ask_question and the safety-limit continue prompt.
  */
 function waitForAnswer(timeoutMs = 300_000): Promise<string> {
+  // Capture the WAITING task's id: a newer task starting mid-wait must not
+  // resolve this waiter with the wrong task's answer.
+  const waitingId = getCurrentTask()?.id;
   return new Promise((resolve) => {
     let resolved = false;
+    const done = (value: string) => {
+      if (resolved) return;
+      resolved = true;
+      clearInterval(check);
+      clearTimeout(timer);
+      resolve(value);
+    };
     const check = setInterval(() => {
       const bg = getCurrentTask();
-      if (bg?.question?.answered) {
-        resolved = true;
-        clearInterval(check);
-        resolve(bg.question.answer || "");
+      if (!bg || bg.id !== waitingId || bg.status === "done" || bg.status === "error") {
+        done("(task cancelled)");
+        return;
       }
-      if (!bg || bg.status === "done" || bg.status === "error") {
-        if (!resolved) {
-          resolved = true;
-          clearInterval(check);
-          resolve("(task cancelled)");
-        }
+      if (bg.question?.answered) {
+        done(bg.question.answer || "");
       }
     }, 500);
-    setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        clearInterval(check);
-        resolve("(timed out)");
-      }
+    const timer = setTimeout(() => {
+      done("(timed out)");
     }, timeoutMs);
   });
 }
@@ -537,13 +558,13 @@ function getContentPreview(content: string, maxLines: number = 3): string {
 
 // === Main background loop ===
 
-// Unlimited within reason — smart loop detection (MAX_SAME_TOOL, MAX_TOTAL_WRITES)
-// plus the hard turn cap below stop runaway loops. The cap exists so a stuck
-// model can't burn the TPM window forever; the interactive safety-limit flow
-// (ask user → reset counters) still governs most sessions.
+// Unlimited within reason — streak-based loop detection (loop-detect.ts:
+// identical-call repeats + state-changing same-tool runs, both measured
+// in-a-row) plus MAX_TOTAL_WRITES and the hard turn cap below stop runaway
+// loops. The cap exists so a stuck model can't burn the TPM window forever;
+// the interactive safety-limit flow (ask user → reset counters) still
+// governs most sessions.
 const MAX_TOOL_TURNS = 120;
-const MAX_DUPLICATE_READS = 3; // Stop if same file read more than this many times
-const MAX_SAME_TOOL = 5; // Stop if same tool called more than this many times in a row
 const MAX_TOTAL_WRITES = 15; // Safety cap on total file writes per task
 
 // === Complexity detection — flags complex tasks for the plan-first directive ===
@@ -569,7 +590,11 @@ export async function runInBackground(
   // opts.model: model id picked in the prompt bar — honored server-side by
   // /api/chat (only providers whose model matches serve the request).
   // Auto-verification defaults ON; pass { autoVerify: false } to disable.
-  opts: { autoVerify?: boolean; model?: string } = {}
+  opts: {
+    autoVerify?: boolean;
+    model?: string;
+    /** Legacy-lane MCP remotes to advertise to the server-side prompt builder. */      mcpRemotes?: Array<{ id: string; label: string; url: string; auth: "oauth" | "bearer" | "none"; tools?: Array<{ name: string; description?: string; inputSchema?: unknown }> }>;
+  } = {}
 ) {
   const autoVerify = opts.autoVerify !== false;
   const selectedModel = opts.model;
@@ -598,6 +623,8 @@ export async function runInBackground(
   // loop below executes through the audited path. If the route is unavailable
   // the plan-first directive stays in place and the normal loop does the work.
   let orchestrationSummary = "";
+  let orchestrationLabel = "Strategy";
+  let orchestratedWrites = 0;
   let orchestratedToolCalls: Array<Partial<ToolCall>> = [];
   if (sparcDirective) {
     updateTaskStatus("streaming", "Planning with the strategy router…");
@@ -607,7 +634,8 @@ export async function runInBackground(
       existingFileCount: _fileTree.reduce((n: number, node: any) => n + (node.kind === "file" ? 1 : 0), 0),
     });
     if (routed && Array.isArray(routed.toolCalls) && routed.toolCalls.length > 0) {
-      orchestrationSummary = `[${String(routed.strategy || "strategy").toUpperCase()}] ${routed.summary || ""}`.trim();
+      orchestrationLabel = String(routed.strategy || "strategy").toUpperCase();
+      orchestrationSummary = `[${orchestrationLabel}] ${routed.summary || ""}`.trim();
       contentWithFiles = `${orchestrationSummary}\n\n${basePrompt}`;
       orchestratedToolCalls = routed.toolCalls;
     }
@@ -697,7 +725,8 @@ export async function runInBackground(
   // not generic). Only on the first message — follow-ups have live history.
   if (isFirstMessage) {
     try {
-      const failureCtx = adaptiveFailureDoctrine();
+      const failureCtx = await adaptiveFailureDoctrine();
+
       if (failureCtx) {
         apiMessages.push({ role: "user", content: failureCtx });
         fullDisplayContent += `\n*[Failure context from previous task injected — the agent will avoid the last failure's path]*\n`;
@@ -720,6 +749,25 @@ export async function runInBackground(
         taskMemoriesUsed = memoryBlock.split("\n").filter((l) => l.startsWith("- [")).length;
         const t = getCurrentTask();
         if (t) (t as BackgroundTaskLike).memoriesUsed = taskMemoriesUsed;
+      }
+    } catch {}
+    // Playbook: evidence-backed learnings from previous VERIFIED runs.
+    // Fetched via the playbook API (the browser never touches the DB
+    // directly) and injected once per task — hints, not doctrine.
+    try {
+      const res = await apiFetch(`/api/playbook?q=${encodeURIComponent(userMessage.slice(0, 500))}`);
+      const data = (await res.json()) as { results?: Array<{ pattern: string; content: string; confidence: number }> };
+      const hits = (data.results ?? []).slice(0, 3);
+      if (hits.length > 0) {
+        const block = [
+          "## PLAYBOOK (from previous verified tasks)",
+          ...hits.map((h) => `- [${h.pattern}] ${h.content}`),
+          "",
+          "These are evidence-backed observations from verified runs. Apply them when relevant; ignore them when a task clearly calls for something different.",
+        ].join("\n");
+        apiMessages.push({ role: "user", content: block });
+        fullDisplayContent += `\n*[Playbook learnings applied]*\n`;
+        setDisplayContent(fullDisplayContent);
       }
     } catch {}
   }
@@ -748,6 +796,11 @@ export async function runInBackground(
     return out;
   }
   const toolCounts = new Map<string, number>(); // tool name → count of times called
+  const loopStreaks = createLoopStreaks(); // consecutive-repeat state (loop-detect.ts)
+  // Loop breaker: one automatic strategy-change attempt per task, then an
+  // honest stop. lastToolResults is the evidence the directive quotes.
+  let loopBreakAttempted = false;
+  let lastToolResults = "";
   let turnsWithTools = 0;
   let hasShownText = false;
   let totalWrites = 0;
@@ -843,10 +896,11 @@ export async function runInBackground(
       writtenFiles,
       bumpStat,
       setFilesChanged,
-      label: orchestrationSummary.startsWith("[SPARC]") ? "SPARC" : "ToT",
+      label: orchestrationLabel,
     });
+    orchestratedWrites = written;
     if (written > 0) {
-      fullDisplayContent += `\n**${orchestrationSummary.startsWith("[SPARC]") ? "SPARC" : "Tree-of-Thoughts"} wrote ${written} file(s).** Continuing with refinement and review…\n`;
+      fullDisplayContent += `\n**${orchestrationLabel} wrote ${written} file(s).** Continuing with refinement and review…\n`;
       setDisplayContent(fullDisplayContent);
       // Seed the loop so the model reviews/refines what was just written
       apiMessages.push({
@@ -973,7 +1027,9 @@ export async function runInBackground(
         const buildKeywords = /build|create|make|generate|write|code|develop|implement|set up|set up/i;
         const userWantsFiles = userMessage && buildKeywords.test(userMessage);
         const hasTextResponse = textOnly.length > 20;
-        const hasWrittenFiles = writtenFiles.size > 0 || totalWrites > 0 || orchestratedToolCalls.length > 0;
+        // orchestratedWrites is the ACTUAL executed count — a planned batch
+        // that fully failed must not suppress the FORCE-TOOLS nudge.
+        const hasWrittenFiles = writtenFiles.size > 0 || totalWrites > 0 || orchestratedWrites > 0;
         const alreadyRetried = apiMessages.some(m => m.role === "user" && m.content?.includes("[FORCE TOOLS]"));
 
         if (userWantsFiles && hasTextResponse && !hasWrittenFiles && !alreadyRetried) {
@@ -1014,21 +1070,47 @@ export async function runInBackground(
       // === STOP: Smart loop detection ===
       turnsWithTools++;
 
-      // Track tool usage for deduplication
+      // Track tool usage for deduplication + feature gates
       for (const call of toolCalls) {
         toolCounts.set(call.name, (toolCounts.get(call.name) || 0) + 1);
         if (call.name === "write_file" || call.name === "edit_file") totalWrites++;
       }
 
-      // Stop if: too many consecutive tool-only turns, same tool looping, or too many writes
-      const dominantTool = Array.from(toolCounts.entries()).sort((a, b) => b[1] - a[1])[0];
-      const isLooping = dominantTool && dominantTool[1] >= MAX_SAME_TOOL && toolCalls.length === 1;
-      if (turnsWithTools >= MAX_TOOL_TURNS - 2 || isLooping || totalWrites >= MAX_TOTAL_WRITES) {
-        const reason = isLooping
-          ? `Looping on ${dominantTool![0]} (${dominantTool![1]}x)`
-          : totalWrites >= MAX_TOTAL_WRITES
-            ? `Too many file writes (${totalWrites})`
-            : `Reached ${turnsWithTools} tool turns`;
+      // Streak-based loop detection, O(1) per turn — runs BEFORE dispatch, so
+      // a trip never executes the offending call (the duplicate the model
+      // just re-sent costs zero tool time). See loop-detect.ts: identical
+      // call 3x in a row, same target 4x with noisy args, the same multi-call
+      // turn 3x, or one state-changing tool every turn for 5 turns.
+      const loopVerdict = trackToolTurn(loopStreaks, toolCalls);
+
+      // === LOOP TRIP: self-heal once, then stop honestly ==================
+      // The old flow asked the user "keep going?" for loops; clicking
+      // Continue reset the counters but not the model's behavior, so the same
+      // call came back (the observed "stuck in a loop" failure). Now the
+      // first trip injects the repeated call + its last result and demands a
+      // different action — no user nag; a second trip (evidence ignored)
+      // stops the task with an honest note instead of burning the TPM window.
+      if (loopVerdict.loop) {
+        const loopReason = loopVerdict.reason!;
+        fullDisplayContent += textOnly ? textOnly + "\n" : "";
+        if (loopBreakAttempted) {
+          fullDisplayContent += `\n*[Stopped — the agent kept repeating ${loopReason} even after a strategy-change instruction. No further calls were run.]*\n`;
+          setDisplayContent(fullDisplayContent);
+          break;
+        }
+        loopBreakAttempted = true;
+        fullDisplayContent += `\n*[Loop detected — ${loopReason}. Forcing a strategy change.]*\n`;
+        setDisplayContent(fullDisplayContent);
+        apiMessages.push({ role: "assistant", content: streamedContent || "" });
+        apiMessages.push({ role: "user", content: buildLoopBreakDirective(loopVerdict, lastToolResults) });
+        Object.assign(loopStreaks, createLoopStreaks());
+        continue;
+      }
+
+      if (turnsWithTools >= MAX_TOOL_TURNS - 2 || totalWrites >= MAX_TOTAL_WRITES) {
+        const reason = totalWrites >= MAX_TOTAL_WRITES
+          ? `Too many file writes (${totalWrites})`
+          : `Reached ${turnsWithTools} tool turns`;
         // Interactive autonomy: at a safety cap, ASK instead of dying. The
         // user can continue (counters reset) or stop here — up to
         // MAX_SAFETY_CONTINUES times, so a stuck UI can't loop forever.
@@ -1045,6 +1127,7 @@ export async function runInBackground(
           if (/continue|keep|yes/i.test(answer)) {
             safetyContinueGrants++;
             toolCounts.clear();
+            Object.assign(loopStreaks, createLoopStreaks());
             totalWrites = 0;
             turnsWithTools = 0;
             fullDisplayContent += `\n*[Continuing — limit reset by user (${MAX_SAFETY_CONTINUES - safetyContinueGrants} extensions left)]*\n`;
@@ -1176,11 +1259,23 @@ export async function runInBackground(
           fullDisplayContent += `[GATE] ${call.name} blocked — plan not approved\n`;
           setDisplayContent(fullDisplayContent);
           // First block surfaces the approval request to the user.
+          // NOTE: the approval TYPE must match the blocked tool — filing
+          // everything as "run_command" mislabels the dialog, mis-scores
+          // risk, and keys "always allow" rules on the wrong fields.
           if (!isPlanRejected(taskId)) {
+            const toolName = String(call.name);
+            const gateType: ApprovalType =
+              toolName === "write_file" || toolName === "write_file_chunk"
+                ? "write_file"
+                : toolName === "edit_file" || toolName === "batch_edit"
+                  ? "edit_file"
+                  : toolName.startsWith("mcp__")
+                    ? "mcp_tool"
+                    : "run_command";
             void requestApproval(
-              "run_command",
+              gateType,
               `Plan approval needed before ${call.name}`,
-              { planGate: true, taskId, blockedTool: call.name, summary: "Approve the plan to let the agent write files." },
+              { planGate: true, taskId, blockedTool: call.name, path: call.path, command: call.command, tool: call.name, summary: "Approve the plan to let the agent write files." },
               undefined,
               "medium"
             ).then((approved) => {
@@ -1227,6 +1322,9 @@ export async function runInBackground(
       }
 
       fullDisplayContent += "\n";
+      // Evidence for the loop breaker on the NEXT turn (the breaker quotes
+      // the most recent tool output — a loop usually re-sends right after it).
+      lastToolResults = toolResults;
 
       // Scratchpad rides the LAST message (same trim-proof pattern as the
       // task anchor): re-rendered fresh every turn from live state, so it is
@@ -2015,11 +2113,21 @@ export async function runInBackground(
       // rides the final content — failTask/completeTask content is what the
       // subscriber writes into the placeholder.)
       if (failedEmptyResponse) {
-        finalContent = stampFailedMessage(finalContent || "");
+        // A response that came back empty while the machine is low on RAM gets
+        // the live percentage appended, so the failure explains itself.
+        const memNote = await lowMemoryNote();
+        const withNote = memNote
+          ? `${finalContent ? finalContent + "\n\n" : ""}${memNote}`
+          : finalContent;
+        finalContent = stampFailedMessage(withNote);
       }
       completeTask(finalContent);
       // === PLUGIN HOOK: onTaskComplete ===
-      onTaskComplete(userMessage, finalContent).catch(() => {});
+      onTaskComplete(userMessage, finalContent, {
+        files: Object.fromEntries(writtenFiles),
+        lanes: getObservationMeta()?.lanes as Record<string, string> | undefined,
+        finalStatus: "done",
+      }).catch(() => {});
     }
   } catch (err) {
     const aborted = abortSignal?.aborted === true;
@@ -2047,9 +2155,18 @@ export async function runInBackground(
       const friendly = TOKEN_LIMIT_RE.test(errMsg)
         ? "Groq's free tier allows 8,000 tokens per minute and this task exceeded it even after trimming the context. Start a new chat (shorter history), or add your own Groq API key in Settings → API Keys for larger limits."
         : errMsg;
-      failTask(friendly);
+      // Low-memory failures explain themselves: append the live RAM percentage
+      // when the machine is under pressure, and land the message IN the bubble
+      // (stamped [FAILED]) so the user sees why the response died + Retry.
+      const memNote = await lowMemoryNote();
+      const failMsg = memNote ? `${friendly} — ${memNote}` : friendly;
+      const partial = fullDisplayContent.trim()
+        ? normalizeThinkingBlocks(deduplicateWords(repairInterleavedReplay(fullDisplayContent.trim())))
+        : "";
+      setDisplayContent(stampFailedMessage(partial ? `${partial}\n\n${failMsg}` : failMsg));
+      failTask(failMsg);
       // === PLUGIN HOOK: onTaskFail ===
-      onTaskFail(userMessage, friendly).catch(() => {});
+      onTaskFail(userMessage, failMsg).catch(() => {});
       // Test-mode rubric recording for FAILED runs — regressions live here.
       if (isRecordingEnabled()) {
         try {

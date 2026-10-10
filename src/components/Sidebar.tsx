@@ -4,7 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import { useState, useCallback, useEffect } from "react";
 import { useConversations } from "./ConversationProvider";
-import { IconEdit, IconTrash, IconClose, IconMenu } from "./Icons";
+import { IconEdit, IconTrash, IconClose, IconMenu, IconLogout } from "./Icons";
 import { useFileSystemContext } from "./FileSystemProvider";
 import { useBackgroundChat } from "@/hooks/useBackgroundChat";
 import { announceConversationOpen } from "@/lib/navigation-events";
@@ -209,6 +209,10 @@ export default function Sidebar() {
               value: "/plugins",
             },
             {
+              label: "Playbook",
+              value: "/playbook",
+            },
+            {
               label: "Settings",
               children: [
                 { value: "/settings?tab=profile", label: "Profile", icon: <MsIcon name="person" /> },
@@ -224,7 +228,7 @@ export default function Sidebar() {
           // so the trunk reach + highlight follow deep links ( BranchedMenu
           // syncs this via a useEffect when the pathname changes).
           defaultActive={
-            pathname === "/" || pathname === "/history" || pathname === "/plugins"
+            pathname === "/" || pathname === "/history" || pathname === "/plugins" || pathname === "/playbook"
               ? pathname
               : pathname.startsWith("/manager")
                 ? "/manager"
@@ -280,21 +284,24 @@ export default function Sidebar() {
 
         {(() => {
           const orphans = ungroupedThreads(conversations);
-          if (orphans.length === 0) return null;
           return (
             <div className="conv-section">
               <div className="conv-section-label">Chats</div>
-              <ProjectBranchedMenu
-                project={{ name: "", lastOpenedAt: 0 }}
-                conversations={conversations}
-                activeProject={directoryName}
-                expanded={expandedProjects.has("__ungrouped__")}
-                onToggle={toggleProject}
-                onReopen={() => toggleProject("__ungrouped__")}
-                onOpenThread={loadConversation}
-                onContextMenu={() => {}} // Ungrouped skips the menu
-                sectionLabel="Ungrouped"
-              />
+              {orphans.length === 0 ? (
+                <p className="conv-empty-hint">No chats yet</p>
+              ) : (
+                <ProjectBranchedMenu
+                  project={{ name: "", lastOpenedAt: 0 }}
+                  conversations={conversations}
+                  activeProject={directoryName}
+                  expanded={expandedProjects.has("__ungrouped__")}
+                  onToggle={toggleProject}
+                  onReopen={() => toggleProject("__ungrouped__")}
+                  onOpenThread={loadConversation}
+                  onContextMenu={() => {}} // Ungrouped skips the menu
+                  sectionLabel="Ungrouped"
+                />
+              )}
             </div>
           );
         })()}
@@ -309,12 +316,20 @@ export default function Sidebar() {
           ) : (
             <div className="sidebar-user-avatar"><span>{(session?.user?.name || "U")[0].toUpperCase()}</span></div>
           )}
-          <div>
+          <div className="sidebar-user-text">
             <div className="sidebar-user-name">{session?.user?.name || "User"}</div>
             <div className="sidebar-user-email">{session?.user?.email || ""}</div>
           </div>
         </div>
-        <button className="sidebar-signout" onClick={() => signOut({ callbackUrl: "/auth/signin" })}>Sign Out</button>
+        <button
+          type="button"
+          className="sidebar-signout"
+          onClick={() => signOut({ callbackUrl: "/auth/signin" })}
+          aria-label="Sign out"
+          title="Sign out"
+        >
+          <IconLogout size={16} />
+        </button>
       </div>
     </>
   );
@@ -356,20 +371,29 @@ function BackgroundTaskIndicator() {
   const { task, isRunning } = useBackgroundChat();
   const router = useRouter();
 
+  // Mirrors the task store: the card exists only while the run is in flight,
+  // so an error, a Stop, or the stall watchdog always takes it off-screen.
   if (!isRunning || !task) return null;
 
   return (
     <div
       onClick={() => router.push("/")}
-      className="mt-3 mx-2 px-3 py-2 rounded-lg border border-[#E4E4E7] bg-[#FAFAFA] cursor-pointer hover:bg-[#F4F4F5] transition-colors"
+      className="bg-task-card"
+      data-status={task.status}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          router.push("/");
+        }
+      }}
     >
-      <div className="flex items-center gap-2">
-        <div className="bg-task-dot" />
-        <span className="text-[11px] font-medium text-[#52525B] truncate">
-          {task.statusDetail}
-        </span>
+      <div className="bg-task-row">
+        <div className="bg-task-dot" aria-hidden="true" />
+        <span className="bg-task-status">{task.statusDetail}</span>
       </div>
-      <div className="text-[10px] text-[#A1A1AA] mt-1 truncate">
+      <div className="bg-task-prompt">
         {task.userMessage.slice(0, 50)}{task.userMessage.length > 50 ? "…" : ""}
       </div>
     </div>

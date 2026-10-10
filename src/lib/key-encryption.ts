@@ -50,6 +50,10 @@ export function decryptKey(cipherText: string): string {
 }
 
 export function maskKey(plainText: string): string {
+  // Last-4 only: the old first-6/last-4 exposed 10 characters of high-entropy
+  // tokens (sk-…, ghp_…) — enough to materially aid brute-force and to
+  // identify the key. Last-4 (the Stripe-dashboard convention) identifies
+  // which key it is without helping to guess it.
   if (plainText.length <= 8) return "****";
-  return plainText.slice(0, 6) + "..." + plainText.slice(-4);
+  return "••••" + plainText.slice(-4);
 }

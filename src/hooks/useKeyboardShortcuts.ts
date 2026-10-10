@@ -37,7 +37,10 @@ export function useKeyboardShortcuts({ onSearch, onNewChat, onStop }: ShortcutHa
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown, { passive: true });
+    // NOTE: must NOT be passive — the handler calls preventDefault() for
+    // Ctrl/Cmd+K and Ctrl/Cmd+N, which passive listeners silently ignore
+    // (Ctrl+N would open a browser window instead).
+    window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []); // Empty deps — handlers read from ref, never stale
 }

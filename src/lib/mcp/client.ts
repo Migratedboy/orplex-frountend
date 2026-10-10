@@ -32,6 +32,13 @@ export interface McpHttpResult {
 }
 
 async function httpPost(url: string, headers: Record<string, string>, body: string): Promise<McpHttpResult> {
+  // SSRF gate on BOTH branches: server.url is registry/localStorage input
+  // (user-pasted), and the Electron bridge no longer re-checks per call.
+  const { checkMcpUrl } = await import("./ssrf-fetch");
+  const verdict = checkMcpUrl(url);
+  if (!verdict.allowed) {
+    throw new Error(`Blocked by MCP SSRF policy: ${verdict.reason ?? "blocked"} — ${url}`);
+  }
   const bridge = typeof window !== "undefined" ? window.orplexDesktop?.mcp : undefined;
   if (bridge) {
     const r = await bridge.request({ url, method: "POST", headers, body });
@@ -39,7 +46,14 @@ async function httpPost(url: string, headers: Record<string, string>, body: stri
     return { status: r.status ?? 0, headers: r.headers ?? {}, text: r.text ?? "" };
   }
   // Plain-browser fallback (best effort — remote servers may lack CORS).
-  const res = await fetch(url, { method: "POST", headers, body });
+  // Bounded: unlike the Electron bridge (30s ceiling), a raw fetch here
+  // would hang the agent turn forever on a dead server.
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body,
+    signal: AbortSignal.timeout(30_000),
+  });
   const responseHeaders: Record<string, string> = {};
   res.headers.forEach((v, k) => { responseHeaders[k] = v; });
   return { status: res.status, headers: responseHeaders, text: await res.text() };

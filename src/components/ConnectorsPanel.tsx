@@ -752,7 +752,7 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
               </div>
             )}
 
-            {(connectTarget.stdio?.env.length ?? 0) > 0 && (
+            {!(connectTarget.remote && connectTarget.auth === "oauth") && (connectTarget.stdio?.env.length ?? 0) > 0 && (
               <div className="mcp-env-form">
                 <div className="mcp-section-label">Credentials & settings</div>
                 {connectTarget.stdio!.env.map((spec) => (

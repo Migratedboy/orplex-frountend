@@ -27,6 +27,9 @@ export interface SnapshotDiff {
   removed: string[];
   changed: string[];
   unchanged: number;
+  /** Tools dropped by the SNAPSHOT_MAX_TOOLS cap (not by the server) — callers
+   *  should surface this so truncation never looks like removal. */
+  truncatedCount: number;
   /** Connection status implied by the result — caller applies it if allowed. */
   status: "connected" | "connected_no_tools";
 }
@@ -61,6 +64,7 @@ export function diffTools(prev: SnapshotTool[], next: SnapshotTool[]): SnapshotD
     removed: removed.sort(),
     changed: changed.sort(),
     unchanged,
+    truncatedCount: 0,
     status: next.length > 0 ? "connected" : "connected_no_tools",
   };
 }
@@ -115,6 +119,13 @@ export async function syncToolSnapshot(
   serverId: string,
   tools: Array<{ name: string; description?: string; inputSchema?: unknown; annotations?: unknown }>
 ): Promise<SnapshotDiff> {
+  const truncatedCount = Math.max(0, tools.length - SNAPSHOT_MAX_TOOLS);
+  if (truncatedCount > 0) {
+    // Ops signal: without this, tools past the cap silently vanish from the
+    // snapshot while the diff reports nothing — indistinguishable from
+    // server-side removal.
+    console.warn(`[mcp-snapshot] ${serverId}: ${truncatedCount} tool(s) dropped by the ${SNAPSHOT_MAX_TOOLS}-tool cap`);
+  }
   const capped = tools.slice(0, SNAPSHOT_MAX_TOOLS);
   const next: SnapshotTool[] = capped.map((t) => ({
     name: t.name,
@@ -174,7 +185,7 @@ export async function syncToolSnapshot(
   }
 
   if (ops.length) await prisma.$transaction(ops);
-  return diff;
+  return { ...diff, truncatedCount };
 }
 
 /** Drop a server's snapshot (disconnect / server removal). Returns row count. */

@@ -347,16 +347,18 @@ describe("DbMcpOAuthProvider", () => {
     });
   });
 
-  it("persists the PKCE verifier on the pending row and reads it back", async () => {
+  it("persists the PKCE verifier encrypted and reads it back", async () => {
     pend.update.mockResolvedValue(pendingRow({ codeVerifier: "ver_1" }) as never);
     const p = provider();
     await p.saveCodeVerifier("ver_1");
-    expect(arg<{ where: Record<string, unknown>; data: Record<string, unknown> }>(pend.update.mock.calls)).toMatchObject({
-      where: { state: "state_abc" },
-      data: { codeVerifier: "ver_1" },
-    });
+    const written = arg<{ where: Record<string, unknown>; data: Record<string, unknown> }>(pend.update.mock.calls);
+    expect(written).toMatchObject({ where: { state: "state_abc" } });
+    // Ciphertext at rest (iv:tag:ciphertext), never the plaintext verifier.
+    const stored = (written.data as { codeVerifier: string }).codeVerifier;
+    expect(stored).not.toBe("ver_1");
+    expect(stored.split(":").length).toBe(3);
 
-    pend.findUnique.mockResolvedValue(pendingRow({ codeVerifier: "ver_1" }) as never);
+    pend.findUnique.mockResolvedValue(pendingRow({ codeVerifier: stored }) as never);
     expect(await p.codeVerifier()).toBe("ver_1");
 
     pend.findUnique.mockResolvedValue(pendingRow({ codeVerifier: null }) as never);

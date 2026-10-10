@@ -11,11 +11,12 @@ const SUGGESTIONS = [
 export default function WelcomeSection() {
   return (
     <div className="welcome-container">
+      <div className="welcome-glow" aria-hidden="true" />
       <div className="welcome-inner">
-        <img src="/logo.svg" alt="Orplex Code" className="welcome-logo" width={80} height={80} />
-        <h1 className="welcome-heading">What can I help you build?</h1>
-        <p className="welcome-subtext">Your agentic coding assistant. Ask me to write, debug, refactor, or architect code.</p>
-        <div className="shortcut-hints">
+        <img src="/logo.svg" alt="Orplex Code" className="welcome-logo welcome-rise" width={80} height={80} />
+        <h1 className="welcome-heading welcome-rise">What can I help you build?</h1>
+        <p className="welcome-subtext welcome-rise">Your agentic coding assistant. Ask me to write, debug, refactor, or architect code.</p>
+        <div className="shortcut-hints welcome-rise">
           <span><kbd>Ctrl</kbd>+<kbd>K</kbd> Search</span>
           <span className="shortcut-sep">/</span>
           <span><kbd>Ctrl</kbd>+<kbd>N</kbd> New Chat</span>
@@ -27,7 +28,7 @@ export default function WelcomeSection() {
       </div>
       <div className="suggestion-grid">
         {SUGGESTIONS.map((s, i) => (
-          <button key={i} className="suggestion-card">
+          <button key={i} className="suggestion-card welcome-rise">
             <p className="suggestion-text">{s}</p>
           </button>
         ))}
