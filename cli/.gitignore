@@ -1,6 +1,0 @@
-node_modules/
-dist/
-*.js
-!bin/orplex
-*.d.ts
-*.map
