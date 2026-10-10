@@ -20,6 +20,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
+import { checkBurstLimit } from "@/lib/rate-limiter";
 import { runStrategy, strategyReview } from "@/lib/strategy-router";
 
 export const dynamic = "force-dynamic";
@@ -46,6 +47,12 @@ export async function POST(request: NextRequest) {
   const session = await getServerSession(jwtOnlyOptions);
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Authentication required" }, { status: 401 });
+  }
+
+  // Burst guard: orchestrate fans out to multiple LLM calls per op.
+  // Fail closed: a limiter failure must throttle, never open the floodgate.
+  if (!(await checkBurstLimit(session.user.id).catch(() => false))) {
+    return NextResponse.json({ ok: false, error: "Too many requests. Try again in about a minute." }, { status: 429, headers: { "Retry-After": "60" } });
   }
 
   const body = await request.json().catch(() => ({}));

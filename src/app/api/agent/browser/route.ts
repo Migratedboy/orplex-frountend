@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
+import { checkBurstLimit } from "@/lib/rate-limiter";
 import { runBrowserOp } from "@/lib/agent-browser-session";
 
 export const dynamic = "force-dynamic";
@@ -64,6 +65,10 @@ export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Authentication required" }, { status: 401 });
+  }
+
+  if (!(await checkBurstLimit(session.user.id).catch(() => false))) {
+    return NextResponse.json({ ok: false, error: "Too many requests. Try again in about a minute." }, { status: 429, headers: { "Retry-After": "60" } });
   }
 
   const body = await request.json().catch(() => null);

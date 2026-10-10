@@ -32,7 +32,6 @@ import {
   type ScratchpadState,
   type ScratchpadSection,
 } from "./scratchpad";
-import { searchCache, cacheResponse, invalidateByFileChange } from "./semantic-cache";
 import { stampFailedMessage } from "./message-retry";
 import { lowMemoryNote } from "./memory-note";
 
@@ -706,18 +705,9 @@ export async function runInBackground(
   // bubble gets [FAILED]-stamped at finalize so Retry is offered.
   let failedEmptyResponse = false;
 
-  // === Semantic cache hint: a very similar past task is offered as context ===
-  // (hint only — never auto-applied, since the workspace may have changed).
-  try {
-    const cacheHit = searchCache(userMessage);
-    if (cacheHit && cacheHit.similarity >= 0.75 && cacheHit.response) {
-      fullDisplayContent += `\n[Semantic cache] ${Math.round(cacheHit.similarity * 100)}% match with a previous task — offering it as reference.\n`;
-      apiMessages.push({
-        role: "user",
-        content: `[CACHED CONTEXT] A very similar past task produced this result:\n\n${cacheHit.response.slice(0, 3000)}\n\nUse it as a reference if helpful, but VERIFY against the current workspace before reusing anything.`,
-      });
-    }
-  } catch {}
+  // NOTE (consolidation): the semantic-cache hint lane was removed — similar
+  // past tasks are surfaced through the workspace-learnings bucket + run
+  // ledger instead of a fourth memory mechanism. See semantic-cache.ts.
 
   // === Adaptive Failure Doctrine: if the LAST task ended in verification
   // failures, seed this fresh task with the real evidence so the model
@@ -1941,12 +1931,8 @@ export async function runInBackground(
     // preserved verbatim.
     cleanContent = stripRedundantFences(cleanContent, { filesWritten: writtenFiles.size > 0 });
 
-    // Cache the final result for future semantic-cache hits (best-effort).
-    if ((mode === "code" || mode === "plan") && isCurrentTask(taskId) && !abortSignal?.aborted) {
-      try {
-        cacheResponse(userMessage, cleanContent.slice(0, 4000), [...writtenFiles.keys()].slice(0, 10));
-      } catch {}
-    }
+    // NOTE (consolidation): no semantic-cache write — task outcomes persist
+    // via the run ledger + workspace learnings (the permanent buckets).
 
     // === CODE BLOCK EXTRACTION ===
     // If AI output markdown code blocks instead of using write_file,

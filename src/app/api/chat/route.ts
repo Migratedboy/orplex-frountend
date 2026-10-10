@@ -4,6 +4,7 @@ import {
   enforceBurstLimit,
   enforceDailyQuota,
   validateRequestBody,
+  sanitizeAndValidateInput,
   getProviderConfigs,
   fetchWithProviderRetry,
   prependStatusMessage,
@@ -56,7 +57,10 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const validated = validateRequestBody(body);
     if (!validated.ok) return validated.response;
-    const { data: parsed } = validated;
+    // Sanitize user messages + log prompt-injection attempts (never blocks).
+    const sanitized = sanitizeAndValidateInput(validated.data);
+    if (!sanitized.ok) return sanitized.response;
+    const { data: parsed } = sanitized;
 
     // --- Step 4: Daily quota ---
     const quota = await enforceDailyQuota(userId);

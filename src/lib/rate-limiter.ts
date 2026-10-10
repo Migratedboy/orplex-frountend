@@ -94,8 +94,15 @@ export async function checkBurstLimit(userId: string): Promise<boolean> {
     cache.set(key, { count: row.count, expiresAt: expiresAt.getTime() });
     return row.count <= BURST_LIMIT;
   } catch {
-    // On DB error, fall back to allowing the request (fail-open)
-    return true;
+    // Fail closed on DB error: burst protection must not evaporate exactly
+    // when the DB is stressed. Fall back to the in-memory count if present,
+    // otherwise deny (429) so abuse can't ride an outage.
+    console.error("[rate-limiter] DB error in checkBurstLimit — failing closed");
+    const cachedFallback = cache.get(key);
+    if (cachedFallback && now <= cachedFallback.expiresAt) {
+      return cachedFallback.count < BURST_LIMIT;
+    }
+    return false;
   }
 }
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect } from "react";
+
 export default function Error({
   error,
   reset,
@@ -7,6 +9,10 @@ export default function Error({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  useEffect(() => {
+    // Full error (Prisma/SQL/paths) goes to console + tracker only — never rendered.
+    console.error("[route-error]", error);
+  }, [error]);
   return (
     <div className="app-root">
       <div className="error-page">
@@ -19,7 +25,7 @@ export default function Error({
             </svg>
           </div>
           <h1 className="error-page-title">Something went wrong</h1>
-          <p className="error-page-message">{error.message || "An unexpected error occurred."}</p>
+          <p className="error-page-message">An unexpected error occurred. Please try again.</p>
           {error.digest && (
             <p className="error-page-digest">Error ID: {error.digest}</p>
           )}

@@ -25,6 +25,7 @@ const TopBarInner = dynamic(() => import("./TopBar"), {
 });
 const BugReportModal = dynamic(() => import("./BugReportModal"), { ssr: false });
 const ProductivityOverlays = dynamic(() => import("./ProductivityOverlays"), { ssr: false });
+const UpdateToast = dynamic(() => import("./UpdateToast"), { ssr: false });
 
 // Artifact panel state — managed at layout level so any component can open it.
 // A const bridge object (not reassignable module-lets) so the React compiler
@@ -200,7 +201,9 @@ export default function AppLayout({ children }: AppLayoutProps) {
           </button>
         )}
         <main className={`main-content ${artifactPanelOpen ? "panel-open" : ""} ${rightPanelOpen ? "rp-open" : ""} ${rightPanelResizing ? "rp-resizing" : ""}`}>
-          {children}
+          <ErrorBoundary fallback={<div style={{ padding: 24, textAlign: "center", color: "#666" }}>Something went wrong loading this view. <button onClick={() => window.location.reload()} style={{ color: "#a04100" }}>Reload</button></div>}>
+            {children}
+          </ErrorBoundary>
         </main>
         <ArtifactPanel
           open={artifactPanelOpen}
@@ -229,6 +232,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
       )}
       <ApprovalDialog />
       <ScrollFadeManager />
+      <UpdateToast />
     </>
   );
 }

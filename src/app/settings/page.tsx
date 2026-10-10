@@ -11,6 +11,50 @@ import { chartScale, dailySpendBars, splitIsPartial, uptimeHealth } from "@/lib/
 import type { SpendAggregates, SpendRun, UptimeSummary } from "@/lib/spend-format";
 import { listProviderDefs, type ProviderDef } from "@/lib/provider-registry";
 import type { ListedModel } from "@/lib/provider-models";
+import { getCachedAppVersion } from "@/lib/api-base";
+
+// === About tab: live version + update check ================================
+// Version comes from the packaged app (Electron bridge), not a hardcoded
+// string. "Check for updates" kicks the main-process check — results surface
+// in the UpdateToast card (mounted in AppLayout), not here.
+function AppVersion() {
+  const [version, setVersion] = useState<string>("…");
+  useEffect(() => {
+    let live = true;
+    getCachedAppVersion().then((v) => {
+      if (live) setVersion(v || "dev");
+    }).catch(() => {
+      if (live) setVersion("dev");
+    });
+    return () => { live = false; };
+  }, []);
+  return <>{version}</>;
+}
+
+function UpdateCheckRow() {
+  const [checking, setChecking] = useState(false);
+  const isDesktop = typeof window !== "undefined" && !!(window as unknown as { orplexDesktop?: unknown }).orplexDesktop;
+  if (!isDesktop) return null;
+  const check = async () => {
+    setChecking(true);
+    try {
+      await (window as unknown as {
+        orplexDesktop?: { updates?: { check?: () => Promise<unknown> } };
+      }).orplexDesktop?.updates?.check?.();
+    } catch {
+      /* results (or errors) surface in UpdateToast */
+    } finally {
+      setChecking(false);
+    }
+  };
+  return (
+    <div className="settings-actions" style={{ marginTop: 12 }}>
+      <button onClick={check} disabled={checking} className="settings-save-btn">
+        {checking ? "Checking..." : "Check for updates"}
+      </button>
+    </div>
+  );
+}
 
 interface UserKey {
   id: string;
@@ -986,7 +1030,7 @@ export default function SettingsPage() {
                   <div className="settings-about-grid">
                     <div className="settings-about-item">
                       <span className="settings-about-label">Version</span>
-                      <span className="settings-about-value">1.0.0</span>
+                      <span className="settings-about-value"><AppVersion /></span>
                     </div>
                     <div className="settings-about-item">
                       <span className="settings-about-label">Build</span>
@@ -1001,6 +1045,7 @@ export default function SettingsPage() {
                       <span className="settings-about-value">Multi-provider (Groq, Claude, Gemini, +9)</span>
                     </div>
                   </div>
+                  <UpdateCheckRow />
                 </div>
               </div>
             )}

@@ -17,6 +17,19 @@ const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
 function buildPrismaClient() {
   const DATABASE_URL = process.env.DATABASE_URL;
 
+  // Fail fast: a localhost DB URL can never work on a cloud host — it means
+  // laptop dev values leaked into production env (Vercel dashboard). Crash
+  // the boot loudly instead of serving 500s on every DB call.
+  if (
+    process.env.NODE_ENV === "production" &&
+    DATABASE_URL &&
+    /localhost|127\.0\.0\.1/.test(DATABASE_URL)
+  ) {
+    throw new Error(
+      "[prisma] DATABASE_URL points at localhost in production — set the Supabase pooler URL (Transaction mode, port 6543) in the host dashboard."
+    );
+  }
+
   // If using Supabase transactional pooler, append connection pool params
   // if they're not already in the URL
   if (DATABASE_URL && DATABASE_URL.includes("pooler.supabase.com") && !DATABASE_URL.includes("pgbouncer")) {

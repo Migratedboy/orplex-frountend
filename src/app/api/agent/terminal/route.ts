@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
+import { checkBurstLimit } from "@/lib/rate-limiter";
 import { isCommandAllowed } from "@/lib/exec-guard";
 import { TIMEOUTS, LIMITS } from "@/lib/constants";
 import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
@@ -11,6 +12,9 @@ export async function POST(request: NextRequest) {
     const userId = session?.user?.id;
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (!(await checkBurstLimit(userId).catch(() => false))) {
+      return NextResponse.json({ error: "Too many requests. Try again in about a minute." }, { status: 429, headers: { "Retry-After": "60" } });
     }
     if (process.env.AGENT_EXEC_DISABLED === "1") {
       return NextResponse.json({ error: "Command execution is disabled on this deployment (AGENT_EXEC_DISABLED=1)." }, { status: 403 });

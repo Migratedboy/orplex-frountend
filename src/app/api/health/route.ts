@@ -2,6 +2,7 @@
 // Returns basic status info without exposing sensitive details
 
 import { NextResponse } from "next/server";
+import { appVersion } from "@/lib/app-version";
 
 export async function GET() {
   const checks: Record<string, string> = {};
@@ -24,6 +25,8 @@ export async function GET() {
   return NextResponse.json(
     {
       status: healthy ? "healthy" : "degraded",
+      version: appVersion(),
+      minSupportedAppVersion: process.env.MIN_SUPPORTED_APP_VERSION || null,
       timestamp: new Date().toISOString(),
       uptime: Math.round(process.uptime()),
       checks,

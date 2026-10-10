@@ -31,10 +31,10 @@ export async function GET(request: NextRequest) {
     const id = request.nextUrl.searchParams.get("id");
 
     if (id) {
-      // Single conversation: one query
+      // Single conversation: one query (message list capped to avoid OOM on huge threads)
       const conversation = await prisma.conversation.findFirst({
         where: { id, userId: session.user.id },
-        include: { messages: { orderBy: { createdAt: "asc" } } },
+        include: { messages: { orderBy: { createdAt: "asc" }, take: 500 } },
       });
       return NextResponse.json({ conversation });
     }
@@ -42,10 +42,16 @@ export async function GET(request: NextRequest) {
     // Single efficient query: list conversations with only the latest message snippet.
     // Previously this also fetched the full latest conversation (all messages), which
     // was unused by the UI and caused unnecessary DB load on every page navigation.
+    // Capped + cursor-paginated to avoid OOM on accounts with many threads.
+    const limitRaw = request.nextUrl.searchParams.get("limit");
+    const limit = Math.min(Math.max(Number(limitRaw) || 50, 1), 100);
+    const cursor = request.nextUrl.searchParams.get("cursor");
     const conversations = await prisma.conversation.findMany({
       where: { userId: session.user.id },
       include: { messages: { take: 1, orderBy: { createdAt: "desc" } } },
       orderBy: { updatedAt: "desc" },
+      take: limit,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
     });
 
     // Clean the preview snippet so raw [THINKING]/status markers never leak

@@ -44,6 +44,41 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
   /** Packaged app version (package.json "version") for update detection. */
   getAppVersion: () =>
     ipcRenderer.invoke("orplex:app-version") as Promise<string>,
+  /**
+   * IN-APP UPDATES: user-consented download flow (available → downloading w/
+   * progress + cancel → downloaded → restart). All UI lives in the renderer
+   * (UpdateToast); main only checks/downloads/installs on explicit calls.
+   */
+  updates: {
+    check: () => ipcRenderer.invoke("orplex:update-check") as Promise<{ state: string; version?: string }>,
+    download: () => ipcRenderer.invoke("orplex:update-download") as Promise<{ state: string; version?: string }>,
+    cancel: () => ipcRenderer.invoke("orplex:update-cancel") as Promise<{ ok: boolean }>,
+    install: () => ipcRenderer.invoke("orplex:update-install") as Promise<{ ok: boolean }>,
+    /** update-status events from main (checking/available/downloading/downloaded/error). */
+    onStatus: (listener: (status: {
+      state: string;
+      version?: string;
+      notes?: string;
+      percent?: number;
+      bytesPerSecond?: number;
+      transferred?: number;
+      total?: number;
+      error?: string;
+    }) => void) => {
+      const wrapped = (_e: unknown, payload: {
+        state: string;
+        version?: string;
+        notes?: string;
+        percent?: number;
+        bytesPerSecond?: number;
+        transferred?: number;
+        total?: number;
+        error?: string;
+      }) => listener(payload);
+      ipcRenderer.on("orplex:update-status", wrapped);
+      return () => ipcRenderer.removeListener("orplex:update-status", wrapped);
+    },
+  },
   /** Reveal a workspace folder in the OS file manager (Projects menu). */
   revealPath: (path: string) =>
     ipcRenderer.invoke("orplex:reveal-path", path) as Promise<boolean>,

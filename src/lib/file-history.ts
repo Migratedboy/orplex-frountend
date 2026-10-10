@@ -1,12 +1,13 @@
-// File change history — tracks all writes for undo/rollback
+// LAYER 1 — working/session history. Tracks all writes for undo/rollback.
 //
 // Durability: the history mirrors itself into sessionStorage so the undo
 // safety net survives a page reload — the same survival model as the task
 // snapshot/restore in useChatSession. (Server-side persistence would be the
 // next step; sessionStorage keeps this module dependency-free and sync.)
 //
-// This is still NOT git. It is a bounded, best-effort snapshot buffer: 50
-// changes, quota-capped. For durable rollback, commit before agent runs.
+// This is still NOT git and NOT durable: a bounded, best-effort snapshot
+// buffer (50 changes, quota-capped) powering undo_last_change + the Changes
+// tab. Durable record lives in Layer 2 (workspace-history.ts).
 
 interface FileChange {
   path: string;

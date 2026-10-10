@@ -1,4 +1,15 @@
-// checkpoints.ts — Durable, restorable checkpoints for agent runs.
+// checkpoints.ts — LAYER 2 snapshots (durable-history snapshots, not a parallel system).
+//
+// History model (the only allowed end state):
+//   Layer 1 (working/session): file-history.ts — in-memory + sessionStorage, undo + Changes tab.
+//   Layer 2 (durable): workspace-history.ts — single append-only history.jsonl; every
+//     mutation is recorded with enough data to restore.
+//
+// Checkpoints are snapshots OF Layer 2's world: a git tree-commit in
+// refs/orplex/checkpoints/<runId>/<n> (or a file-copy snapshot for non-git
+// workspaces) PLUS the durable-history offset at capture time (historyLength).
+// Restore always records through the durable layer (one entry per restored
+// file), so checkpoint restore is itself undoable via /api/agent/history.
 //
 // Two kinds, chosen per workspace:
 //   git      — a tree-commit landed in refs/orplex/checkpoints/<runId>/<n>.
@@ -14,7 +25,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+import { appendHistory, readHistory } from "./workspace-history";
 
 export interface CheckpointFile {
   path: string;
@@ -29,6 +41,17 @@ export interface CheckpointResult {
   ref: string;         // git ref, or snapshot dir path
   label: string;
   files: CheckpointFile[];
+  /** Durable-history (Layer 2) entry count at capture — the snapshot's offset into history.jsonl. */
+  historyLength: number;
+}
+
+/** Current Layer-2 offset for a workspace root. -1 when unreadable (never throws). */
+export async function layer2Offset(root: string): Promise<number> {
+  try {
+    return (await readHistory(root)).length;
+  } catch {
+    return -1;
+  }
 }
 
 const MAX_PER_RUN = 20;
@@ -127,7 +150,7 @@ export async function createCheckpointGit(
     const commit = (await git(root, commitArgs)).trim();
     const ref = `refs/orplex/checkpoints/${runId}/${n}`;
     await git(root, ["update-ref", ref, commit]);
-    return { id: `${runId}:${n}`, n, kind: "git", ref, label, files };
+    return { id: `${runId}:${n}`, n, kind: "git", ref, label, files, historyLength: await layer2Offset(root) };
   } finally {
     await rm(tmpIdx, { force: true }).catch(() => {});
   }
@@ -161,14 +184,19 @@ export async function createCheckpointSnapshot(
     const s = await stat(f.abs).catch(() => null);
     if (!s || !s.isFile()) continue;
     if (bytes + s.size > MAX_TOTAL_BYTES) break; // budget guard
+    // Containment (defense in depth — callers gate too): the copy destination
+    // must stay inside the snapshot dir.
     const dest = join(dir, f.path);
+    const resolvedDest = resolve(dest);
+    const resolvedDir = resolve(dir);
+    if (resolvedDest !== resolvedDir && !resolvedDest.startsWith(resolvedDir + sep)) continue;
     await mkdir(dirname(dest), { recursive: true });
     await copyFile(f.abs, dest);
     manifest.push({ path: f.path, sha256: await sha256File(dest) });
     bytes += s.size;
   }
-  await writeFile(join(dir, "manifest.json"), JSON.stringify({ runId, n, label, at: Date.now(), files, copied: manifest }, null, 1), "utf8");
-  return { id: `${runId}:${n}`, n, kind: "snapshot", ref: dir, label, files };
+  await writeFile(join(dir, "manifest.json"), JSON.stringify({ runId, n, label, at: Date.now(), files, copied: manifest, historyLength: await layer2Offset(root) }, null, 1), "utf8");
+  return { id: `${runId}:${n}`, n, kind: "snapshot", ref: dir, label, files, historyLength: await layer2Offset(root) };
 }
 
 /** List checkpoints for a run (git kind). */
@@ -215,6 +243,11 @@ export async function listCheckpointsSnapshot(root: string, runId: string): Prom
  * Restore a git checkpoint: first record an inverse snapshot of the current
  * tree (so restore is undoable), then checkout the ref's tree into the
  * working tree — index and ref namespace stay intact.
+ *
+ * Layer-2 rule: every restored file is ALSO appended to the durable history
+ * (prev = pre-restore content from the inverse commit, next = restored
+ * content), so the restore itself can be undone via /api/agent/history.
+ * History writes are best-effort per file — they never fail the restore.
  */
 export async function restoreCheckpointGit(root: string, ref: string, runId: string): Promise<CheckpointResult> {
   // Inverse: snapshot what the tree looks like NOW.
@@ -229,9 +262,29 @@ export async function restoreCheckpointGit(root: string, ref: string, runId: str
       after: null, // filled by caller when it matters
     });
   }
-  await createCheckpointGit(root, `${runId}-restore-inverse`, `inverse of restore ${ref}`, files);
+  const inverse = await createCheckpointGit(root, `${runId}-restore-inverse`, `inverse of restore ${ref}`, files);
   await git(root, ["checkout", ref, "--", "."]);
-  return { id: `restore:${ref}`, n: -1, kind: "git", ref, label: "restore", files };
+  // Through the durable layer: prev from the inverse commit, next from disk.
+  const restored = await git(root, ["ls-tree", "-r", "--name-only", ref]).catch(() => "");
+  const touched = new Set([...files.map((f) => f.path), ...restored.split("\n").map((s) => s.trim()).filter(Boolean)]);
+  let i = 0;
+  for (const p of touched) {
+    if (i++ >= 100) break; // cap: history is a safety net, not a full mirror
+    try {
+      const prev = await git(root, ["show", `${inverse.ref}:${p}`]).catch(() => null);
+      const next = await readFile(join(root, p), "utf8").catch(() => null);
+      if (next === null && prev === null) continue;
+      await appendHistory(root, {
+        path: p,
+        prev: prev === null ? null : String(prev).slice(0, 200_000),
+        next: next === null ? "" : String(next).slice(0, 200_000),
+        peer: "restore",
+      });
+    } catch {
+      /* per-file best-effort */
+    }
+  }
+  return { id: `restore:${ref}`, n: -1, kind: "git", ref, label: "restore", files, historyLength: await layer2Offset(root) };
 }
 
 /** Convenience wrapper: create the right kind for this workspace. */
@@ -240,8 +293,7 @@ export async function createCheckpoint(
   runId: string,
   label: string,
   changed: Array<{ path: string; abs: string; created: boolean }>
-): Promise<CheckpointResult> {
-  if (await isGitRepo(root)) {
+): Promise<CheckpointResult> {  if (await isGitRepo(root)) {
     const wt = await workingTreeFiles(root);
     const files: CheckpointFile[] = [];
     for (const f of wt) {
@@ -258,5 +310,12 @@ export async function createCheckpoint(
   const files: CheckpointFile[] = changed.map((c) => ({ path: c.path, before: null, after: null }));
   return createCheckpointSnapshot(root, runId, label, changed, files);
 }
+
+/**
+ * snapshotLayer2 — the only allowed checkpoint constructor going forward.
+ * Same mechanism as createCheckpoint (kept for its callers/tests); the alias
+ * makes the Layer-2 framing explicit at new call sites.
+ */
+export const snapshotLayer2 = createCheckpoint;
 
 export { MAX_PER_RUN, MAX_TOTAL_BYTES };

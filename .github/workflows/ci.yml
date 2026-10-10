@@ -40,6 +40,12 @@ jobs:
       - name: API wiring audit
         run: npm run audit
 
+      - name: Env check (.env.example stays the complete spec)
+        run: npm run env:check
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/orplex_test
+          NEXTAUTH_SECRET: test-secret-ci-only
+
   # ──────────────────────────────────────────────────────────────────
   # Tests (unit + integration, with coverage)
   # ──────────────────────────────────────────────────────────────────

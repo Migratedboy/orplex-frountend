@@ -26,11 +26,20 @@ function iconPath(): string {
   // Orplex logo in the tray/system area. Prefer the 32px render (crisper on
   // HiDPI taskbars than the old 16px), fall back to the 16px, then to an
   // empty image (Electron uses its default) rather than crashing.
+  // Probes dev layout (electron-dist/../electron/assets) AND packaged layout
+  // (app.asar/electron/assets) — tray.png must ship in builder `files`.
   const fs = require("fs");
   try {
-    for (const name of ["icon32.png", "tray.png"]) {
-      const p = join(__dirname, "assets", name);
-      if (fs.existsSync(p)) return p;
+    const bases = [
+      join(__dirname, "assets"),
+      join(__dirname, "..", "electron", "assets"),
+      join(process.resourcesPath || "", "app.asar", "electron", "assets"),
+    ];
+    for (const base of bases) {
+      for (const name of ["icon32.png", "tray.png"]) {
+        const p = join(base, name);
+        if (p && fs.existsSync(p)) return p;
+      }
     }
     return "";
   } catch {

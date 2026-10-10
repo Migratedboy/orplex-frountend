@@ -169,8 +169,18 @@ export async function dispatchSandbox(command: string, opts?: { timeoutMs?: numb
   if (!zipRes?.ok) {
     return { stdout: "", stderr: "Failed to download sandbox artifact", exitCode: 1, source: "ci-sandbox", runUrl: run.html_url };
   }
+  // Pre-decompression cap: check Content-Length + raw bytes before inflating.
+  const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
+  const contentLength = Number(zipRes.headers.get("content-length") || 0);
+  if (contentLength > MAX_ARTIFACT_BYTES) {
+    return { stdout: "", stderr: "Sandbox artifact too large", exitCode: 1, source: "ci-sandbox", runUrl: run.html_url };
+  }
+  const zipBytes = await zipRes.arrayBuffer();
+  if (zipBytes.byteLength > MAX_ARTIFACT_BYTES) {
+    return { stdout: "", stderr: "Sandbox artifact too large", exitCode: 1, source: "ci-sandbox", runUrl: run.html_url };
+  }
   const JSZip = (await import("jszip")).default;
-  const zip = await JSZip.loadAsync(await zipRes.arrayBuffer());
+  const zip = await JSZip.loadAsync(zipBytes);
   const stdout = (await zip.file("stdout.txt")?.async("string")) || "";
   const stderr = (await zip.file("stderr.txt")?.async("string")) || "";
   const exitRaw = (await zip.file("exit-code.txt")?.async("string")) || "";

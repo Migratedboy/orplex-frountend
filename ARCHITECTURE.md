@@ -161,7 +161,13 @@ IPC — the full op set: `browser_navigate`, `browser_read`, `browser_find`,
 ## 4. Streaming Agent Chat + Tool Loop
 
 `background-worker.ts` runs the tool-calling loop client-side as a background
-singleton (survives navigation/reload via `background-chat.ts` snapshots):
+singleton (survives navigation/reload via `background-chat.ts` snapshots).
+Both execution modes (this worker + the claimed server executor in
+`server-executor/executor.ts`) import their shared tool-loop logic from ONE
+place — `src/lib/agent/contract/` (tool arg rules, risk tiers, loop
+detection, scratchpad, browser backends, result formatting). Neither loop
+re-implements tool logic; backends (Electron IPC, Playwright) plug in at the
+edges.
 
 - **Context building** (`context-builder.ts`, `client-signatures.ts`): M3-aware
   workspace context — full contents for small repos, signature tiers for large.
@@ -232,21 +238,22 @@ instead of hanging.
   lanes for claimed runs (see §8), plus auto-checkpointing, tool-hooks, MCP,
   and review artifacts.
 
-## 7. Files: Undo, Checkpoints, Worktrees
+## 7. Files: History (exactly two layers) + Checkpoints as Snapshots
 
-- **Session undo**: `file-history.ts` (50-entry snapshots, sessionStorage
-  mirror) powers `undo_last_change` and the Changes tab.
-- **Hunk-level review**: `diff-hunks.ts` + `DiffView` — accept/reject
-  individual hunks; rejections roll back via file history.
-- **Durable history**: `workspace-history.ts` appends every change to
+- **Layer 1 — working/session history**: `file-history.ts` (50-entry snapshots,
+  sessionStorage mirror) powers `undo_last_change` and the Changes tab.
+  Short-lived, UI-facing.
+- **Layer 2 — durable history**: `workspace-history.ts` appends every change to
   `<workspace>/.orplex/history.jsonl`; `/api/agent/history` GET/PUT undo
-  survives tabs, days, and machines.
-- **Checkpoints**: `checkpoints.ts` + `auto-checkpoint.ts` — before first
-  mutating write per file, a restorable snapshot (git tree-commit under
-  `refs/orplex/checkpoints/<runId>/<n>` or shadow-clone JSON), with
-  cooldown/count/byte caps for laptop budgets. Restore records an inverse
-  snapshot, so restore is itself undoable. `checkpoint-sync.ts` pushes ONLY
-  the checkpoint namespace to the workspace's own remote (opt-in).
+  survives tabs, days, and machines. Path containment enforced (`safeJoinWorkspace`).
+- **Checkpoints are snapshots OF Layer 2, not a parallel system**:
+  `checkpoints.ts` + `auto-checkpoint.ts` — before first mutating write per
+  file, a restorable snapshot (git tree-commit under
+  `refs/orplex/checkpoints/<runId>/<n>` or shadow-clone JSON) that records its
+  Layer-2 offset (`historyLength`); restore appends inverse entries to the
+  durable history, so restore is itself undoable via `/api/agent/history`.
+  `checkpoint-sync.ts` pushes ONLY the checkpoint namespace to the workspace's
+  own remote (opt-in).
 - **Parallel workspaces**: `parallel-workspaces/index.ts` + `server-executor/
   worktree.ts` — each agent task gets its own git worktree (or directory
   copy); `merge/crdt.ts` is a line-level CRDT (peerId+lamport identities,
@@ -278,18 +285,25 @@ instead of hanging.
   with a `/verify` endpoint for tamper checks.
 - **Worktrees/merge**: `/api/agent/runs/[id]/merge` previews/applies merges.
 
-## 9. Memory Systems (layered)
+## 9. Memory (exactly three permanent buckets + one ephemeral scratchpad)
 
-| Layer | File | Purpose |
+All writes go through the tiny API in `memory.ts` (`remember`,
+`record_failure`, `update_scratchpad`, `captureFromCompaction`,
+`postRunToLedger`); readers query the same buckets. No lane touches memory
+tables directly.
+
+| Bucket | File | Purpose |
 |---|---|---|
-| Project memory | `project-memory.ts` | User-owned `orplex.md` hierarchy injected into system prompts (CLAUDE.md parity), token-disciplined |
-| Workspace learnings | `workspace-memory.ts` (+client) | Evidence-backed memories derived server-side from completed runs; score-based retrieval (path overlap + recency); `/remember <fact>` pinning; forget API |
-| Eviction capture | `compaction-memory.ts` | Durable facts lifted from compaction summaries — zero extra model calls |
-| Failure memory | `failure-memory.ts` | Cross-turn/cross-task record of real failures feeding the doctrine |
-| Run ledger | `run-ledger.ts` | Browser client over Postgres (`task_runs`/`task_failures`) — learning survives restarts |
-| Semantic cache | `semantic-cache.ts` | Very similar past tasks offered as reference context |
-| Playbook | `playbook.ts` | Learning loop: derive patterns from completed runs, merge into searchable playbooks, inject into prompts via `## PLAYBOOK` section (server-only, gated) |
-| Vector/eval memory | `eval/` | (Earlier RAG/pgvector/sona façades were removed and replaced by workspace-memory.) |
+| Project instructions | `project-memory.ts` | User-owned `orplex.md` hierarchy injected into system prompts (CLAUDE.md parity), token-disciplined |
+| Workspace learnings | `workspace-memory.ts` (+client) | Evidence-backed memories derived server-side from completed runs; score-based retrieval (path overlap + recency); `/remember <fact>` pinning; forget API; eviction capture folded in here |
+| Run / failure ledger | `run-ledger.ts` (persistent client) + `failure-memory.ts` (session doctrine) | What actually failed and why; learning survives restarts |
+| Scratchpad (ephemeral) | `scratchpad.ts` | Current plan / hypotheses / findings / next — per-task only, never persisted |
+
+Folded away (no parallel stores): `compaction-memory.ts` is a re-export shim
+over the learnings bucket; the playbook is a derived view (search reads
+playbooks + learnings together, executor `playbook_search` merges both);
+`semantic-cache.ts` is deprecated with zero callers (similar tasks surface via
+learnings + ledger). `memory-note.ts` probes local RAM for failure annotation.
 
 ## 10. Models & Providers
 
@@ -556,14 +570,16 @@ create/destroy/merge); users' own API keys per provider; quotas per tier.
 | `master-prompt.ts` | Single source of truth for every system prompt + doctrines |
 | `tool-definitions.ts` | OpenAI function schemas for all tools |
 | `tool-handlers.ts` | Extracted tool handlers |
-| `agent/native-tools.ts` | Tool dispatch incl. browser_* backends |
+| `agent/native-tools.ts` | Tool dispatch via the shared contract (+ Electron IPC transport) |
+| `agent/contract/` | THE shared tool-loop contract: `tools` (arg rules), `risk`, `loop`, `scratchpad`, `browser` (one op set, Electron + Playwright backends, one result formatter), `results`, `index` barrel — used by both execution modes |
+| `memory.ts` | Tiny memory API (all writes go through here — see §9) |
 | `agent/file-ops.ts` | Audited write/edit path |
 | `agent/serve-helpers.ts` | Server-command detection, port-conflict hints |
 | `agent/runtime/*` | Run scheduler + service (claiming, sweeping) |
 | `context-builder.ts` | M3 context windows (full vs tiered) |
 | `client-signatures.ts` | Regex signature extraction for context |
 | `compaction.ts` | Transcript compaction under TPM budget |
-| `compaction-memory.ts` | Facts captured from evictions |
+| `compaction-memory.ts` | SHIM — re-exports eviction capture from the learnings bucket (no separate store) |
 | `failure-memory.ts` | Adaptive failure doctrine state |
 | `run-ledger.ts` | Persistent run/failure ledger client |
 | `scratchpad.ts` | Agent private working memory (plan/hypotheses/findings/next), re-shown every turn |
@@ -589,6 +605,7 @@ create/destroy/merge); users' own API keys per provider; quotas per tier.
 | File | Purpose |
 |---|---|
 | `strategy-router.ts` | Deterministic strategy pick + all 5 strategies (replaced sparc/tot/swarm/blueprint/m3-client) |
+| `semantic-cache.ts` | DEPRECATED — zero callers (learnings + ledger cover it); exports kept for tests, scheduled for deletion |
 | `model-router.ts` | 3-tier task→model routing |
 | `semantic-cache.ts` | Similar-task response cache |
 | `cost-estimator.ts` | Pre-run cost estimation |
@@ -785,8 +802,10 @@ UI writes detected → pick dev command → free-port check (4310)
   HunkDecisions → Conversation → QueueRunner → AppLayout.
 - **Everything budgeted**: TPM pacer (global), compaction, prompt profiles,
   checkpoint caps, janitor — the 8GB/free-tier machine is the target.
-- **Two loops, one contract**: browser worker and server executor share tool
-  semantics, lanes, memory, and board events.
+- **Two loops, one contract**: interactive client worker and claimed server
+  executor share `src/lib/agent/contract/` (tool schemas/rules, risk, loop
+  detection, scratchpad, browser backends, result formatting) — no
+  re-implemented tool logic on either side.
 - **Honest failures**: every lane surfaces infrastructure-failure distinctly
   from app failure; no silent degradation.
 - **Same-origin API, cloud handlers**: the browser only ever calls `/api/*`

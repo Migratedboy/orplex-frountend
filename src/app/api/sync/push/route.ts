@@ -9,6 +9,7 @@ import { prisma } from "@/lib/prisma";
 import {
   decodeEnvelope,
   verifySignature,
+  MAX_SYNC_COMPRESSED_BYTES,
   MAX_SYNC_ENTRIES_PER_PULL,
 } from "@/lib/sync-transport";
 
@@ -27,6 +28,10 @@ export async function POST(request: NextRequest) {
     const raw = Buffer.from(await request.arrayBuffer());
     if (raw.length === 0) {
       return NextResponse.json({ error: "Empty body" }, { status: 400 });
+    }
+    // Reject oversized compressed payloads BEFORE decompression (gzip bomb guard).
+    if (raw.length > MAX_SYNC_COMPRESSED_BYTES) {
+      return NextResponse.json({ error: "Sync bundle too large" }, { status: 413 });
     }
 
     const signature = request.headers.get("X-Orplex-Sync-Signature") || "";

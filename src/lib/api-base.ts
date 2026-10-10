@@ -11,6 +11,8 @@
 // Browser-only by design: server-internal callers (executor, route-to-route)
 // must keep relative paths — they run where the API lives.
 
+import { handleVersionedResponse } from "./update-state";
+
 export const API_BASE: string = (() => {
   const raw = process.env.NEXT_PUBLIC_API_BASE_URL || "";
   return raw.trim().replace(/\/+$/, "");
@@ -43,11 +45,43 @@ export interface ApiFetchInit extends RequestInit {
 export async function apiFetch(path: string, init: ApiFetchInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   if (!headers.has("X-Requested-With")) headers.set("X-Requested-With", "fetch");
+  // Version handshake: desktops identify their build so the backend can
+  // answer 426 when the client is below the supported floor. Cached per page
+  // load; absent outside Electron (browser preview) — server allows no-header.
+  if (typeof window !== "undefined" && !headers.has("X-Orplex-App-Version")) {
+    try {
+      const v = await getCachedAppVersion();
+      if (v) headers.set("X-Orplex-App-Version", v);
+    } catch {
+      /* version header is best-effort — never break the call */
+    }
+  }
   return fetch(withApiBase(path), {
     ...init,
     headers,
     credentials: init.credentials ?? "include",
   });
+}
+
+let cachedAppVersion: string | null | undefined;
+/**
+ * Resolve the packaged app version once per page load (Electron only).
+ * Only truthy versions are cached — a transient bridge failure must not
+ * pin `null` for the whole session (that would silently disable the 426
+ * handshake until reload).
+ */
+export async function getCachedAppVersion(): Promise<string | null> {
+  if (cachedAppVersion) return cachedAppVersion;
+  try {
+    const v = (await window.orplexDesktop?.getAppVersion?.()) || null;
+    if (typeof v === "string" && v) {
+      cachedAppVersion = v;
+      return v;
+    }
+  } catch {
+    /* best-effort — retry on next call */
+  }
+  return null;
 }
 
 /**
@@ -62,6 +96,8 @@ export async function apiJson<T = unknown>(
     const res = await apiFetch(path, init);
     const isJson = (res.headers.get("content-type") || "").includes("application/json");
     const data = isJson ? await res.json().catch(() => null) : null;
+    // Stale-client handshake: a 426 flips the update card to mandatory.
+    if (res.status === 426) handleVersionedResponse(res.status, data);
     if (res.ok) return { ok: true, status: res.status, data: data as T, error: null };
     const message =
       (data as { error?: { message?: string } | string } | null)?.error &&

@@ -36,7 +36,8 @@ export const MAX_SAME_TURN = 3; // identical multi-call turn this many turns in 
 // Read-only tools: exempt from the same-tool streak (never extend, never
 // reset). Everything else — writes, commands, browser interactions,
 // searches with side effects, scratchpad/todo spam — counts.
-const READ_ONLY_TOOLS = new Set([
+// Exported: the single read-only set shared via agent/contract (no rival sets).
+export const READ_ONLY_TOOLS = new Set([
   "read_file",
   "list_files",
   "search_code",

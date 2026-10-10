@@ -65,7 +65,9 @@ export async function POST(request: Request) {
     response.cookies.set("__Secure-next-auth.session-token", token, { ...base, secure: true });
     return response;
   } catch (error) {
-    console.error("[Desktop auth] exchange failed:", error);
+    // Never log the full error object — it can contain the bearer code (in
+    // request URLs) and DB internals. Message prefix only.
+    console.error("[Desktop auth] exchange failed:", error instanceof Error ? error.message.slice(0, 200) : "unknown");
     return NextResponse.json({ error: "Failed to create the desktop session" }, { status: 500 });
   }
 }

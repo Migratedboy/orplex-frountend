@@ -6,11 +6,11 @@
  *     the main loop, which then reviews/refines; auto-verification passes.
  *  2. The structured review lane with negative consensus feeds one model
  *     repair turn.
- *  3. Semantic cache: a past similar task is offered as context (hint only).
+ *  3. Finished runs are recorded to the run ledger (the permanent bucket) —
+ *     the removed semantic-cache hint lane has no callers and asserts nothing.
  */
 import { runInBackground, setFileSystemAccess } from "../background-worker";
 import { getCurrentTask, abortCurrentTask } from "../background-chat";
-import { cacheResponse } from "../semantic-cache";
 import { waitFor } from "./helpers";
 
 const toolCallChunk = (call: object) =>
@@ -207,26 +207,20 @@ describe("orchestration wiring (code mode)", () => {
     expect(display).toMatch(/repairing/i);
   });
 
-  it("offers a cached prior task as reference context (hint only)", async () => {
-    // Seed the cache with a strong match for the incoming message.
-    cacheResponse(
-      "fix the login authentication flow and resolve the auth issue",
-      "PAST RESULT: patched src/auth.ts and it worked.",
-      ["src/auth.ts"]
-    );
-
-    let sawCacheContext = false;
+  it("records the finished run to the ledger (permanent bucket)", async () => {
+    let ledgerPosts = 0;
     global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/chat")) {
         chatFetchCount++;
-        const body = JSON.parse(String(init?.body));
-        const lastMsg = body.messages?.[body.messages.length - 1]?.content || "";
-        if (lastMsg.includes("[CACHED CONTEXT]")) sawCacheContext = true;
         if (chatFetchCount === 1) {
           return streamOnce([textChunk("Done."), doneChunk()]);
         }
         return streamOnce([textChunk("ok"), doneChunk()]);
+      }
+      if (url.includes("/api/agent/history") && init?.method === "POST") {
+        ledgerPosts++;
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       if (url.includes("/api/agent/exec")) {
         execCount++;
@@ -247,7 +241,8 @@ describe("orchestration wiring (code mode)", () => {
 
     const task = getCurrentTask();
     expect(task?.status).toBe("done");
-    expect(sawCacheContext).toBe(true);
+    // The finished run reached the persistent ledger (run/failure bucket).
+    expect(ledgerPosts).toBeGreaterThan(0);
     // Nothing was written (text-only reply), so no self-review/recheck turns follow.
     expect(chatFetchCount).toBe(1);
   });

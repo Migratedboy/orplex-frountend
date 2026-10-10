@@ -28,9 +28,31 @@ async function tryAdvisoryLock(lockId: number): Promise<boolean> {
 }
 
 /**
- * Start the daily reset cron.
+ * Run one daily-reset cycle now: acquire the advisory lock, reset counters,
+ * record runtime state. Shared by the in-process timer (desktop/long-lived
+ * hosts) and the HTTP cron route (serverless — Vercel Cron hits
+ * /api/cron/reset with the CRON_SECRET bearer).
+ * Returns { ran } — false when another instance holds the lock.
+ */
+export async function runDailyReset(): Promise<{ ran: boolean }> {
+  const acquired = await tryAdvisoryLock(7777);
+  if (!acquired) {
+    console.log("[cron] Another instance holds the lock — skipping daily reset.");
+    return { ran: false };
+  }
+  console.log("[cron] Resetting daily usage counters...");
+  await resetDailyCounts();
+  console.log("[cron] Daily reset complete.");
+  recordRuntimeLog("cron", "info", "daily usage counter reset complete");
+  runtimeState.cron.lastResetAt = new Date().toISOString();
+  return { ran: true };
+}
+/**
+ * Start the daily reset cron (in-process timer).
  * Runs at midnight UTC to reset all usage counters.
  * Uses PostgreSQL advisory lock to prevent double-runs in multi-instance deployments.
+ * NOTE: on serverless (Vercel) timers don't survive between invocations — use
+ * the /api/cron/reset HTTP route via Vercel Cron Jobs instead.
  */
 export function startDailyResetCron(): void {
   if (cronStarted) return;
@@ -50,17 +72,7 @@ export function startDailyResetCron(): void {
     runtimeState.cron.nextResetAt = new Date(Date.now() + delay).toISOString();
     setTimeout(async () => {
       try {
-        // Only one instance in a multi-instance deployment runs the reset
-        const acquired = await tryAdvisoryLock(7777);
-        if (!acquired) {
-          console.log("[cron] Another instance holds the lock — skipping daily reset.");
-        } else {
-          console.log("[cron] Resetting daily usage counters...");
-          await resetDailyCounts();
-          console.log("[cron] Daily reset complete.");
-          recordRuntimeLog("cron", "info", "daily usage counter reset complete");
-          runtimeState.cron.lastResetAt = new Date().toISOString();
-        }
+        await runDailyReset();
       } catch (err) {
         console.error("[cron] Daily reset failed:", err);
         recordRuntimeLog("cron", "error", `daily reset failed: ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`);

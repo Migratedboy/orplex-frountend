@@ -392,4 +392,55 @@ export async function forgetMemory(id: string, workspaceKey: string): Promise<bo
   return !!res && res.count > 0;
 }
 
+/**
+ * Eviction capture — folded here from the former compaction-memory.ts store.
+ * When the transcript outgrows budget, compaction summarizes the evicted
+ * prefix; that summary already holds distilled facts, so 1-3 durable
+ * learnings are captured into THIS bucket at zero extra model cost.
+ * There is no separate compaction store: extract + capture live here.
+ */
+
+/** Extract candidate facts from a compaction summary. Pure, deterministic. */
+export function extractEvictionFacts(summary: string): string[] {
+  const facts: string[] = [];
+  const lines = summary.split(/\r?\n/).map((l) => l.trim());
+  for (const line of lines) {
+    if (facts.length >= 3) break;
+    // Decision/pitfall markers the compaction prompt encourages.
+    const decision = /^(?:[-*]\s*)?(?:decision|chose|decided|use|prefer)\b/i.test(line);
+    const pitfall = /^(?:[-*]\s*)?(?:avoid|never|do not|don't|fails|error|pitfall)\b/i.test(line);
+    if (!decision && !pitfall) continue;
+    // Length-check the STORED fact (prefix stripped), not the raw line.
+    const fact = line.replace(/^[-*]\s*/, "").slice(0, 400);
+    if (fact.length < 25 || fact.length > 400) continue;
+    facts.push(fact);
+  }
+  return facts;
+}
+
+/**
+ * Fire-and-forget capture from a compaction summary. Best-effort: any DB
+ * error is swallowed — memory must never break a run.
+ */
+export async function captureFromCompaction(opts: {
+  directoryName: string;
+  summary: string;
+}): Promise<number> {
+  if (!opts.summary || opts.summary.length < 60) return 0;
+  const facts = extractEvictionFacts(opts.summary);
+  if (facts.length === 0) return 0;
+  try {
+    return await captureWorkspaceMemories({
+      workspaceKey: getWorkspaceKey(opts.directoryName),
+      task: "auto-captured from compacted context",
+      writtenFiles: {},
+      lanes: {},
+      finalStatus: "done",
+      acceptedSuggestions: facts,
+    });
+  } catch {
+    return 0;
+  }
+}
+
 export { getWorkspaceKey };

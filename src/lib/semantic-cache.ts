@@ -1,13 +1,12 @@
 /**
- * semantic-cache.ts — Agentic Semantic Caching
- * 
- * Caches AI responses based on semantic meaning, not exact text.
- * "fix login bug" and "resolve auth issue" hit the same cache entry.
- * 
- * Benefits:
- * - 80% cost reduction on repeated/similar queries
- * - 3-5x faster response time for cached queries
- * - M3 skips tool calls for known patterns
+ * semantic-cache.ts — DEPRECATED (consolidation).
+ *
+ * No execution lane calls this module anymore: similar past tasks are
+ * surfaced through the workspace-learnings bucket + run ledger (the
+ * permanent memory buckets), not a fourth mechanism. The exports stay
+ * functional so existing unit tests (orchestration-wiring) keep passing.
+ * Scheduled for deletion once the tests migrate to the ledger assertions.
+ * Do NOT add new callers.
  */
 
 // Client-safe id: the worker bundle (browser) imports this module — Node's

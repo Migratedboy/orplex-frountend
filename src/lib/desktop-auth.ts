@@ -15,7 +15,7 @@ export interface DesktopAuthCode {
   session?: { id: string; name?: string | null; email?: string | null; image?: string | null };
 }
 
-const TTL_MS = 10 * 60_000;
+const TTL_MS = 5 * 60_000;
 
 /** Initiator-binding cookie name (minted at start, verified at finish). */
 export const DESKTOP_FLOW_COOKIE = "orplex_desktop_flow";

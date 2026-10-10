@@ -8,6 +8,7 @@ import {
   findUndoTarget,
   inverseOf,
   machineId,
+  safeJoinWorkspace,
 } from "@/lib/workspace-history";
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -33,6 +34,18 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   if (!body || typeof body.path !== "string" || typeof body.next !== "string") {
     return NextResponse.json({ success: false, error: "path and next required" }, { status: 400 });
+  }
+  // Enforce request cap (MAX_BODY_BYTES) — JSON-stringified size.
+  try {
+    if (JSON.stringify(body).length > MAX_BODY_BYTES) {
+      return NextResponse.json({ success: true, recorded: false, reason: "too-large" });
+    }
+  } catch {
+    return NextResponse.json({ success: false, error: "invalid body" }, { status: 400 });
+  }
+  // Containment: reject paths escaping the workspace root.
+  if (!safeJoinWorkspace(root, body.path)) {
+    return NextResponse.json({ success: false, error: "path escapes workspace" }, { status: 403 });
   }
   if (body.next.length > 400_000 || (body.prev != null && body.prev.length > 400_000)) {
     return NextResponse.json({ success: true, recorded: false, reason: "too-large" });
@@ -79,11 +92,22 @@ export async function PUT(request: NextRequest) {
   if (!body || typeof body.path !== "string") {
     return NextResponse.json({ success: false, error: "path required" }, { status: 400 });
   }
+  try {
+    if (JSON.stringify(body).length > MAX_BODY_BYTES) {
+      return NextResponse.json({ success: false, error: "request too large" }, { status: 413 });
+    }
+  } catch {
+    return NextResponse.json({ success: false, error: "invalid body" }, { status: 400 });
+  }
+  const safePath = safeJoinWorkspace(root, body.path);
+  if (!safePath) {
+    return NextResponse.json({ success: false, error: "path escapes workspace" }, { status: 403 });
+  }
 
   const entries = await readHistory(root);
   let current: string | null = null;
   try {
-    current = await readFile(`${root}/${body.path}`, "utf8");
+    current = await readFile(safePath, "utf8");
   } catch {
     current = null;
   }
@@ -96,7 +120,11 @@ export async function PUT(request: NextRequest) {
   if (target.prev === null) {
     return NextResponse.json({ success: true, action: "delete-file", path: target.path });
   }
-  await writeFile(`${root}/${target.path}`, target.prev, "utf8");
+  const targetFull = safeJoinWorkspace(root, target.path);
+  if (!targetFull) {
+    return NextResponse.json({ success: false, error: "stored path escapes workspace" }, { status: 403 });
+  }
+  await writeFile(targetFull, target.prev, "utf8");
   await appendHistory(root, inverseOf(target, machineId()));
   return NextResponse.json({ success: true, action: "restored", path: target.path, content: target.prev });
 }

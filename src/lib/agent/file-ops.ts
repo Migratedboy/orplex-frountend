@@ -6,7 +6,6 @@
 
 import { recordChange } from "../file-history";
 import { virtualFS } from "../virtual-fs";
-import { invalidateByFileChange } from "../semantic-cache";
 import type { ToolCall } from "../stream-reader";
 
 export interface FileOpsFs {
@@ -61,10 +60,6 @@ export async function writeFileAudited(
     counters.setTotalWrites(counters.getTotalWrites() + 1);
     counters.setFilesChanged(counters.getTotalWrites());
     counters.writtenFiles.set(path, content);
-    // A changed file invalidates cached answers derived from its old
-    // content — otherwise the semantic cache serves stale hints. The cache
-    // must never break a write, so failures are swallowed.
-    try { invalidateByFileChange(path); } catch {}
   }
   return ok;
 }
@@ -89,7 +84,6 @@ export async function editFileAudited(
       const after = await fs.readFile(path).catch(() => null);
       if (after && !after.startsWith("[Error")) counters.writtenFiles.set(path, after);
     }
-    try { invalidateByFileChange(path); } catch {}
   }
   return ok;
 }

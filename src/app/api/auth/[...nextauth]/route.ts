@@ -14,6 +14,13 @@ async function resilientHandler(
   try {
     return await handler(req, ctx);
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Config errors (missing secret, bad provider) must surface as 500 so
+    // deploys alert — only DB-connectivity outages get the empty-session fallback.
+    if (/secret|configuration|clientid|client_secret|provider/i.test(msg)) {
+      console.error("[NextAuth] Configuration error — refusing to mask as empty session:", err);
+      return NextResponse.json({ error: "Auth misconfigured" }, { status: 500 });
+    }
     console.error("[NextAuth] Handler error (DB unreachable?)", err);
     // Return empty session so client doesn't get HTML parser error
     return NextResponse.json({}, { status: 200 });

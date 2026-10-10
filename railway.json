@@ -6,7 +6,7 @@
     "watchPatterns": ["src/**"]
   },
   "deploy": {
-    "startCommand": "npx prisma db push --skip-generate && next start",
+    "startCommand": "npx prisma migrate deploy && next start",
     "healthcheckPath": "/api/health",
     "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE",

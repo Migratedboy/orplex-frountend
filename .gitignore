@@ -10,7 +10,7 @@ out/
 # Environment variables (NEVER commit these)
 .env
 .env.local
-.env.*!.env.example
+!.env.example
 
 # Build output
 dist/
@@ -96,3 +96,5 @@ service-account*.json
 .env-backups/
 .vercel
 .env*
+# Negation must come AFTER the .env* rule (last-match-wins).
+!.env.example

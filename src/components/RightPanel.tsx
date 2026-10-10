@@ -19,11 +19,12 @@ class TabErrorBoundary extends Component<{ children: ReactNode; tab: string }, {
   }
   render() {
     if (this.state.error) {
+      const showStack = process.env.NODE_ENV !== "production";
       return (
         <div className="rp-empty" style={{ padding: 16 }}>
           <div style={{ color: '#ef4444', marginBottom: 8, fontWeight: 600 }}><span className="ms">warning</span> Tab error</div>
-          <div style={{ fontSize: 12, color: '#666', marginBottom: 8, wordBreak: 'break-word' }}>{this.state.error}</div>
-          {this.state.errorInfo && (
+          <div style={{ fontSize: 12, color: '#666', marginBottom: 8, wordBreak: 'break-word' }}>Something went wrong in this tab. Try again.</div>
+          {showStack && this.state.errorInfo && (
             <details style={{ fontSize: 11, color: '#999', marginBottom: 8 }}>
               <summary style={{ cursor: 'pointer' }}>Stack trace</summary>
               <pre style={{ marginTop: 4, whiteSpace: 'pre-wrap', fontSize: 10 }}>{this.state.errorInfo}</pre>

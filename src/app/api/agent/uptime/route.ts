@@ -18,6 +18,7 @@ const UPTIME_WINDOW_DAYS = 7;
  * millions, but a cap keeps the payload honest if that ever changes.
  */
 export async function GET() {
+  try {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
@@ -27,7 +28,7 @@ export async function GET() {
   const rows = await prisma.providerEvent.findMany({
     where: { userId: session.user.id, createdAt: { gte: since } },
     orderBy: { createdAt: "desc" },
-    take: 5000,
+    take: 1000,
   });
 
   const events: UptimeEvent[] = rows.map((r) => ({
@@ -45,4 +46,7 @@ export async function GET() {
     events,
     summary: summarizeUptime(events, UPTIME_WINDOW_DAYS),
   });
+  } catch {
+    return NextResponse.json({ success: false, error: "Uptime lookup failed" }, { status: 500 });
+  }
 }

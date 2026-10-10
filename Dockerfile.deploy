@@ -41,4 +41,4 @@ ENV PORT=8080
 # NOTE: exec-form CMD runs WITHOUT a shell — the previous
 # ["npx", "prisma", ..., "&&", "npx", "next", "start"] passed "&&" as a
 # literal prisma arg and the container never booted. sh -c required.
-CMD ["sh", "-c", "npx prisma db push --skip-generate && npx next start"]
+CMD ["sh", "-c", "npx prisma migrate deploy && npx next start"]

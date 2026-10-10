@@ -10,6 +10,7 @@ import {
   listCheckpointsSnapshot,
   restoreCheckpointGit,
 } from "@/lib/checkpoints";
+import { safeJoinWorkspace } from "@/lib/workspace-history";
 import { recordRuntimeLog } from "@/lib/runtime-log";
 
 export const dynamic = "force-dynamic";
@@ -55,7 +56,17 @@ export async function POST(request: NextRequest) {
           abs: `${root}/${c.path}`,
           created: c.created === true,
         }))
+        .filter((c: { path: string; abs: string; created: boolean }) => {
+          // Containment: snapshot kind copies abs→dir on non-git workspaces —
+          // an escaping path would read/copy arbitrary files. Git workspaces
+          // ignore `changed` (uses workingTreeFiles), same gate applies.
+          if (!safeJoinWorkspace(root, c.path)) return false;
+          return true;
+        })
     : [];
+  if (Array.isArray(body?.changed) && body.changed.length > 0 && changed.length === 0) {
+    return NextResponse.json({ success: false, error: "path escapes workspace" }, { status: 403 });
+  }
 
   try {
     const result = await createCheckpoint(root, runId, label, changed);

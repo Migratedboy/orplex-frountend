@@ -37,6 +37,25 @@ function splitDeploymentCookies(): Partial<Record<string, CookieOption>> | undef
   };
 }
 
+// Fail fast in production when secrets are missing — signing JWTs with
+// `undefined` silently breaks all sessions and is undebuggable at runtime.
+if (process.env.NODE_ENV === "production" && !process.env.NEXTAUTH_SECRET) {
+  throw new Error("[auth] NEXTAUTH_SECRET is unset in production — refusing to boot. Generate with: openssl rand -base64 32");
+}
+
+// Fail fast: localhost callback URLs on a cloud host break every OAuth flow
+// (laptop dev values leaked into production env). Crash the boot loudly.
+if (
+  process.env.NODE_ENV === "production" &&
+  process.env.NEXTAUTH_URL &&
+  /localhost|127\.0\.0\.1/.test(process.env.NEXTAUTH_URL)
+) {
+  throw new Error("[auth] NEXTAUTH_URL points at localhost in production — set it to the public app URL in the host dashboard.");
+}
+
+const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
+const GOOGLE_CLIENT_SECRET = (process.env.GOOGLE_CLIENT_SECRET || "").trim();
+
 const SPLIT_COOKIES = splitDeploymentCookies();
 
 
@@ -77,10 +96,14 @@ export const authOptions: NextAuthOptions = {
     return PrismaAdapter(prisma);
   },
   providers: [
-    GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-    }),
+    ...(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET
+      ? [
+          GoogleProvider({
+            clientId: GOOGLE_CLIENT_ID,
+            clientSecret: GOOGLE_CLIENT_SECRET,
+          }),
+        ]
+      : []),
     // Only register GitHub provider when OAuth credentials are real (not placeholders).
     ...(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
       && !process.env.GITHUB_CLIENT_ID.includes("your_")

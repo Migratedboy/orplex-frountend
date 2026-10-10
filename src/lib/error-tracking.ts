@@ -57,6 +57,27 @@ interface ErrorContext {
   extra?: Record<string, unknown>;
 }
 
+const SENSITIVE_KEYS = /email|apikey|api_key|token|secret|password|authorization|cookie/i;
+
+/** Strip PII/secrets and cap size before logging or shipping errors. */
+export function scrubContext(extra?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!extra) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(extra)) {
+    if (SENSITIVE_KEYS.test(k)) {
+      out[k] = "[redacted]";
+      continue;
+    }
+    try {
+      const s = typeof v === "string" ? v : JSON.stringify(v);
+      out[k] = s.length > 1024 ? s.slice(0, 1024) + "…[truncated]" : v;
+    } catch {
+      out[k] = "[unserializable]";
+    }
+  }
+  return out;
+}
+
 /**
  * Initialize the error tracker. Safe to call multiple times.
  * Only initializes once, and only if BUGSINK_DSN is configured.
@@ -115,24 +136,28 @@ function initConsoleFallback(): void {
  */
 export function reportError(error: Error, context: ErrorContext = {}): void {
   const payload = {
-    message: error.message,
-    stack: error.stack,
-    ...context,
+    message: error.message.slice(0, 500),
+    stack: error.stack?.slice(0, 2000),
+    component: context.component,
+    action: context.action,
+    userId: context.userId,
+    extra: scrubContext(context.extra),
     timestamp: new Date().toISOString(),
   };
 
   // Always log to console
   console.error("[error-tracking]", payload);
 
-  // Send to Bugsink if available
+  // Send to Bugsink if available (scrubbed — same redaction as console).
   if (initialized && typeof window !== "undefined") {
+    const safeExtra = scrubContext(context.extra);
     loadSentry().then((Sentry) => {
       if (!Sentry) return; // SDK not available - already logged to console
       Sentry.withScope((scope) => {
         if (context.component) scope.setComponent(context.component);
         if (context.action) scope.setTag("action", context.action);
         if (context.userId) scope.setUser({ id: context.userId });
-        if (context.extra) scope.setExtras(context.extra);
+        if (safeExtra) scope.setExtras(safeExtra);
         Sentry.captureException(error);
       });
     });
@@ -147,14 +172,15 @@ export function reportMessage(
   level: "info" | "warning" | "error" = "info",
   context: ErrorContext = {}
 ): void {
-  console.log(`[error-tracking:${level}]`, message, context);
+  console.log(`[error-tracking:${level}]`, message.slice(0, 500), scrubContext(context.extra) ?? {});
 
   if (initialized && typeof window !== "undefined") {
+    const safeExtra = scrubContext(context.extra);
     loadSentry().then((Sentry) => {
       if (!Sentry) return; // SDK not available
       Sentry.withScope((scope) => {
         if (context.component) scope.setComponent(context.component);
-        if (context.extra) scope.setExtras(context.extra);
+        if (safeExtra) scope.setExtras(safeExtra);
         Sentry.captureMessage(message, level);
       });
     });

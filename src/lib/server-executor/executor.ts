@@ -17,6 +17,7 @@ import type { Prisma } from "@prisma/client";
 import { getWorkspaceCwdForUser, resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import { parseToolCalls, parseBareJsonToolCalls } from "@/lib/tool-text";
 import { createLoopStreaks, trackToolTurn, buildLoopBreakDirective } from "@/lib/loop-detect";
+import { validateToolArgs } from "@/lib/agent/contract/tools";
 import { isCommandAllowed } from "@/lib/exec-guard";
 import { createProviderAdapter, createAdapterForProvider, type AIProviderAdapter, type NativeToolDef, type NativeToolCall } from "@/lib/ai-providers";
 import { isRateLimitError, isTransientError } from "@/lib/retry";
@@ -421,6 +422,12 @@ async function executeTool(
 ): Promise<string> {
   const name = call.name;
 
+  // Shared contract gate: malformed core-tool calls fail fast with a precise
+  // error instead of falling through to "unknown tool". (Browser/MCP lanes
+  // validate through their own contract paths below.)
+  const argError = validateToolArgs(name, call as unknown as Record<string, unknown>);
+  if (argError) return `error: ${argError}`;
+
   // Plugin beforeToolCall hooks, server lane. Only the secret-scanner is
   // activated here (see ensureServerHooks below) — it is pure, stateless,
   // and closes the one gap the executor's native guards don't cover
@@ -628,15 +635,35 @@ async function executeTool(
     return `recorded ${section} (${content.length} chars). It will be re-shown every turn.`;
   }
 
-  // playbook_search / skill_create / session_search — the Playbook loop,
-  // served in-process (no HTTP hop): the executor IS the server, so it
-  // calls the library directly (the browser lane goes through /api/*).
+  // playbook_search — derived view over playbooks + workspace learnings.
+  // The playbook is NOT a parallel memory store: patterns derived from runs
+  // land in the workspace-learnings bucket (remember()), and search reads
+  // both so nothing learned is invisible to this tool. Learnings are keyed
+  // by workspace (machine:folder, same key the capture route writes), resolved
+  // from the run row — never the auth id.
   if (name === "playbook_search" && typeof call.query === "string") {
     try {
+      const userId = mcpExtras?.userId || "default";
       const { searchPlaybooks } = await import("../playbook");
-      const hits = await searchPlaybooks(mcpExtras?.userId || "default", call.query.slice(0, 500), 5);
-      if (hits.length === 0) return "No matching playbook entries found.";
-      return hits.map((h) => `- [${h.pattern}] ${h.content} (confidence: ${Math.round(h.confidence * 100)}%)`).join("\n");
+      const hits = await searchPlaybooks(userId, call.query.slice(0, 500), 5);
+      const lines = hits.map((h) => `- [${h.pattern}] ${h.content} (confidence: ${Math.round(h.confidence * 100)}%)`);
+      // Derived-view half: workspace learnings for the same query. Bounded
+      // (retrieval embeds locally; never stall the tool loop on a cold model).
+      try {
+        const { getWorkspaceKey } = await import("../run-ledger");
+        const runRow = await prisma.agentRun.findUnique({ where: { id: runId }, select: { workspace: true } }).catch(() => null);
+        const workspaceKey = getWorkspaceKey(runRow?.workspace || "");
+        const { retrieveWorkspaceMemories } = await import("../workspace-memory");
+        const mems = await Promise.race([
+          retrieveWorkspaceMemories(workspaceKey, call.query.slice(0, 500), 3).catch(() => []),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("learnings timeout")), 15_000)),
+        ]).catch(() => []);
+        for (const m of (mems as Array<{ content: string }>).slice(0, 3)) lines.push(`- [learning] ${m.content}`);
+      } catch {
+        /* learnings unavailable — playbook hits still stand */
+      }
+      if (lines.length === 0) return "No matching playbook entries found.";
+      return lines.join("\n");
     } catch (err) {
       return `error: ${(err as Error).message}`;
     }
@@ -778,80 +805,25 @@ async function executeTool(
     }
   }
 
-  // ── browser_* — server session, called directly (no HTTP hop) ──────────
+  // ── browser_* — one contract, Playwright backend (no HTTP hop) ──────────
+  // Op mapping, arg validation, and result formatting live in
+  // agent/contract/browser.ts — shared with the interactive client worker.
   if (typeof name === "string" && name.startsWith("browser_")) {
-    const { runBrowserOp } = await import("@/lib/agent-browser-session");
-    const opMap: Record<string, { op: string; args: Record<string, unknown> }> = {
-      browser_navigate: { op: "navigate", args: { url: call.url } },
-      browser_read: { op: "read", args: {} },
-      browser_click: { op: "click", args: { selector: call.selector, ref: call.ref } },
-      browser_type: { op: "type", args: { selector: call.selector, ref: call.ref, text: call.text } },
-      browser_press: { op: "press", args: { key: call.key } },
-      browser_scroll: { op: "scroll", args: { dy: typeof call.amount === "number" ? call.amount : 600 } },
-      browser_console: { op: "console", args: {} },
-      browser_screenshot: { op: "screenshot", args: { fullPage: !!call.fullPage, viewpoint: call.viewpoint } },
-      browser_find: { op: "find", args: { text: call.text, role: call.role } },
-      browser_wait_for: { op: "wait_for", args: { text: call.text, selector: call.selector, time: call.time, timeoutMs: call.timeoutMs } },
-      browser_hover: { op: "hover", args: { selector: call.selector, ref: call.ref } },
-      browser_select: { op: "select", args: { selector: call.selector, ref: call.ref, value: call.value } },
-      browser_tabs: { op: "tabs", args: { tabAction: call.action, url: call.url, index: call.index } },
-      browser_network: { op: "network", args: {} },
-      browser_evaluate: { op: "evaluate", args: { code: call.code } },
-    };
-    const mapped = opMap[name];
-    if (!mapped) return `error: ${name} is not supported in server runs`;
-    const r = await runBrowserOp(
-      `run:${runId}`, // session scoped to this run — isolated per execution
-      mapped.op,
-      mapped.args as never
-    );
-    if (!r.ok) return `error: ${r.error}`;
-    const d = (r.data || {}) as Record<string, unknown>;
-    switch (mapped.op) {
-      case "navigate":
-        return `HTTP ${String(d.status ?? "?")} — now on "${String(d.title || d.url)}" (${String(d.url)}). Use browser_read for content.`;
-      case "read":
-        return [
-          `URL: ${String(d.url)}`, `Title: ${String(d.title)}`, ``, `PAGE TEXT:`, String(d.text || "").slice(0, 6000), ``,
-          `HEADINGS:`, (d.headings as string[] || []).join("\n"), ``,
-          `INTERACTIVE:`, ((d.interactives as string[]) || []).slice(0, 25).join("\n"),
-        ].join("\n");
-      case "click":
-        return `clicked — page now "${String(d.title || d.url)}". Use browser_read to see the result.`;
-      case "type":
-        return `typed ${String(d.length ?? 0)} chars into ${String(call.selector || call.ref || "")}`;
-      case "press":
-        return `key sent: ${String(call.key)}`;
-      case "find": {
-        const list = ((d.matches as any[]) || []).slice(0, 25).map((m) => `${m.ref}: ${m.role} "${m.name}" [${m.selector}]${m.enabled ? "" : " (disabled)"}`).join("\n");
-        return `MATCHES (${((d.matches as any[]) || []).length} of ${String(d.total)}):\n${list || "none"}\n\n${String(d.hint || "")}`;
-      }
-      case "wait_for":
-        return `condition met after ${String(d.waitedMs)}ms — now on "${String(d.title || d.url)}"`;
-      case "hover":
-        return `hovered ${String(d.hovered)}`;
-      case "select":
-        return `selected "${String(d.selected)}" in ${String(d.in)}`;
-      case "tabs": {
-        const tabs = ((d.tabs as any[]) || []).map((t) => `${t.active ? "→" : " "}[${t.index}] ${t.title || "(untitled)"} — ${t.url}`).join("\n");
-        return tabs || "no tabs";
-      }
-      case "network": {
-        const events = ((d.events as any[]) || []).map((e) => `${e.status ? `HTTP ${e.status}` : "ABORTED"} ${e.method} ${e.url}${e.error ? ` (${e.error})` : ""}`).join("\n");
-        return events || "No failed requests (no 4xx/5xx responses, no aborted requests).";
-      }
-      case "evaluate":
-        return `result: ${String(d.result ?? "undefined")}`;
-      case "scroll":
-        return `scrolled ${String(d.scrolled)}px`;
-      case "console": {
-        const msgs = ((d.messages as any[]) || []).map((m: any) => `[${m.type}] ${m.text}`).join("\n");
-        return msgs || "No console messages — no JS errors.";
-      }
-      case "screenshot":
-        return `screenshot captured (${String(d.url)}) — saved as run artifact`;
-      default:
-        return "ok";
+    try {
+      const { browserOpOf, playwrightBackend, runBrowserTool } = await import("@/lib/agent/contract/browser");
+      if (!browserOpOf(name)) return `error: ${name} is not supported in server runs`;
+      // Session fixation guard: the session key stays run-scoped — a
+      // model-supplied sessionId must never escape this run's browser.
+      const { sessionId: _dropped, ...modelArgs } = call as unknown as Record<string, unknown>;
+      return await runBrowserTool(
+        playwrightBackend(`run:${runId}`), // session scoped to this run — isolated per execution
+        name,
+        modelArgs
+      );
+    } catch (err) {
+      // A lane failure (backend import, browser crash) is a tool error, never
+      // a run failure — same envelope as every other lane here.
+      return `error: browser ${name} failed: ${(err as Error).message.slice(0, 200)}`;
     }
   }
 

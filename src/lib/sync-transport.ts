@@ -15,7 +15,8 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 export const SYNC_WIRE_VERSION = 1;
-export const MAX_SYNC_BUNDLE_BYTES = 25 * 1024 * 1024; // RAM guard
+export const MAX_SYNC_BUNDLE_BYTES = 25 * 1024 * 1024; // RAM guard (decompressed)
+export const MAX_SYNC_COMPRESSED_BYTES = 5 * 1024 * 1024; // pre-decompression cap (gzip bomb guard)
 export const MAX_SYNC_ENTRIES_PER_PULL = 500;
 
 export interface HistoryEntryLike {
@@ -52,6 +53,10 @@ export function encodeEnvelope(env: SyncEnvelope): Buffer {
 }
 
 export function decodeEnvelope(raw: Buffer): SyncEnvelope {
+  // Pre-decompression cap: reject gzip bombs before inflating into memory.
+  if (raw.length > MAX_SYNC_COMPRESSED_BYTES) {
+    throw new Error("sync bundle too large (compressed)");
+  }
   const json = gunzipSync(raw).toString("utf8");
   if (Buffer.byteLength(json) > MAX_SYNC_BUNDLE_BYTES) {
     throw new Error("sync bundle too large");

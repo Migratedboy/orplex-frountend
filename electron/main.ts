@@ -97,7 +97,7 @@ const gotTheLock = app.requestSingleInstanceLock();
 // by AppUserModelId + exe. Set as early as possible so the shell never
 // associates this process with electron.exe's default icon.
 try {
-  app.setAppUserModelId("tech.orplex.code.desktop");
+  app.setAppUserModelId("tech.orplex.app");
 } catch {}
 if (!gotTheLock) {
   app.quit();
@@ -542,7 +542,9 @@ function resolveIconPath(): string | undefined {
   // Start points: compiled dir, app root, cwd, packaged resources. From each,
   // walk UP a few levels and probe the usual icon folders at every level.
   const starts = [__dirname, app.getAppPath(), process.cwd(), process.resourcesPath || ""];
-  const subs = ["", "assets", "electron", path.join("electron", "assets"), "build", "public", "resources"];
+  const subs = ["", "assets", "electron", path.join("electron", "assets"), "build", "public", "resources",
+    // Packaged app: files land inside app.asar (fs.existsSync reads through asar).
+    path.join("app.asar", "electron", "assets"), path.join("app", "electron", "assets")];
   const seen = new Set<string>();
   for (const name of names) {
     for (const start of starts) {
@@ -609,7 +611,7 @@ function createWindow(): void {
     if (process.platform === "win32" && iconPath && /\.ico$/i.test(iconPath)) {
       try {
         mainWindow.setAppDetails({
-          appId: "tech.orplex.code.desktop",
+          appId: "tech.orplex.app",
           appIconPath: iconPath,
           appIconIndex: 0,
           relaunchDisplayName: "Orplex Code",
@@ -673,6 +675,19 @@ function buildMenu(): void {
         submenu: [
           { role: "undo" }, { role: "redo" }, { type: "separator" },
           { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" },
+        ],
+      },
+      {
+        label: "Help",
+        submenu: [
+          {
+            label: "Check for updates",
+            click: () => {
+              // The renderer owns the download UI (UpdateToast); the menu
+              // just kicks a check — results arrive as update-status events.
+              void import("./updater").then((m) => m.checkForUpdates(getMainWindow).catch(() => {}));
+            },
+          },
         ],
       },
     ])
@@ -976,7 +991,7 @@ ipcMain.handle("agent-browser:interact", async (_e, action: { kind: string; sele
           (() => {
             ${RESOLVE_FN}
             const el = __orplexResolve(${JSON.stringify(selector)});
-            if (!el) return { ok: false, error: 'not found: ${String(selector).replace(/'/g, "")}' };
+            if (!el) return { ok: false, error: ${JSON.stringify("not found: " + String(selector))} };
             el.scrollIntoView({ block: 'center' });
             // Realistic event sequence (React/SPA frameworks listen for these)
             const r = el.getBoundingClientRect();
@@ -1469,7 +1484,7 @@ app.whenReady().then(async () => {
   // (AppUserModelId is set at module top, before ready — kept here as a
   // no-op-safe reaffirm for the packaged appId parity.)
   try {
-    app.setAppUserModelId("tech.orplex.code.desktop");
+    app.setAppUserModelId("tech.orplex.app");
   } catch {}
 
   // Desktop sign-in: register the orplex:// protocol handler and the IPC
@@ -1568,6 +1583,17 @@ app.whenReady().then(async () => {
     buildTrayWithNotifications(APP_URL);
   } catch {
     // Tray is cosmetic — never block startup on it.
+  }
+
+  // In-app updates (packaged builds only — dev skips silently). The renderer
+  // owns all UI via update-status events; the menu's "Check for updates"
+  // reuses the same check path.
+  try {
+    const { registerUpdaterIpc, startUpdateSchedule } = await import("./updater");
+    registerUpdaterIpc(getMainWindow);
+    startUpdateSchedule(getMainWindow);
+  } catch {
+    // Updates are convenience — never block startup on them.
   }
 
   // Graceful shutdown (wires the graceful-shutdown doctrine into the

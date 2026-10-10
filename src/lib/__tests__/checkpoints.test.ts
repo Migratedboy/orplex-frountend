@@ -79,6 +79,8 @@ describe("checkpoints — git kind", () => {
     await writeFile(join(dir, "keep.txt"), "v2 — agent edit");
     const cp = await createCheckpoint(dir, "run1", "after edit", []);
     expect(cp.kind).toBe("git");
+    // Layer-2 framing: the snapshot records its durable-history offset.
+    expect(typeof cp.historyLength).toBe("number");
 
     // Agent deletes the file after the checkpoint
     await rm(join(dir, "keep.txt"));
@@ -89,6 +91,9 @@ describe("checkpoints — git kind", () => {
     // The inverse snapshot became a checkpoint under the restore-inverse namespace
     const inverses = await listCheckpointsGit(dir, "run1-restore-inverse");
     expect(inverses.length).toBe(1);
+    // Restore went through Layer 2: durable history holds the restore entry.
+    const hist = await readHistory(dir);
+    expect(hist.some((e) => e.path === "keep.txt" && e.peer === "restore")).toBe(true);
   }, 30_000);
 });
 

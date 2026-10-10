@@ -89,8 +89,18 @@ export function errorResponse(message: string, status: number = 500, details?: u
  */
 export function publicErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof AppError && error.isOperational) return error.message;
-  console.error("[API Error]", error);
+  console.error("[API Error]", redactError(error));
   return fallback;
+}
+
+/** Redact connection strings / user paths from server log lines. Exported for reuse. */
+export function redactError(error: unknown): string {
+  const msg = error instanceof Error ? `${error.name}: ${error.message}`.slice(0, 500) : String(error).slice(0, 500);
+  // Never let connection strings / absolute paths land in logs unredacted.
+  return msg
+    .replace(/postgresql:\/\/[^\s"']+/gi, "postgresql://[redacted]")
+    .replace(/[A-Za-z]:\\[^\s"']*/g, "[path]")
+    .replace(/\/(home|Users)\/[^\s"']*/g, "/[user]/[redacted]");
 }
 
 export function handleError(error: unknown): Response {
@@ -102,6 +112,6 @@ export function handleError(error: unknown): Response {
     );
   }
 
-  console.error("[API Error]", error);
+  console.error("[API Error]", redactError(error));
   return errorResponse("Internal server error", 500);
 }

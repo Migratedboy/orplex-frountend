@@ -83,6 +83,25 @@ declare global {
       lastSessionCrashed?: () => Promise<boolean>;
       /** Packaged app version from package.json (update detection). */
       getAppVersion?: () => Promise<string>;
+      /** In-app updates: user-consented check/download/install + status events. */
+      updates?: {
+        check: () => Promise<{ state: string; version?: string }>;
+        download: () => Promise<{ state: string; version?: string }>;
+        cancel: () => Promise<{ ok: boolean }>;
+        install: () => Promise<{ ok: boolean }>;
+        onStatus: (
+          listener: (status: {
+            state: string;
+            version?: string;
+            notes?: string;
+            percent?: number;
+            bytesPerSecond?: number;
+            transferred?: number;
+            total?: number;
+            error?: string;
+          }) => void
+        ) => () => void;
+      };
       /** Desktop sign-in: browser OAuth + orplex:// deep-link handoff. */
       auth?: {
         start: (provider: "google" | "github") => Promise<{

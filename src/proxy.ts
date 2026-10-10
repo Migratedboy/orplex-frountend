@@ -16,6 +16,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { meetsMinimum } from "@/lib/app-version";
 
 // Simple request ID generation - Edge Runtime compatible (no Node.js modules)
 function generateRequestId(): string {
@@ -93,6 +94,26 @@ async function isCloudReachable(origin: string): Promise<boolean> {
 export default async function proxy(request: NextRequest) {
   const requestId = request.headers.get("x-request-id") || generateRequestId();
 
+  // Version handshake (cloud backends set MIN_SUPPORTED_APP_VERSION; local
+  // desktop servers leave it unset and skip this entirely). Desktops send
+  // X-Orplex-App-Version via apiFetch; below the floor → 426 so the app can
+  // prompt an update instead of failing mysteriously. No header → allow
+  // (browser preview + pre-handshake clients).
+  const minSupported = (process.env.MIN_SUPPORTED_APP_VERSION || "").trim();
+  if (
+    minSupported &&
+    request.nextUrl.pathname.startsWith("/api/") &&
+    !isLocalOnlyApi(request.nextUrl.pathname)
+  ) {
+    const clientVersion = (request.headers.get("x-orplex-app-version") || "").trim();
+    if (clientVersion && !meetsMinimum(clientVersion, minSupported)) {
+      return NextResponse.json(
+        { error: "Client too old — update Orplex to continue.", minVersion: minSupported, updateRequired: true },
+        { status: 426 }
+      );
+    }
+  }
+
   // ALL /api/* traffic forwards to the backend origin: the browser stays
   // same-origin (cookies first-party on the UI origin, zero CORS), while the
   // real handlers run in the cloud backend. Covers next-auth (/api/auth/*),
@@ -162,18 +183,21 @@ export default async function proxy(request: NextRequest) {
   // Content-Security-Policy — connect-src explicitly includes the split-API
   // origin when configured (blanket https: stays for provider-side lanes).
   const apiBase = backendOrigin();
+  const isProd = process.env.NODE_ENV === "production";
   response.headers.set(
     "Content-Security-Policy",
     [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'", // Next.js requires unsafe-inline/eval
+      // unsafe-eval is a Next.js dev requirement — never ship it in production.
+      isProd ? "script-src 'self' 'unsafe-inline'" : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
       "style-src 'self' 'unsafe-inline'", // Tailwind requires unsafe-inline
       "img-src 'self' data: blob: https:",
       "font-src 'self' data:",
       apiBase
         ? `connect-src 'self' ${apiBase} https: wss:` // split API + WebSocket/streaming
         : "connect-src 'self' https: wss:",
-      "frame-src 'self' https: http://localhost:* http://127.0.0.1:*", // embedded browser (proxy + direct dev servers)
+      // localhost frames are a dev/preview requirement — production gets https only.
+      isProd ? "frame-src 'self' https:" : "frame-src 'self' https: http://localhost:* http://127.0.0.1:*",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",

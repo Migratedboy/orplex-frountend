@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "./auth";
 
-const ADMIN_IDS = (process.env.ADMIN_USER_IDS || "").split(",").filter(Boolean);
+const ADMIN_IDS = (process.env.ADMIN_USER_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
 
 /**
  * With ADMIN_USER_IDS set, only those ids are admin. With it unset we used to

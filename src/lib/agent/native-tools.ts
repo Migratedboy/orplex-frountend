@@ -9,6 +9,7 @@
 // waiting for a result that never came.
 
 import { TIMEOUTS, LIMITS, isBlockedCommand } from "../constants";
+import { isCommandAllowed } from "../exec-guard";
 import { classifyRisk } from "../risk-classifier";
 import { requestApproval } from "../approval-store";
 import { computeDiff } from "../file-history";
@@ -955,7 +956,18 @@ export async function dispatchToolCall(
   // ── run_in_sandbox (E2B when configured, detached serve for servers,
   //    else local exec with sandbox budgets) ─────────────────────────────
   if (call.name === "run_in_sandbox" && call.command) {
-    const sandboxTimeout = (call.timeout as number) || TIMEOUTS.SANDBOX_EXEC / 1000;
+    // Screen model-controlled commands BEFORE spawning a billable cloud sandbox.
+    // Mirrors the CI-sandbox lane (ci-sandbox.ts) which calls isCommandAllowed first.
+    const guard = isCommandAllowed(call.command);
+    if (!guard.allowed) {
+      result(`<tool_result name="run_in_sandbox" command="${call.command}">blocked: ${guard.reason || "command not allowed"}</tool_result>\n`);
+      ctx.replaceStatus(`[BLOCKED] Sandbox command blocked`);
+      ctx.syncDisplay();
+      return { resultXml: toolResults, blocked: false };
+    }
+    // Clamp model-supplied timeout to the sandbox budget (E2B expects ms).
+    const rawTimeout = typeof call.timeout === "number" && Number.isFinite(call.timeout) ? call.timeout : TIMEOUTS.SANDBOX_EXEC / 1000;
+    const sandboxTimeout = Math.min(Math.max(rawTimeout, 1), TIMEOUTS.SANDBOX_EXEC / 1000);
 
     ctx.setStatus("awaiting_approval", `Waiting for approval: sandbox ${call.command.slice(0, 40)}`);
     ctx.appendDisplay(`sandbox [${call.command}] — awaiting approval\n`);
@@ -1014,12 +1026,15 @@ export async function dispatchToolCall(
         // @ts-ignore — e2b is an optional dependency (npm i e2b to enable)
         const { Sandbox } = await import(/* webpackIgnore: true */ "e2b");
         const sandbox = await Sandbox.create({ apiKey: e2bKey });
-        const execution = await sandbox.runCommand(call.command, { timeout: sandboxTimeout });
-        const output = (execution.stdout || "") + (execution.stderr ? `\nSTDERR: ${execution.stderr}` : "");
-        result(`<tool_result name="run_in_sandbox" command="${call.command}">\n${truncate(output, LIMITS.SANDBOX_OUTPUT)}\n</tool_result>\n`);
-        ctx.replaceStatus(`[OK] Sandbox completed: \`${call.command.slice(0, LIMITS.COMMAND_STATUS)}\``);
-        await sandbox.kill();
-        ctx.stats.commandRun();
+        try {
+          const execution = await sandbox.runCommand(call.command, { timeout: sandboxTimeout * 1000 });
+          const output = (execution.stdout || "") + (execution.stderr ? `\nSTDERR: ${execution.stderr}` : "");
+          result(`<tool_result name="run_in_sandbox" command="${call.command}">\n${truncate(output, LIMITS.SANDBOX_OUTPUT)}\n</tool_result>\n`);
+          ctx.replaceStatus(`[OK] Sandbox completed: \`${call.command.slice(0, LIMITS.COMMAND_STATUS)}\``);
+          ctx.stats.commandRun();
+        } finally {
+          await sandbox.kill().catch(() => {});
+        }
       } catch (err) {
         ctx.stats.failedStep();
         result(`<tool_result name="run_in_sandbox" command="${call.command}">error: ${(err as Error).message}</tool_result>\n`);
@@ -1328,38 +1343,34 @@ export async function dispatchToolCall(
   if (call.name?.startsWith("browser_")) {
     const bridge = (typeof window !== "undefined" ? (window as any).orplexDesktop?.agentBrowser : null) as any;
     if (!bridge) {
-      // SERVER FALLBACK — browser as a first-class sensor, no desktop app needed.
+      // SERVER FALLBACK — one contract, Playwright-via-API backend. Op mapping,
+      // arg validation, and result formatting live in agent/contract/browser.ts
+      // (shared with the server executor); only transport (HTTP POST) + the
+      // screenshot inline-attach stay lane-specific.
       try {
-        const opMap: Record<string, { op: string; pick: (c: any) => Record<string, unknown> }> = {
-          browser_navigate: { op: "navigate", pick: (c) => ({ url: c.url }) },
-          browser_read: { op: "read", pick: () => ({}) },
-          browser_click: { op: "click", pick: (c) => ({ selector: c.selector, ref: c.ref }) },
-          browser_type: { op: "type", pick: (c) => ({ selector: c.selector, ref: c.ref, text: c.text }) },
-          browser_press: { op: "press", pick: (c) => ({ key: c.key }) },
-          browser_scroll: { op: "scroll", pick: (c) => ({ dy: typeof c.amount === "number" ? c.amount : 600 }) },
-          browser_console: { op: "console", pick: () => ({}) },
-          browser_screenshot: { op: "screenshot", pick: (c) => ({ fullPage: !!c.fullPage, viewpoint: c.viewpoint }) },
-          browser_find: { op: "find", pick: (c) => ({ text: c.text, role: c.role }) },
-          browser_wait_for: { op: "wait_for", pick: (c) => ({ text: c.text, selector: c.selector, time: c.time, timeoutMs: c.timeoutMs }) },
-          browser_hover: { op: "hover", pick: (c) => ({ selector: c.selector, ref: c.ref }) },
-          browser_select: { op: "select", pick: (c) => ({ selector: c.selector, ref: c.ref, value: c.value }) },
-          browser_tabs: { op: "tabs", pick: (c) => ({ tabAction: c.action, url: c.url, index: c.index }) },
-          browser_network: { op: "network", pick: () => ({}) },
-          browser_evaluate: { op: "evaluate", pick: (c) => ({ code: c.code }) },
-        };
-        const mapped = opMap[String(call.name)];
-        if (!mapped) {
+        const { browserOpOf, validateBrowserArgs, formatBrowserResult } = await import("./contract/browser");
+        const toolName = String(call.name);
+        const op = browserOpOf(toolName);
+        if (!op) {
           result(`<tool_result name="${call.name}">error - browser op "${call.name}" is not available in server browser mode.</tool_result>\n`);
           ctx.replaceStatus(`[WARN] ${call.name} unsupported in server browser mode`);
           ctx.syncDisplay();
           return { resultXml: toolResults, blocked: false };
         }
-        ctx.setStatus("tool_executing", `Browser ${mapped.op}…`);
+        const argError = validateBrowserArgs(op, call as unknown as Record<string, unknown>);
+        if (argError) {
+          result(`<tool_result name="${call.name}">error - ${argError}</tool_result>\n`);
+          ctx.replaceStatus(`[FAIL] ${call.name}: ${argError.slice(0, 60)}`);
+          ctx.syncDisplay();
+          return { resultXml: toolResults, blocked: false };
+        }
+        ctx.setStatus("tool_executing", `Browser ${op}…`);
         ctx.syncDisplay();
+        const { url, selector, ref, text, value, key, dx, dy, amount, time, timeoutMs, role, action, index, fullPage, viewpoint, code } = call as unknown as Record<string, unknown>;
         const res = await apiFetch("/api/agent/browser", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ op: mapped.op, ...mapped.pick(call) }),
+          body: JSON.stringify({ op, url, selector, ref, text, value, key, dx, dy: (dy as number) ?? (amount as number), time, timeoutMs, role, tabAction: action, index, fullPage, viewpoint, code }),
           signal: ctx.abortSignal ? AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000),
         });
         const r = await res.json().catch(() => ({ ok: false, error: "bad response from browser API" }));
@@ -1370,81 +1381,26 @@ export async function dispatchToolCall(
           return { resultXml: toolResults, blocked: false };
         }
         const d = r.data || {};
-        switch (mapped.op) {
-          case "navigate":
-            result(`<tool_result name="browser_navigate" url="${d.url}">success — HTTP ${d.status ?? "?"}, now on "${d.title || d.url}". Use browser_read to see the page content, browser_click/browser_type to interact.</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Browser: ${d.title || d.url}`);
-            break;
-          case "read": {
-            const linkList = (d.interactives || []).slice(0, 25).join("\n");
-            result(`<tool_result name="browser_read">\nURL: ${d.url}\nTitle: ${d.title}\n\nPAGE TEXT (first 4000 chars):\n${String(d.text || "").slice(0, 4000)}\n\nHEADINGS:\n${(d.headings || []).join("\n")}\n\nINTERACTIVE ELEMENTS (click with browser_click selector):\n${linkList}\n</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Read "${d.title}" (${String(d.text || "").length} chars)`);
-            break;
-          }
-          case "click":
-            result(`<tool_result name="browser_click" selector="${d.clicked}">success — clicked "${d.clicked}". Page now shows: "${d.title || d.url}". Use browser_read to see the result.</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Clicked ${d.clicked}`);
-            break;
-          case "type":
-            result(`<tool_result name="browser_type" selector="${d.typed}">success — typed ${d.length ?? 0} chars into "${d.typed}"</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Typed ${d.length ?? 0} chars`);
-            break;
-          case "press":
-            result(`<tool_result name="browser_press" key="${call.key}">success — key sent</tool_result>\n`);
-            break;
-          case "scroll":
-            result(`<tool_result name="browser_scroll">success — scrolled ${d.scrolled}px. Use browser_read to see the new content.</tool_result>\n`);
-            break;
-          case "console": {
-            const msgs = (d.messages || []).map((m: any) => `[${m.type}] ${m.text}`).join("\n");
-            result(`<tool_result name="browser_console">${msgs.length ? msgs : "No console messages — no JS errors."}</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Console`);
-            break;
-          }
-          case "screenshot": {
-            const vp = d.viewport ? ` at ${d.viewport.width}x${d.viewport.height}` : "";
-            const shot = await attachScreenshot(ctx, (d as any).screenshot, `browser screenshot — ${d.url || "page"}`);
-            result(`<tool_result name="browser_screenshot">success — screenshot captured${d.fullPage ? " (full page)" : ""}${vp} (${d.url}) and attached inline in the chat below. Use browser_read for the text content.</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Screenshot captured`);
-            if (shot) return { resultXml: toolResults, blocked: false, imageDataUrl: shot };
-            break;
-          }
-          case "find": {
-            const list = (d.matches || []).slice(0, 25).map((m: any) => `${m.ref}: ${m.role} "${m.name}" [${m.selector}]${m.enabled ? "" : " (disabled)"}`).join("\n");
-            result(`<tool_result name="browser_find">\nMATCHES (${d.matches?.length ?? 0} of ${d.total} actionable elements):\n${list || "none"}\n\n${d.hint || ""}\n</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Find: ${d.matches?.length ?? 0} match(es)`);
-            break;
-          }
-          case "wait_for":
-            result(`<tool_result name="browser_wait_for">success — condition met after ${d.waitedMs}ms. Now on "${d.title || d.url}".</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Wait ${d.waitedMs}ms`);
-            break;
-          case "hover":
-            result(`<tool_result name="browser_hover" selector="${d.hovered}">success — hovered "${d.hovered}". Check browser_screenshot/browser_read for what appeared.</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Hovered`);
-            break;
-          case "select":
-            result(`<tool_result name="browser_select" selector="${d.in}">success — selected "${d.selected}" in "${d.in}"</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Selected`);
-            break;
-          case "tabs": {
-            const tabs = (d.tabs || []).map((t: any) => `${t.active ? "→" : " "} [${t.index}] ${t.title || "(untitled)"} — ${t.url}`).join("\n");
-            const head = d.opened !== undefined ? `opened tab [${d.opened}] ${d.url}` : d.switchedTo !== undefined ? `switched to tab [${d.switchedTo}]` : d.closed !== undefined ? `closed tab [${d.closed}]` : `${(d.tabs || []).length} tab(s) open`;
-            result(`<tool_result name="browser_tabs">${head}\n${tabs}</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Tabs: ${(d.tabs || []).length} open`);
-            break;
-          }
-          case "network": {
-            const events = (d.events || []).map((e: any) => `${e.status ? `HTTP ${e.status}` : "ABORTED"} ${e.method} ${e.url}${e.error ? ` (${e.error})` : ""}`).join("\n");
-            result(`<tool_result name="browser_network">${events || "No failed requests (no 4xx/5xx responses, no aborted requests)."}</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Network: ${d.failedRequests ?? 0} failed`);
-            break;
-          }
-          case "evaluate":
-            result(`<tool_result name="browser_evaluate">result: ${d.result}</tool_result>\n`);
-            ctx.replaceStatus(`[OK] Evaluated`);
-            break;
+        // Screenshot bytes ride out-of-band (inline attach); the text contract
+        // still comes from the single formatter. The API lane returns raw
+        // base64 (screenshotBase64); the bridge returns a data: URL — accept both.
+        if (op === "screenshot") {
+          const dd = d as Record<string, unknown>;
+          const rawShot =
+            typeof dd.screenshot === "string"
+              ? dd.screenshot
+              : typeof dd.screenshotBase64 === "string" && dd.screenshotBase64.length > 0
+                ? `data:image/png;base64,${dd.screenshotBase64}`
+                : undefined;
+          const shot = await attachScreenshot(ctx, rawShot, `browser screenshot — ${String(dd.url || "page")}`);
+          result(formatBrowserResult(toolName, op, { ok: true, data: d }));
+          ctx.replaceStatus(`[OK] Screenshot captured`);
+          if (shot) return { resultXml: toolResults, blocked: false, imageDataUrl: shot };
+          ctx.syncDisplay();
+          return { resultXml: toolResults, blocked: false };
         }
+        result(formatBrowserResult(toolName, op, { ok: true, data: d }));
+        ctx.replaceStatus(`[OK] Browser: ${String((d as Record<string, unknown>).title || (d as Record<string, unknown>).url || op)}`);
         ctx.syncDisplay();
         return { resultXml: toolResults, blocked: false };
       } catch (err) {
@@ -1454,7 +1410,20 @@ export async function dispatchToolCall(
         return { resultXml: toolResults, blocked: false };
       }
     }
+    // Electron lane: transport is the IPC bridge (see electronBackend() in
+    // contract/browser.ts for the backend adapter); arg validation is the
+    // shared contract so all three browser lanes reject bad args identically.
     try {
+      const { browserOpOf, validateBrowserArgs } = await import("./contract/browser");
+      const { formatToolError } = await import("./contract/results");
+      const laneOp = browserOpOf(String(call.name));
+      const laneArgError = laneOp ? validateBrowserArgs(laneOp, call as unknown as Record<string, unknown>) : null;
+      if (laneOp && laneArgError) {
+        result(formatToolError(String(call.name), {}, laneArgError));
+        ctx.replaceStatus(`[FAIL] ${call.name}: ${laneArgError.slice(0, 60)}`);
+        ctx.syncDisplay();
+        return { resultXml: toolResults, blocked: false };
+      }
       if (call.name === "browser_navigate" && call.url) {
         ctx.setStatus("tool_executing", `Browsing to ${call.url}…`);
         ctx.appendDisplay(`browsing [${String(call.url).slice(0, 60)}]\n`);

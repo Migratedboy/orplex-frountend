@@ -7,12 +7,15 @@ export default function GlobalError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  if (typeof window !== "undefined") {
+    console.error("[global-error]", error);
+  }
   return (
     <html>
       <body>
         <div style={{ padding: "2rem", textAlign: "center" }}>
           <h2>Something went wrong!</h2>
-          <p style={{ color: "#666" }}>{error.message}</p>
+          <p style={{ color: "#666" }}>An unexpected error occurred. Please try again.</p>
           <button
             onClick={() => reset()}
             style={{

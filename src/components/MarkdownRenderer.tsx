@@ -19,9 +19,40 @@ const PromptMeterStrip = dynamic(() => import("./PromptMeterStrip"), { ssr: fals
 // it and render the designed strip instead of plain italic text.
 const METER_LINE_PREFIX = "Prompt meter:";
 
-// Lazy-load syntax highlighter — removes ~70KB from main bundle
+// Lazy-load syntax highlighter — PrismLight + explicit languages (~70% smaller than full Prism).
+// NOTE: the Light build MUST be prism-light (refractor core), not light
+// (lowlight/hljs core) — prism grammars + prism themes only apply there.
 const SyntaxHighlighter = dynamic(
-  () => import("react-syntax-highlighter").then(mod => mod.Prism),
+  () => import("react-syntax-highlighter/dist/esm/prism-light").then(async (mod) => {
+    const { default: Light } = mod as unknown as { default: React.ComponentType<Record<string, unknown>> };
+    const reg = (Light as unknown as { registerLanguage: (n: string, l: unknown) => void }).registerLanguage;
+    const alias = (Light as unknown as { alias?: (n: string, a: string[]) => void }).alias;
+    const [{ default: js }, { default: ts }, { default: python }, { default: bash }, { default: json }, { default: jsx }, { default: tsx }] = await Promise.all([
+      import("react-syntax-highlighter/dist/esm/languages/prism/javascript"),
+      import("react-syntax-highlighter/dist/esm/languages/prism/typescript"),
+      import("react-syntax-highlighter/dist/esm/languages/prism/python"),
+      import("react-syntax-highlighter/dist/esm/languages/prism/bash"),
+      import("react-syntax-highlighter/dist/esm/languages/prism/json"),
+      import("react-syntax-highlighter/dist/esm/languages/prism/jsx"),
+      import("react-syntax-highlighter/dist/esm/languages/prism/tsx"),
+    ]);
+    reg("javascript", js);
+    reg("typescript", ts);
+    reg("python", python);
+    reg("bash", bash);
+    reg("json", json);
+    reg("jsx", jsx);
+    reg("tsx", tsx);
+    // Common fence aliases so ```sh/```shell/```yml etc. highlight instead of going plain.
+    try {
+      alias?.("bash", ["sh", "shell", "zsh"]);
+      alias?.("javascript", ["js", "jsx"]);
+      alias?.("typescript", ["ts", "tsx"]);
+      alias?.("json", ["jsonc"]);
+      alias?.("python", ["py"]);
+    } catch {}
+    return Light;
+  }),
   { ssr: false, loading: () => <pre className="code-block-pre">Loading…</pre> }
 );
 
@@ -30,7 +61,9 @@ function SyntaxHighlighterWithTheme({ language, children, ...props }: { language
   const [theme, setTheme] = useState<any>(null);
 
   useEffect(() => {
-    import("react-syntax-highlighter/dist/esm/styles/prism").then(m => setTheme(m.oneLight));
+    let live = true;
+    import("react-syntax-highlighter/dist/esm/styles/prism").then(m => { if (live) setTheme(m.oneLight); });
+    return () => { live = false; };
   }, []);
 
   if (!theme) return <pre className="code-block-pre">{children}</pre>;
@@ -166,8 +199,12 @@ export default function MarkdownRenderer({ content }: Props) {
         a({ href, children }) {
           // Only allow safe URL schemes — javascript:, data:, vbscript: in a
           // link would execute in the app's origin on click.
-          const safe = /^(https?:|mailto:)/i.test(href || "");
-          return <a href={safe ? href : undefined} className="md-link" target="_blank" rel="noopener noreferrer">{children}</a>;
+          const raw = (href || "").trim();
+          // Strip control chars / encoded newlines attackers use to smuggle schemes.
+          const cleaned = raw.replace(/[\u0000-\u001f\u007f]+/g, "").replace(/%0[aAdD]/g, "");
+          const safe = /^(https?:|mailto:)/i.test(cleaned);
+          if (!safe) return <span className="md-link">{children}</span>;
+          return <a href={cleaned} className="md-link" target="_blank" rel="noopener noreferrer">{children}</a>;
         },
         blockquote({ children }) {
           return <blockquote className="md-blockquote">{children}</blockquote>;
@@ -187,11 +224,12 @@ export default function MarkdownRenderer({ content }: Props) {
         img({ src, alt }) {
           // Markdown like `![]()` produces src="" — rendering it would make the
           // browser re-fetch the whole page (and trip the Next.js dev warning).
-          // Also block javascript:/data: URIs — they execute in the app's origin.
-          if (!src || !/^(https?:|data:image\/)/i.test(src)) return null;
+          // Raster data-URLs only: data:image/svg+xml executes script when
+          // opened as a document, so SVG is never allowlisted here.
+          if (!src || !/^(https?:|data:image\/(png|jpe?g|gif|webp);base64,)/i.test(src.trim())) return null;
           return (
             <div className="md-image-wrap">
-              <img src={src} alt={alt || ""} className="md-image" loading="lazy" />
+              <img src={src} alt={alt || ""} className="md-image" loading="lazy" referrerPolicy="no-referrer" />
               <div className="md-image-actions">
                 <button
                   onClick={() => { const a = document.createElement("a"); a.href = src || ""; a.download = alt || "image.png"; a.click(); }}
@@ -200,7 +238,12 @@ export default function MarkdownRenderer({ content }: Props) {
                   <IconDownload size={12} /> Save Image
                 </button>
                 <button
-                  onClick={() => { const a = document.createElement("a"); a.href = src || ""; a.target = "_blank"; a.click(); }}
+                  onClick={() => {
+                    // Never target=_blank a data: URL — SVG inside would run script
+                    // in the opener's context. Download instead; open only http(s).
+                    if (/^https?:/i.test(src || "")) window.open(src, "_blank", "noopener,noreferrer");
+                    else { const a = document.createElement("a"); a.href = src || ""; a.download = alt || "image.png"; a.click(); }
+                  }}
                   className="code-block-btn"
                 >
                   <IconImage size={12} /> Open

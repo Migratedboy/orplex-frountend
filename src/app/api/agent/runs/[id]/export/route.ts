@@ -17,6 +17,7 @@ type RouteContext = { params: Promise<{ id: string }> };
  * memory between requests.
  */
 export async function GET(_request: NextRequest, { params }: RouteContext) {
+  try {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
@@ -30,21 +31,25 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
     prisma.runEvent.findMany({
       where: { runId: id },
       orderBy: { sequence: "asc" },
+      take: 2000,
       select: { sequence: true, type: true, payload: true, createdAt: true },
     }),
     prisma.agentArtifact.findMany({
       where: { runId: id },
       orderBy: { createdAt: "asc" },
+      take: 200,
       select: { kind: true, name: true, mediaType: true, content: true },
     }),
     prisma.agentTask.findMany({
       where: { runId: id },
       orderBy: { createdAt: "asc" },
+      take: 500,
       select: { id: true, role: true, status: true, title: true, createdAt: true },
     }),
     prisma.approvalRequest.findMany({
       where: { runId: id },
       orderBy: { createdAt: "asc" },
+      take: 500,
       select: { action: true, payload: true, status: true, decidedBy: true, decidedAt: true, createdAt: true },
     }),
   ]);
@@ -85,4 +90,7 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
   }
 
   return NextResponse.json({ success: true, bundle });
+  } catch {
+    return NextResponse.json({ success: false, error: "Export failed" }, { status: 500 });
+  }
 }

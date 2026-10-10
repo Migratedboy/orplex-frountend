@@ -250,7 +250,7 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
         )}
         {msg.role === "user" && msg.images && msg.images.length > 0 && (
           <div className="msg-images">
-            {msg.images.filter(img => img.dataUrl).map((img, ii) => (
+            {msg.images.filter(img => img.dataUrl && /^(https?:|data:image\/(png|jpe?g|gif|webp);base64,)/i.test(img.dataUrl)).map((img, ii) => (
               <div key={ii} className="msg-image-thumb">
                 <img src={img.dataUrl} alt={img.name} />
                 <div className="msg-image-label">{img.name}</div>

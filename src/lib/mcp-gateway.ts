@@ -35,6 +35,13 @@ export async function resolveLocalUser(): Promise<string | null> {
       const user = await prisma.user.findUnique({ where: { id: pinned }, select: { id: true } });
       return user?.id ?? null;
     }
+    // Fail closed on shared hosts: attributing every token holder to the
+    // oldest account is a privilege mixup. Single-user desktops keep working.
+    const count = await prisma.user.count();
+    if (count > 1) {
+      console.error("[mcp-gateway] Multiple users exist but ORPLEX_MCP_USER_ID is unset — refusing to attribute gateway runs. Set ORPLEX_MCP_USER_ID.");
+      return null;
+    }
     const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
     return user?.id ?? null;
   } catch {

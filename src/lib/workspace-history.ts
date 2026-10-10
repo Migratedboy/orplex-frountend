@@ -1,11 +1,15 @@
-// workspace-history.ts — Server-side durable file-change history.
+// workspace-history.ts — LAYER 2: the single durable file-change history.
 //
-// The browser's file-history.ts is a fast session-local undo buffer. This
-// module is the DURABLE twin: the same changes are appended to
+// The browser's file-history.ts (Layer 1) is a fast session-local undo buffer.
+// This module is the DURABLE twin: the same changes are appended to
 // <workspace>/.orplex/history.jsonl so undo survives machines, tabs, and
 // days. JSONL (one JSON object per line) is deliberate: appends are atomic
 // enough on local disks, a crash can never corrupt earlier entries, and
 // compaction = rewrite the kept tail.
+//
+// Checkpoints (checkpoints.ts) are snapshots OF this layer: each records the
+// entry count at capture (historyLength), and restores append inverse entries
+// here. Restore always goes through this module — never around it.
 //
 // Laptop discipline: appends stream (no full-file reads on record); quota
 // enforcement happens on READ/compaction, not on the hot write path. The
@@ -14,7 +18,7 @@
 // Pure functions over fs — unit-testable with a temp dir.
 
 import { appendFile, readFile, writeFile, mkdir, rename, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 export interface HistoryEntry {
   /** Epoch ms. */
@@ -35,6 +39,25 @@ const MAX_CONTENT_CHARS = 200_000; // per side; larger files skip content captur
 
 export function historyPath(root: string): string {
   return join(root, ".orplex", "history.jsonl");
+}
+
+/**
+ * Containment check: reject paths that escape the workspace root.
+ * Mirrors the logic in src/app/api/workspace-file/route.ts.
+ */
+export function isPathInsideWorkspace(root: string, p: string): boolean {
+  if (!p || p.length > 1024) return false;
+  // Reject absolute Windows drive paths and UNC prefixes outright.
+  if (/^[a-zA-Z]:[\\/]/.test(p) || p.startsWith("\\\\")) return false;
+  if (p.includes("\0")) return false;
+  const resolvedRoot = resolve(root);
+  const full = resolve(resolvedRoot, p);
+  return full === resolvedRoot || full.startsWith(resolvedRoot + sep);
+}
+
+export function safeJoinWorkspace(root: string, p: string): string | null {
+  if (!isPathInsideWorkspace(root, p)) return null;
+  return resolve(resolve(root), p);
 }
 
 function clamp(s: string | null): string | null {
@@ -68,6 +91,7 @@ export async function appendHistory(
   root: string,
   entry: Omit<HistoryEntry, "t" | "peer"> & { t?: number; peer?: string }
 ): Promise<boolean> {
+  if (!isPathInsideWorkspace(root, entry.path)) return false;
   const prev = clamp(entry.prev);
   const next = clamp(entry.next);
   if (prev === null && entry.prev !== null) return false;

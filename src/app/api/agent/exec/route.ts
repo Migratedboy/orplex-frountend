@@ -14,6 +14,7 @@
 import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
+import { checkBurstLimit } from "@/lib/rate-limiter";
 import { isCommandAllowed, buildSafeEnv } from "@/lib/exec-guard";
 import { TIMEOUTS, LIMITS } from "@/lib/constants";
 import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
@@ -36,6 +37,10 @@ export async function POST(request: NextRequest) {
     const userId = session?.user?.id;
     if (!userId) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    if (!(await checkBurstLimit(userId).catch(() => false))) {
+      return Response.json({ error: "Too many requests. Try again in about a minute." }, { status: 429, headers: { "Retry-After": "60" } });
     }
 
     if (!checkExecEnabled()) {
