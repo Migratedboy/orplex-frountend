@@ -810,9 +810,14 @@ const finish = () => {
             onChange={async (e) => {
               const fileList = e.target.files;
               if (!fileList || fileList.length === 0) return;
-              const { processFileList } = await import("@/lib/file-utils");
-              const picked = await processFileList(fileList);
-              if (picked.length > 0) files.addFiles(picked);
+      const { processFileListDetailed } = await import("@/lib/file-utils");
+      const { picked, rejected } = await processFileListDetailed(fileList);
+      if (picked.length > 0) files.addFiles(picked);
+      // Never swallow a refusal: a file that vanished with no message is what
+      // made "the AI ignores my files" look like a model problem.
+      for (const r of rejected) {
+        toastRef.current(`Skipped ${r.name} — ${r.reason}`, "error");
+      }
               if (fileInputRef.current) fileInputRef.current.value = "";
             }}
           />

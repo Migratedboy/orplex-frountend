@@ -94,37 +94,88 @@ export interface ProcessedFile {
   dataUrl?: string;
 }
 
-export async function processFileList(fileList: FileList): Promise<ProcessedFile[]> {
+export interface RejectedFile {
+  name: string;
+  reason: string;
+}
+
+export interface ProcessFileListResult {
+  picked: ProcessedFile[];
+  rejected: RejectedFile[];
+}
+
+/**
+ * Process a picked/dropped list AND report what was refused.
+ *
+ * This used to drop oversized and unreadable files as a bare `null`, so the
+ * composer silently swallowed them: attach a 40MB .zip, see no chip and no
+ * error, and the model is told nothing at all — which looks exactly like "the
+ * AI ignores my files". The rejection reason has to reach the user.
+ */
+export async function processFileListDetailed(
+  fileList: FileList | File[],
+): Promise<ProcessFileListResult> {
+  const rejected: RejectedFile[] = [];
+
   // Read every file concurrently — reads are async I/O, so a sequential loop
   // multiplies user-visible latency by the file count. Promise.all keeps the
-  // result order stable; oversized files and read failures drop out as null.
+  // result order stable.
   const processed = await Promise.all(
-    Array.from(fileList).map(async (file): Promise<ProcessedFile | null> => {
-      try {
-      if (isImageFile(file.name)) {
-        if (file.size > MAX_IMAGE_SIZE) return null;
-        const dataUrl = await readFileAsDataUrl(file);
-        return { name: file.name, content: "", size: file.size, type: "image", dataUrl };
-      }
+    Array.from(fileList).map(
+      async (file): Promise<ProcessedFile | RejectedFile | null> => {
+        try {
+          if (isImageFile(file.name)) {
+            if (file.size > MAX_IMAGE_SIZE) {
+              return {
+                name: file.name,
+                reason: `over the ${MAX_IMAGE_SIZE / 1024 / 1024}MB image limit`,
+              };
+            }
+            const dataUrl = await readFileAsDataUrl(file);
+            return { name: file.name, content: "", size: file.size, type: "image", dataUrl };
+          }
 
-      // Archives are binary: read as a data URL so they can be persisted
-      // locally and later extracted by the extract_archive tool. Reading one
-      // as text produced mojibake and tripped the 500KB text ceiling.
-      if (isArchiveFile(file.name)) {
-        if (file.size > MAX_ARCHIVE_SIZE) return null;
-        const dataUrl = await readFileAsDataUrl(file);
-        return { name: file.name, content: "", size: file.size, type: "archive", dataUrl };
-      }
+          // Archives are binary: read as a data URL so they can be persisted
+          // locally and later extracted. Reading one as text produced mojibake
+          // and tripped the 500KB text ceiling.
+          if (isArchiveFile(file.name)) {
+            if (file.size > MAX_ARCHIVE_SIZE) {
+              return {
+                name: file.name,
+                reason: `over the ${MAX_ARCHIVE_SIZE / 1024 / 1024}MB archive limit`,
+              };
+            }
+            const dataUrl = await readFileAsDataUrl(file);
+            return { name: file.name, content: "", size: file.size, type: "archive", dataUrl };
+          }
 
-
-        if (file.size > MAX_TEXT_SIZE) return null;
-        const content = await readFileAsText(file);
-        return { name: file.name, content, size: file.size, type: "text" };
-      } catch {
-        return null;
-      }
-    })
+          if (file.size > MAX_TEXT_SIZE) {
+            return {
+              name: file.name,
+              reason: `over the ${MAX_TEXT_SIZE / 1024}KB text limit`,
+            };
+          }
+          const content = await readFileAsText(file);
+          return { name: file.name, content, size: file.size, type: "text" };
+        } catch {
+          return { name: file.name, reason: "could not be read" };
+        }
+      },
+    ),
   );
 
-  return processed.filter((f): f is ProcessedFile => f !== null);
+  const picked: ProcessedFile[] = [];
+  for (const entry of processed) {
+    if (!entry) continue;
+    if ("reason" in entry) rejected.push(entry);
+    else picked.push(entry);
+  }
+  return { picked, rejected };
+}
+
+/** Back-compat wrapper: accepted files only. */
+export async function processFileList(
+  fileList: FileList | File[],
+): Promise<ProcessedFile[]> {
+  return (await processFileListDetailed(fileList)).picked;
 }

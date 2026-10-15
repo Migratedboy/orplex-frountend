@@ -14,15 +14,20 @@ import { beforeToolCall, afterToolCall, onFileWrite, onFileEdit, onTaskStart, on
 import { initializePlugins, isPluginEnabled } from "./plugins/initializer";
 import { TIMEOUTS, LIMITS, isBlockedCommand } from "./constants";
 import { readStream, deduplicateWords, dedupeStreamedChunk, replaceLastStatus, parseToolCalls, normalizeThinkingBlocks, stripRedundantFences, appendTaskAnchor, repairInterleavedReplay, type ToolCall, type StreamResult } from "./stream-reader";
-import { createLoopStreaks, trackToolTurn, buildLoopBreakDirective } from "./loop-detect";
+import {
+  createLoopStreaks,
+  trackToolTurn,
+  buildLoopBreakDirective,
+} from "@/lib/agent/contract";
 import { SPARC_PLAN_DIRECTIVE, FORCE_TOOLS_DIRECTIVE, FORCE_BROWSER_TOOLS_DIRECTIVE, SAFETY_CONTINUE_DIRECTIVE, qualityReviewDirective, SELF_REVIEW_DIRECTIVE, verificationRepairDirective, browserRepairDirective, truncationContinue, adaptiveFailureDoctrine } from "./master-prompt";
 import { recordFailure, recordRepairAttempt, clearFailures } from "./failure-memory";
 import { startTaskMeter, recordPromptCall, formatSavingsSummary, logTaskMeter, calibratePromptSizes, computeTaskSavings } from "./prompt-meter";
 import { startRubricObservation, recordToolCall, recordLaneOutcome, finishRubricObservation, isRecordingEnabled, formatTrendReport, readTrendHistoryForReport, getObservationMeta } from "./rubric-recorder";
 import { getWorkspaceKey, buildFinalizePayload, postRunToLedger, hydrateFailureMemoryFromLedger } from "./run-ledger";
 import { buildSystemPrompt } from "./master-prompt";
-import { emitStatus, emitActivity, emitPreview } from "./agent-events";
+import { emitStatus, emitActivity, emitPreview, emitCompaction } from "./agent-events";
 import { dispatchToolCall, type ToolContext } from "./agent/native-tools";
+import { configureCache, searchCache, cacheResponse } from "./semantic-cache";
 import {
   createScratchpad,
   seedScratchpad,
@@ -67,8 +72,38 @@ import {
 //   2. reserveTokenWindow - pace requests so a 60s window is never exceeded
 
 const CHARS_PER_TOKEN = 4;
+
+// RATE LIMIT vs CONTEXT WINDOW are different things and were conflated here.
+// TPM_LIMIT is a throughput ceiling (tokens per MINUTE) and only paces request
+// timing via reserveTokenWindow — it must never size the transcript. Deriving
+// the message budget from it produced MSG_BUDGET_TOKENS = 2500, so compaction
+// fired after ~3 messages and the divider read "6k -> 2k".
 const TPM_LIMIT = 8000; // Groq free tier (gpt-oss-120b, on_demand)
 const TPM_SAFETY = 400; // counting-error margin
+
+// Real per-model context window, resolved from the model catalog (the same
+// `contextWindow` the picker already shows). There is deliberately NO global
+// default window: models here range from ~8k to 400k, so any single hardcoded
+// number either starves small-context models or overflows them.
+// Unknown/unlisted model -> deliberately small and safe.
+const FALLBACK_CONTEXT_TOKENS = 32_000;
+// Compact at half the model's window: leaves room for the system prompt, the
+// next reply, and MCP tool schemas without ever hitting the hard limit.
+const COMPACTION_TRIGGER_RATIO = 0.5;
+
+async function contextWindowForModel(model?: string): Promise<number> {
+  if (!model) return FALLBACK_CONTEXT_TOKENS;
+  try {
+    const { getVerifiedModels } = await import("./model-catalog");
+    const { models } = await getVerifiedModels();
+    const bare = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model;
+    const hit = models.find((m) => m.id === model) || models.find((m) => m.id === bare);
+    const ctx = hit?.contextWindow;
+    return typeof ctx === "number" && ctx > 0 ? ctx : FALLBACK_CONTEXT_TOKENS;
+  } catch {
+    return FALLBACK_CONTEXT_TOKENS;
+  }
+}
 // Calibrate the prompt meter with the REAL master-prompt sizes (once per load).
 try {
   const p = await buildSystemPrompt({ mode: "code" });
@@ -78,7 +113,14 @@ try {
 
 const SYSTEM_PROMPT_TOKENS = 3300; // CODE-mode stack: M3 + techniques + enhanced (added by /api/chat)
 const OUTPUT_RESERVE = 1800; // room for the model's reply
-const MSG_BUDGET_TOKENS = TPM_LIMIT - TPM_SAFETY - SYSTEM_PROMPT_TOKENS - OUTPUT_RESERVE;
+// Headroom inside the window for everything that is NOT conversation history:
+// the system prompt, the reply, and MCP tool schemas. Sized from THIS model's
+// real window (never from the rate limit, and never from a global constant).
+const msgBudgetFor = (contextWindow: number) =>
+  Math.min(
+    Math.floor(contextWindow * COMPACTION_TRIGGER_RATIO),
+    contextWindow - SYSTEM_PROMPT_TOKENS - OUTPUT_RESERVE - TPM_SAFETY
+  );
 const SENT_LOG: { t: number; tokens: number }[] = [];
 
 export function estimateTokens(text: string): number {
@@ -97,7 +139,7 @@ export function estimateTokens(text: string): number {
  */
 export function fitMessagesToBudget(
   messages: { role: string; content: string }[],
-  budgetTokens: number = MSG_BUDGET_TOKENS
+  budgetTokens: number = msgBudgetFor(FALLBACK_CONTEXT_TOKENS)
 ): { role: string; content: string }[] {
   const out = messages.map(m => ({ ...m }));
   if (out.length === 0) return out;
@@ -173,6 +215,36 @@ let anchorTaskMessage = "";
 // Per-task summarizing compactor (see compaction.ts). Created lazily on the
 // first over-budget callModel, reset when a new task starts.
 let taskCompactor: import("./compaction").TranscriptCompactor | null = null;
+// Eviction high-water mark for the CURRENT task. callModel re-enters this
+// block on every tool turn (and again for review/repair lanes), and
+// compactTranscript keeps returning non-null because it takes the incremental
+// path — so emitting unconditionally stamped up to ~11 near-identical
+// dividers for one logical compaction. Only emit when the eviction actually
+// advanced.
+let lastCompactedThrough = 0;
+
+// Semantic response cache — opt-in via env (default off to preserve behavior).
+// Set SEMANTIC_CACHE=1 to enable. Cache is in-memory, per-process, TTL 24h.
+let cacheEnabled = process.env.SEMANTIC_CACHE === "1";
+if (cacheEnabled) {
+  try { configureCache({ enabled: true }); } catch {}
+}
+
+/**
+ * Pull the human-readable summary out of a compacted transcript.
+ *
+ * `compactTranscript` replaces the evicted prefix with a single
+ * `<context_so_far>…</context_so_far>` block (compaction.ts). The divider wants
+ * that body on its own — showing a user the raw wrapper tags would leak an
+ * implementation detail into the UI. Returns null when the shape is unexpected,
+ * so the divider can say "no summary captured" instead of printing markup.
+ */
+function summarizeForDisplay(compacted: Array<{ content?: string }>): string | undefined {
+  const first = compacted?.[0]?.content ?? "";
+  const m = first.match(/<context_so_far>\s*([\s\S]*?)\s*<\/context_so_far>/i);
+  const body = (m?.[1] ?? "").trim();
+  return body.length > 0 ? body : undefined;
+}
 // Number of workspace-memory entries injected into the current task's prompt
 // (surfaced on the run record so the Manager can show retrieval firing).
 let taskMemoriesUsed = 0;
@@ -202,6 +274,9 @@ async function callModel(
   // being dropped. Incremental state = one bounded summary call per eviction.
   // Any failure falls back to fitMessagesToBudget below — never blocks a task.
   let fitted = fitMessagesToBudget(anchored);
+  // Resolved once per callModel, for THIS model's real context window — used by
+  // both the compaction pass and the token-limit retry fallback below.
+  const MSG_BUDGET_TOKENS = msgBudgetFor(await contextWindowForModel(model));
   try {
     const { createTranscriptCompactor } = await import("./compaction");
     taskCompactor ||= createTranscriptCompactor(async (prompt, maxTokens) => {
@@ -218,10 +293,34 @@ async function callModel(
       void maxTokens; // compact profile + readStream caps handle the budget
       return res.content || "";
     });
+    // Resolved once per callModel for THIS model's real context window.
     const compacted = await taskCompactor.compact(anchored, MSG_BUDGET_TOKENS, signal);
     if (compacted) {
       fitted = fitMessagesToBudget(compacted, MSG_BUDGET_TOKENS);
       emitActivity({ type: "status", message: "Context compacted — earlier turns summarized to stay under the token budget", agent: "coder" });
+      // Structured companion to the status line: the timeline renders a
+      // collapsible marker with the real before/after numbers, which the flat
+      // status string cannot carry.
+      //
+      // Token figures are ESTIMATES from the same chars/4 heuristic the
+      // prompt meter uses (see below) — the divider renders them "~"-prefixed
+      // for that reason.
+      //
+      // Gated on the eviction advancing: callModel runs again on every tool
+      // turn and again for review/repair, and each pass compacts a little more.
+      // One logical compaction should read as ONE divider in the timeline.
+      const evictedNow = anchored.length - compacted.length;
+      if (evictedNow > lastCompactedThrough) {
+        lastCompactedThrough = evictedNow;
+        const charsToTokens = (msgs: Array<{ content?: string }>) =>
+          Math.round(msgs.reduce((sum, m) => sum + (m.content || "").length, 0) / 4);
+        emitCompaction({
+          tokensBefore: charsToTokens(anchored),
+          tokensAfter: charsToTokens(fitted),
+          mode: "automatic",
+          summary: summarizeForDisplay(compacted),
+        });
+      }
     }
   } catch {}
   // Meter BEFORE reserving: system block is server-side (profile chosen from
@@ -281,10 +380,34 @@ async function callModel(
   // Transient-blip retry: LIVE-VALIDATED (run 4) — a dropped connection
   // ("fetch failed") on call #2 killed an otherwise-healthy task after it had
   // already produced its plan. One retry with a short backoff covers both
-  // this and the token-window pressure path below. Abort never retries.
+  // this and the token-window pressure path. Abort never retries.
   const attempt = async (msgs: { role: string; content: string }[]): Promise<StreamResult> => {
+    // Semantic cache: check for similar past query (opt-in via SEMANTIC_CACHE=1).
+    // We hash the last user message as the query key.
+    let cacheHit: { response: string; toolsUsed: string[] } | null = null;
+    let cacheKey = "";
+    if (cacheEnabled) {
+      try {
+        const lastUser = [...msgs].reverse().find((m) => m.role === "user")?.content || "";
+        if (lastUser) {
+          cacheKey = lastUser.slice(0, 500);
+          const hit = searchCache(cacheKey);
+          if (hit) {
+            cacheHit = { response: hit.response, toolsUsed: hit.toolsUsed };
+            callbacks?.onChunk?.(hit.response);
+            return { content: hit.response, thinking: "", toolCalls: [] };
+          }
+        }
+      } catch {}
+    }
+
     try {
-      return await readStream(msgs, conversationId, callbacks, mode, images, signal, effort, profile, { model, mcpRemotes: sendMcpRemotes });
+      const result = await readStream(msgs, conversationId, callbacks, mode, images, signal, effort, profile, { model, mcpRemotes: sendMcpRemotes });
+      // Cache successful response (if we have a cache key and content).
+      if (cacheEnabled && cacheKey && result.content) {
+        try { cacheResponse(cacheKey, result.content, cacheHit?.toolsUsed || []); } catch {}
+      }
+      return result;
     } catch (err) {
       if (signal?.aborted) throw err;
       const { isTransientError } = await import("./retry");
@@ -292,7 +415,11 @@ async function callModel(
       await new Promise((r) => setTimeout(r, 1500));
       updateTaskStatus("tool_executing", "Connection blip — retrying…");
       emitActivity({ type: "status", message: "Provider blip — retrying once", agent: "coder" });
-      return await readStream(msgs, conversationId, callbacks, mode, images, signal, effort, profile, { model, mcpRemotes: sendMcpRemotes });
+      const retryResult = await readStream(msgs, conversationId, callbacks, mode, images, signal, effort, profile, { model, mcpRemotes: sendMcpRemotes });
+      if (cacheEnabled && cacheKey && retryResult.content) {
+        try { cacheResponse(cacheKey, retryResult.content, []); } catch {}
+      }
+      return retryResult;
     }
   };
   try {
@@ -684,6 +811,7 @@ export async function runInBackground(
   // Fire plugin hooks
   anchorTaskMessage = userMessage; // for callModel's trim-proof task anchor
   taskCompactor?.reset(); // fresh summary state per task
+  lastCompactedThrough = 0; // ...and a fresh compaction-marker baseline
   taskMemoriesUsed = 0;
   getCurrentTask() && ((getCurrentTask() as BackgroundTaskLike).memoriesUsed = 0);
   onTaskStart(userMessage).catch(() => {});
@@ -1276,7 +1404,26 @@ export async function runInBackground(
           continue;
         }
 
-        const outcome = await dispatchToolCall(call, toolCtx);
+        // A throwing tool must not take down the turn. Several tools are only
+        // partially guarded internally (read_file's whole-file read,
+        // list_files, the write/edit approval paths, ask_question), and an
+        // unhandled rejection used to propagate out of this loop: the
+        // remaining tool calls in the turn never ran, the model never received
+        // their <tool_result>, and the whole task died with a raw error.
+        // Aborts still propagate — they are control flow, not tool failures.
+        let outcome: Awaited<ReturnType<typeof dispatchToolCall>>;
+        try {
+          outcome = await dispatchToolCall(call, toolCtx);
+        } catch (err) {
+          if (abortSignal?.aborted || (err as { name?: string })?.name === "AbortError") throw err;
+          const msg = err instanceof Error ? err.message : String(err);
+          toolResults += `<tool_result name="${call.name}">\nerror: ${msg}\n</tool_result>\n`;
+          try {
+            toolCtx.replaceStatus(`[FAIL] ${call.name} — ${msg.slice(0, 120)}`);
+            toolCtx.syncDisplay();
+          } catch {}
+          continue;
+        }
         toolResults += outcome.resultXml;
         if (outcome.dedupRead) skippedDueToDup = true;
         // Screenshot pixels → vision channel on the next turn (capped).
@@ -1326,10 +1473,25 @@ export async function runInBackground(
         scratchNudged = true;
         scratchNudge = `\n[SCRATCHPAD] Use scratchpad_update to record your plan, key findings, and next move before continuing.`;
       }
+      // "You now have all the information you need" was asserted on EVERY
+      // tool turn, including turns whose result was "No files found at that
+      // path." That is an affirmative instruction to proceed on absent data,
+      // which is how an empty workspace produced confident speculation. Only
+      // claim sufficiency when the results actually contain something, and
+      // tell the model plainly when they do not.
+      const resultsAreEmpty =
+        !contextFiles.size &&
+        /No files found at that path\.|no results|not found|No results found/i.test(
+          toolResults,
+        );
+      const sufficiencyDirective = resultsAreEmpty
+        ? "The tool returned NOTHING for this call. Do not call it again with the same or a similar argument — repeating it cannot succeed. Either try a materially different action, or tell the user plainly what you could not find and stop."
+        : "You now have all the information you need. Act on it: write files or answer. Do NOT re-read files you've already read.";
+
       apiMessages = [
         ...apiMessages,
         { role: "assistant", content: streamedContent || "" },
-        { role: "user", content: `[TOOL RESULTS]\n${toolResults}${contextFiles.size ? `\n${buildWorkspaceDigest()}` : ""}${scratchBlock ? `\n${scratchBlock}` : ""}${scratchNudge}\nYou now have all the information you need. Act on it: write files or answer. Do NOT re-read files you've already read.` },
+        { role: "user", content: `[TOOL RESULTS]\n${toolResults}${contextFiles.size ? `\n${buildWorkspaceDigest()}` : ""}${scratchBlock ? `\n${scratchBlock}` : ""}${scratchNudge}\n${sufficiencyDirective}` },
       ];
     }
 

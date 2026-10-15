@@ -38,7 +38,12 @@ export interface StoredImage {
  */
 export async function uploadImage(dataUrl: string): Promise<StoredAttachment | null> {
   try {
-    const res = await fetch("/api/attachments", {
+    // apiFetch, NOT raw fetch: it routes through API_BASE and sends credentials.
+    // A raw same-origin fetch hit the local Next server without the NextAuth
+    // cookie in split/Electron deployments and came back 401 - the upload
+    // silently no-opped, so the model got a filename and no contents.
+    const { apiFetch } = await import("@/lib/api-base");
+    const res = await apiFetch("/api/attachments", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dataUrl }),
@@ -98,7 +103,8 @@ export async function extractStoredArchive(
   const parsed = /^attachment:([a-f0-9]{32})(\.[a-z0-9]{2,5})$/.exec(ref.trim());
   if (!parsed) return null;
   try {
-    const res = await fetch("/api/attachments/extract", {
+    const { apiFetch } = await import("@/lib/api-base");
+    const res = await apiFetch("/api/attachments/extract", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

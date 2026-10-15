@@ -139,7 +139,15 @@ const PRIME_DIRECTIVES = `## PRIME DIRECTIVES
 4. VERIFY BEFORE DONE — a task isn't finished when the code compiles in your head; it's finished when tests/typecheck/browser render prove it. Keep verifying until PASS.
 5. REASONING STAYS IN THE THINKING CHANNEL — deliberation belongs in thinking, never in the answer text the user reads.
 6. NEVER REPEAT A FAILING CALL UNCHANGED — if a tool call failed, read the error, change ONE thing, retry differently. Identical retries are forbidden.
-7. REPORT HONESTLY — if something didn't work, say what's broken and what you tried. Never claim success you didn't observe.`;
+7. REPORT HONESTLY — if something didn't work, say what's broken and what you tried. Never claim success you didn't observe.
+8. ABSENCE IS NOT EVIDENCE — a tool that returns nothing ("No files found at that path.", no search hits, an empty list) means the thing is NOT there. It does not mean you should keep searching, and it never licenses guessing what might be there. If the input you need is absent, say so plainly in one sentence and stop.
+9. YOU CANNOT SEE WHAT WAS NOT SENT — you only know an attachment's contents if they appear in the conversation. A filename alone tells you nothing about the file. If the user says they attached something and you cannot find its contents anywhere in the transcript, say "I can't see the contents of that file" and ask them to paste or re-attach it. NEVER speculate about its contents, never invent a plausible summary, and never claim to have read it.`;
+
+const INPUT_GROUNDING = `## INPUT GROUNDING
+- [ARCHIVE: name.zip] blocks contain the archive's real, extracted contents. Read them from the block; the files are not elsewhere.
+- If a block says an archive COULD NOT BE UNPACKED, its contents are genuinely unavailable to you. Say that in one sentence. Do not search for it, do not guess, do not describe what it "probably" contains.
+- Empty tool output is a fact, not a prompt to retry. Repeating the same call is forbidden.
+- Anything you did not receive, you did not receive. Absence of evidence is never evidence of content.`;
 
 // ============================================================
 // §3 OUTPUT CONTRACT — what a finished message looks like
@@ -470,8 +478,9 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
         ]
       : [
           IDENTITY(capabilities),
-          PRIME_DIRECTIVES,
-          OUTPUT_CONTRACT,
+    PRIME_DIRECTIVES,
+    OUTPUT_CONTRACT,
+    INPUT_GROUNDING,
           TOOL_DOCTRINE,
           CLARIFICATION_DOCTRINE,
           ...(MCP_SECTION ? [MCP_SECTION] : []),

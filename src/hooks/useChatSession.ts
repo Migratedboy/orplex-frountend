@@ -608,9 +608,14 @@ export function useChatSession() {
             blocks.push(extractedArchiveToPrompt(s.name, ext));
           } else {
             const rel = ".orplex/attachments/" + s.ref.slice("attachment:".length);
+            // Say so PLAINLY. A silent fallback made this look like "the model
+            // ignores my zip" when the truth was the upload/extraction never
+            // happened.
             blocks.push(
-              `[ARCHIVE: ${s.name}] stored at ${rel} but could not be unpacked here. ` +
-                `Ask the user to open a local workspace session, or re-attach the files directly.`,
+              `[ARCHIVE: ${s.name}] COULD NOT BE UNPACKED. The file is stored at ${rel} ` +
+                `but extraction failed on this machine, so its contents are NOT available to you. ` +
+                `Tell the user plainly that you cannot see the archive's contents and ask them to ` +
+                `re-attach the files individually, rather than guessing at what is inside.`,
             );
           }
         }

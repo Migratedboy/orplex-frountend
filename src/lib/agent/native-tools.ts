@@ -26,9 +26,28 @@ import { CLARIFICATION_SKIP } from "../background-chat";
 import { writeFileAudited, editFileAudited, type FileOpsFs, type FileOpsCounters } from "./file-ops";
 import { isServerCommand, diagnosePortConflict } from "./serve-helpers";
 import type { ToolCall } from "../stream-reader";
-import { apiFetch } from "@/lib/api-base";
+import { apiFetch, withApiBase, API_BASE } from "@/lib/api-base";
 
-const base = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:5000";
+// NOTE: this file runs on BOTH lanes — the browser worker and the server
+// executor — so origin resolution cannot be a single constant. It previously
+// used its own `base`, defaulted to "http://localhost:5000", so in a cloud or
+// packaged deployment six tool calls (grep x2, search, screenshot, preview,
+// verify) aimed at the END USER'S OWN machine: grep/search degraded to an
+// in-memory fallback that still returned a plausible-looking answer, and the
+// rest errored outright.
+//
+//   browser -> withApiBase() honours NEXT_PUBLIC_API_BASE_URL (split deploy)
+//   server  -> needs an absolute origin; prefer the same var, then
+//              NEXT_PUBLIC_APP_URL, then the historical localhost default so
+//              the desktop install is unchanged.
+function resolveApiUrl(path: string): string {
+  if (typeof window !== "undefined") return withApiBase(path);
+  const origin = (
+    API_BASE ||
+    (process.env.NEXT_PUBLIC_APP_URL || "http://localhost:5000").trim().replace(/\/+$/, "")
+  );
+  return `${origin}${path}`;
+}
 
 // === Phase 8 lane gate (ORPLEX_MCP, default "sdk") ===========================
 // Server env isn't visible here, so ask GET /api/agent/mcp once per session
@@ -285,7 +304,7 @@ export async function dispatchToolCall(
         { tool: call.name },
         undefined,
         mcpRisk.level
-      );
+      , ctx.abortSignal);
       if (!approved) {
         ctx.stats.rejectedAction();
         result(`<tool_result name="${call.name}">rejected by user</tool_result>\n`);
@@ -315,7 +334,7 @@ export async function dispatchToolCall(
     const tool = (call as unknown as Record<string, unknown>).tool as string | undefined;
     const args = (call as unknown as Record<string, unknown>).arguments as Record<string, unknown> ?? {};
     if (!serverId || !tool) {
-      result(`<tool_result name="mcp_call">\nerror: mcp_call requires serverId and tool (e.g. mcp_call({serverId: "supabase", tool: "list_tables", arguments: {}})). Use mcp_search_tools to list connected servers and their tools.\n</tool_result>\n`);
+      result(`<tool_result name="mcp_call">\nerror: mcp_call requires serverId and tool (e.g. mcp_call({serverId: "supabase", tool: "list_tables", arguments: {}}). Use mcp_search_tools to list connected servers and their tools.\n</tool_result>\n`);
       return { resultXml: toolResults, blocked: false };
     }
     const mcpName = `mcp__${serverId}__${tool}`;
@@ -340,7 +359,7 @@ export async function dispatchToolCall(
         { tool: mcpName },
         undefined,
         mcpRisk.level
-      );
+      , ctx.abortSignal);
       if (!approved) {
         ctx.stats.rejectedAction();
         result(`<tool_result name="mcp_call">rejected by user</tool_result>\n`);
@@ -396,6 +415,42 @@ export async function dispatchToolCall(
     return { resultXml: toolResults, blocked: false };
   }
 
+  // ── extract_archive ───────────────────────────────────────────────────
+  // Available on EVERY lane (M3 + the lean Groq/NVIDIA set, and therefore
+  // every BYOK provider, which defaults to the full set). Extracting an
+  // attached .zip is the only way its contents become readable, so gating it
+  // to full-tier providers would dead-end the feature on free tiers.
+  if (call.name === "extract_archive" && call.path) {
+    ctx.setStatus("tool_executing", `Extracting ${call.path}…`);
+    emitActivity({ type: "tool", message: `Extracting ${call.path}`, agent: "coder" });
+    try {
+      const { extractZip } = await import("@/lib/agent/archive-extract");
+      const out = await extractZip({
+        root: ctx.fs.directoryName,
+        archivePath: String(call.path),
+        destRel: typeof call.dest === "string" ? call.dest : undefined,
+      });
+      result(`<tool_result name="extract_archive" path="${call.path}">\n${out.summary}\n</tool_result>\n`);
+      ctx.replaceStatus(
+        out.ok
+          ? `[OK] Extracted ${out.written.length} file(s) from \`${call.path}\``
+          : `[ERR] extract_archive failed: ${out.error ?? "unknown"}`,
+      );
+      ctx.appendDisplay(
+        out.ok
+          ? `[OK] Extracted \`${call.path}\` → \`${out.dest}/\` (${out.written.length} files)\n`
+          : `[ERR] ${out.summary}\n`,
+      );
+      ctx.syncDisplay();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      result(`<tool_result name="extract_archive" path="${call.path}">\n[Error: ${msg}]\n</tool_result>\n`);
+      ctx.appendDisplay(`[ERR] extract_archive failed: ${msg}\n`);
+      ctx.syncDisplay();
+    }
+    return { resultXml: toolResults, blocked: false };
+  }
+
   // ── read_file ─────────────────────────────────────────────────────────
   if (call.name === "read_file" && call.path) {
     const readCount = ctx.readFiles.get(call.path) || 0;
@@ -404,12 +459,20 @@ export async function dispatchToolCall(
     // Dedup: after enough reads, serve the cached FULL content — a 5-line
     // preview made the model re-read forever (it could never see the file).
     if (readCount >= MAX_DUPLICATE_READS) {
-      const cached = ctx.contextFiles.get(call.path);
-      const preview = ctx.readResults.get(call.path) || "(already read)";
-      result(`<tool_result name="read_file" path="${call.path}">\n[Already read ${readCount} times — showing cached content, do NOT re-read]\n${cached ?? preview}\n</tool_result>\n`);
-      ctx.appendDisplay(`[OK] Read \`${call.path}\` (cached — already read ${readCount}×)\n`);
-      ctx.syncDisplay();
-      return { resultXml: toolResults, blocked: false };
+      // A PAGED re-read must never be short-circuited. The dedup cache only
+      // ever stores whole-file content (contextFiles) or an 80-char preview, so
+      // short-circuiting a page request served the model a 5-line preview under
+      // a "showing cached content" banner — while the very recovery it needed
+      // ("re-read with offset") was what had just been refused.
+      const isPageRequest = call.offset !== undefined || call.limit !== undefined;
+      if (!isPageRequest) {
+        const cached = ctx.contextFiles.get(call.path);
+        const preview = ctx.readResults.get(call.path) || "(already read)";
+        result(`<tool_result name="read_file" path="${call.path}">\n[Already read ${readCount} times — showing cached content, do NOT re-read]\n${cached ?? preview}\n</tool_result>\n`);
+        ctx.appendDisplay(`[OK] Read \`${call.path}\` (cached — already read ${readCount}×)\n`);
+        ctx.syncDisplay();
+        return { resultXml: toolResults, blocked: false };
+      }
     }
 
     ctx.readFiles.set(call.path, readCount + 1);
@@ -443,7 +506,9 @@ export async function dispatchToolCall(
       }
     }
 
-    let content = (await ctx.fs.readFile?.(call.path)) || "(file not available)";
+    // `??` not `||`: an empty file legitimately reads as "", and `||` reported it
+    // as missing — sending the model hunting for a file that is right there.
+    let content = (await ctx.fs.readFile?.(call.path)) ?? "(file not available)";
     if (wantsPage && content.length > 0 && !content.startsWith("[Error")) {
       // Client lane (no readPage): full text is already in memory — slice it.
       const { text, startLine, endLine, totalLines } = pageByLines(content, call.offset, call.limit);
@@ -484,10 +549,25 @@ export async function dispatchToolCall(
     ctx.appendDisplay(`analysing [${call.path || "."}]\n`);
     ctx.syncDisplay();
 
-    const listing = listFilesUnderPath(call.path || "", ctx.fileTree);
-    const fileCount = listing.split("\n").length;
-    result(`<tool_result name="list_files" path="${call.path || "."}">\n${listing}\n</tool_result>\n`);
-    ctx.replaceStatus(`[SUCCESS] Listed ${fileCount} file(s) in \`${call.path || "."}\``);
+        const listing = listFilesUnderPath(call.path || "", ctx.fileTree);
+        // The empty sentinel is a single line, so splitting it yielded
+        // fileCount === 1 and the status chip read
+        // "[SUCCESS] Listed 1 file(s)" for a COMPLETELY empty workspace. That
+        // told both the user and the model the search had worked, so the model
+        // kept re-listing a workspace that has nothing in it. Count real
+        // entries, and report an empty result as empty.
+        const EMPTY_SENTINEL = "No files found at that path.";
+        const isEmpty = listing.trim() === EMPTY_SENTINEL;
+        const fileCount = isEmpty ? 0 : listing.split("\n").filter(Boolean).length;
+        const toolBody = isEmpty
+          ? `${EMPTY_SENTINEL}\nThis path is empty. Do NOT call list_files on it again — it will return the same result. If you were looking for a file that is not here, say so to the user instead of searching repeatedly.`
+          : listing;
+        result(`<tool_result name="list_files" path="${call.path || "."}">\n${toolBody}\n</tool_result>\n`);
+        ctx.replaceStatus(
+          isEmpty
+            ? `[EMPTY] No files found in \`${call.path || "."}\``
+            : `[SUCCESS] Listed ${fileCount} file(s) in \`${call.path || "."}\``,
+        );
     ctx.syncDisplay();
     return { resultXml: toolResults, blocked: false };
   }
@@ -563,7 +643,7 @@ export async function dispatchToolCall(
           `Overwrite ${call.path} (${lineCount} lines)`,
           { path: call.path, existed },
           diff
-        );
+        , undefined, ctx.abortSignal);
         if (!approved) {
           ctx.stats.rejectedAction();
           result(`<tool_result name="write_file" path="${call.path}">rejected by user — do not write this file again without permission; adjust your approach.</tool_result>\n`);
@@ -608,7 +688,7 @@ export async function dispatchToolCall(
         `Append to ${call.path} (${chunkLines} lines)`,
         { path: call.path, existed: true },
         computeDiff("", call.content)
-      );
+      , undefined, ctx.abortSignal);
       if (!approved) {
         ctx.stats.rejectedAction();
         result(`<tool_result name="write_file_chunk" path="${call.path}">rejected by user — do not write this file again without permission; adjust your approach.</tool_result>\n`);
@@ -670,7 +750,7 @@ export async function dispatchToolCall(
         `Edit ${call.path}`,
         { path: call.path, old_text: call.old_text, new_text: call.new_text },
         editDiff
-      );
+      , undefined, ctx.abortSignal);
     }
 
     if (!approved) {
@@ -698,7 +778,7 @@ export async function dispatchToolCall(
     ctx.syncDisplay();
 
     const diffs = edits.map(e => `--- ${e.path}\n+++ ${e.path}\n${computeDiff(e.old_text, e.new_text)}`).join("\n\n");
-    const approved = await requestApproval("edit_file", `Batch edit ${edits.length} file(s)`, { edits }, diffs);
+    const approved = await requestApproval("edit_file", `Batch edit ${edits.length} file(s)`, { edits }, diffs, undefined, ctx.abortSignal);
 
     if (!approved) {
       ctx.stats.rejectedAction();
@@ -736,7 +816,7 @@ export async function dispatchToolCall(
     let results: string | null = null;
     let engine = "cache";
     try {
-      const res = await ctxFetch(`${base}/api/agent/grep`, {
+      const res = await ctxFetch(resolveApiUrl(`/api/agent/grep`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pattern: call.query }),
@@ -771,7 +851,7 @@ export async function dispatchToolCall(
     let results: string | null = null;
     let engine = "cache";
     try {
-      const res = await ctxFetch(`${base}/api/agent/grep`, {
+      const res = await ctxFetch(resolveApiUrl(`/api/agent/grep`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pattern: call.query, mode: "snippets", context: call.context }),
@@ -801,7 +881,7 @@ export async function dispatchToolCall(
     ctx.syncDisplay();
 
     try {
-      const res = await ctxFetch(`${base}/api/search`, {
+      const res = await ctxFetch(resolveApiUrl(`/api/search`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: call.query }),
@@ -845,7 +925,7 @@ export async function dispatchToolCall(
       ctx.setStatus("awaiting_approval", `Waiting for approval: ${call.command.slice(0, 40)}`);
       ctx.appendDisplay(`running [${call.command}] — awaiting approval\n`);
       ctx.syncDisplay();
-      approved = await requestApproval("run_command", `Run: ${call.command}`, { command: call.command });
+      approved = await requestApproval("run_command", `Run: ${call.command}`, { command: call.command }, undefined, undefined, ctx.abortSignal);
     } else {
       ctx.setStatus("tool_executing", `Running: ${call.command.slice(0, 40)}...`);
       emitActivity({ type: "tool", message: `Running ${call.command.slice(0, 40)}`, agent: "coder" });
@@ -940,7 +1020,10 @@ export async function dispatchToolCall(
       } else {
         ctx.stats.failedStep();
         const portHint = diagnosePortConflict(call.command, execData.stderr || execData.stdout || "");
-        result(`<tool_result name="run_command" command="${call.command}">\n${execData.stdout}${execData.stderr ? `\nSTDERR: ${execData.stderr}` : execData.stderr}${portHint}\n</tool_result>\n`);
+        // The false branch used to interpolate execData.stderr itself, emitting the
+      // literal string "undefined" into the model's context when stderr was
+      // undefined (line 959 already had the correct form).
+      result(`<tool_result name="run_command" command="${call.command}">\n${execData.stdout}${execData.stderr ? `\nSTDERR: ${execData.stderr}` : ""}${portHint}\n</tool_result>\n`);
         ctx.replaceStatus(`[FAIL] Command failed: \`${call.command.slice(0, 50)}\` (exit ${execData.exitCode})${portHint ? " — port busy" : ""}`);
         recordFailure("command", `${call.command}\n${execData.stderr || execData.stdout || "exit " + execData.exitCode}`, []);
       }
@@ -979,7 +1062,7 @@ export async function dispatchToolCall(
       { command: call.command, sandbox: true },
       undefined,
       "medium" // sandboxed execution is contained — never above medium
-    );
+    , ctx.abortSignal);
 
     if (!approved) {
       ctx.stats.rejectedAction();
@@ -1103,7 +1186,7 @@ export async function dispatchToolCall(
     ctx.syncDisplay();
 
     try {
-      const res = await ctxFetch(`${base}/api/agent/screenshot`, {
+      const res = await ctxFetch(resolveApiUrl(`/api/agent/screenshot`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: call.url, width: 1280, height: 720 }),
@@ -1257,7 +1340,7 @@ export async function dispatchToolCall(
 
     try {
       emitPreview(call.url, "preview_browser");
-      const res = await ctxFetch(`${base}/api/agent/preview`, {
+      const res = await ctxFetch(resolveApiUrl(`/api/agent/preview`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: call.url, action: "fetch" }),
@@ -1292,7 +1375,7 @@ export async function dispatchToolCall(
     ctx.syncDisplay();
 
     try {
-      const res = await ctxFetch(`${base}/api/agent/verify`, {
+      const res = await ctxFetch(resolveApiUrl(`/api/agent/verify`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

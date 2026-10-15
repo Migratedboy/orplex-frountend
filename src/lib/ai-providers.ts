@@ -5,12 +5,25 @@
 import { withRetry } from "./retry";
 import { deduplicateWords } from "./tool-text";
 import { getProviderDef } from "./provider-registry";
+import { resolveMaxOutputTokens } from "./model-output-caps";
 
 export type ContentPart = { type: string; text?: string; image_url?: { url: string } };
 export type MessageContent = string | ContentPart[];
 
 export interface AIProviderAdapter {
   name: string;
+  /**
+   * Whether this provider accepts OpenAI-style multimodal content parts
+   * (`[{type:"text"...},{type:"image_url"...}]`).
+   *
+   * Adapters that inherit `OpenAICompatibleAdapter.stream()` flatten every
+   * message to text, which silently discarded attached images — so picking a
+   * vision-capable model (Gemini, Claude, GPT-4o) still sent NO image, because
+   * the flattening happened in the shared adapter rather than per provider.
+   * Providers that do not accept image parts must stay false so they keep
+   * receiving plain text.
+   */
+  supportsVision?: boolean;
   stream(messages: { role: string; content: MessageContent }[]): Promise<ReadableStream>;
   complete(messages: { role: string; content: MessageContent }[]): Promise<string>;
   /**
@@ -52,6 +65,32 @@ interface OpenAICompatibleConfig {
   headers?: Record<string, string>;
   streamTitle?: string;
   completeTitle?: string;
+  /** Provider accepts OpenAI-style multimodal parts. Default false. */
+  supportsVision?: boolean;
+  /**
+   * Registry auth style. "x-api-key" providers (Anthropic-style) must receive
+   * the key as `x-api-key`, NOT `Authorization: Bearer`. The registry declares
+   * this and the model-listing lanes already honour it; the chat and executor
+   * lanes used to send Bearer regardless, which silently 401s the next
+   * provider registered as x-api-key.
+   */
+  authStyle?: "bearer" | "x-api-key";
+}
+
+/**
+ * Reasoning-family models that reject a `temperature` other than the default
+ * (OpenAI o-series / gpt-5) or reject any value below 1 (Claude 4.7+). Sending
+ * it to them is a guaranteed HTTP 400, so the parameter is omitted instead.
+ */
+const REJECTS_TEMPERATURE_RE =
+  /^(?:.*\/)?(?:o1|o3|o4|gpt-5)(?:-|$)|claude-(?:opus|sonnet|haiku)-?[45]\.[7-9]|claude-(?:opus|sonnet|haiku)-?[5-9]/i;
+
+/** Build the auth headers for a request, honouring the registry auth style. */
+function authHeaders(apiKey: string, authStyle: "bearer" | "x-api-key" | undefined, extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (authStyle === "x-api-key") headers["x-api-key"] = apiKey;
+  else headers["Authorization"] = `Bearer ${apiKey}`;
+  return { ...headers, ...(extra ?? {}) };
 }
 
 export class OpenAICompatibleAdapter implements AIProviderAdapter {
@@ -60,9 +99,12 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
   private _apiKeyEnvVar: string | undefined;
   protected model: string;
   protected baseUrl: string;
+  /** Whether this adapter may send OpenAI-style multimodal content parts. */
+  public supportsVision = false;
   protected headers: Record<string, string>;
   protected streamTitle: string;
   protected completeTitle: string;
+  protected authStyle: "bearer" | "x-api-key";
 
   /** Read API key lazily — avoids Turbopack env-var timing issues where
    *  process.env is undefined when the module first evaluates. */
@@ -76,6 +118,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
 
   constructor(config: OpenAICompatibleConfig & { apiKeyEnvVar?: string }) {
     this.name = config.name;
+    this.supportsVision = config.supportsVision === true;
     this._apiKey = config.apiKey || "";
     this._apiKeyEnvVar = config.apiKeyEnvVar;
     // Try to read env var immediately if provided
@@ -87,6 +130,27 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     this.headers = config.headers || {};
     this.streamTitle = config.streamTitle || config.name;
     this.completeTitle = config.completeTitle || config.name;
+    this.authStyle = config.authStyle ?? "bearer";
+  }
+
+  /**
+   * Token params for one request.
+   *
+   * The output budget used to be a hardcoded literal (500000 on `complete()`,
+   * 8192 on `completeWithTools()`). Both are wrong in opposite directions: the
+   * first exceeds EVERY provider's ceiling and 400s, the second truncates
+   * frontier-model tool calls mid-JSON. Sizing per model is the same fix
+   * /api/chat already uses via resolveMaxOutputTokens.
+   *
+   * Reasoning models also take `max_completion_tokens`, not the legacy
+   * `max_tokens`, and reject a non-default `temperature`.
+   */
+  protected tokenParams(requested: number): Record<string, unknown> {
+    const reasoning = REJECTS_TEMPERATURE_RE.test(this.model);
+    return {
+      ...(reasoning ? { max_completion_tokens: resolveMaxOutputTokens(this.model, requested) } : { max_tokens: resolveMaxOutputTokens(this.model, requested) }),
+      ...(reasoning ? {} : { temperature: 0.3 }),
+    };
   }
 
   // Flatten ContentPart[] to string for providers that don't support multimodal
@@ -95,26 +159,50 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     return content.filter(p => p.type === "text").map(p => p.text).join("\n");
   }
 
+  /**
+   * Prepare message content for the wire.
+   *
+   * This used to be `flattenContent()` unconditionally, which threw away every
+   * `image_url` part for EVERY provider — the shared adapter is inherited by
+   * OpenRouter/NVIDIA/Groq, so a user could pick a vision model and still send
+   * no image at all.
+   *
+   * Now: a message that carries image parts is passed through in the OpenAI
+   * multimodal shape when the provider accepts it, and flattened to text when
+   * it doesn't (so a text-only provider degrades to the description the vision
+   * preprocessor produced, rather than a malformed request).
+   */
+  protected prepareContent(content: MessageContent): MessageContent {
+    if (typeof content === "string") return content;
+    const hasImage = content.some((p) => p.type === "image_url");
+    if (!hasImage || !this.supportsVision) return this.flattenContent(content);
+    // OpenAI-compatible multimodal shape: keep text + image_url parts, drop
+    // anything else the preprocessor may have attached.
+    return content
+      .filter((p) => p.type === "text" || p.type === "image_url")
+      .map((p) =>
+        p.type === "image_url" && p.image_url
+          ? { type: "image_url", image_url: { url: p.image_url.url } }
+          : { type: "text", text: p.text ?? "" }
+      );
+  }
+
   async stream(messages: { role: string; content: MessageContent }[]): Promise<ReadableStream> {
     const flattened = messages.map(m => ({
       role: m.role,
-      content: this.flattenContent(m.content),
+      content: this.prepareContent(m.content),
     }));
 
     const res = await fetch(this.baseUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-        ...this.headers,
-      },
+      headers: authHeaders(this.apiKey, this.authStyle, this.headers),
       body: JSON.stringify({
         model: this.model,
         messages: [{ role: "system", content: SYSTEM_PROMPT }, ...flattened],
-        max_tokens: 500000,
-        temperature: 0.7,
+        ...this.tokenParams(16_384),
         stream: true,
       }),
+      signal: AbortSignal.timeout(150_000),
     });
 
     if (!res.ok) {
@@ -137,22 +225,22 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     return withRetry(async () => {
       const res = await fetch(this.baseUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
-          ...this.headers,
-        },
+        headers: authHeaders(this.apiKey, this.authStyle, this.headers),
         body: JSON.stringify({
           model: this.model,
           messages: [{ role: "system", content: SYSTEM_PROMPT }, ...flattened],
-          max_tokens: 500000,
-          temperature: 0.3,
+          ...this.tokenParams(16_384),
           stream: false,
         }),
         signal: AbortSignal.timeout(150_000),
       });
 
-      if (!res.ok) throw new Error(`LLM API error: ${res.status}`);
+      if (!res.ok) {
+        // Keep the provider's own words: without them a budget rejection is an
+        // unactionable "LLM API error: 400".
+        const err = await res.text().catch(() => "");
+        throw new Error(`LLM API error: ${res.status} ${err.slice(0, 200)}`);
+      }
       const data = await res.json();
       return data.choices?.[0]?.message?.content || "";
     }, { attempts: 2, baseDelayMs: 3000, label: `adapter:${this.name || "complete"}`, attemptTimeoutMs: 160_000 });
@@ -172,11 +260,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     return withRetry(async () => {
       const res = await fetch(this.baseUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
-          ...this.headers,
-        },
+        headers: authHeaders(this.apiKey, this.authStyle, this.headers),
         body: JSON.stringify({
           model: this.model,
           messages: flattened,
@@ -185,8 +269,10 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
             function: { name: t.name, description: t.description, parameters: t.parameters },
           })),
           tool_choice: "auto",
-          max_tokens: 8192, // bounded: a rambling reasoning model must not balloon memory
-          temperature: 0.3,
+          // Per-model budget: a fixed 8192 truncated frontier-model tool calls
+          // mid-JSON (producing an empty arg set and a bogus "path required"),
+          // while a budget above a small model's ceiling 400s the run outright.
+          ...this.tokenParams(16_384),
           stream: false,
         }),
         signal: AbortSignal.timeout(150_000),
@@ -232,10 +318,15 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
 export class OpenRouterAdapter extends OpenAICompatibleAdapter {
   constructor(apiKey?: string, model?: string) {
     super({
-      name: "openrouter",
-      apiKey: apiKey || "",
-      apiKeyEnvVar: "OPENROUTER_API_KEY",
-      model: model || process.env.OPENROUTER_MODEL || "qwen/qwen3.8-27b:free",
+    name: "openrouter",
+    // OpenRouter proxies Gemini / Claude / GPT-4o vision and speaks the
+    // OpenAI multimodal content shape, so image parts must survive.
+    supportsVision: true,
+    apiKey: apiKey || "",
+    apiKeyEnvVar: "OPENROUTER_API_KEY",
+      // Default comes from the REGISTRY so the executor and the chat lane cannot
+    // disagree about what "OpenRouter" means.
+    model: model || process.env.OPENROUTER_MODEL || getProviderDef("openrouter")!.fallbackModel,
       baseUrl: "https://openrouter.ai/api/v1/chat/completions",
       headers: {
         "HTTP-Referer": "https://orplex.tech",
@@ -252,9 +343,11 @@ export class OpenRouterAdapter extends OpenAICompatibleAdapter {
 export class NvidiaAdapter extends OpenAICompatibleAdapter {
   constructor(apiKey?: string, model?: string) {
     super({
-      name: "nvidia",
-      apiKey: apiKey || "",
-      apiKeyEnvVar: "NVIDIA_API_KEY",
+    name: "nvidia",
+    // NIM serves VLM checkpoints on the OpenAI-compatible multimodal shape.
+    supportsVision: true,
+    apiKey: apiKey || "",
+    apiKeyEnvVar: "NVIDIA_API_KEY",
       model: model || process.env.NVIDIA_MODEL || "nvidia/nemotron-3-super-120b-a12b",
       baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
       streamTitle: "NVIDIA",
@@ -325,7 +418,10 @@ export class GroqAdapter extends OpenAICompatibleAdapter {
       name: "groq",
       apiKey: apiKey || "",
       apiKeyEnvVar: "GROQ_API_KEY",
-      model: model || process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
+      // Same registry-sourced default: this literal used to differ from
+    // provider-registry's Groq fallbackModel, so chat and background runs used
+    // different models for the same provider.
+    model: model || process.env.GROQ_MODEL || getProviderDef("groq")!.fallbackModel,
       baseUrl: "https://api.groq.com/openai/v1/chat/completions",
       streamTitle: "Groq",
       completeTitle: "Groq",
@@ -396,7 +492,13 @@ export interface ProviderSelection {
   knownProvider: boolean;
 }
 
-/** Env var that must hold a key for each provider name. */
+/**
+ * @deprecated Pre-dates the provider registry and only covers 4 of the 12
+ * providers. Use `getProviderDef(id).keyEnvVar` (or `failoverKeyEnvMap()`)
+ * instead — this map was the wrong source that made the status badge report
+ * NVIDIA models and NVIDIA_API_KEY for every non-Groq/OpenRouter provider.
+ * Kept exported for callers outside src; do not add new reads.
+ */
 export const PROVIDER_KEY_ENV: Record<string, string> = {
   nvidia: "NVIDIA_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
@@ -473,26 +575,39 @@ function createCiFixtureAdapter(modelOverride?: string): AIProviderAdapter {
  * resolves generically via its def (OpenAI-compatible chat endpoint, env key,
  * fallback model). Truly unknown names still resolve to the default (nvidia).
  */
-export function createAdapterForProvider(provider: string, modelOverride?: string | null): AIProviderAdapter {
+export function createAdapterForProvider(
+  provider: string,
+  modelOverride?: string | null,
+  /** Explicit credential (the run user's own BYOK key). Falls back to env. */
+  explicitKey?: string | null
+): AIProviderAdapter {
   const override = modelOverride?.trim() || undefined;
+  const key = (explicitKey || "").trim();
+  const keyFor = (envVar: string): string => key || process.env[envVar] || "";
   switch (provider) {
     case "ci-fixture":
-      // Deterministic headless-CI provider: the turn script rides in
+      // Deterministic scripted provider: the turn script rides in
       // modelOverride ({"__ciFixtureTurns": [...]}) or AI_FIXTURE_TURNS and
       // plays the model turn-by-turn; an exhausted script returns the final
       // text so the loop ends cleanly. No network. A missing/malformed script
       // fails loudly instead of drifting into a network call.
+      //
+      // NOTE: nothing in this repo drives it any more — scripts/agent-ci-run.mjs
+      // and .github/workflows/agent-ci.yml were removed. It remains as a
+      // manual seam: set AI_PROVIDER=ci-fixture plus AI_FIXTURE_TURNS to
+      // replay a deterministic tool loop by hand. Delete it once the
+      // executor battery comes back.
       return createCiFixtureAdapter(override);
     case "openrouter":
-      return new OpenRouterAdapter(process.env.OPENROUTER_API_KEY, override);
+      return new OpenRouterAdapter(keyFor("OPENROUTER_API_KEY"), override);
     case "groq":
-      return new GroqAdapter(process.env.GROQ_API_KEY, override);
+      return new GroqAdapter(keyFor("GROQ_API_KEY"), override);
     case "custom":
-      return new CustomAdapter(process.env.AI_API_KEY, override);
+      return new CustomAdapter(keyFor("AI_API_KEY"), override);
     case "in-memory":
       return new InMemoryAdapter();
     case "nvidia":
-      return new NvidiaAdapter(process.env.NVIDIA_API_KEY!, override);
+      return new NvidiaAdapter(keyFor("NVIDIA_API_KEY"), override);
     default: {
       // Registry-driven generic: any elite provider without a bespoke adapter
       // (anthropic, gemini, mistral, deepseek, together, xai, cerebras,
@@ -501,14 +616,20 @@ export function createAdapterForProvider(provider: string, modelOverride?: strin
       if (def) {
         return new OpenAICompatibleAdapter({
           name: def.id,
-          apiKey: process.env[def.keyEnvVar] || "",
+          apiKey: keyFor(def.keyEnvVar),
           model: override || def.fallbackModel,
           baseUrl: `${def.baseUrl}/chat/completions`,
+          // The registry's auth style must reach the transport, not just the
+          // headers bag — otherwise an x-api-key provider gets Bearer and 401s.
+          authStyle: def.authStyle,
           ...(def.extraHeaders || def.authStyle === "x-api-key"
             ? { headers: { ...(def.extraHeaders ?? {}) } }
             : {}),
         });
       }
+      // An unrecognized AI_PROVIDER must not silently become NVIDIA: that runs
+      // the whole executor fleet on a model the operator never asked for.
+      console.warn(`[ai-providers] unknown AI_PROVIDER "${provider}" — falling back to nvidia`);
       return new NvidiaAdapter(process.env.NVIDIA_API_KEY!, override);
     }
   }
@@ -525,34 +646,46 @@ export function createProviderAdapter(modelOverride?: string | null): AIProvider
   return createAdapterForProvider(provider, modelOverride);
 }
 
+/** The model id an adapter will actually send (telemetry reads this). */
+export function adapterModelId(adapter: AIProviderAdapter): string {
+  const m = (adapter as { model?: unknown }).model;
+  return typeof m === "string" && m ? m : "(auto)";
+}
+
 /**
  * Describe the current provider configuration for the status badge.
  * Pure env reading — no network, safe to call per request.
+ *
+ * Resolved through the REGISTRY, not a local 4-entry lookup. It used to fall
+ * back to `NVIDIA_MODEL` / "nvidia/nemotron-…" for every provider outside
+ * {nvidia, openrouter, groq, custom}, so with AI_PROVIDER=anthropic the badge
+ * reported an NVIDIA model id for an Anthropic run, `keyPresent: false` even
+ * with ANTHROPIC_API_KEY set, and pointed the operator at NVIDIA_API_KEY.
  */
 export function describeProviderSelection(modelOverride?: string | null): ProviderSelection {
   const provider = process.env.AI_PROVIDER || "nvidia";
-  const keyEnv = PROVIDER_KEY_ENV[provider] || "NVIDIA_API_KEY";
-  const known = provider in PROVIDER_KEY_ENV;
+  const def = getProviderDef(provider);
 
-  const envModel =
-    provider === "openrouter" ? process.env.OPENROUTER_MODEL :
-    provider === "groq" ? process.env.GROQ_MODEL :
-    provider === "custom" ? process.env.AI_MODEL :
-    process.env.NVIDIA_MODEL;
-
-  const fallbackModel =
-    provider === "openrouter" ? "qwen/qwen3.8-27b:free" :
-    provider === "groq" ? "llama-3.3-70b-versatile" :
-    provider === "custom" ? "(AI_MODEL)" :
-    "nvidia/nemotron-3-super-120b-a12b";
+  // `custom` is a pre-registry escape hatch for an arbitrary OpenAI-compatible
+  // base, so it has no def; everything else must come from the registry so this
+  // can never drift from createAdapterForProvider.
+  const keyEnv = def?.keyEnvVar || (provider === "custom" ? "AI_API_KEY" : "NVIDIA_API_KEY");
+  const envModel = def
+    ? process.env[`${provider.toUpperCase()}_MODEL`]
+    : provider === "custom"
+      ? process.env.AI_MODEL
+      : process.env.NVIDIA_MODEL;
+  const fallbackModel = def?.fallbackModel ?? (provider === "custom" ? "(AI_MODEL)" : "nvidia/nemotron-3-super-120b-a12b");
 
   return {
     provider,
     model: modelOverride?.trim() || envModel || fallbackModel,
-    keyPresent: known ? Boolean(process.env[keyEnv]) : false,
-    budgetMode: provider === "nvidia" ? "free" : "byok",
+    keyPresent: Boolean(process.env[keyEnv]),
+    // Free/paid is the registry's `free` flag — the same source the quota and
+    // shaping decisions use, so the badge can never disagree with them.
+    budgetMode: def?.free === true ? "free" : "byok",
     keyEnvVar: keyEnv,
-    knownProvider: known,
+    knownProvider: provider === "custom" || def !== undefined,
   };
 }
 
@@ -597,10 +730,27 @@ export function sseTransform(stream: ReadableStream): ReadableStream {
             if (line.startsWith("data: ")) {
               const data = line.slice(6).trim();
               if (data === "[DONE]") {
-                // Safety net: if reasoning model sent thinking but no content,
-                // emit the thinking as the actual content so user sees a response
+                // A reasoning model (gpt-oss-120b especially) can spend an
+                // entire turn on reasoning_content and return NO content. This
+                // used to re-emit the whole thinking buffer as the visible
+                // answer, so the chat bubble showed raw deliberation
+                // ("a .zip file uploaded but not extracted. We need to locate
+                // zip file. Let's search th…") as if it were the reply.
+                //
+                // The thinking is ALREADY streamed on its own channel, so the
+                // user still sees it in the Thought panel - promoting it here
+                // duplicated it into the answer and lied about what happened.
+                // Say plainly that the turn produced no answer instead.
                 if (!hasContent && thinkingText.length > 0) {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: thinkingText })}\n\n`));
+                  controller.enqueue(
+                    encoder.encode(
+                      `data: ${JSON.stringify({
+                        content:
+                          "_NO_ANSWER_: this turn produced no answer — the model returned only internal reasoning.",
+                        no_answer: true,
+                      })}\n\n`,
+                    ),
+                  );
                 }
                 if (!closed) controller.enqueue(encoder.encode("data: [DONE]\n\n"));
                 continue;
