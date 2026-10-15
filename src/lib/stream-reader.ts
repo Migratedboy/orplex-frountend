@@ -134,6 +134,8 @@ export function repairInterleavedReplay(text: string): string {
   let repaired = text;
   let rawShift = 0; // length delta from prior repairs (raw indices drift)
   let didRepair = false;
+  // Raw index ranges this call rewrote, so residue cleanup can be scoped.
+  const repairedSpans: Array<[number, number]> = [];
   let an = 0;
   while (an + 2 * MIN_UNIT <= a.length) {
     // Find the smallest adjacent-copy unit: a[an..an+u) === a[an+u..an+2u).
@@ -239,16 +241,55 @@ export function repairInterleavedReplay(text: string): string {
     repaired = repaired.slice(0, s) + replacement + repaired.slice(eEnd);
     rawShift += eEnd - s - replacement.length;
     didRepair = true;
+    // Remember WHERE we edited, so the residue cleanup below can be scoped to
+    // the seams this repair actually produced.
+    repairedSpans.push([s, s + replacement.length]);
     an += spanN; // skip past the repaired span (odd-length chains leave one copy — acceptable)
   }
-  if (didRepair) {
-    // Residue classes the span logic can't reach, safe ONLY once a real
-    // replay repair fired (clean text is never rewritten):
-    repaired = repaired.replace(/[^\S\n]{2,}/g, " "); // seams left double spaces ("has  provided")
-    // Non-adjacent tail doubling: "5500" → "55000000". Legit prose/code has
-    // no 3+ identical letters/digits in a row, so collapse runs to 2 ("mm"
-    // stays, "oooo" → "oo").
-    repaired = repaired.replace(/([\p{L}\p{N}])\1{2,}/gu, "$1$1");
+  if (didRepair && repairedSpans.length > 0) {
+    // Residue classes the span logic can't reach, applied ONLY inside the
+    // exact span we just rewrote (back-to-front so earlier indices stay valid).
+    //
+    // These two rules were previously run over the WHOLE message, so a single
+    // replay repair anywhere silently destroyed unrelated content:
+    //   [^\S\n]{2,}           collapsed EVERY indented line in every code fence
+    //   ([\p{L}\p{N}])\1{2,}   mangled sha256 digests, base64, padded numbers
+    // The old comment claimed "legit prose/code has no 3+ identical
+    // letters/digits in a row", which is false.
+    //
+    // Both rules only ever need to clean the SEAM the repair just created,
+    // which sits immediately around the replacement — so span + a small
+    // margin is exact. Running them over the whole message (the old
+    // behaviour) meant one repair anywhere flattened every indented line in
+    // every code fence and mangled every sha256 digest and base64 blob.
+    //
+    // The two rules are ALSO narrowed independently, because their blast
+    // radii differ:
+    //  - leading whitespace is structural (Python/JS/YAML indentation), so the
+    //    space rule requires a non-space character before it and can therefore
+    //    never touch the start of a line;
+    //  - 3+ identical alphanumerics is a genuine data pattern (digests, base64,
+    //    padded numbers), so it is confined to the repaired span with no margin.
+    const SPACE_MARGIN = 24;
+    let from = repaired.length;
+    let to = 0;
+    for (const [a, b] of repairedSpans) {
+      from = Math.min(from, a);
+      to = Math.max(to, b);
+    }
+    if (to > from) {
+      from = Math.max(0, from - SPACE_MARGIN);
+      to = Math.min(repaired.length, to + SPACE_MARGIN);
+      const seg = repaired.slice(from, to);
+      let cleaned = seg.replace(/(\S)[^\S\n]{2,}/g, "$1 "); // seam doubles, never line-leading
+      for (let i = repairedSpans.length - 1; i >= 0; i--) {
+        const [a, b] = repairedSpans[i];
+        const inner = cleaned.slice(a - from, b - from);
+        const fixed = inner.replace(/([\p{L}\p{N}])\1{2,}/gu, "$1$1"); // "5500" → "55000000"
+        if (fixed !== inner) cleaned = cleaned.slice(0, a - from) + fixed + cleaned.slice(b - from);
+      }
+      if (cleaned !== seg) repaired = repaired.slice(0, from) + cleaned + repaired.slice(to);
+    }
   }
   if (repaired !== text) {
     repaired = deduplicateWords(repaired);
@@ -310,7 +351,20 @@ export function stripEchoedThinking(content: string, thinking: string): string {
   // Punctuation normalizes to nothing, so ci can stop right before the
   // echo's own trailing "."/"!"/etc. Drop a leading punctuation-only run
   // (never whitespace or word chars — the answer's formatting survives).
-  return content.slice(ci).replace(/^[^\w\n]+/, "");
+  const stripped = content.slice(ci).replace(/^[^\w\n]+/, "");
+
+  // The echo consumed the ENTIRE content, so there is nothing left — which
+  // means the content was never an echo at all. This is the server safety-net
+  // path (ai-providers.ts: when a stream ends with reasoning but no content it
+  // re-emits the whole thinking buffer as { content: thinkingText }). Here
+  // content === thinking, the binary search consumes all of it, and the old
+  // code returned "" — so readStream produced content: null and the worker
+  // stamped the user's complete answer as
+  // "No response from the model. Try again." + [FAILED].
+  // A genuine echo always leaves a real answer after it; an all-echo never does.
+  if (!stripped.trim()) return content;
+
+  return stripped;
 }
 
 // === FILES-NOT-FENCES display guard ===
@@ -353,6 +407,9 @@ export interface ToolCall {
   // read_file pagination — 1-based line offset + line-count limit
   offset?: number;
   limit?: number;
+  // extract_archive - optional output directory (defaults to one named after
+  // the archive)
+  dest?: string;
   // code_search — context lines around each match (0-10, default 3)
   context?: number;
   query?: string;

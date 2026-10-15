@@ -9,7 +9,7 @@ import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
 import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
 import {
-  MAX_ATTACHMENT_BYTES,
+  MAX_ARCHIVE_ATTACHMENT_BYTES,
   attachmentUrl,
   parseImageDataUrl,
   saveAttachment,
@@ -44,10 +44,13 @@ export async function POST(request: NextRequest) {
     }
 
     // A base64 payload inflates ~33%, so reject obviously oversized bodies
-    // before decoding, then re-check the decoded size in parseImageDataUrl.
-    if (body.dataUrl.length > MAX_ATTACHMENT_BYTES * 1.4) {
+    // before decoding. The decoded size is re-checked in parseImageDataUrl
+    // against the per-type ceiling (archives get a larger one).
+    if (body.dataUrl.length > MAX_ARCHIVE_ATTACHMENT_BYTES * 1.4) {
       return NextResponse.json(
-        { error: `Image exceeds ${Math.floor(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB` },
+        {
+          error: `File exceeds ${Math.floor(MAX_ARCHIVE_ATTACHMENT_BYTES / 1024 / 1024)}MB`,
+        },
         { status: 413 },
       );
     }

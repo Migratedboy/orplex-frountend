@@ -13,8 +13,14 @@ export const TEXT_EXTENSIONS = [
 
 export const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"];
 
+// Archives are attached as binaries and handed to the agent's extract_archive
+// tool — they are NOT inlined into the prompt as text. Reading a .zip with
+// readFileAsText used to produce mojibake and then trip the 500KB text cap.
+export const ARCHIVE_EXTENSIONS = [".zip"];
+
 export const MAX_TEXT_SIZE = 500 * 1024; // 500KB
 export const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
+export const MAX_ARCHIVE_SIZE = 25 * 1024 * 1024; // 25MB
 
 // === TYPE DETECTION ===
 
@@ -30,6 +36,15 @@ export function isTextFile(filename: string): boolean {
 export function isImageFile(filename: string): boolean {
   const ext = getExt(filename);
   return IMAGE_EXTENSIONS.includes(ext);
+}
+
+export function isArchiveFile(filename: string): boolean {
+  return ARCHIVE_EXTENSIONS.includes(getExt(filename));
+}
+
+/** Text, image, or archive — i.e. anything the composer accepts. */
+export function isSupportedFile(filename: string): boolean {
+  return isImageFile(filename) || isArchiveFile(filename) || isTextFile(filename);
 }
 
 // === FILE READING ===
@@ -75,7 +90,7 @@ export interface ProcessedFile {
   name: string;
   content: string;
   size: number;
-  type: "text" | "image";
+  type: "text" | "image" | "archive";
   dataUrl?: string;
 }
 
@@ -86,11 +101,21 @@ export async function processFileList(fileList: FileList): Promise<ProcessedFile
   const processed = await Promise.all(
     Array.from(fileList).map(async (file): Promise<ProcessedFile | null> => {
       try {
-        if (isImageFile(file.name)) {
-          if (file.size > MAX_IMAGE_SIZE) return null;
-          const dataUrl = await readFileAsDataUrl(file);
-          return { name: file.name, content: "", size: file.size, type: "image", dataUrl };
-        }
+      if (isImageFile(file.name)) {
+        if (file.size > MAX_IMAGE_SIZE) return null;
+        const dataUrl = await readFileAsDataUrl(file);
+        return { name: file.name, content: "", size: file.size, type: "image", dataUrl };
+      }
+
+      // Archives are binary: read as a data URL so they can be persisted
+      // locally and later extracted by the extract_archive tool. Reading one
+      // as text produced mojibake and tripped the 500KB text ceiling.
+      if (isArchiveFile(file.name)) {
+        if (file.size > MAX_ARCHIVE_SIZE) return null;
+        const dataUrl = await readFileAsDataUrl(file);
+        return { name: file.name, content: "", size: file.size, type: "archive", dataUrl };
+      }
+
 
         if (file.size > MAX_TEXT_SIZE) return null;
         const content = await readFileAsText(file);

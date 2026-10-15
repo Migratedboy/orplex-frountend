@@ -22,6 +22,30 @@ export const M3_TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "extract_archive",
+      description:
+        "Extract a .zip archive into the workspace so its files can be read and edited. Entries that try to escape the workspace (../ paths, absolute paths) are refused. Use this when the user attaches a .zip or asks you to open/unpack one, then read the extracted files with read_file.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description:
+              "Path to the .zip, relative to the workspace root. Attached archives are stored under .orplex/attachments/.",
+          },
+          dest: {
+            type: "string",
+            description:
+              "Optional output directory (relative to the workspace root). Defaults to a folder named after the archive.",
+          },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "list_files",
       description: "List files and directories in a path. Use '.' for root.",
       parameters: {
@@ -635,6 +659,10 @@ export function usesCompactTools(providerName: string): boolean {
 }
 export const GROQ_TOOL_NAMES = [
   "read_file",
+  // Archive extraction is text-light (path in, a short file list out) and is
+  // the ONLY way an attached .zip becomes usable, so lean lanes must have it
+  // too — otherwise attaching a zip dead-ends on Groq/NVIDIA.
+  "extract_archive",
   "list_files",
   "write_file",
   "edit_file",

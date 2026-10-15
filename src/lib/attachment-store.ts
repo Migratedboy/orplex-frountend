@@ -24,6 +24,12 @@ export const ATTACHMENTS_DIRNAME = join(".orplex", "attachments");
 
 /** Mirrors the client-side MAX_IMAGE_SIZE in file-utils.ts. */
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+/**
+ * Archives get a larger ceiling than images (mirrors MAX_ARCHIVE_SIZE in
+ * file-utils.ts) — a .zip is a container, so the useful payload is routinely
+ * bigger than one screenshot.
+ */
+export const MAX_ARCHIVE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 const MIME: Record<string, string> = {
   ".png": "image/png",
@@ -33,10 +39,16 @@ const MIME: Record<string, string> = {
   ".webp": "image/webp",
   ".bmp": "image/bmp",
   ".svg": "image/svg+xml",
+  ".zip": "application/zip",
 };
 
 /** Extensions we will persist. Anything else is rejected. */
 const ALLOWED_EXT = new Set(Object.keys(MIME));
+
+/** Ceiling for a given extension, so an archive gets the larger budget. */
+export function maxBytesForExt(ext: string): number {
+  return ext === ".zip" ? MAX_ARCHIVE_ATTACHMENT_BYTES : MAX_ATTACHMENT_BYTES;
+}
 
 export function attachmentsDir(workspaceCwd: string): string {
   return join(workspaceCwd, ATTACHMENTS_DIRNAME);
@@ -73,7 +85,7 @@ export function parseImageDataUrl(dataUrl: string): ParsedDataUrl | null {
 
   const bytes = Buffer.from(m[2], "base64");
   if (bytes.length === 0) return null;
-  if (bytes.length > MAX_ATTACHMENT_BYTES) return null;
+  if (bytes.length > maxBytesForExt(ext)) return null;
 
   return { bytes, ext, mime };
 }
@@ -93,6 +105,12 @@ function extFromMime(mime: string): string | null {
       return ".bmp";
     case "image/svg+xml":
       return ".svg";
+    // Browsers and Windows both hand us zip blobs under one of these.
+    // Deliberately NOT application/octet-stream: that would let any binary
+    // masquerade as an archive.
+    case "application/zip":
+    case "application/x-zip-compressed":
+      return ".zip";
     default:
       return null;
   }
@@ -140,7 +158,7 @@ export async function readAttachment(
   if (!isValidAttachmentId(id) || !ALLOWED_EXT.has(ext)) return null;
   const full = join(attachmentsDir(workspaceCwd), `${id}${ext}`);
   const st = await stat(full).catch(() => null);
-  if (!st?.isFile() || st.size > MAX_ATTACHMENT_BYTES) return null;
+  if (!st?.isFile() || st.size > maxBytesForExt(ext)) return null;
   return readFile(full);
 }
 

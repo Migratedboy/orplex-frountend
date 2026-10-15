@@ -583,6 +583,28 @@ export function useChatSession() {
       contentWithFiles = context;
     }
 
+    // Archives (.zip) cannot be inlined into the prompt. Persist each one to
+    // local disk, then tell the model the real workspace path so it can call
+    // extract_archive. Without this line an attached zip is inert: the model
+    // has no way to reach it.
+    const archiveFiles = textFiles.filter((f) => f.type === "archive" && f.dataUrl);
+    if (archiveFiles.length > 0) {
+      const { persistImages } = await import("@/lib/client-attachments");
+      const stored = await persistImages(
+        archiveFiles.map((f) => ({ name: f.name, dataUrl: f.dataUrl!, size: f.size })),
+      );
+      if (stored.length > 0) {
+        const lines = stored.map(
+          (s) => `- \`${s.name}\` → \`.orplex/attachments/${s.ref.slice("attachment:".length)}\``
+        );
+        const note =
+          `\n\n[ATTACHED ARCHIVES]\nThe user attached ${stored.length} archive(s), stored on disk. ` +
+          `Use the extract_archive tool to unpack them (e.g. extract_archive path=".orplex/attachments/<file>.zip"), ` +
+          `then read the extracted files with read_file.\n${lines.join("\n")}`;
+        contentWithFiles = `${contentWithFiles}${note}`;
+      }
+    }
+
   // Persist attached images to the user's LOCAL disk (never Postgres) and swap
   // the inline data URLs for local URLs. Best-effort: if storage fails the
   // message still sends with the original data URLs, it just will not survive

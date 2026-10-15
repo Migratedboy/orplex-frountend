@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useToast } from "./Toast";
 import PromptBar, { type PromptBarMode, type PromptBarModel, type PromptBarSource } from "./PromptBar";
 import { useFileProcessor, formatFileSize, getFileIcon } from "@/hooks/useFileProcessor";
 import { SKILL_CATEGORIES, type Skill } from "@/lib/skills";
@@ -10,6 +11,7 @@ import type { AttachedFile } from "@/hooks/useFileProcessor";
 import { Attachment01Icon, SparklesIcon } from "@hugeicons/core-free-icons";
 import QuotaIndicator from "./QuotaIndicator";
 import WorkspaceSwitcher from "./WorkspaceSwitcher";
+import { QuickActions } from "./ui";
 import type { AgentMode } from "./ModeSelector";
 import { listProviderDefs } from "@/lib/provider-registry";
 
@@ -41,6 +43,18 @@ interface ChatInputProps {
   stopped?: boolean;
 }
 
+/**
+ * Static, hoisted to module scope. These were inline JSX expressions, so a
+ * fresh array of ~100 command objects and a fresh efforts array were built on
+ * EVERY ChatInput render. `commands` is a dependency of PromptBar's `filtered`
+ * memo, which feeds `list`, which feeds the scroll-into-view layout effect —
+ * so the model menu scrolled on every parent render while open.
+ */
+const SKILL_COMMANDS = SKILL_CATEGORIES.flatMap((c) =>
+  c.skills.map((s) => ({ key: s.id, name: `/${s.name}`, description: s.description, insert: s.promptPrefix }))
+);
+const EFFORT_TIERS = ["Low", "Medium", "High"];
+
 const MODES: (PromptBarMode & { agentMode: AgentMode })[] = [
   { key: "ask", name: "Ask", description: "Simple chat, no file access", agentMode: "ask" },
   { key: "plan", name: "Plan", description: "Analyze codebase, create plan", agentMode: "plan" },
@@ -53,7 +67,7 @@ const MODES: (PromptBarMode & { agentMode: AgentMode })[] = [
 // Honesty beats a pretty picker: once the catalog lands these are replaced.
 const FALLBACK_MODELS: PromptBarModel[] = [
   { key: "openai/gpt-oss-120b", name: "GPT-OSS 120B", tag: "Groq", detail: "checking availability…" },
-  { key: "qwen/qwen3.8-27b:free", name: "Qwen 3.8 27B", tag: "OpenRouter", detail: "checking availability…" },
+  { key: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B", tag: "Groq", detail: "checking availability…" },
   { key: "nvidia/nemotron-3-super-120b-a12b:free", name: "Nemotron Super", tag: "OpenRouter", detail: "checking availability…" },
 ];
 
@@ -95,6 +109,14 @@ const PLACEHOLDERS: Record<AgentMode, string> = {
   ask: "Ask anything…",
   plan: "Describe what to analyze or plan…",
   code: "Describe what you want to build or fix…",
+};
+
+const QUICK_ACTION_PROMPTS: Record<string, string> = {
+  "fix-bugs": "Fix bugs in the current project",
+  "add-tests": "Add tests for the current project",
+  optimize: "Optimize the current project",
+  export: "Export the project as a .zip",
+  regenerate: "Regenerate the last response",
 };
 
 // --- Picker persistence -----------------------------------------------------
@@ -149,8 +171,23 @@ function savePickers(conversationId: string | null | undefined, state: PickerSta
   }
 }
 
+/**
+ * Imperative bridge for files attached OUTSIDE the composer (drag-and-drop
+ * onto the page). The composer owns its attachment list internally, so the
+ * page-level drop zone has no other way in — same pattern as the artifact and
+ * memory panel bridges in AppLayout.
+ */
+export const droppedFilesBridge: { add: ((files: AttachedFile[]) => void) | null } = { add: null };
+
 export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, failedModels, clearFailedModels, onRetryModelSwap, stopped = false }: ChatInputProps) {
   const files = useFileProcessor();
+  // Publish the attach bridge (page-level drag-and-drop) and release it on unmount.
+  useEffect(() => {
+    droppedFilesBridge.add = files.addFiles;
+    return () => {
+      droppedFilesBridge.add = null;
+    };
+  }, [files.addFiles]);
   const [busy, setBusy] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const clearRef = useRef<(() => void) | null>(null);
@@ -163,7 +200,27 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   const [recents, setRecents] = useState<string[]>(() => readRecents());
   // Mirror for use inside loadCatalog's closure without re-creating it.
   const userModelsRef = useRef<PromptBarModel[]>([]);
+  const { toast } = useToast();
+  // Refs for values loadCatalog closes over. `loadCatalog` is deliberately a
+  // stable useCallback([]) (it is wired to the menu-open event and must not
+  // churn), so referencing toast/refreshWakePromotions directly would capture
+  // the first render's values forever. React's exhaustive-deps flagged this;
+  // the refs are the correct fix for "stable callback + fresh values".
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+  const refreshWakeRef = useRef<(() => void) | null>(null);
   const catalogInFlight = useRef(false);
+  // P1: a refetch requested while a load was in flight, run once it settles.
+  const catalogRefetchQueued = useRef(false);
+  // Self-reference so `finish` (defined inside loadCatalog) can schedule the
+  // coalesced refetch without recursing through a stale closure.
+  const loadCatalogRef = useRef<(() => void) | null>(null);
+  // P2: bound the cold-start retry loop by WALL-CLOCK, not attempt count.
+  const catalogDeadline = useRef(0);
+  const catalogSettleUntil = useRef(0);
+  const CATALOG_RETRY_MS = 60_000;
+  /** Quiet-polling window after the blocking indicator gives up. */
+  const CATALOG_SETTLE_MS = 10 * 60_000;
   // Retry-timer + unmount guards: the catalog retry loop below can schedule
   // up to 120 × 5s retries (~10 min). Without cancellation they keep firing
   // (and setState) after unmount and waste network.
@@ -185,7 +242,24 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   // life: names harvested here un-hide cold models on the next fetch.
   const [wakePromoted, setWakePromoted] = useState<string[]>([]);
   const wakePromotedRef = useRef<string[]>([]);
-  const coldIdsRef = useRef<Set<string>>(new Set());
+  // STATE, not a ref (fix P3). The cold filter in the `models` getter below
+  // reads these ids to decide what the picker renders. A ref mutation does not
+  // schedule a render, so on the all-cold path — where nothing else writes
+  // state — the updated ids were never reflected and the picker appeared to
+  // ignore the fetch.
+  const [coldIds, setColdIds] = useState<Set<string>>(new Set());
+  // Fix 4: provider-acknowledged-but-busy models, shown after verified ones.
+  const [throttledModels, setThrottledModels] = useState<PromptBarModel[]>([]);
+  // True once the blocking indicator has given up but we are still polling in
+  // the background. Drives a quiet one-line note instead of a spinner, so the
+  // fallback trio stays usable while the real list is still landing.
+  const [catalogSettling, setCatalogSettling] = useState(false);
+  // Fix 5: why a configured provider is missing from the list. Surfaced as a
+  // toast so "OpenRouter never appears" has an answer instead of silence.
+  const [providerIssues, setProviderIssues] = useState<
+    { provider: string; kind: string; detail: string }[]
+  >([]);
+  const issuesRef = useRef<{ provider: string; kind: string; detail: string }[]>([]);
 
   // A promoted model's short name matches its picker key exactly, or as the
   // provider-qualified suffix ("deepseek-v4.1-flash" ⊂ "deepseek-ai/deepseek-v4.1-flash").
@@ -194,13 +268,30 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
 
   // Pull recent wake notifications and record the announced model names
   // (message starts with the model's short name).
+  //
+  // Incremental: track the newest timestamp we have already seen and ask only
+  // for what arrived since. This used to re-fetch the ENTIRE notification
+  // history (since the epoch) on every catalog load — i.e. on every menu open
+  // and every poll during a cold start — purely to re-derive a handful of
+  // names that almost never change.
+  const notificationsSinceRef = useRef<string>("1970-01-01T00:00:00.000Z");
   const refreshWakePromotions = useCallback(() => {
-    apiFetch("/api/notifications?since=1970-01-01T00:00:00.000Z")
+    const since = notificationsSinceRef.current;
+    apiFetch(`/api/notifications?since=${encodeURIComponent(since)}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((j: { notifications?: { title?: string; message?: string }[] }) => {
-        const names = (j.notifications ?? [])
+      .then((j: { notifications?: { title?: string; message?: string; createdAt?: string }[] }) => {
+        const fresh = j.notifications ?? [];
+        // Advance the watermark with whatever the newest item is, so the next
+        // call is a true delta.
+        const newest = fresh.reduce<string>(
+          (acc, n) => (n.createdAt && n.createdAt > acc ? n.createdAt : acc),
+          since
+        );
+        notificationsSinceRef.current = newest;
+        const names = fresh
           .filter((n) => n.title === "Cold model woke up" && n.message)
           .map((n) => n.message!.split(" ")[0].toLowerCase());
+        if (names.length === 0) return;
         const merged = Array.from(new Set([...wakePromotedRef.current, ...names]));
         if (merged.length !== wakePromotedRef.current.length) {
           wakePromotedRef.current = merged;
@@ -211,21 +302,46 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   }, []);
 
   const loadCatalog = useCallback(() => {
-    if (catalogInFlight.current) return;
+    // P1 — COALESCE, don't drop. This used to `return` outright while a load
+    // was in flight, which meant reopening the model menu (and the
+    // orplex:wake-promoted event) did literally NOTHING for the whole retry
+    // window — up to ~10 minutes. A menu opened during a cold poll is exactly
+    // the moment the user most wants fresh data, so queue exactly one
+    // refetch to run when the in-flight load settles.
+    if (catalogInFlight.current) {
+      catalogRefetchQueued.current = true;
+      return;
+    }
     catalogInFlight.current = true;
+    catalogDeadline.current = Date.now() + CATALOG_RETRY_MS;
+    catalogSettleUntil.current = Date.now() + CATALOG_SETTLE_MS;
     setCatalogLoading(true);
     // Harvest wake promotions in parallel (see wakePromoted above).
-    refreshWakePromotions();
-    const finish = () => {
+    refreshWakeRef.current?.();
+const finish = () => {
       catalogInFlight.current = false;
       setCatalogLoading(false);
+      // P1: drain the coalesced refetch exactly once.
+      if (catalogRefetchQueued.current && !catalogCancelled.current) {
+        catalogRefetchQueued.current = false;
+        window.setTimeout(() => loadCatalogRef.current?.(), 0);
+      }
     };
-    const later = (fn: () => void) => {
+    const laterWith = (fn: () => void, ms: number) => {
       if (catalogCancelled.current) return;
-      catalogTimers.current.push(window.setTimeout(() => {
+      // Track the handle so it can be cancelled on unmount, but DROP it from the
+      // list once it fires — the array was only ever pruned wholesale on unmount,
+      // so every menu open during a cold catalog added ~12 entries that were
+      // never reclaimed for the life of the view.
+      const handle = window.setTimeout(() => {
+        catalogTimers.current = catalogTimers.current.filter((t) => t !== handle);
         if (!catalogCancelled.current) fn();
-      }, 5000));
+      }, ms);
+      catalogTimers.current.push(handle);
     };
+    const later = (fn: () => void) => laterWith(fn, 5000);
+    // Quiet phase: same bookkeeping, slower cadence, no network noise.
+    const laterSlow = (fn: () => void) => laterWith(fn, 15_000);
     const tryFetch = (attempt: number) => {
       if (catalogCancelled.current) return;
       apiFetch("/api/models/available")
@@ -235,8 +351,12 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
           models?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
           health?: Record<string, { health?: "green" | "amber"; lastVerifiedAt?: string; probeLatencyMs?: number }>;
           coldModelIds?: string[];
+          /** Provider acknowledged these serve but is busy (429) — fix 4. */
+          throttledModels?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
           userModels?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
           keysRev?: string;
+          /** Configured providers that contributed 0 models, and why (fix 5). */
+          providerIssues?: { provider: string; kind: string; detail: string; count: number }[];
         }) => {
           // Picker contract: ONLY models proven to answer are rendered.
           //  - throttledModels are never sent by the picker endpoint anymore
@@ -246,8 +366,10 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
           //    hidden here and woken by the background engine — once a wake
           //    probe answers, the model lands here WITHOUT the cold flag and
           //    appears on the next fetch.
-          const coldIds = new Set(j.coldModelIds ?? []);
-          coldIdsRef.current = coldIds;
+          const coldSet = new Set(j.coldModelIds ?? []);
+          // P3: state, not a ref — a ref write does not re-render, so the
+          // cold filter in the `models` getter never saw these ids.
+          setColdIds(coldSet);
           const health = j.health ?? {};
           // Cold models are KEPT in the stored list — the hide happens in the
           // `models` getter below, so a wake promotion un-hides instantly
@@ -280,6 +402,36 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
               .filter(Boolean)
               .join(" "),
           }));
+          // Fix 4: throttled models (provider answered 429 => it ACKNOWLEDGES
+          // the model serves, it is merely busy) used to never be sent by the
+          // endpoint, which is why OpenRouter — configured and working —
+          // contributed zero rows. Render them after the verified list, tagged
+          // "busy", so they are selectable but never mistaken for confirmed.
+          const throttledList = (j.throttledModels ?? []).map((m) => ({
+            key: m.id,
+            name: m.name || m.id,
+            tag: PROVIDER_TAG[m.provider] || m.provider,
+            detail: ["busy", m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : undefined]
+              .filter(Boolean)
+              .join(" · "),
+          }));
+          // Fix 5: tell the user WHY a configured provider is missing, once
+          // per distinct cause (never on every poll).
+          const issues = j.providerIssues ?? [];
+          const issueSig = issues.map((i) => `${i.provider}:${i.kind}`).join("|");
+          if (issueSig && issueSig !== issuesRef.current.map((i) => `${i.provider}:${i.kind}`).join("|")) {
+            issuesRef.current = issues;
+            setProviderIssues(issues);
+            const label = (k: string) =>
+              k === "invalid_key" ? "API key rejected"
+              : k === "no_credits" ? "out of credits"
+              : k === "network" ? "unreachable"
+              : k;
+            toastRef.current(
+              issues.map((i) => `${i.provider}: ${label(i.kind)}`).join(" · "),
+              "error"
+            );
+          }
           // New/changed keys invalidate the memo → merge the fresh BYOK list.
           const rev = j.keysRev ?? "";
           if (rev !== keysRevRef.current || userList.length !== userModelsRef.current.length) {
@@ -287,61 +439,137 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             setUserModels(userList);
             userModelsRef.current = userList;
           }
-          // Retry while nothing visible is verified (an all-cold catalog
-          // keeps polling and re-kicks the wake sweep).
-          if (list.some((m) => !coldIds.has(m.key))) {
+          // Retry only while NOTHING is visible: the catalog is empty or every
+          // entry is cold. A throttled model counts as visible.
+          if (list.some((m) => !coldSet.has(m.key)) || throttledList.length > 0) {
             setCatalogModels(list);
+            setThrottledModels(throttledList);
+            setCatalogSettling(false);
             finish();
             return;
           }
           // The server answers instantly but returns an empty list while its
-          // probe sweep runs in the background — keep polling until the real
-          // catalog lands (a full sweep can take ~10 minutes). Every poll
-          // re-kicks the sweep in case the server cold-started without one.
+          // probe sweep runs in the background. A full sweep is MINUTES
+          // (hundreds of live completion probes), so this is two phases:
+          //
+          //   1. FAST WINDOW (CATALOG_RETRY_MS) — poll every 5s with the
+          //      "Fetching verified models…" indicator up. A warm catalog
+          //      answers immediately and never reaches this.
+          //   2. SETTLE WINDOW (CATALOG_SETTLE_MS) — keep polling every 15s
+          //      but STOP showing the blocking indicator, so the fallback trio
+          //      stays visible and the real list swaps in the moment it lands.
+          //
+          // Previously phase 1 was 60s and then polling stopped dead: the sweep
+          // is far slower than that, so the picker sat on the fallback trio
+          // with no spinner and no way to refresh but reopening the menu.
           if (catalogCancelled.current) { finish(); return; }
-          if (attempt < 120) {
-            apiFetch("/api/models/warm", { method: "POST" }).catch(() => {});
+          const now = Date.now();
+          if (now < catalogDeadline.current) {
+            // Kick the sweep ONCE, not on every 5s poll. The endpoint already
+            // schedules a repair via after(); re-POSTing each round was ~12
+            // redundant requests per cold start and could restart the very
+            // sweep we are waiting on.
+            if (attempt === 0) apiFetch("/api/models/warm", { method: "POST" }).catch(() => {});
             later(() => tryFetch(attempt + 1));
-          } else finish();
+            return;
+          }
+          if (now < catalogSettleUntil.current) {
+            setCatalogModels(list);
+            setThrottledModels(throttledList);
+            // Indicator off, keep polling quietly.
+            setCatalogLoading(false);
+            setCatalogSettling(true);
+            catalogInFlight.current = true;
+            laterSlow(() => tryFetch(attempt + 1));
+            return;
+          }
+          // Both windows elapsed — settle on what we have.
+          setCatalogModels(list);
+          setThrottledModels(throttledList);
+          finish();
         })
         .catch(() => {
           if (catalogCancelled.current) { finish(); return; }
-          // Network/auth hiccup: a few retries, then keep the fallback list.
-          if (attempt < 3) later(() => tryFetch(attempt + 1));
-          else finish();
+          // Network/auth hiccup: retry inside the fast window, then quietly
+          // through the settle window, then give up.
+          const now = Date.now();
+          if (now < catalogDeadline.current) {
+            later(() => tryFetch(attempt + 1));
+            return;
+          }
+          if (now < catalogSettleUntil.current) {
+            setCatalogLoading(false);
+            setCatalogSettling(true);
+            catalogInFlight.current = true;
+            laterSlow(() => tryFetch(attempt + 1));
+            return;
+          }
+          finish();
         });
     };
     tryFetch(0);
   }, []);
+  // Keep a stable handle to the latest loadCatalog so `finish` can schedule the
+  // coalesced P1 refetch without re-creating the callback's deps.
+  useEffect(() => {
+    loadCatalogRef.current = loadCatalog;
+  }, [loadCatalog]);
+  useEffect(() => {
+    refreshWakeRef.current = refreshWakePromotions;
+  }, [refreshWakePromotions]);
 
   // A fresh wake toast means a model just became usable — refresh promotions
   // + catalog so it appears in the picker without reopening the menu.
   useEffect(() => {
     const onWake = () => {
-      refreshWakePromotions();
+      refreshWakeRef.current?.();
       loadCatalog();
     };
     window.addEventListener("orplex:wake-promoted", onWake);
     return () => window.removeEventListener("orplex:wake-promoted", onWake);
   }, [refreshWakePromotions, loadCatalog]);
 
-  // Verified models first, then BYOK models the user can reach with their
-  // own keys, deduped by id (a BYOK listing proves the same id the platform
-  // catalog verified — keep the verified row's tag).
-  const models = (() => {
-    // Cold models are hidden UNLESS a wake notification promoted them —
-    // trust the "woke up" announcement over a lagging coldModelIds list.
+  // Verified models first, then provider-acknowledged-but-busy ones (fix 4),
+  // then the BYOK models the user can reach with their own keys — deduped by id
+  // (a BYOK listing proves the same id the platform catalog verified, so keep
+  // the verified row's tag).
+  //
+  // P5: memoized. As a bare IIFE this produced a NEW array identity on every
+  // render, which defeated PromptBar's `filtered` useMemo (deps: models,
+  // recentModels), re-ran its cursor/scroll effects on every render, and reset
+  // the keyboard cursor to row 0 each time the menu opened.
+  const models = useMemo<PromptBarModel[]>(() => {
     const visible = (m: PromptBarModel) =>
-      !coldIdsRef.current.has(m.key) || wakePromoted.some((n) => keyMatchesPromotion(m.key, n));
+      !coldIds.has(m.key) || wakePromoted.some((n) => keyMatchesPromotion(m.key, n));
     const catalog = catalogModels.filter(visible);
-    if (catalog.length === 0) return userModels.length > 0 ? userModels : FALLBACK_MODELS;
-    if (userModels.length === 0) return catalog;
-    const seen = new Set(catalog.map((m) => m.key));
-    return [...catalog, ...userModels.filter((m) => !seen.has(m.key) && seen.add(m.key))];
-  })();
-  const recentModels: PromptBarModel[] = recents
-    .map((key) => models.find((m) => m.key === key))
-    .filter((m): m is PromptBarModel => !!m);
+    const busy = throttledModels.filter(visible);
+    const verified = catalog.length > 0 ? catalog : busy;
+    const pool = verified.length === 0 && busy.length > 0 ? busy : verified;
+    if (pool.length === 0) return userModels.length > 0 ? userModels : FALLBACK_MODELS;
+    const seen = new Set(pool.map((m) => m.key));
+    return [...pool, ...busy.filter((m) => !seen.has(m.key) && seen.add(m.key)),
+      ...userModels.filter((m) => !seen.has(m.key) && seen.add(m.key))];
+  }, [catalogModels, coldIds, throttledModels, userModels, wakePromoted]);
+
+  /**
+   * BYOK bypass.
+   *
+   * The user's own keys are LISTING-PROVEN: the Settings "Fetch models"
+   * engine already reached the provider with that key and recorded what it
+   * serves. The platform catalog additionally live-probes every model, which
+   * takes minutes and can legitimately return nothing. Gating the user's own
+   * models behind that sweep made the picker appear empty for a long time even
+   * though usable models were available the whole time.
+   *
+   * So: BYOK models count as "we have something to show". The blocking spinner
+   * only appears when there is genuinely nothing to list.
+   */
+  const hasReadyModels = models.length > 0 && models !== FALLBACK_MODELS;
+  const showBlockingSpinner = catalogLoading && !hasReadyModels;
+  const recentModels: PromptBarModel[] = useMemo(
+    () => recents.map((key) => models.find((m) => m.key === key)).filter((m): m is PromptBarModel => !!m),
+    [recents, models]
+  );
 
   // Restored picker state — recomputed when the conversation changes so each
   // chat gets its own last-used model/effort (falling back to the global
@@ -358,23 +586,26 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     controlsRef.current?.setText(prefix);
   }, []);
 
+  // Archives carry no inline text — inlining them produced an empty code
+  // fence. They are still passed through so the send path can persist them
+  // locally and hand the model a real path for extract_archive.
+  const inlineBlocks = (textFiles: AttachedFile[]) =>
+    textFiles
+      .filter((f) => f.type !== "archive")
+      .map(
+        (f) =>
+          `\n\n---\n**File: \`${f.name}\`** (${formatFileSize(f.size)})\n\`\`\`\n${f.content}\n\`\`\``
+      )
+      .join("");
+
   const emit = (msg: string, textFiles: AttachedFile[], imageFiles: { name: string; dataUrl: string; size: number }[], mode: AgentMode, effort?: string, model?: string) => {
-    let contentWithFiles = msg;
-    if (textFiles.length > 0) {
-      const fileBlocks = textFiles.map((f) =>
-        `\n\n---\n**File: \`${f.name}\`** (${formatFileSize(f.size)})\n\`\`\`\n${f.content}\n\`\`\``
-      ).join("");
-      contentWithFiles = msg + fileBlocks;
-    }
+    const contentWithFiles = msg + inlineBlocks(textFiles);
     onSend(msg, contentWithFiles, textFiles, imageFiles, mode, effort, model);
   };
 
   const buildContent = (draft: string, textFiles: AttachedFile[]) => {
     if (textFiles.length === 0) return draft;
-    const fileBlocks = textFiles.map((f) =>
-      `\n\n---\n**File: \`${f.name}\`** (${formatFileSize(f.size)})\n\`\`\`\n${f.content}\n\`\`\``
-    ).join("");
-    return draft + fileBlocks;
+    return draft + inlineBlocks(textFiles);
   };
 
   // === One-shot auto-retry model swap ===================================
@@ -442,6 +673,21 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     clearRef.current?.();
   };
 
+  // Model picks made in the TopBar model switcher land here — keep the
+  // composer's picker (and its per-conversation persistence) in sync.
+  useEffect(() => {
+    const onModelChanged = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (!id || pickerState.modelKey === id) return;
+      const next = { ...pickerState, modelKey: id };
+      setPickerState(next);
+      savePickers(conversationId, next);
+      setRecents(pushRecent(id));
+    };
+    window.addEventListener("orplex:model-changed", onModelChanged);
+    return () => window.removeEventListener("orplex:model-changed", onModelChanged);
+  }, [pickerState, conversationId]);
+
   // Skills → insert prompt prefix into the bar (dispatched by legacy popups)
   useEffect(() => {
     const handler = (e: Event) => {
@@ -458,19 +704,30 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
       const items = e.clipboardData?.items;
       if (!items) return;
       for (const item of Array.from(items)) {
-        if (item.type.startsWith("image/")) {
-          const file = item.getAsFile();
-          if (!file) continue;
-          e.preventDefault();
-          const { readFileAsDataUrl } = await import("@/lib/file-utils");
-          try {
-            const dataUrl = await readFileAsDataUrl(file);
-            const ext = file.type.split("/")[1] || "png";
-            files.addFiles([
-              { name: `pasted-image.${ext}`, content: "", size: file.size, type: "image", dataUrl },
-            ]);
-          } catch {}
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (!file) continue;
+        e.preventDefault();
+        // Same 10MB ceiling the attach button enforces via MAX_IMAGE_SIZE.
+        // Paste bypassed it entirely, so pasting a huge screenshot built a
+        // multi-megabyte data URL in memory and shipped it straight to the
+        // provider, where it is rejected as an oversized request.
+        const { MAX_IMAGE_SIZE } = await import("@/lib/file-utils");
+        if (file.size > MAX_IMAGE_SIZE) {
+          toastRef.current(`That image is too large (max ${formatFileSize(MAX_IMAGE_SIZE)})`, "error");
           return;
+        }
+        const { readFileAsDataUrl } = await import("@/lib/file-utils");
+        try {
+          const dataUrl = await readFileAsDataUrl(file);
+          const ext = file.type.split("/")[1] || "png";
+          files.addFiles([
+            { name: `pasted-image.${ext}`, content: "", size: file.size, type: "image", dataUrl },
+          ]);
+        } catch {
+          toastRef.current("Could not read the pasted image", "error");
+        }
+        return;
         }
       }
     };
@@ -536,6 +793,14 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             ))}
           </div>
         )}
+        <QuickActions
+          onAction={(action) => {
+            controlsRef.current?.setText(QUICK_ACTION_PROMPTS[action] ?? action);
+            document.querySelector<HTMLTextAreaElement>(".prompt-bar__input")?.focus();
+          }}
+          hasFiles={files.hasFiles}
+          isRunning={isWorking}
+        />
         <div className="chat-input-wrapper prompt-bar-wrapper">
           <input
             ref={fileInputRef}
@@ -561,13 +826,14 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             modes={MODES}
             defaultMode={agentMode}
             sources={SOURCES}
-            commands={SKILL_CATEGORIES.flatMap((c) => c.skills.map((s) => ({ key: s.id, name: `/${s.name}`, description: s.description, insert: s.promptPrefix })))}
+            commands={SKILL_COMMANDS}
             models={models}
             recentModels={recentModels}
-            modelsLoading={catalogLoading}
+            modelsLoading={showBlockingSpinner}
+        modelsSettling={catalogLoading && !showBlockingSpinner}
             onModelMenuOpened={loadCatalog}
             defaultModel={pickerState.modelKey ?? models[0].key}
-            efforts={["Low", "Medium", "High"]}
+            efforts={EFFORT_TIERS}
             defaultEffort={pickerState.effort
               ? pickerState.effort.charAt(0).toUpperCase() + pickerState.effort.slice(1)
               : "Medium"}
@@ -576,6 +842,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
               setPickerState(next);
               savePickers(conversationId, next);
               setRecents(pushRecent(m.key));
+              window.dispatchEvent(new CustomEvent("orplex:model-changed", { detail: m.key }));
             }}
             onEffortChange={(level) => {
               const next = { ...pickerState, effort: level.toLowerCase() };
