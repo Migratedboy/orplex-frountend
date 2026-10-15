@@ -12,6 +12,8 @@ import { buildWorkspaceContext } from "@/lib/client-signatures";
 import { listFilesUnderPath, parseToolCalls, replaceLastStatus } from "@/lib/tool-text";
 import { subscribeBackgroundChat, abortCurrentTask, readTaskSnapshot, clearTaskSnapshot, getCurrentTask, deriveRunPhase, runPhaseLabel, type BackgroundTask, type RunPhase } from "@/lib/background-chat";
 import { normalizeThinkingBlocks } from "@/lib/stream-reader";
+import { onAgentStatus } from "@/lib/agent-events";
+import type { AgentEvent } from "@/lib/types";
 import { stampFailedMessage, findFailedExchange, userTypedText } from "@/lib/message-retry";
 import { formatFileSize } from "@/lib/file-utils";
 import { useSession } from "next-auth/react";
@@ -99,6 +101,38 @@ export function useChatSession() {
   // are held briefly (see phaseTimerRef) so the tail can fade instead of
   // vanishing, then fall back to "idle".
   const [runPhase, setRunPhase] = useState<RunPhase>("idle");
+  // Timeline events emitted by the agent loop. `agentEvents` was a hardcoded
+  // `[]`, so the timeline's event rows (tool calls, and now the compaction
+  // divider) could never render in a live chat. Subscribing to the existing
+  // agent-events bus wires it additively — it only collects events, it does not
+  // touch the message or streaming path.
+  const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
+  // Compaction markers accumulate for the life of the view. The bus is
+  // module-level, so the unsubscribe MUST be returned or a remount would
+  // double-count every subsequent event.
+  useEffect(() => {
+    return onAgentStatus((event) => {
+      if (event.type !== "compaction") return;
+      setAgentEvents((prev) => [
+        ...prev,
+        {
+          type: "compacted",
+          tokensBefore: event.tokensBefore,
+          tokensAfter: event.tokensAfter,
+          mode: event.mode,
+          ...(event.summary ? { summary: event.summary } : {}),
+        },
+      ]);
+    });
+  }, []);
+
+  // Clear on conversation change. Without this a new thread inherits the
+  // previous thread's compaction markers — they sit at the bottom of an empty
+  // conversation, claiming turns that are not there — and the array grows for
+  // the life of the view.
+  useEffect(() => {
+    setAgentEvents([]);
+  }, [convo.conversationId]);
   const [runLabel, setRunLabel] = useState("");
   const [stopped, setStopped] = useState(false);
   const phaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -163,6 +197,11 @@ export function useChatSession() {
       // Only set bgTask to active tasks — terminal/done/error/cancelled/null clears it
       const isActive = task && (task.status === "streaming" || task.status === "tool_executing" || task.status === "awaiting_approval" || task.status === "waiting_for_input");
       const isStreaming = task && (task.status === "streaming" || task.status === "tool_executing");
+      // A genuinely new task clears the abandoned marker, so it can never mask
+      // a later run's write-back.
+      if (task && task.id !== abandonedTaskIdRef.current) {
+        abandonedTaskIdRef.current = "";
+      }
       setBgTask(isActive ? task : null);
       setStreaming(!!isStreaming);
 
@@ -202,7 +241,19 @@ export function useChatSession() {
         // background task was running. Never write into the store or save a
         // conversation that isn't the one currently on screen — the message
         // store holds the active conversation's bubbles.
-        const isCurrentConvo = !task || task.conversationId === convoIdRef.current;
+        //
+        // `task.conversationId === convoIdRef.current` alone is NOT enough: a
+        // brand-new chat has conversationId === null on BOTH sides, so
+        // `null === null` read as "current". After New Chat the abandoned task
+        // would write its reply into the now-empty store (silently dropped,
+        // since the updater bails on prev.length === 0) and still fire the DB
+        // save below — resurfacing as a stray conversation in the sidebar
+        // under a different thread. `abandonedTaskIdRef` pins the exact task
+        // the user walked away from, independent of any other module's abort.
+        const isCurrentConvo =
+          !!task &&
+          task.id !== abandonedTaskIdRef.current &&
+          task.conversationId === convoIdRef.current;
 
         // CRITICAL: Write final content back to the assistant message that
         // belongs to THIS task. Searching backward for the task's own user
@@ -354,6 +405,14 @@ export function useChatSession() {
   // Listen for New Chat event from sidebar
   useEffect(() => {
     const handler = () => {
+      // Abandon whatever is running BEFORE resetting state, and abort it here
+      // rather than relying on AppLayout's listener: that abort is an async
+      // dynamic import, so a task could finish inside the gap and still be
+      // written back. New Chat means "stop working".
+      abandonedTaskIdRef.current = bgTaskRef.current?.id ?? "";
+      void import("@/lib/background-chat")
+        .then((m) => m.abortCurrentTask())
+        .catch(() => {});
       convoRef.current.newChat();
       msgRef.current.clearMessages();
       setAgentStatus("");
@@ -376,6 +435,10 @@ export function useChatSession() {
   // Stable refs
   const msgRef = useRef(msg);
   const convoRef = useRef(convo);
+  // The task the user explicitly walked away from (New Chat). Cleared when a
+  // new task starts, so it can never mask a later run.
+  const abandonedTaskIdRef = useRef<string>("");
+  const bgTaskRef = useRef(bgTask);
   const toastRef = useRef(toast);
   const fileContentsRef = useRef(fileContents);
   const fileTreeRef = useRef(fileTree);
@@ -520,13 +583,41 @@ export function useChatSession() {
       contentWithFiles = context;
     }
 
-    const userMsg: Message = {
-      role: "user",
-      content: text || (textFiles.length > 0 ? `Uploaded ${textFiles.length} file(s)` : `Uploaded ${imageFiles.length} image(s)`),
-      time: m.now(),
-      files: textFiles.length > 0 ? textFiles : undefined,
-      images: imageFiles.length > 0 ? imageFiles : undefined,
-    };
+  // Persist attached images to the user's LOCAL disk (never Postgres) and swap
+  // the inline data URLs for local URLs. Best-effort: if storage fails the
+  // message still sends with the original data URLs, it just will not survive
+  // a reload.
+  let storedImages: { name: string; dataUrl: string; size: number; ref: string }[] = [];
+  if (imageFiles.length > 0) {
+    const { persistImages, contentWithRefs } = await import("@/lib/client-attachments");
+    storedImages = await persistImages(imageFiles);
+  }
+
+  const userMsg: Message = {
+    role: "user",
+    content:
+      text ||
+      (textFiles.length > 0
+        ? `Uploaded ${textFiles.length} file(s)`
+        : `Uploaded ${imageFiles.length} image(s)`),
+    time: m.now(),
+    files: textFiles.length > 0 ? textFiles : undefined,
+    // Prefer the locally-stored copy so the thumbnail keeps rendering after a
+    // reload; fall back to the inline data URL if local storage failed.
+    images:
+      storedImages.length > 0
+        ? storedImages.map((s) => ({ name: s.name, dataUrl: s.dataUrl, size: s.size }))
+        : imageFiles.length > 0
+          ? imageFiles
+          : undefined,
+  };
+
+  // The persisted body carries only the refs, so the saved conversation stays
+  // text-only and the image is rehydrated from local disk on load.
+  if (storedImages.length > 0) {
+    const { contentWithRefs } = await import("@/lib/client-attachments");
+    userMsg.content = contentWithRefs(userMsg.content, storedImages.map((s) => s.ref));
+  }
 
     const currentMessages = m.messagesRef.current;
     m.addMessage(userMsg);
@@ -703,7 +794,7 @@ export function useChatSession() {
       // word. The auto-retry swap must not fire on the next send.
       setFailedModels({});
     },
-    agentEvents: [],
+    agentEvents,
     agentRunning: (bgTask?.status === "streaming" || bgTask?.status === "tool_executing"),
     isStreaming: streaming || thinking,
     // Per-turn run state for the tail indicator + composer Stop note.

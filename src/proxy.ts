@@ -45,14 +45,24 @@ const PROXIED_AUTH_PREFIXES = ["/api/auth/", "/api/dev/"];
 // diagnostics whose whole point is THIS host's hardware. /api/system/memory
 // feeds low-memory failure messages — the cloud backend would report the
 // Vercel host's RAM instead of the user's machine.
-const LOCAL_ONLY_API_ROUTES = ["/api/system/memory"];
+const LOCAL_ONLY_API_ROUTES = ["/api/system/memory", "/api/attachments"];
+
+// Chat image attachments are local BY DESIGN: the bytes live on the user's own
+// disk under <workspace>/.orplex/attachments and the Message row keeps only a
+// reference. Proxying these to the backend would write them to Vercel's
+// EPHEMERAL filesystem, where they are lost on the next cold start — which is
+// exactly the "images don't survive a reload" bug this store exists to fix.
+// Images are never persisted to Postgres, so there is no DB copy to lose.
+// The nested serve route needs a PREFIX entry: LOCAL_ONLY_API_ROUTES matches
+// exactly, so "/api/attachments/<id>.png" would otherwise still be proxied and
+// 404 against a backend that has no such file.
 
 // MCP connector routes are local BY DESIGN (conflict C2): the OAuth token
 // store, one-time pending states, and stdio configs live in THIS process's
 // Prisma/Postgres — rewriting them to the backend would split-brain (two
 // token stores, two states) and the backend has no Electron loopback either.
 // Prefix match, so dynamic children (…/connections/[id]/connect) match too.
-const LOCAL_ONLY_API_PREFIXES = ["/api/mcp/", "/api/agent/mcp/"];
+const LOCAL_ONLY_API_PREFIXES = ["/api/mcp/", "/api/agent/mcp/", "/api/attachments/"];
 
 function isLocalOnlyApi(pathname: string): boolean {
   if (LOCAL_ONLY_API_ROUTES.includes(pathname)) return true;

@@ -6,6 +6,7 @@ import { useConversations } from "@/components/ConversationProvider";
 import { OPEN_CONVERSATION_EVENT } from "@/lib/navigation-events";
 import { Message } from "./useMessages";
 import { apiFetch } from "@/lib/api-base";
+import { refToUrl, refsInContent } from "@/lib/client-attachments";
 
 export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]) => void) {
   const { data: session } = useSession();
@@ -27,11 +28,24 @@ export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]
         const conv = data.conversation;
         if (conv) {
           setConversationId(conv.id);
-          setMessages(() => conv.messages.map((m: { role: string; content: string; createdAt: string }) => ({
+setMessages(() => conv.messages.map((m: { role: string; content: string; createdAt: string }) => {
+          // Images are stored on local disk, never in the DB — the body carries
+          // `attachment:<id><ext>` refs which we resolve back to local URLs so
+          // a reload still renders the image instead of losing it.
+          const refs = refsInContent(m.content);
+          const images = refs.length
+            ? refs.map((ref, i) => {
+                const url = refToUrl(ref);
+                return url ? { name: `image-${i + 1}`, dataUrl: url, size: 0 } : null;
+              }).filter((x): x is { name: string; dataUrl: string; size: number } => x !== null)
+            : undefined;
+          return {
             role: m.role as "user" | "assistant",
             content: m.content,
             time: new Date(m.createdAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }),
-          })));
+            ...(images && images.length > 0 ? { images } : {}),
+          };
+        }));
         }
         setLoadingConvo(false);
       })

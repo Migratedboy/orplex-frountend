@@ -31,6 +31,8 @@ npm-debug.log*
 *.db-journal
 .localpg/
 .orplex/*.log
+# Local chat image attachments (user data, never in the repo)
+.orplex/attachments/
 
 # IDE / OS
 .vscode-test
