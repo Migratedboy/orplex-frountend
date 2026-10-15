@@ -3,7 +3,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
-import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
+import { resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import {
   isValidAttachmentId,
   mimeForPath,
@@ -22,7 +22,9 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const workspace = getWorkspaceCwdForUser(session.user.id);
+    // Async resolver, not the sync in-memory getter: the registration map is
+    // per-process, so a restart would 404 an otherwise-open workspace.
+    const workspace = await resolveWorkspaceCwd(session.user.id);
     if (!workspace) {
       return NextResponse.json({ error: "No workspace open" }, { status: 404 });
     }

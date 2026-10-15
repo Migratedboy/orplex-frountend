@@ -45,7 +45,7 @@ const PROXIED_AUTH_PREFIXES = ["/api/auth/", "/api/dev/"];
 // diagnostics whose whole point is THIS host's hardware. /api/system/memory
 // feeds low-memory failure messages — the cloud backend would report the
 // Vercel host's RAM instead of the user's machine.
-const LOCAL_ONLY_API_ROUTES = ["/api/system/memory", "/api/attachments"];
+const LOCAL_ONLY_API_ROUTES = ["/api/system/memory", "/api/attachments", "/api/attachments/extract"];
 
 // Chat image attachments are local BY DESIGN: the bytes live on the user's own
 // disk under <workspace>/.orplex/attachments and the Message row keeps only a

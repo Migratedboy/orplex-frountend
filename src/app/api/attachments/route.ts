@@ -7,7 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
-import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
+import { resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import {
   MAX_ARCHIVE_ATTACHMENT_BYTES,
   attachmentUrl,
@@ -24,7 +24,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const workspace = getWorkspaceCwdForUser(session.user.id);
+    // resolveWorkspaceCwd (not the sync in-memory getter): the registration map
+    // is per-process, so after a restart a legitimately open workspace would
+    // 404 here. The async resolver falls back to the durable User.workspacePath.
+    const workspace = await resolveWorkspaceCwd(session.user.id);
     if (!workspace) {
       return NextResponse.json(
         { error: "No workspace open — open a project first" },

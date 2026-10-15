@@ -74,6 +74,71 @@ export async function persistImages(
   return results.filter((r): r is StoredImage => r !== null);
 }
 
+/** Result of POST /api/attachments/extract */
+export interface ExtractedArchive {
+  dest: string;
+  written: number;
+  skipped: number;
+  files: { path: string; content: string }[];
+  truncated: boolean;
+}
+
+/**
+ * Unpack a stored archive LOCALLY and get its text contents back inline.
+ *
+ * The agent tool loop runs on the cloud backend — a different machine from the
+ * user's disk — so a path under .orplex/attachments is unreachable to it no
+ * matter which tools it holds. Extracting here and shipping the text with the
+ * request is what actually puts the archive in front of the model.
+ */
+export async function extractStoredArchive(
+  ref: string,
+  dest?: string,
+): Promise<ExtractedArchive | null> {
+  const parsed = /^attachment:([a-f0-9]{32})(\.[a-z0-9]{2,5})$/.exec(ref.trim());
+  if (!parsed) return null;
+  try {
+    const res = await fetch("/api/attachments/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: parsed[1],
+        ext: parsed[2],
+        ...(dest ? { dest } : {}),
+      }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as ExtractedArchive;
+  } catch {
+    return null;
+  }
+}
+
+/** Render an extracted archive as prompt text the model can actually read. */
+export function extractedArchiveToPrompt(
+  name: string,
+  ext: ExtractedArchive,
+): string {
+  const parts: string[] = [];
+  parts.push(
+    `[ARCHIVE: ${name}]`,
+    `Unpacked locally into \`${ext.dest}/\` (${ext.written} file(s)` +
+      (ext.skipped ? `, ${ext.skipped} skipped` : "") +
+      "). Contents follow.",
+    "",
+  );
+  for (const f of ext.files) {
+    parts.push(`--- ${ext.dest}/${f.path} ---`, f.content, "");
+  }
+  if (ext.truncated) {
+    parts.push(
+      `[Note: only the first ${ext.files.length} readable file(s) are shown. ` +
+        `The rest are on disk under ${ext.dest}/.]`,
+    );
+  }
+  return parts.join("\n");
+}
+
 /** `attachment:<id><ext>` → the local URL to render. */
 export function refToUrl(ref: string): string | null {
   const m = /^attachment:([a-f0-9]{32})(\.[a-z0-9]{2,5})$/.exec(ref.trim());

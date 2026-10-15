@@ -594,14 +594,28 @@ export function useChatSession() {
         archiveFiles.map((f) => ({ name: f.name, dataUrl: f.dataUrl!, size: f.size })),
       );
       if (stored.length > 0) {
-        const lines = stored.map(
-          (s) => `- \`${s.name}\` → \`.orplex/attachments/${s.ref.slice("attachment:".length)}\``
+        const { extractStoredArchive, extractedArchiveToPrompt } = await import(
+          "@/lib/client-attachments"
         );
-        const note =
-          `\n\n[ATTACHED ARCHIVES]\nThe user attached ${stored.length} archive(s), stored on disk. ` +
-          `Use the extract_archive tool to unpack them (e.g. extract_archive path=".orplex/attachments/<file>.zip"), ` +
-          `then read the extracted files with read_file.\n${lines.join("\n")}`;
-        contentWithFiles = `${contentWithFiles}${note}`;
+        const blocks: string[] = [];
+        for (const s of stored) {
+          const stem = s.name.replace(/\.[^.]+$/, "") || "extracted";
+          const ext = await extractStoredArchive(s.ref, stem);
+          if (ext && ext.files.length > 0) {
+            // The real fix for "the AI cannot see the .zip": the tool loop runs
+            // on the cloud backend, which cannot read this machine's disk, so a
+            // path is useless to it. Ship the actual contents with the request.
+            blocks.push(extractedArchiveToPrompt(s.name, ext));
+          } else {
+            const rel = ".orplex/attachments/" + s.ref.slice("attachment:".length);
+            blocks.push(
+              `[ARCHIVE: ${s.name}] stored at ${rel} but could not be unpacked here. ` +
+                `Ask the user to open a local workspace session, or re-attach the files directly.`,
+            );
+          }
+        }
+        contentWithFiles =
+          contentWithFiles + "\n\n" + blocks.join("\n\n");
       }
     }
 
