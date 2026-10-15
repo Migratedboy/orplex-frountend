@@ -26,7 +26,13 @@ export function useFileProcessor() {
   }, []);
 
   const getTextFiles = useCallback(() => {
-    return attachedFiles.filter((f) => f.type === "text" && f.content);
+    // Archives ride this lane even though they carry no inline text: they have
+    // no content to show, but they still need to REACH the send path so it can
+    // persist them locally and hand the model a path for extract_archive.
+    // Filtering them out here silently dropped every attached .zip.
+    return attachedFiles.filter(
+      (f) => (f.type === "text" && !!f.content) || (f.type === "archive" && !!f.dataUrl)
+    );
   }, [attachedFiles]);
 
   const getImageFiles = useCallback(() => {
