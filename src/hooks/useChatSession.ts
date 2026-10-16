@@ -269,7 +269,13 @@ export function useChatSession() {
             if (prev.length === 0) return prev;
             const updated = [...prev];
             for (let i = updated.length - 2; i >= 0; i--) {
-              if (updated[i].role === "user" && updated[i].content === task.userMessage) {
+              // Prefix match, not equality: when images persisted, the bubble content is
+        // `text` plus the appended `![attachment](attachment:...)` refs, while
+        // task.userMessage holds the bare `text`. Equality therefore never held,
+        // so any run carrying an image wrote back into nothing - an empty bubble
+        // with no [FAILED] stamp and therefore no Retry. Scanning backwards means
+        // the most recent match wins.
+        if (updated[i].role === "user" && updated[i].content.startsWith(task.userMessage)) {
                 const assistantIdx = i + 1;
                 if (
                   assistantIdx < updated.length &&
@@ -330,7 +336,13 @@ export function useChatSession() {
             if (prev.length === 0) return prev;
             const updated = [...prev];
             for (let i = updated.length - 2; i >= 0; i--) {
-              if (updated[i].role === "user" && updated[i].content === task.userMessage) {
+              // Prefix match, not equality: when images persisted, the bubble content is
+        // `text` plus the appended `![attachment](attachment:...)` refs, while
+        // task.userMessage holds the bare `text`. Equality therefore never held,
+        // so any run carrying an image wrote back into nothing - an empty bubble
+        // with no [FAILED] stamp and therefore no Retry. Scanning backwards means
+        // the most recent match wins.
+        if (updated[i].role === "user" && updated[i].content.startsWith(task.userMessage)) {
                 const assistantIdx = i + 1;
                 if (
                   assistantIdx < updated.length &&
@@ -339,6 +351,21 @@ export function useChatSession() {
                 ) {
                   updated[assistantIdx] = {
                     ...updated[assistantIdx],
+                    content: stampFailedMessage(finalText, {
+                      mode: task.mode,
+                      model: task.model,
+                    }),
+                  };
+                }
+                // Same fallback the success path has: if the user bubble was
+                // not located (its content drifted, e.g. attachment refs were
+                // appended), stamp the trailing assistant placeholder instead of
+                // leaving a permanently empty bubble with no [FAILED] marker and
+                // therefore no one-click Retry.
+                const tail = updated[updated.length - 1];
+                if (tail.role === "assistant" && !tail.content) {
+                  updated[updated.length - 1] = {
+                    ...tail,
                     content: stampFailedMessage(finalText, {
                       mode: task.mode,
                       model: task.model,

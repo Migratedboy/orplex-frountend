@@ -16,10 +16,17 @@ export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]
   // Guards against a slow response for an OLD conversation overwriting the
   // messages of a newer one when the user clicks through chats quickly.
   const loadTokenRef = useRef(0);
+  /**
+   * Bumped whenever the user navigates between conversations or starts a new
+   * chat. A conversation save in flight captures the current value and drops
+   * its own `setConversationId` if this moved underneath it.
+   */
+  const navTokenRef = useRef(0);
 
   const loadConversation = useCallback((convoId: string | null) => {
     if (!session?.user?.id || !convoId) return;
     const token = ++loadTokenRef.current;
+    navTokenRef.current++;
     setLoadingConvo(true);
     apiFetch(`/api/conversations?id=${encodeURIComponent(convoId)}`)
       .then((r) => r.json())
@@ -91,6 +98,7 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
     /** Surfaced to the user when a save fails or truncates content. */
     onSaveError?: (message: string) => void,
   ) => {
+    const saveToken = navTokenRef.current;
     try {
       const targetId = conversationIdOverride !== undefined ? conversationIdOverride : conversationId;
       const res = await apiFetch("/api/conversations", {
@@ -121,6 +129,14 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
           `${data.truncatedMessages} message(s) were too long to save in full and were truncated at 50,000 characters.`,
         );
       }
+      // A save is as asynchronous as a load, so it needs the same staleness
+      // guard. Scenario: a task completes and POSTs its save (target = thread
+      // A); before that POST resolves the user clicks thread B, whose GET
+      // resolves first and sets conversationId(B). The save then resolved and
+      // unconditionally set conversationId(A) - so the visible transcript was
+      // B while the next reply in B was appended to A, and B never recorded it.
+      // Drop the write if the user navigated or started a new chat meanwhile.
+      if (saveToken !== navTokenRef.current) return;
       if (data.conversationId) setConversationId(data.conversationId);
       // Refresh shared conversation cache so Sidebar + History page
       // see the new/updated conversation immediately.
@@ -145,6 +161,7 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
     // conversation's messages and setConversationId re-attached it. The next
     // message was then appended to the thread the user had walked away from.
     loadTokenRef.current++;
+    navTokenRef.current++;
     setMessages(() => []);
     setConversationId(null);
   }, [setMessages]);
