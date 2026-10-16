@@ -61,15 +61,32 @@ const MODES: (PromptBarMode & { agentMode: AgentMode })[] = [
   { key: "code", name: "Code", description: "Edit files, run commands", agentMode: "code" },
 ];
 
-// Fallback trio shown only if the live catalog can't be fetched. Tagged
-// "checking" — NOT verified: these ride the server's failover chain rather
-// than a passed probe, and a throttled free tier can leave them silent.
-// Honesty beats a pretty picker: once the catalog lands these are replaced.
-const FALLBACK_MODELS: PromptBarModel[] = [
-  { key: "openai/gpt-oss-120b", name: "GPT-OSS 120B", tag: "Groq", detail: "checking availability…" },
-  { key: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B", tag: "Groq", detail: "checking availability…" },
-  { key: "nvidia/nemotron-3-super-120b-a12b:free", name: "Nemotron Super", tag: "OpenRouter", detail: "checking availability…" },
-];
+  /**
+   * The models offered out of the box, shown under a persistent "Default
+   * Models" group. Every id here is real and current: the OpenRouter ones end
+   * in `:free` (no card, no credits, rate-limited per model) and the Groq ones
+   * are on Groq's free tier. They are deliberately NOT filtered by the catalog
+   * probe — availability is reported per row via the health dot, so a probe
+   * failure never silently empties the menu.
+   */
+  const DEFAULT_MODELS: PromptBarModel[] = [
+    { key: "openai/gpt-oss-120b", name: "GPT-OSS 120B", tag: "Groq", detail: "free tier · 131K", group: "Default Models" },
+    { key: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B", tag: "Groq", detail: "free tier", group: "Default Models" },
+    { key: "stealth/space-bunny-alpha:free", name: "Space Bunny Alpha", tag: "OpenRouter", detail: "free · 1M · vision", group: "Default Models" },
+    { key: "thinkingmachines/inkling-small:free", name: "Inkling Small", tag: "OpenRouter", detail: "free · 1M · tools", group: "Default Models" },
+    { key: "thinkingmachines/inkling:free", name: "Inkling", tag: "OpenRouter", detail: "free · 1M · tools · vision", group: "Default Models" },
+    { key: "nvidia/nemotron-3-ultra-550b-a55b:free", name: "Nemotron 3 Ultra", tag: "OpenRouter", detail: "free · 1M", group: "Default Models" },
+    { key: "nvidia/nemotron-3-super-120b-a12b:free", name: "Nemotron 3 Super", tag: "OpenRouter", detail: "free · 262K", group: "Default Models" },
+    { key: "nvidia/nemotron-3.5-lightning:free", name: "Nemotron 3.5 Lightning", tag: "OpenRouter", detail: "free · 1M", group: "Default Models" },
+    { key: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", name: "Nemotron 3 Nano Omni", tag: "OpenRouter", detail: "free · 256K · vision", group: "Default Models" },
+    { key: "google/gemma-4-26b-a4b-it:free", name: "Gemma 4 26B A4B", tag: "OpenRouter", detail: "free · 262K · vision", group: "Default Models" },
+    { key: "google/gemma-4-31b-it:free", name: "Gemma 4 31B", tag: "OpenRouter", detail: "free · 262K · vision", group: "Default Models" },
+    { key: "cohere/north-mini-code:free", name: "North Mini Code", tag: "OpenRouter", detail: "free · 256K · coding", group: "Default Models" },
+    { key: "poolside/laguna-s-2.1:free", name: "Laguna S 2.1", tag: "OpenRouter", detail: "free · 262K · coding", group: "Default Models" },
+    { key: "dots-studio/dots-3-note-preview:free", name: "Dots3-Note Preview", tag: "OpenRouter", detail: "free · 512K", group: "Default Models" },
+  ];
+
+
 
 // Registry labels as picker tags, so a new registry provider shows up here
 // with zero component changes.
@@ -233,7 +250,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     // EVERY path in loadCatalog - so after the remount the catalog fetch
     // returned immediately, finish() never ran, setCatalogLoading(false) never
     // fired, and the picker spun on "Fetching verified models…" forever,
-    // pinned to FALLBACK_MODELS. Reset on setup as well as clear on cleanup.
+    // pinned to the defaults. Reset on setup as well as clear on cleanup.
     catalogCancelled.current = false;
     return () => {
       catalogCancelled.current = true;
@@ -555,10 +572,37 @@ const finish = () => {
     const busy = throttledModels.filter(visible);
     const verified = catalog.length > 0 ? catalog : busy;
     const pool = verified.length === 0 && busy.length > 0 ? busy : verified;
-    if (pool.length === 0) return userModels.length > 0 ? userModels : FALLBACK_MODELS;
-    const seen = new Set(pool.map((m) => m.key));
-    return [...pool, ...busy.filter((m) => !seen.has(m.key) && seen.add(m.key)),
-      ...userModels.filter((m) => !seen.has(m.key) && seen.add(m.key))];
+
+    // The curated defaults are a PERMANENT group, not a fallback. They used to
+    // appear only when the catalog came back empty, so a probe that found
+    // anything made them vanish - the menu silently dropped from 14 models to
+    // whatever the platform happened to have verified. They are now always
+    // listed first under their own "Default Models" header.
+    //
+    // Dedup is by key, and a catalog/BYOK row WINS over the default row of the
+    // same id, because it carries real probe data (health dot, latency) - except
+    // that its `group` is dropped, since the default header is the more useful
+    // placement for a curated entry.
+    const out: PromptBarModel[] = [];
+    const seen = new Set<string>();
+    for (const m of DEFAULT_MODELS) {
+      out.push(m);
+      seen.add(m.key);
+    }
+    for (const m of [...pool, ...busy, ...userModels]) {
+      if (seen.has(m.key)) {
+        // Upgrade the default row in place with live probe data.
+        const i = out.findIndex((d) => d.key === m.key);
+        if (i !== -1) {
+          out[i] = { ...out[i], ...m, group: out[i].group };
+          continue;
+        }
+        continue;
+      }
+      seen.add(m.key);
+      out.push(m);
+    }
+    return out;
   }, [catalogModels, coldIds, throttledModels, userModels, wakePromoted]);
 
   /**
@@ -571,11 +615,17 @@ const finish = () => {
    * models behind that sweep made the picker appear empty for a long time even
    * though usable models were available the whole time.
    *
-   * So: BYOK models count as "we have something to show". The blocking spinner
-   * only appears when there is genuinely nothing to list.
-   */
-  const hasReadyModels = models.length > 0 && models !== FALLBACK_MODELS;
-  const showBlockingSpinner = catalogLoading && !hasReadyModels;
+ * So: BYOK models count as "we have something to show". The blocking spinner
+ * only appears when there is genuinely nothing to list.
+ */
+ // The curated defaults are always listed, so `models` is never empty. What we
+ // actually need to know is whether a LIVE source (platform catalog or the
+ // user's own keys) has produced anything yet. The old
+ // `models !== FALLBACK_MODELS` identity check was written when the defaults
+ // were the only thing the fallback returned; it is now permanently true, which
+ // silently disabled the blocking spinner for every case it was meant to cover.
+ const hasLiveModels = catalogModels.length > 0 || throttledModels.length > 0 || userModels.length > 0;
+ const showBlockingSpinner = catalogLoading && !hasLiveModels && models.length === 0;
   const recentModels: PromptBarModel[] = useMemo(
     () => recents.map((key) => models.find((m) => m.key === key)).filter((m): m is PromptBarModel => !!m),
     [recents, models]

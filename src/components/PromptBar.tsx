@@ -66,6 +66,11 @@ export interface PromptBarModel {
   healthDot?: "green" | "amber";
   /** Tooltip for the health dot — last-verified time + probe latency. */
   healthTitle?: string;
+  /**
+   * Force a specific group header for this row (e.g. "Default Models"),
+   * overriding the creator-based grouping.
+   */
+  group?: string;
 }
 
 export interface PromptBarMode {

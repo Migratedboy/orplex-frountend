@@ -317,9 +317,16 @@ export interface ModelCreator {
   Icon: (props: ProviderIconProps) => ReactElement;
 }
 
-/** The creator of a model, or null when nothing in the registry claims it. */
+/**
+ * The creator of a model, or null when nothing in the registry claims it.
+ *
+ * This drives the per-row provider MARK, so it must keep matching on the model
+ * id/name exactly as before - a `group` only changes which header the row sits
+ * under, never which icon it draws. Routing both through here replaced every
+ * real provider icon with a generic star.
+ */
 export function modelCreator(
-  model: { key?: string; name?: string } | null | undefined
+  model: { key?: string; name?: string; group?: string } | null | undefined,
 ): ModelCreator | null {
   if (!model) return null;
   const hay = `${model.key ?? ""} ${model.name ?? ""}`.toLowerCase();
@@ -330,13 +337,18 @@ export function modelCreator(
   return null;
 }
 
-/** Stable bucket key — shared by every model from the same creator. */
-export function modelCreatorId(model: { key?: string; name?: string }): string {
+/** Stable bucket key — shared by every model in the same group. */
+export function modelCreatorId(model: { key?: string; name?: string; group?: string }): string {
+  // An explicit group overrides the bucket so the curated defaults sit under
+  // one "Default Models" header instead of being scattered across QWEN /
+  // NVIDIA / Groq sections.
+  if (model.group) return `group:${model.group}`;
   return modelCreator(model)?.id ?? "";
 }
 
 /** Group header text, or null for unmapped models (they get no header). */
-export function modelCreatorLabel(model: { key?: string; name?: string }): string | null {
+export function modelCreatorLabel(model: { key?: string; name?: string; group?: string }): string | null {
+  if (model.group) return model.group;
   return modelCreator(model)?.label ?? null;
 }
 
@@ -348,7 +360,9 @@ export function ProviderMark({
   model,
   size = 16,
   className,
-}: { model: { key?: string; name?: string } | null | undefined } & ProviderIconProps) {
+}: { model: { key?: string; name?: string; group?: string } | null | undefined } & ProviderIconProps) {
+  // Real provider mark. `group` is intentionally NOT consulted here - it only
+  // changes the section header, never the row icon.
   const Icon = modelCreator(model)?.Icon ?? GenericChipMark;
   return <Icon size={size} className={className} />;
 }
