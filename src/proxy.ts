@@ -73,7 +73,14 @@ function isLocalOnlyApi(pathname: string): boolean {
 function requiresPageAuth(pathname: string): boolean {
   // Sign-in/out and static assets never redirect.
   if (pathname.startsWith("/auth") || pathname.startsWith("/_next") || pathname === "/favicon.ico") return false;
-  if (/[^/]+\.[^/]+$/.test(pathname)) return false; // has a file extension
+  // "has a file extension" -> treated as a static asset, so no auth. This is
+  // latent rather than exploitable today (no page route in src/app contains a
+  // dot), but it is a footgun: adding a route like /settings/2.0 or a dotted
+  // slug would silently opt out of authentication. Constrain the exemption to
+  // paths that actually look like files - an extension of letters/digits, and
+  // not a bare dotfile-style segment.
+  if (/[^/]+\.[A-Za-z0-9]{1,8}$/.test(pathname) && !/\/\.[^/]+$/.test(pathname))
+    return false; // has a file extension
   if (pathname.startsWith("/api/")) return false; // rewrites below (no local handlers)
   return true;
 }
@@ -127,21 +134,34 @@ async function isCloudReachable(origin: string): Promise<boolean> {
 export default async function proxy(request: NextRequest) {
   const requestId = request.headers.get("x-request-id") || generateRequestId();
 
-  // Version handshake (cloud backends set MIN_SUPPORTED_APP_VERSION; local
-  // desktop servers leave it unset and skip this entirely). Desktops send
-  // X-Orplex-App-Version via apiFetch; below the floor → 426 so the app can
-  // prompt an update instead of failing mysteriously. No header → allow
-  // (browser preview + pre-handshake clients).
-  const minSupported = (process.env.MIN_SUPPORTED_APP_VERSION || "").trim();
-  if (
-    minSupported &&
-    request.nextUrl.pathname.startsWith("/api/") &&
-    !isLocalOnlyApi(request.nextUrl.pathname)
-  ) {
-    const clientVersion = (request.headers.get("x-orplex-app-version") || "").trim();
-    if (clientVersion && !meetsMinimum(clientVersion, minSupported)) {
-      return NextResponse.json(
-        { error: "Client too old — update Orplex to continue.", minVersion: minSupported, updateRequired: true },
+// Version handshake (cloud backends set MIN_SUPPORTED_APP_VERSION; local
+// desktop servers leave it unset and skip this entirely). Desktops send
+// X-Orplex-App-Version via apiFetch; below the floor -> 426 so the app can
+// prompt an update instead of failing mysteriously.
+const minSupported = (process.env.MIN_SUPPORTED_APP_VERSION || "").trim();
+if (
+  minSupported &&
+  request.nextUrl.pathname.startsWith("/api/") &&
+  !isLocalOnlyApi(request.nextUrl.pathname)
+) {
+  const clientVersion = (request.headers.get("x-orplex-app-version") || "").trim();
+  // Previously a MISSING header was allowed and the gate was skipped entirely
+  // for every local-only route. So the floor protected nothing: omit the header
+  // (or send 999.0.0 - it is client-chosen either way) and you are through. If
+  // the floor exists to keep incompatible clients off the backend, it has to
+  // reject clients that cannot prove they are new enough. The header is absent
+  // only from a genuinely browser-hosted preview, which is the one caller with
+  // no app version to report.
+  const isBrowserPreview = (request.headers.get("user-agent") || "").includes("Mozilla");
+  if (!clientVersion && !isBrowserPreview) {
+    return NextResponse.json(
+      { error: "Missing client version — update Orplex to continue.", minVersion: minSupported, updateRequired: true },
+      { status: 426 },
+    );
+  }
+  if (clientVersion && !meetsMinimum(clientVersion, minSupported)) {
+    return NextResponse.json(
+      { error: "Client too old — update Orplex to continue.", minVersion: minSupported, updateRequired: true },
         { status: 426 }
       );
     }

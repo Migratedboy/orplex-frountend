@@ -100,21 +100,44 @@ function parseWWWAuthenticate(header: string | undefined): Record<string, string
   while ((mm = re.exec(m[2]))) out[mm[1]] = mm[2];
   return out;
 }
-
 async function fetchText(url: string, init: RequestInit = {}, timeoutMs = CONTENT_TIMEOUT_MS): Promise<FetchResult> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ...init, signal: ctrl.signal, redirect: "follow" });
+    // redirect: "manual" - the SSRF screen (mcpFetchUrlError) validated only
+    // the INITIAL url, so `redirect: "follow"` let a public https URL that 302s
+    // to http://169.254.169.254/... (or any RFC1918 host) walk straight past
+    // the private/link-local policy. Following manually means every hop is
+    // re-screened.
+    let current = url;
+    let res: Response | null = null;
+    for (let hop = 0; hop < 5; hop++) {
+      res = await fetch(current, { ...init, signal: ctrl.signal, redirect: "manual" });
+      if (res.status < 300 || res.status > 399) break;
+      const loc = res.headers.get("location");
+      if (!loc) break;
+      let next: string;
+      try {
+        next = new URL(loc, current).toString();
+      } catch {
+        break;
+      }
+      // Re-screen the redirect target exactly as the initial URL.
+      const screened = mcpFetchUrlError(next);
+      if (screened) throw new Error(screened);
+      current = next;
+    }
+    const finalRes = res!;
     const headers: Record<string, string> = {};
-    res.headers.forEach((v, k) => { headers[k] = v; });
-    const text = await res.text();
-    return { status: res.status, headers, text };
+    finalRes.headers.forEach((v, k) => {
+      headers[k] = v;
+    });
+    const text = await finalRes.text();
+    return { status: finalRes.status, headers, text };
   } finally {
     clearTimeout(timer);
   }
 }
-
 function originOf(url: string): string {
   return new URL(url).origin;
 }
@@ -610,16 +633,23 @@ export function registerMcpIpc(): void {
           continue;
         }
 
-        const result = await exchangeCode(meta.token_endpoint, {
-          grant_type: "authorization_code",
-          code: cb.code!,
-          redirect_uri: redirectUri,
-          client_id: client.client_id,
-          ...(client.client_secret ? { client_secret: client.client_secret } : {}),
-          code_verifier: verifier,
-        });
-        return { ...result, serverUrl };
-      }
+  const result = await exchangeCode(meta.token_endpoint, {
+    grant_type: "authorization_code",
+    code: cb.code!,
+    redirect_uri: redirectUri,
+    client_id: client.client_id,
+    ...(client.client_secret ? { client_secret: client.client_secret } : {}),
+    code_verifier: verifier,
+  });
+  // Strip every credential before this crosses into the renderer. Returning
+  // `...result` shipped the access token, the refresh token AND the
+  // dynamically-registered client_secret into renderer memory, contradicting
+  // the server-lane invariant in src/app/api/mcp/connections/route.ts ("tokens
+  // never leave store.ts"). Any script execution in the renderer - and we just
+  // fixed an SVG-XSS path into exactly that - exfiltrated every connected MCP
+  // server's long-lived credentials. Callers only need to know it worked.
+  return { ok: true, serverUrl };
+}
       return { ok: false, error: lastError };
     } catch (err) {
       return { ok: false, error: (err as Error)?.message ?? String(err) };
