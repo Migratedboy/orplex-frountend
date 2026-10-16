@@ -1670,6 +1670,9 @@ export async function runInBackground(
         emitActivity({ type: "thinking", message: `Verification round ${round}: typechecking workspace` });
 
         let findings = "";
+  // Did the typecheck lane actually RUN? A lane that could not execute is not
+  // a pass, and must never report one.
+  let typecheckRan = false;
         try {
           const res = await apiFetch("/api/agent/exec", {
             method: "POST",
@@ -1678,15 +1681,33 @@ export async function runInBackground(
             signal: abortSignal ?? undefined,
           });
           const data = await res.json();
-          // exitCode is absent on non-exec responses (401/500/error JSON) —
-          // treat those as "verification unavailable", not as a failure.
+          // exitCode is absent on non-exec responses (401/500/error JSON).
+          // Those are "verification unavailable" — which is NOT a pass and NOT
+          // a failure. `findings` staying falsy used to fall through to
+          // `if (!findings)`, printing "Verification passed — typecheck clean ✓",
+          // recording a pass in the ledger, and calling clearFailures() — so an
+          // unreachable verifier erased the workspace's real failure memory and
+          // persisted the lie into run records.
           if (typeof data.exitCode === "number" && data.exitCode !== 0) {
             findings = summarizeTypecheckOutput(`${data.stdout || ""}\n${data.stderr || ""}`);
             // Feed the adaptive Failure Doctrine with real evidence
             recordFailure("typecheck", findings, [...writtenFiles.keys()]);
+          } else if (data.exitCode === 0) {
+            typecheckRan = true;
           }
         } catch {
-          // exec route unavailable (e.g. unit tests without the server) — skip quietly
+          // exec route unavailable (e.g. unit tests without the server) — the
+          // lane did NOT run. typecheckRan stays false so it is never a pass.
+        }
+
+        if (!typecheckRan && !findings) {
+          fullDisplayContent +=
+            `**Typecheck not verified** — the typecheck lane could not run (exec route unavailable or returned no exit code). Not a pass.\n`;
+          // "skipped", not "pass": computeVerdict already treats a skipped lane
+          // as never-a-pass, which is exactly the truth here.
+          recordLaneOutcome("typecheck", "skipped");
+          setDisplayContent(fullDisplayContent);
+          break;
         }
 
         if (!findings) {
@@ -1961,9 +1982,16 @@ export async function runInBackground(
             }),
             signal: abortSignal ?? undefined,
           });
-          if (!res.ok) return { success: false, error: `verify route ${res.status}`, consoleErrors: [], timeline: [] };
-          return res.json();
-        };
+    if (!res.ok) return { success: false, error: `verify route ${res.status}`, consoleErrors: [], timeline: [] };
+    // The route's ENVELOPE `success` is always true when the harness ran; the
+    // real verdict lives in `result`. Returning the envelope made
+    // `if (!browserResult.success)` below unreachable, so a genuinely broken
+    // UI was reported as "Browser verification passed - no console errors",
+    // recorded as a pass, and had `clearFailures("browser")` wipe the
+    // workspace's accumulated failure memory. Unwrap once, here.
+    const data = await res.json();
+    return data && data.result ? { ...data.result, runId: data.runId } : { success: false, error: "verify route returned no result", consoleErrors: [], timeline: [] };
+  };
 
         updateTaskStatus("tool_executing", "Browser verification…");
         fullDisplayContent += "\n**Browser verification…** rendering the app\n";

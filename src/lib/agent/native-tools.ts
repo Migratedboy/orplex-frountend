@@ -533,11 +533,21 @@ export async function dispatchToolCall(
     const lineCount = content.split("\n").length;
 
     ctx.readResults.set(call.path, previewOf(content));
-    if (!content.startsWith("[Error") && content !== "(file not available)") {
+    // A failed read is detectable here (the sentinel is recognised two lines
+    // above), yet the status chip below printed "[OK] Read ... (lines 1-1, 34
+    // chars)" for a MISSING file — confident-looking stats computed from the
+    // error string. The model gets the truth in the <tool_result>; the
+    // human-visible chip must not lie about it.
+    const readFailed = content.startsWith("[Error") || content === "(file not available)";
+    if (!readFailed) {
       ctx.contextFiles.set(call.path, content);
     }
     result(`<tool_result name="read_file" path="${call.path}">\n${content}\n</tool_result>\n`);
-    ctx.replaceStatus(`[OK] Read \`${call.path}\` (lines 1–${lineCount}, ${contentLength} chars)`);
+    ctx.replaceStatus(
+      readFailed
+        ? `[ERR] Could not read \`${call.path}\``
+        : `[OK] Read \`${call.path}\` (lines 1–${lineCount}, ${contentLength} chars)`,
+    );
     ctx.syncDisplay();
     return { resultXml: toolResults, blocked: false };
   }

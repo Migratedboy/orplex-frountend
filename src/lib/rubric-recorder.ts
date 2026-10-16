@@ -97,7 +97,14 @@ export function recordToolCall(name: string, ok: boolean, path?: string): void {
 }
 
 /** Record a verification-lane outcome (typecheck / browser / swarm). */
-export function recordLaneOutcome(lane: "typecheck" | "browser" | "swarm", outcome: "pass" | "fail"): void {
+export function recordLaneOutcome(
+  lane: "typecheck" | "browser" | "swarm",
+  // The stored model has always allowed "skipped" (computeVerdict treats it as
+  // never-a-pass), but this signature only accepted "pass" | "fail", so a lane
+  // that could not run could never be recorded as skipped — the only way out
+  // was to lie and say "pass".
+  outcome: "pass" | "fail" | "skipped",
+): void {
   if (!currentObservation || !isRecordingEnabled()) return;
   currentObservation.lanes[lane] = outcome;
 }

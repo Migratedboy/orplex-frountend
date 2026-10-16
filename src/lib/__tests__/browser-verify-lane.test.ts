@@ -32,7 +32,23 @@ const ORIGINAL_FETCH = global.fetch;
 let store: Record<string, string> = {};
 let chatFetchCount = 0;
 let verifyCount = 0;
-let verifyResponses: any[] = [];
+  let verifyResponses: any[] = [];
+
+  /**
+   * The REAL /api/agent/verify contract.
+   *
+   * The route returns an ENVELOPE whose `success` is always true when the
+   * harness ran; the actual verdict lives in `result`. This test used to mock
+   * the bare result shape instead — a shape the route never returns — so the
+   * worker's real bug (reading the envelope, where success is always true) was
+   * invisible here: browser verification reported "passed" for a broken UI,
+   * skipped the repair turn, and wiped failure memory. Mock the real contract.
+   */
+  const verifyEnvelope = (result: Record<string, unknown>) => ({
+    success: true,
+    runId: "test-run",
+    result,
+  });
 let verifyBodies: any[] = [];
 let repairSeen = false;
 
@@ -130,8 +146,8 @@ function setupFetch(opts?: { portBusy?: boolean }) {
 describe("worker auto browser-verification lane", () => {
   it("verifies UI work, repairs on console errors, and re-verifies clean", async () => {
     verifyResponses = [
-      { success: false, consoleErrors: ["ReferenceError: undefinedfoo is not defined"], timeline: [] },
-      { success: true, consoleErrors: [], screenshotPath: ".orplex-verify/shot.png", timeline: [] },
+      verifyEnvelope({ success: false, consoleErrors: ["ReferenceError: undefinedfoo is not defined"], timeline: [] }),
+      verifyEnvelope({ success: true, consoleErrors: [], screenshotPath: ".orplex-verify/shot.png", timeline: [] }),
     ];
     setupFetch();
 
@@ -159,7 +175,7 @@ describe("worker auto browser-verification lane", () => {
   });
 
   it("passes immediately when the app renders clean", async () => {
-    verifyResponses = [{ success: true, consoleErrors: [], screenshotPath: "s.png", timeline: [] }];
+    verifyResponses = [verifyEnvelope({ success: true, consoleErrors: [], screenshotPath: "s.png", timeline: [] })];
     setupFetch();
 
     const promise = runInBackground("build a landing page with hero section", null, [], "code", []);
@@ -207,7 +223,7 @@ describe("worker auto browser-verification lane", () => {
   });
 
   it("skips when the port is busy (user's dev server already running)", async () => {
-    verifyResponses = [{ success: true, consoleErrors: [], timeline: [] }];
+    verifyResponses = [verifyEnvelope({ success: true, consoleErrors: [], timeline: [] })];
     setupFetch({ portBusy: true });
 
     const promise = runInBackground("build a settings page with form fields", null, [], "code", []);
