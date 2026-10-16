@@ -26,6 +26,23 @@ export const MAX_ENTRY_OUT_BYTES = 50 * 1024 * 1024; // 50MB per file
  *  Keys MUST be lowercase — comparisons lowercase the candidate. */
 const BLOCKED_BASENAMES = new Set([".ds_store", "thumbs.db", "desktop.ini"]);
 
+/**
+ * Read an entry's declared uncompressed size from JSZip's internal record.
+ *
+ * JSZip parses the central directory up front, so this is available WITHOUT
+ * inflating the entry - which is the whole point: it lets us refuse a zip bomb
+ * before allocating gigabytes. Returns null when the field is missing or
+ * implausible (a bomb may simply lie about it, so the post-inflate check still
+ * runs as a backstop).
+ */
+function uncompressedSizeOf(entry: unknown): number | null {
+  const rec = (entry as any)?._data?.uncompressedSize;
+  if (typeof rec !== "number" || !Number.isFinite(rec) || rec < 0) return null;
+  // Implausible as a single file (> MAX_ENTRY_OUT_BYTES by a wide margin) is
+  // still reported, not swallowed, so the caller rejects it.
+  return rec;
+}
+
 export interface ExtractEntry {
   path: string;
   bytes: number;
@@ -217,9 +234,22 @@ export async function extractZip(args: {
       continue;
     }
 
+    // Reject on the DECLARED uncompressed size, before inflating.
+    //
+    // entry.async("nodebuffer") materialises the entry's entire decompressed
+    // content as a Buffer. DEFLATE reaches ~1032:1 and ZIP64 allows a single
+    // entry up to 4GB, so a 25MB upload can demand gigabytes of allocation - and
+    // the old size check ran AFTER the inflate, making it a correctness check
+    // rather than a guard. This killed the Next process from one attachment.
+    const declared = uncompressedSizeOf(entry);
+    if (declared !== null && declared > MAX_ENTRY_OUT_BYTES) {
+      skipped.push({ path: rel, bytes: declared, skipped: "too-large" });
+      continue;
+    }
+
     const bytes = await entry.async("nodebuffer");
     if (bytes.length > MAX_ENTRY_OUT_BYTES) {
-      skipped.push({ path: rel, bytes: bytes.length, skipped: "too-large" });
+      skipped.push({ path: bytes.length ? rel : entry.name, bytes: bytes.length, skipped: "too-large" });
       continue;
     }
     if (totalOut + bytes.length > MAX_TOTAL_OUT_BYTES) {

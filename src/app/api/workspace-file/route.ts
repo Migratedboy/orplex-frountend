@@ -63,12 +63,27 @@ export async function GET(request: NextRequest) {
 
     const data = await readFile(full);
     const mime = MIME[extname(full).toLowerCase()] || "application/octet-stream";
+    // Same stored-XSS sink as /api/attachments: an SVG (or any scriptable
+    // document) rendered as a top-level document executes its <script>, and in
+    // the Electron shell that reaches the terminal bridge, which spawns with
+    // shell:true. This route is reachable for ANY .svg in the user's workspace,
+    // including ones written by an agent or pulled from a repo, so it is the
+    // easier of the two to reach. Raster types are exempt so screenshots and
+    // recordings keep rendering in <img>/<video>.
+    const scriptable = /\.(svg|html?|xhtml|xml|xsl|xslt)$/i.test(full);
     return new NextResponse(new Uint8Array(data), {
       headers: {
         "Content-Type": mime,
         // Artifacts are immutable once captured; short private cache for UX
         "Cache-Control": "private, max-age=60",
         "X-Content-Type-Options": "nosniff",
+        ...(scriptable
+          ? {
+              "Content-Disposition": "attachment",
+              "Content-Security-Policy":
+                "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+            }
+          : {}),
       },
     });
   } catch {

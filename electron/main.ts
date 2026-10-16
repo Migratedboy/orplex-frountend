@@ -67,7 +67,62 @@ const isDev = !app.isPackaged;
 // ORPLEX_PORT / ORPLEX_API_PORT only override for special setups.
 const UI_PORT = Number(process.env.ORPLEX_PORT || 5000);
 const API_PORT = Number(process.env.ORPLEX_API_PORT || 5010);
+/**
+ * Register an IPC handler that only accepts calls from our own app origin.
+ *
+ * All 33 handlers previously registered with a bare `ipcMain.handle(...)` and
+ * validated nothing about the sender. The preload bridge (including
+ * terminal.exec, which spawns with shell:true) is attached to the MAIN WINDOW
+ * only - the preview/agent views are sandboxed with no preload - so any handler
+ * reachable from a non-app origin is reachable only after the window has been
+ * navigated somewhere hostile. With the will-navigate guard above that is much
+ * harder, but defence in depth: validate at every single entry point rather
+ * than trusting the navigation layer to hold.
+ */
+function handleAppIpc(channel: string, handler: (event: any, ...args: any[]) => any) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    const senderUrl =
+      event?.senderFrame?.url || event?.sender?.getURL?.() || "";
+    if (!isAppOrigin(senderUrl)) {
+      console.warn(
+        `[ipc] rejected '${channel}' from untrusted origin: ${senderUrl || "(unknown)"}`,
+      );
+      throw new Error(`IPC '${channel}' rejected: sender origin not allowed`);
+    }
+    return handler(event, ...args);
+  });
+}
+
 const APP_URL = `http://localhost:${UI_PORT}`;
+
+/**
+ * Is this URL our own app?
+ *
+ * Used by the navigation guards to ensure the main window can only ever host
+ * the local Next server. Everything else is refused and (for http/https)
+ * handed to the OS browser. Compared against the parsed origin rather than by
+ * string prefix, so `http://localhost:3000.evil.com` and
+ * `http://evil.com/?x=http://localhost:3000` cannot pass.
+ */
+function isAppOrigin(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    // The packaged app and dev both serve from loopback on UI_PORT. Dev may be
+    // on 127.0.0.1 or the LAN address for device testing.
+    const host = u.hostname.toLowerCase();
+    const isLoopback =
+      host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+    if (isLoopback) return u.port === String(UI_PORT) || u.port === "";
+    // The preview/agent WebContentsViews serve third-party origins, but those are
+    // sandboxed views WITHOUT the preload bridge (sandbox: true, no contextBridge
+    // to orplexDesktop). The main window must stay loopback-only, so anything
+    // else is refused.
+    return false;
+  } catch {
+    return false;
+  }
+}
 const LOCAL_DB_PORT = Number(process.env.LOCAL_DB_PORT || 5433);
 
 // === LIGHTWEIGHT MODE =======================================================
@@ -679,6 +734,38 @@ function createWindow(): void {
     return { action: "deny" };
   });
 
+  // Navigation guard. setWindowOpenHandler only covers target=_blank and
+  // window.open - a plain <a href>, location.assign, or a redirect still
+  // navigates the MAIN window, and the preload bridge is attached to whatever
+  // that window loads. Without this, any navigation of the main window to a
+  // non-localhost origin hands that origin orplexDesktop.terminal.exec, which
+  // spawns with shell:true - i.e. any injected script becomes arbitrary code
+  // execution. Only our own origin may navigate in place; anything else is
+  // either denied or handed to the OS browser.
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (!isAppOrigin(url)) {
+      event.preventDefault();
+      if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    }
+  });
+  // Same protection for in-page redirects that never emit will-navigate on
+  // some paths (window.location on a 3xx), plus a back/forward guard.
+  mainWindow.webContents.on("will-redirect", (event, url) => {
+    if (!isAppOrigin(url)) {
+      event.preventDefault();
+      if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    }
+  });
+  // Block attaching webviews/frames to arbitrary origins.
+  mainWindow.webContents.on("will-attach-webview", (event) => {
+    event.preventDefault();
+  });
+  // Deny every powerful permission request from the app origin (camera,
+  // geolocation, notifications, ...) - the app never asks for any.
+  mainWindow.webContents.session.setPermissionRequestHandler((_wc, _perm, callback) => {
+    callback(false);
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
     // Normal exit path (window closed while the app keeps running).
@@ -741,13 +828,13 @@ app.on("before-quit", () => {
 });
 
 // === PREVIEW IPC (registered once, guarded by partition session) =========
-ipcMain.handle("preview:create-tab", () => {
+handleAppIpc("preview:create-tab", () => {
   const tabId = previewNextTabId++;
   previewViews.set(tabId, createPreviewView());
   return tabId;
 });
 
-ipcMain.handle("preview:navigate", (_e, tabId: number, rawUrl: string) => {
+handleAppIpc("preview:navigate", (_e, tabId: number, rawUrl: string) => {
   const view = previewViews.get(tabId);
   // The renderer always sends fully-formed URLs (toNavigateUrl normalizes);
   // accept them verbatim, fall back to normalization for bare hosts.
@@ -764,7 +851,7 @@ ipcMain.handle("preview:navigate", (_e, tabId: number, rawUrl: string) => {
   return true;
 });
 
-ipcMain.handle("preview:set-bounds", (_e, tabId: number, rect: { x: number; y: number; width: number; height: number }) => {
+handleAppIpc("preview:set-bounds", (_e, tabId: number, rect: { x: number; y: number; width: number; height: number }) => {
   const view = previewViews.get(tabId);
   if (!view) return false;
   // Real rects only (renderer sends 0-sizes while hidden) — cache for navigate.
@@ -775,7 +862,7 @@ ipcMain.handle("preview:set-bounds", (_e, tabId: number, rect: { x: number; y: n
   return true;
 });
 
-ipcMain.handle("preview:show-tab", (_e, tabId: number | null) => {
+handleAppIpc("preview:show-tab", (_e, tabId: number | null) => {
   showPreviewTab(tabId);
   return true;
 });
@@ -783,7 +870,7 @@ ipcMain.handle("preview:show-tab", (_e, tabId: number | null) => {
 /** Renderer → OS file manager: reveal a workspace folder (Projects menu).
  * openPath opens the folder itself; the renderer only sends paths it has
  * already registered via /api/agent/workspace-cwd (this device's folders). */
-ipcMain.handle("orplex:reveal-path", async (_e, path: string) => {
+handleAppIpc("orplex:reveal-path", async (_e, path: string) => {
   if (typeof path !== "string" || !/^([A-Za-z]:[\\/]|\/)/.test(path)) return false; // absolute paths only
   try {
     const errMsg = await shell.openPath(path);
@@ -802,7 +889,7 @@ ipcMain.handle("orplex:reveal-path", async (_e, path: string) => {
  * Bounded search of the usual roots (home first — that is where users keep
  * projects); returns "" when nothing matches, never a guess.
  */
-ipcMain.handle("orplex:path-for-directory", async (_e, name: string) => {
+handleAppIpc("orplex:path-for-directory", async (_e, name: string) => {
   if (typeof name !== "string" || !name || /[\\/]/.test(name) || name === "." || name === "..") return "";
   try {
     const { readdir, stat } = await import("node:fs/promises");
@@ -840,7 +927,7 @@ ipcMain.handle("orplex:path-for-directory", async (_e, name: string) => {
 
 // DEV DIAGNOSTIC: dump native-preview state shortly after a tab is created —
 // proves the view is attached, visible, sized, and which URL it holds.
-ipcMain.handle("preview:diag", () => {
+handleAppIpc("preview:diag", () => {
   const win = getMainWindow();
   const children = win ? win.contentView.children.length : -1;
   const views = [...previewViews.entries()].map(([id, v]) => ({
@@ -854,34 +941,34 @@ ipcMain.handle("preview:diag", () => {
   return { children, views };
 });
 
-ipcMain.handle("preview:close-tab", (_e, tabId: number) => {
+handleAppIpc("preview:close-tab", (_e, tabId: number) => {
   destroyPreviewTab(tabId);
   return true;
 });
 
-ipcMain.handle("preview:go-back", (_e, tabId: number) => {
+handleAppIpc("preview:go-back", (_e, tabId: number) => {
   const view = previewViews.get(tabId);
   if (view?.webContents.navigationHistory.canGoBack()) view.webContents.navigationHistory.goBack();
   return true;
 });
 
-ipcMain.handle("preview:go-forward", (_e, tabId: number) => {
+handleAppIpc("preview:go-forward", (_e, tabId: number) => {
   const view = previewViews.get(tabId);
   if (view?.webContents.navigationHistory.canGoForward()) view.webContents.navigationHistory.goForward();
   return true;
 });
 
-ipcMain.handle("preview:reload", (_e, tabId: number) => {
+handleAppIpc("preview:reload", (_e, tabId: number) => {
   previewViews.get(tabId)?.webContents.reload();
   return true;
 });
 
-ipcMain.handle("preview:stop", (_e, tabId: number) => {
+handleAppIpc("preview:stop", (_e, tabId: number) => {
   previewViews.get(tabId)?.webContents.stop();
   return true;
 });
 
-ipcMain.handle("preview:screenshot", async (_e, tabId: number) => {
+handleAppIpc("preview:screenshot", async (_e, tabId: number) => {
   const view = previewViews.get(tabId);
   if (!view) return null;
   const image = await view.webContents.capturePage();
@@ -891,7 +978,7 @@ ipcMain.handle("preview:screenshot", async (_e, tabId: number) => {
 // === AGENT BROWSER IPC — the AI drives a real browser =====================
 
 /** Show the ACTIVE agent tab in the panel (so the user watches it work). */
-ipcMain.handle("agent-browser:show", async () => {
+handleAppIpc("agent-browser:show", async () => {
   const { id, view } = await getAgentView();
   showPreviewTab(id);
   if (lastViewportRect.width > 2) applyBounds(view, lastViewportRect);
@@ -899,13 +986,13 @@ ipcMain.handle("agent-browser:show", async () => {
 });
 
 /** The agent view's id so the renderer can map a tab to it. */
-ipcMain.handle("agent-browser:get-id", async () => {
+handleAppIpc("agent-browser:get-id", async () => {
   const { id } = await getAgentView();
   return id;
 });
 
 /** Show the agent view (id provided) as the panel's active tab. */
-ipcMain.handle("agent-browser:show-id", (_e, viewId: number) => {
+handleAppIpc("agent-browser:show-id", (_e, viewId: number) => {
   if (!previewViews.has(viewId)) return false;
   showPreviewTab(viewId);
   const view = previewViews.get(viewId)!;
@@ -914,7 +1001,7 @@ ipcMain.handle("agent-browser:show-id", (_e, viewId: number) => {
 });
 
 /** Navigate + wait for load. Returns final URL + title. */
-ipcMain.handle("agent-browser:navigate", async (_e, rawUrl: string) => {
+handleAppIpc("agent-browser:navigate", async (_e, rawUrl: string) => {
   const url = normalizePreviewUrl(rawUrl);
   if (!url) return { ok: false, error: `Invalid URL: ${rawUrl}` };
   const { view } = await getAgentView();
@@ -939,7 +1026,7 @@ ipcMain.handle("agent-browser:navigate", async (_e, rawUrl: string) => {
 });
 
 /** Full page observation: URL, title, visible text, headings, links, buttons, inputs. */
-ipcMain.handle("agent-browser:read", async () => {
+handleAppIpc("agent-browser:read", async () => {
   const { view } = await getAgentView();
   await waitForLoad(view);
   const wc = view.webContents;
@@ -972,7 +1059,7 @@ ipcMain.handle("agent-browser:read", async () => {
 });
 
 /** Structured elements (links/buttons/inputs) for interaction planning. */
-ipcMain.handle("agent-browser:elements", async () => {
+handleAppIpc("agent-browser:elements", async () => {
   const { view } = await getAgentView();
   await waitForLoad(view);
   try {
@@ -1013,7 +1100,7 @@ const RESOLVE_FN = `
       return el;
     }`;
 
-ipcMain.handle("agent-browser:interact", async (_e, action: { kind: string; selector?: string; ref?: string; text?: string; key?: string; amount?: number }) => {
+handleAppIpc("agent-browser:interact", async (_e, action: { kind: string; selector?: string; ref?: string; text?: string; key?: string; amount?: number }) => {
   const { view } = await getAgentView();
   await waitForLoad(view);
   const wc = view.webContents;
@@ -1099,13 +1186,13 @@ ipcMain.handle("agent-browser:interact", async (_e, action: { kind: string; sele
 });
 
 /** Console messages since last navigation (errors/warnings/logs). */
-ipcMain.handle("agent-browser:console", async () => {
+handleAppIpc("agent-browser:console", async () => {
   const { id } = await getAgentView();
   return { ok: true, messages: consoleBuffers.get(id) ?? [] };
 });
 
 /** Screenshot of the agent view as data URL. */
-ipcMain.handle("agent-browser:screenshot", async () => {
+handleAppIpc("agent-browser:screenshot", async () => {
   const { view } = await getAgentView();
   await waitForLoad(view, 8000);
   const image = await view.webContents.capturePage();
@@ -1113,7 +1200,7 @@ ipcMain.handle("agent-browser:screenshot", async () => {
 });
 
 /** Arbitrary read-only JS evaluation in the page context. */
-ipcMain.handle("agent-browser:evaluate", async (_e, code: string) => {
+handleAppIpc("agent-browser:evaluate", async (_e, code: string) => {
   const { view } = await getAgentView();
   await waitForLoad(view);
   try {
@@ -1197,7 +1284,7 @@ const FIND_SCRIPT = `
   })()`;
 
 /** Discover actionable elements; stores refs e1..eN for click/type/hover/select. */
-ipcMain.handle("agent-browser:find", async (_e, filter: { text?: string; role?: string } = {}) => {
+handleAppIpc("agent-browser:find", async (_e, filter: { text?: string; role?: string } = {}) => {
   const { view } = await getAgentView();
   await waitForLoad(view);
   try {
@@ -1222,7 +1309,7 @@ ipcMain.handle("agent-browser:find", async (_e, filter: { text?: string; role?: 
 });
 
 /** Wait for text to appear / a selector to become visible / a fixed delay. */
-ipcMain.handle("agent-browser:wait-for", async (_e, args: { text?: string; selector?: string; time?: number; timeoutMs?: number } = {}) => {
+handleAppIpc("agent-browser:wait-for", async (_e, args: { text?: string; selector?: string; time?: number; timeoutMs?: number } = {}) => {
   const { view } = await getAgentView();
   const started = Date.now();
   const timeout = Math.min(Math.max(Number(args.timeoutMs) || 10000, 500), 15000);
@@ -1270,7 +1357,7 @@ ipcMain.handle("agent-browser:wait-for", async (_e, args: { text?: string; selec
 });
 
 /** Hover an element (selector or find-ref) — triggers menus/tooltips. */
-ipcMain.handle("agent-browser:hover", async (_e, args: { selector?: string; ref?: string } = {}) => {
+handleAppIpc("agent-browser:hover", async (_e, args: { selector?: string; ref?: string } = {}) => {
   const { view } = await getAgentView();
   await waitForLoad(view);
   let selector = args.selector;
@@ -1304,7 +1391,7 @@ ipcMain.handle("agent-browser:hover", async (_e, args: { selector?: string; ref?
 });
 
 /** Select an <option> in a <select> (value or visible label). */
-ipcMain.handle("agent-browser:select", async (_e, args: { selector?: string; ref?: string; value?: string } = {}) => {
+handleAppIpc("agent-browser:select", async (_e, args: { selector?: string; ref?: string; value?: string } = {}) => {
   const { view } = await getAgentView();
   await waitForLoad(view);
   let selector = args.selector;
@@ -1342,7 +1429,7 @@ ipcMain.handle("agent-browser:select", async (_e, args: { selector?: string; ref
 
 /** Agent tab management: list / new / switch / close (cap ${"MAX_AGENT_TABS"}).
  * All ops act on the ACTIVE tab set; every tab has console + network capture. */
-ipcMain.handle("agent-browser:tabs", async (_e, args: { action?: string; url?: string; index?: number } = {}) => {
+handleAppIpc("agent-browser:tabs", async (_e, args: { action?: string; url?: string; index?: number } = {}) => {
   const action = args.action || "list";
   const summarize = async () => {
     const out: Array<{ index: number; url: string; title: string; active: boolean }> = [];
@@ -1416,7 +1503,7 @@ ipcMain.handle("agent-browser:tabs", async (_e, args: { action?: string; url?: s
 });
 
 /** Failed requests (HTTP 4xx/5xx + aborted) since session start, active tab. */
-ipcMain.handle("agent-browser:network", async () => {
+handleAppIpc("agent-browser:network", async () => {
   const { id } = await getAgentView();
   const events = networkBuffers.get(id) ?? [];
   return {
@@ -1432,7 +1519,7 @@ ipcMain.handle("agent-browser:network", async () => {
 });
 
 /** Screenshot with optional fullPage + named viewport (desktop/tablet/mobile). */
-ipcMain.handle("agent-browser:screenshot-advanced", async (_e, args: { fullPage?: boolean; viewpoint?: string } = {}) => {
+handleAppIpc("agent-browser:screenshot-advanced", async (_e, args: { fullPage?: boolean; viewpoint?: string } = {}) => {
   const { view } = await getAgentView();
   await waitForLoad(view, 8000);
   const wc = view.webContents;
@@ -1548,7 +1635,7 @@ app.whenReady().then(async () => {
   registerTerminalIpc(getMainWindow);
 
   // Renderer → main: open http(s) links in the OS default browser.
-  ipcMain.handle("orplex:open-external", (_event, url: string) => {
+  handleAppIpc("orplex:open-external", (_event, url: string) => {
     if (typeof url === "string" && /^https?:\/\//i.test(url)) {
       shell.openExternal(url);
     }
@@ -1556,14 +1643,14 @@ app.whenReady().then(async () => {
 
   // Crash recovery: did the previous session end uncleanly? (read-only —
   // the marker flips to "dirty" in createWindow and "clean" on will-quit.)
-  ipcMain.handle("orplex:last-session-crashed", () => {
+  handleAppIpc("orplex:last-session-crashed", () => {
     const state = readLastSessionState();
     return state.clean === false;
   });
 
   // Update detection: the packaged app's version, so the renderer can show
   // "What's new" exactly once per installed version.
-  ipcMain.handle("orplex:app-version", () => app.getVersion());
+  handleAppIpc("orplex:app-version", () => app.getVersion());
 
   try {
     // Electron owns BOTH server lifecycles — it always spawns its own Next

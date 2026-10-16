@@ -53,6 +53,17 @@ export async function GET(
       return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
     }
 
+    // An SVG served inline executes its <script> when navigated to directly -
+    // nosniff does not help, because the declared type really is
+    // image/svg+xml - and in the Electron shell that reaches
+    // window.orplexDesktop.terminal.exec, which spawns with shell:true. That is
+    // arbitrary code execution from an attached file.
+    //
+    // Raster types are exempt: browsers ignore Content-Disposition for <img>
+    // subresource loads, and these are only ever rendered as thumbnails, so
+    // restricting the dangerous ones keeps display working without reopening
+    // the hole for anything scriptable.
+    const scriptable = ext.toLowerCase() === ".svg";
     return new NextResponse(new Uint8Array(data), {
       headers: {
         "Content-Type": mimeForPath(ext),
@@ -60,6 +71,13 @@ export async function GET(
         // are safe to cache hard.
         "Cache-Control": "private, max-age=31536000, immutable",
         "X-Content-Type-Options": "nosniff",
+        ...(scriptable
+          ? {
+              "Content-Disposition": "attachment",
+              "Content-Security-Policy":
+                "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+            }
+          : {}),
       },
     });
   } catch {
