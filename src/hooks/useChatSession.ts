@@ -163,6 +163,26 @@ export function useChatSession() {
     }
   };
   const [queue, setQueue] = useState<QueuedPrompt[]>([]);
+  const dequeueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * Empty the queue AND cancel any dequeue already scheduled.
+   *
+   * Clearing the queue alone was not enough: the auto-dequeue timer captured its
+   * prompt by closure, so the prompt could be removed from the UI and still be
+   * sent 300ms later - a Stop that started the agent anyway, or a New Chat that
+   * received the old thread's prompt. Every queue-clearing path goes through
+   * here so they cannot diverge.
+   */
+  const cancelQueue = useCallback(() => {
+    if (dequeueTimerRef.current) {
+      clearTimeout(dequeueTimerRef.current);
+      dequeueTimerRef.current = null;
+    }
+    setQueue([]);
+    queueRef.current = [];
+  }, []);
+
   const queueRef = useRef<QueuedPrompt[]>([]);
   const thinkingRef = useRef(false);
   // === Auto-retry after a model failure ===================================
@@ -404,15 +424,24 @@ export function useChatSession() {
         // Auto-dequeue: send the next prompt if one is queued — but NOT when
         // the task was aborted (user pressed Stop / New Chat). Stopping means
         // stop; the next queued prompt fires only after a natural finish.
-        const q = queueRef.current;
-        if (q.length > 0 && task && !task.aborted && (task.status === "done" || task.status === "error")) {
-          const next = q[0];
-          setQueue(prev => prev.slice(1));
-          setTimeout(() => {
-            sendMessageRef.current(next.text, next.fullContent, next.textFiles, next.imageFiles, next.mode, next.effort, next.model);
-          }, 300);
-        }
-      }
+  const q = queueRef.current;
+  if (q.length > 0 && task && !task.aborted && (task.status === "done" || task.status === "error")) {
+    const next = q[0];
+    setQueue(prev => prev.slice(1));
+    // The handle was discarded, so the 300ms delay was UNCANCELLABLE and
+    // `next` was captured by closure - meaning stop()'s setQueue([]),
+    // clearQueue, removeFromQueue and unmount could all remove the prompt from
+    // the UI without stopping the send. Pressing Stop inside that window showed
+    // no "queued prompt cancelled" toast (the queue was already spliced) and
+    // then started a fresh agent run anyway. Same for New Chat, which cleared
+    // the message store and then received the old thread's prompt.
+    const handle = setTimeout(() => {
+      dequeueTimerRef.current = null;
+      sendMessageRef.current(next.text, next.fullContent, next.textFiles, next.imageFiles, next.mode, next.effort, next.model);
+    }, 300);
+    dequeueTimerRef.current = handle;
+  }
+}
     });
   }, []);
 
@@ -472,8 +501,8 @@ export function useChatSession() {
     // then send anything: the new task completes, the subscriber auto-dequeues,
     // and the old thread's queued prompt is appended to the NEW chat and saved
     // under the new conversation.
-    setQueue([]);
-    queueRef.current = [];
+    cancelQueue();
+
       // Navigate to / if not already there — use Next.js router for instant client-side nav
       if (window.location.pathname !== "/") {
         router.push("/");
@@ -865,8 +894,8 @@ export function useChatSession() {
   }, []);
 
   const clearQueue = useCallback(() => {
-    setQueue([]);
-  }, []);
+    cancelQueue();
+  }, [cancelQueue]);
 
   // Use background task display content only if it's actively running for THIS conversation
   // Don't overlay loaded conversation messages with stale background task content
@@ -883,7 +912,7 @@ export function useChatSession() {
     loadingConvo: convo.loadingConvo,
     agentStatus: bgTask?.statusDetail || agentStatus,
     newChat: () => {
-      convo.newChat(); msg.clearMessages(); setAgentStatus(""); setQueue([]);
+    convo.newChat(); msg.clearMessages(); setAgentStatus(""); cancelQueue();
       setFailedModels({}); // fresh chat → no failure trail anywhere
     },
     sendMessage,
@@ -896,7 +925,7 @@ export function useChatSession() {
       // the current task is cancelled.
       const queuedCount = queueRef.current.length;
       if (queuedCount > 0) {
-        setQueue([]);
+    cancelQueue();
         toast(
           `Stopped — ${queuedCount} queued prompt${queuedCount > 1 ? "s" : ""} cancelled`,
           "info"

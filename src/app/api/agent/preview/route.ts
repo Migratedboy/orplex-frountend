@@ -8,10 +8,40 @@ import { randomUUID } from "crypto";
 // user read anyone's preview by id).
 const previewStore = new Map<string, Map<string, { url: string; html: string; timestamp: number }>>();
 const MAX_PREVIEWS_PER_USER = 10;
+/** Entries per user are capped, but the OUTER map was never pruned: a userId key
+ *  plus up to 10 x 2MB of third-party HTML (~20MB) was pinned forever, even
+ *  after the user closed the preview. On a warm serverless instance that
+ *  accumulates across every user for the life of the lambda. */
+const MAX_STALE_USER_STORES = 50;
+/** Age at which an idle user's store is collected. */
+const USER_STORE_TTL_MS = 60 * 60 * 1000;
+
 /** Cap on fetched page bodies — an uncapped res.text() is an OOM vector. */
 const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Drop whole per-user stores that have gone cold, then bound the count.
+ * Runs on every write, so it is amortised and cheap.
+ */
+function pruneUserStores(): void {
+  const now = Date.now();
+  for (const [uid, store] of previewStore) {
+    if (!store.size) {
+      previewStore.delete(uid);
+      continue;
+    }
+    const newest = Math.max(...Array.from(store.values()).map((v) => v.timestamp));
+    if (now - newest > USER_STORE_TTL_MS) previewStore.delete(uid);
+  }
+  while (previewStore.size > MAX_STALE_USER_STORES) {
+    const oldest = previewStore.keys().next();
+    if (oldest.done) break;
+    previewStore.delete(oldest.value);
+  }
+}
+
 function userStore(userId: string) {
+  pruneUserStores();
   let m = previewStore.get(userId);
   if (!m) {
     m = new Map();
@@ -92,11 +122,15 @@ export async function POST(request: NextRequest) {
         store.set(previewId, { url: url as string, html, timestamp: Date.now() });
 
         // Clean old previews (keep last N per user)
-        if (store.size > MAX_PREVIEWS_PER_USER) {
-          const oldest = Array.from(store.entries())
-            .sort((a, b) => a[1].timestamp - b[1].timestamp)[0];
-          if (oldest) store.delete(oldest[0]);
-        }
+  // Clean old previews (keep last N per user). The previous single eviction ran
+  // only when the size exceeded the cap by exactly one, so the store stabilised
+  // at 11 entries instead of 10.
+  while (store.size > MAX_PREVIEWS_PER_USER) {
+    const oldest = Array.from(store.entries())
+      .sort((a, b) => a[1].timestamp - b[1].timestamp)[0];
+    if (!oldest) break;
+    store.delete(oldest[0]);
+  }
 
         return NextResponse.json({
           success: true,
