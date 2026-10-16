@@ -289,7 +289,14 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
         )}
         {msg.role === "user" && msg.images && msg.images.length > 0 && (
           <div className="msg-images">
-            {msg.images.filter(img => img.dataUrl && /^(https?:|data:image\/(png|jpe?g|gif|webp);base64,)/i.test(img.dataUrl)).map((img, ii) => (
+              {/* Allowlist: remote images, inline data URLs, and LOCAL attachment
+                  paths. The /api/attachments/ branch is required — the local
+                  store returns `/api/attachments/<sha>.<ext>`, which matches
+                  neither `https?:` nor `data:image/…`, so every locally-stored
+                  screenshot rendered nowhere while the model still received it.
+                  Same-origin, id-shaped, and validated server-side before any
+                  fs call. */}
+              {msg.images.filter(img => img.dataUrl && (/^(https?:|data:image\/(png|jpe?g|gif|webp);base64,)/i.test(img.dataUrl) || /^\/api\/attachments\/[a-f0-9]{32}\.[a-z0-9]{2,5}$/i.test(img.dataUrl))).map((img, ii) => (
               <div key={ii} className="msg-image-thumb">
                 <img src={img.dataUrl} alt={img.name} />
                 <div className="msg-image-label">{img.name}</div>

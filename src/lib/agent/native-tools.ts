@@ -807,8 +807,14 @@ export async function dispatchToolCall(
         ctx.hooks.fileEdited(edit.path, edit.old_text, edit.new_text);
       } else failCount++;
     }
-    result(`<tool_result name="batch_edit">${successCount} succeeded, ${failCount} failed</tool_result>\n`);
-    ctx.replaceStatus(`[OK] Batch edit: ${successCount} files edited, ${failCount} failed`);
+  result(`<tool_result name="batch_edit">${successCount} succeeded, ${failCount} failed</tool_result>\n`);
+  // The [OK] prefix was asserted unconditionally, so "2 files edited, 5
+  // failed" rendered as a success chip. A partial batch is not a success.
+  ctx.replaceStatus(
+    failCount === 0
+      ? `[OK] Batch edit: ${successCount} files edited, 0 failed`
+      : `[PARTIAL] Batch edit: ${successCount} edited, ${failCount} FAILED`,
+  );
     ctx.syncDisplay();
     return { resultXml: toolResults, blocked: false };
   }
@@ -825,6 +831,13 @@ export async function dispatchToolCall(
     // always gets an answer.
     let results: string | null = null;
     let engine = "cache";
+    // Distinguish "the search ran and found nothing" from "the search never
+    // ran". /api/agent/grep answers 400 "No workspace registered", 401, or
+    // 500 "No search engine available", and the old code collapsed all of that
+    // into a cache scan over `ctx.fileContents` — which is `{}` on the server
+    // lane — so it returned "" and reported "No matches for X". The model then
+    // concluded the symbol does not exist, or invented it.
+    let searchUnavailableReason: string | null = null;
     try {
       const res = await ctxFetch(resolveApiUrl(`/api/agent/grep`), {
         method: "POST",
@@ -835,8 +848,31 @@ export async function dispatchToolCall(
       if (res.ok && data?.success) {
         engine = data.engine || "grep";
         results = data.output || "";
+      } else {
+        searchUnavailableReason = `grep lane unavailable (HTTP ${res.status}${data?.error ? `: ${data.error}` : ""})`;
       }
-    } catch {}
+    } catch (e) {
+      searchUnavailableReason = `grep lane errored: ${e instanceof Error ? e.message : String(e)}`;
+    }
+    if (results === null && searchUnavailableReason) {
+      // Try the cache anyway — it may still hold the files.
+      const cached = searchCodeInContents(call.query, ctx.fileContents);
+      if (cached) {
+        results = cached;
+        engine = "cache";
+      } else {
+        // Neither lane could actually search. Say that instead of claiming
+        // the code is absent.
+        const msg =
+          `SEARCH DID NOT RUN — ${searchUnavailableReason}, and the read cache had no files to scan. ` +
+          `This is NOT evidence that "${call.query}" is absent from the workspace. ` +
+          `Tell the user the search was unavailable rather than reporting no matches.`;
+        result(`<tool_result name="search_code" query="${call.query}" engine="unavailable">\n${msg}\n</tool_result>\n`);
+        ctx.replaceStatus(`[UNAVAILABLE] Search "${call.query}" could not run`);
+        ctx.syncDisplay();
+        return { resultXml: toolResults, blocked: false };
+      }
+    }
     if (results === null) {
       results = searchCodeInContents(call.query, ctx.fileContents);
     }
@@ -1122,9 +1158,22 @@ export async function dispatchToolCall(
         try {
           const execution = await sandbox.runCommand(call.command, { timeout: sandboxTimeout * 1000 });
           const output = (execution.stdout || "") + (execution.stderr ? `\nSTDERR: ${execution.stderr}` : "");
-          result(`<tool_result name="run_in_sandbox" command="${call.command}">\n${truncate(output, LIMITS.SANDBOX_OUTPUT)}\n</tool_result>\n`);
-          ctx.replaceStatus(`[OK] Sandbox completed: \`${call.command.slice(0, LIMITS.COMMAND_STATUS)}\``);
-          ctx.stats.commandRun();
+          // execution.exitCode was never read, so a FAILING command (a red test
+          // suite, a failed build) reported "[OK] Sandbox completed", counted as
+          // commandRun instead of failedStep, and — because the code was not in
+          // the tool_result either — the model could not tell either. The local
+          // fallback below already checks exitCode; this lane did not.
+          const exitCode = execution.exitCode;
+          const failed = typeof exitCode === "number" && exitCode !== 0;
+          const exitLine = typeof exitCode === "number" ? `\n[exit code: ${exitCode}]` : "\n[exit code: not reported]";
+          result(`<tool_result name="run_in_sandbox" command="${call.command}">${failed ? "FAILED" : "OK"}${exitLine}\n${truncate(output, LIMITS.SANDBOX_OUTPUT)}\n</tool_result>\n`);
+          if (failed) {
+            ctx.stats.failedStep();
+            ctx.replaceStatus(`[FAIL] Sandbox exited ${exitCode}: \`${call.command.slice(0, LIMITS.COMMAND_STATUS)}\``);
+          } else {
+            ctx.stats.commandRun();
+            ctx.replaceStatus(`[OK] Sandbox completed: \`${call.command.slice(0, LIMITS.COMMAND_STATUS)}\``);
+          }
         } finally {
           await sandbox.kill().catch(() => {});
         }
@@ -1177,10 +1226,21 @@ export async function dispatchToolCall(
     const { undoLastChange } = await import("../file-history");
     const prevContent = undoLastChange(call.path);
     if (prevContent !== null && ctx.fs.writeFile) {
-      await ctx.fs.writeFile(call.path, prevContent);
-      ctx.hooks.fileWritten(call.path, prevContent);
-      result(`<tool_result name="undo_last_change" path="${call.path}">success - restored previous version</tool_result>\n`);
-      ctx.replaceStatus(`[OK] Undid change to \`${call.path}\` — restored previous version`);
+      // writeFile returns false on a failed write, a locked handle, the
+      // anti-clobber refusal, or "no file handle found". The boolean was
+      // discarded, so every one of those still reported success AND advanced
+      // the file-history/undo stack as if the restore had happened. Every
+      // sibling write path (write_file, write_file_chunk, edit_file) checks
+      // it; this one did not.
+      const restored = await ctx.fs.writeFile(call.path, prevContent);
+      if (restored === false) {
+        result(`<tool_result name="undo_last_change" path="${call.path}">error - the restore write failed (locked handle, or the file changed since the snapshot). The file is unchanged and the undo history still holds the previous version.</tool_result>\n`);
+        ctx.replaceStatus(`[FAIL] Could not restore \`${call.path}\` — write failed`);
+      } else {
+        ctx.hooks.fileWritten(call.path, prevContent);
+        result(`<tool_result name="undo_last_change" path="${call.path}">success - restored previous version</tool_result>\n`);
+        ctx.replaceStatus(`[OK] Undid change to \`${call.path}\` — restored previous version`);
+      }
     } else {
       result(`<tool_result name="undo_last_change" path="${call.path}">error - no previous version found</tool_result>\n`);
       ctx.replaceStatus(`[FAIL] No previous version of \`${call.path}\` to undo`);
