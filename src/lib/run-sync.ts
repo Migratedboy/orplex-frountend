@@ -20,6 +20,26 @@ interface SyncRecord {
 
 const records = new Map<string, SyncRecord>();
 
+/**
+ * Drop records for tasks that can no longer report a terminal status.
+ *
+ * background-worker has several early returns (abort, superseded by a newer
+ * task) that bypass completeTask/failTask - the only callers of the cleanup
+ * path. Without this, a record - and its plan-gate latch - survived forever, and
+ * the run also never recorded its terminal status on the AgentRun row. Bounded by
+ * running this periodically, so it cannot grow without limit.
+ */
+export function sweepDeadTaskRecords(liveIds: Set<string>): number {
+  let dropped = 0;
+  for (const id of Array.from(records.keys())) {
+    if (!liveIds.has(id)) {
+      records.delete(id);
+      dropped++;
+    }
+  }
+  return dropped;
+}
+
 function canSync(): boolean {
   return typeof window !== "undefined" && typeof fetch === "function";
 }

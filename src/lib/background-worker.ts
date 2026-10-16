@@ -825,7 +825,13 @@ export async function runInBackground(
   // Our generation. If anything else claims the slot while we are awaiting,
   // this run must unwind instead of writing into the newer task's store.
   const myGeneration = getGeneration();
-  startRubricObservation(taskId, userMessage, mode); // test-mode rubric observation (no-op unless TEST_MODE/live session)
+  startRubricObservation(taskId, userMessage, mode);
+  // Reap run-sync records for tasks that ended via an early return and so can
+  // never report a terminal status (see sweepDeadTaskRecords).
+  try {
+    const { sweepDeadTaskRecords } = await import("./run-sync");
+    sweepDeadTaskRecords(new Set([taskId]));
+  } catch {} // test-mode rubric observation (no-op unless TEST_MODE/live session)
 
   // === Deep orchestration attempt (code/plan mode, complex tasks) ==========
   // ONE deterministic router call: it picks scaffold | branch-compare |

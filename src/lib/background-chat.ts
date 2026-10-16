@@ -331,12 +331,12 @@ function notifyThrottled() {
 // === Stats tracking (for actionable notifications) ===
 
 export function bumpStat(key: keyof Omit<TaskStats, "filesChanged">) {
-  if (!currentTask) return;
+  if (!currentTask || !ownsTaskStore()) return;
   currentTask.stats[key]++;
 }
 
 export function setFilesChanged(count: number) {
-  if (!currentTask) return;
+  if (!currentTask || !ownsTaskStore()) return;
   currentTask.stats.filesChanged = count;
 }
 
@@ -375,6 +375,9 @@ export function startTask(
 ): string {
   const id = `bg-${++taskIdCounter}`;
   generationCounter++;
+  // The newest run owns the shared task store; a superseded run's writes are
+  // dropped rather than corrupting the live one (see ownsTaskStore).
+  ownerTaskId = id;
   // Fresh abort controller for this task — any prior cancel must not affect it
   abortController = new AbortController();
   currentTask = {
@@ -403,8 +406,32 @@ export function startTask(
   return id;
 }
 
+/**
+ * Id of the run that currently owns the shared task store.
+ *
+ * Every mutator below (updateTaskStatus, setDisplayContent, bumpStat,
+ * setFilesChanged, ...) writes to `currentTask` - the single global slot. With
+ * overlapping runs that means a run which has been superseded keeps writing:
+ * its status string lands on the newer task, its file-change count inflates the
+ * newer task's counter, and the UI shows the older run as live. Threading a
+ * taskId through ~90 call sites is the thorough fix; this ownership guard is
+ * the containment: a mutator refuses to write once the owner has changed, so a
+ * superseded run's writes are dropped instead of corrupting the live one.
+ *
+ * startTask claims ownership, so the newest run always wins - which matches the
+ * generation semantics used elsewhere.
+ */
+let ownerTaskId: string | null = null;
+
+/** True when it is safe for a store mutator to touch currentTask. */
+function ownsTaskStore(): boolean {
+  if (!currentTask) return false;
+  if (ownerTaskId === null) return true; // no run-scoped ownership in play
+  return currentTask.id === ownerTaskId;
+}
+
 export function updateTaskStatus(status: TaskStatus, detail?: string) {
-  if (!currentTask) return;
+  if (!currentTask || !ownsTaskStore()) return;
   currentTask.status = status;
   if (detail !== undefined) currentTask.statusDetail = detail;
   notify();
@@ -489,7 +516,7 @@ export function appendToDisplayContent(text: string) {
 }
 
 export function setDisplayContent(content: string) {
-  if (!currentTask) return;
+  if (!currentTask || !ownsTaskStore()) return;
   currentTask.displayContent = content;
   notifyThrottled();
 }
