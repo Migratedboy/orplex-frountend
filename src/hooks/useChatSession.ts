@@ -854,7 +854,14 @@ export function useChatSession() {
       toast(`Queued: "${text.slice(0, 40)}${text.length > 40 ? "..." : ""}"`, "info");
       return;
     }
-    await sendMessageInner(text, fullContent, textFiles, imageFiles, mode, effort, model);
+    // Call through sendMessageRef rather than closing over sendMessageInner
+  // directly. This callback is memoised on [toast] only, so a direct call
+  // captured whichever sendMessageInner existed at THAT render and kept it for
+  // the component's life - i.e. a permanently stale closure. sendMessageInner
+  // now contains the attachment upload/extract path, so a stale copy meant the
+  // send path could reach for out-of-date state. The ref is re-assigned on every
+  // render (line 812), which is the pattern this file already uses.
+  await sendMessageRef.current(text, fullContent, textFiles, imageFiles, mode, effort, model);
   }, [toast]);
 
   // Listen for "apply annotations" from artifact cards: pinned visual
