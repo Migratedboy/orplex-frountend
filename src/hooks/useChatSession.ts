@@ -654,11 +654,12 @@ export function useChatSession() {
       const stored = await persistImages(
         archiveFiles.map((f) => ({ name: f.name, dataUrl: f.dataUrl!, size: f.size })),
       );
+
+      const blocks: string[] = [];
       if (stored.length > 0) {
         const { extractStoredArchive, extractedArchiveToPrompt } = await import(
           "@/lib/client-attachments"
         );
-        const blocks: string[] = [];
         for (const s of stored) {
           const stem = s.name.replace(/\.[^.]+$/, "") || "extracted";
           const ext = await extractStoredArchive(s.ref, stem);
@@ -680,8 +681,32 @@ export function useChatSession() {
             );
           }
         }
-        contentWithFiles =
-          contentWithFiles + "\n\n" + blocks.join("\n\n");
+      }
+
+      // The upload-failure branch had NO handler at all. Archives carry no
+      // inline text (ChatInput filters type !== "archive" out of the prompt
+      // block), so when the upload failed for any reason - 401 expired session,
+      // 404 no workspace open, 413 over the size limit, 500 disk - not one byte
+      // of the archive AND no mention of it reached the request. The chip was
+      // still on screen, so the only visible symptom was the model answering
+      // something adjacent: "the AI ignores my zips".
+      const failedNames = archiveFiles
+        .filter((f) => !stored.some((s) => s.name === f.name))
+        .map((f) => f.name);
+      for (const name of failedNames) {
+        t(
+          `${name} could not be attached — it was not uploaded, so the AI cannot see it. Check that a project folder is open.`,
+          "error",
+        );
+        blocks.push(
+          `[ARCHIVE: ${name}] COULD NOT BE ATTACHED. The upload failed, so its contents are NOT available to you ` +
+            `and no bytes of it are in this request. Tell the user plainly that you cannot see it, ` +
+            `rather than guessing at what is inside.`,
+        );
+      }
+
+      if (blocks.length > 0) {
+        contentWithFiles = contentWithFiles + "\n\n" + blocks.join("\n\n");
       }
     }
 

@@ -226,10 +226,20 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   // (and setState) after unmount and waste network.
   const catalogTimers = useRef<number[]>([]);
   const catalogCancelled = useRef(false);
-  useEffect(() => () => {
-    catalogCancelled.current = true;
-    catalogTimers.current.forEach((t) => clearTimeout(t));
-    catalogTimers.current = [];
+  useEffect(() => {
+    // React 18 StrictMode (next.config.js reactStrictMode: true) mounts,
+    // runs cleanup, then mounts again. This cleanup latched
+    // catalogCancelled = true and nothing ever reset it, and that flag gates
+    // EVERY path in loadCatalog - so after the remount the catalog fetch
+    // returned immediately, finish() never ran, setCatalogLoading(false) never
+    // fired, and the picker spun on "Fetching verified models…" forever,
+    // pinned to FALLBACK_MODELS. Reset on setup as well as clear on cleanup.
+    catalogCancelled.current = false;
+    return () => {
+      catalogCancelled.current = true;
+      catalogTimers.current.forEach((t) => clearTimeout(t));
+      catalogTimers.current = [];
+    };
   }, []);
   // BYOK models (from the user's stored keys' model listings) + the keys
   // revision marker that tells us when to refetch (new/removed keys).
@@ -653,9 +663,15 @@ const finish = () => {
     const imageFiles = files.getImageFiles().map((f) => ({ name: f.name, dataUrl: f.dataUrl!, size: f.size }));
     if (!msg && textFiles.length === 0 && imageFiles.length === 0) return;
     const mode: AgentMode = (MODES.find((m) => m.key === meta.mode?.key)?.agentMode ?? agentMode);
+    // Clear BEFORE the await. swapForRetry can await a dynamic import of
+    // model-catalog (hundreds of ms on a cold chunk, seconds on first load
+    // after boot) and nothing disables the attach button, the file input or the
+    // paste listener meanwhile — so anything attached in that window was
+    // dropped by clearFiles() after the send had already snapshotted the file
+    // list, and the chip vanished with no indication it had ever been added.
+    files.clearFiles();
     const model = await swapForRetry(meta.model);
     emit(msg, textFiles, imageFiles, mode, meta.effort?.toLowerCase(), model?.key);
-    files.clearFiles();
     clearRef.current?.();
   };
 

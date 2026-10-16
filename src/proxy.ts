@@ -86,17 +86,40 @@ function requiresPageAuth(pathname: string): boolean {
 // recovery feels instant when the network returns.
 let probeAt = 0;
 let probeOk = false;
+/** In-flight probe, so a cold cache does not fan out one HEAD per request. */
+let probeInFlight: Promise<boolean> | null = null;
 async function isCloudReachable(origin: string): Promise<boolean> {
   const now = Date.now();
   if (now - probeAt < (probeOk ? 30_000 : 5_000)) return probeOk;
-  try {
-    await fetch(origin, { method: "HEAD", signal: AbortSignal.timeout(4000) });
-    probeOk = true;
-  } catch {
-    probeOk = false;
-  }
-  probeAt = now;
-  return probeOk;
+  if (probeInFlight) return probeInFlight;
+
+  // Page load fans out session + catalog + conversations + notifications in the
+  // same tick, so without this every one of them started its own HEAD.
+  probeInFlight = (async () => {
+    const startedAt = Date.now();
+    let ok: boolean;
+    try {
+      await fetch(origin, { method: "HEAD", signal: AbortSignal.timeout(4000) });
+      ok = true;
+    } catch {
+      ok = false;
+    }
+    // Last RESOLUTION won before, not last INITIATION: if an older probe failed
+    // on a transient blip and resolved after a newer one succeeded, probeOk was
+    // left false and cached for 5s — bouncing every /api/auth/* request to a
+    // 503 "offline" and signing the user out while the cloud was reachable.
+    // A probe result now only lands if no newer probe has started since it did.
+    if (startedAt >= probeAt) {
+      probeOk = ok;
+      // Stamp AFTER completion. The old code stamped the pre-await time, so a
+      // 4s-timeout probe recorded its verdict as fresh up to 4s early.
+      probeAt = Date.now();
+    }
+    probeInFlight = null;
+    return ok;
+  })();
+
+  return probeInFlight;
 }
 
 // Proxy: page-route auth (Edge JWT check, redirect to /auth/signin) and
