@@ -97,9 +97,32 @@ export interface CallTarget {
   label: string;
 }
 
-function str(v: unknown): string {
-  return typeof v === "string" ? v : "";
-}
+  function str(v: unknown): string {
+    return typeof v === "string" ? v : "";
+  }
+
+  /**
+   * Collapse the spellings of "the workspace root" to one identity.
+   *
+   * The directory walk treats "", ".", "/", "./" and "src/../" as the same
+   * tree, so a model alternating between them is making no progress — which is
+   * exactly what happened when it looped on an empty workspace. Resolves "."
+   * and ".." segments so the key reflects the tree that is actually walked.
+   */
+  function normalizeDirPath(p: string): string {
+    const raw = (p || "").trim().replace(/\\/g, "/");
+    if (raw === "" || raw === "." || raw === "/") return ".";
+    const out: string[] = [];
+    for (const seg of raw.split("/")) {
+      if (seg === "" || seg === ".") continue;
+      if (seg === "..") {
+        out.pop();
+        continue;
+      }
+      out.push(seg);
+    }
+    return out.length === 0 ? "." : out.join("/");
+  }
 
 function norm(v: unknown): string {
   return String(v ?? "").trim().replace(/\s+/g, " ").slice(0, 160);
@@ -129,6 +152,21 @@ export function callTarget<T extends { name?: string }>(call: T): CallTarget | n
   const offset = a.offset === undefined ? 0 : Number(a.offset) || 0;
 
   switch (name) {
+    case "list_files": {
+      // list_files had NO case here, so callTarget fell through to `default`
+      // and returned null. Combined with its READ_ONLY_TOOLS membership (which
+      // exempts it from the single-tool-streak signal), NOTHING could catch a
+      // model repeatedly listing the same empty workspace — observed live as
+      // list_files(), list_files({path:"."}), list_files({path:"/"}) in a row
+      // against a 120-turn ceiling.
+      //
+      // Normalise the path so those spellings collapse to ONE target: they all
+      // mean "the workspace root", and the directory walk normalises them
+      // identically, so they are not progress. The "successively deeper
+      // directory" escape still works, which is the legitimate descent.
+      const norm = normalizeDirPath(path);
+      return { key: `list|${norm}`, label: `path "${norm}"` };
+    }
     case "read_file": {
       if (!path) return null;
       // Offset is part of the identity: paging forward is progress; re-reading

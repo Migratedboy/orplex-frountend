@@ -22,8 +22,44 @@ import { listSnapshotToolsByServer } from "@/lib/mcp/tool-snapshot";
 import { refreshMissingSnapshots as refreshMissingMcpSnapshots } from "@/lib/mcp/roster-refresh";
 import { getMcpCatalogEntry } from "@/lib/mcp-catalog";
 import { routeToModel } from "@/lib/model-router";
+import { resolveMaxOutputTokens, rejectsTemperature } from "@/lib/model-output-caps";
+import { getVerifiedModels } from "@/lib/model-catalog";
 import { preprocessMessages } from "@/lib/vision-preprocessor";
+import { canSendImageParts } from "@/lib/vision-models";
 import { recordProviderEvent } from "@/lib/provider-uptime";
+
+/** Strip an OpenRouter-style namespace: "openai/gpt-4o" -> "gpt-4o". */
+function bareModelId(id: string): string {
+  const s = (id || "").trim();
+  const i = s.lastIndexOf("/");
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
+/**
+ * Model id -> context window, from the (cached) verified catalog.
+ *
+ * Best-effort by design: the catalog answers from memory/disk cache instantly
+ * and a cold cache simply yields an empty map, which makes
+ * resolveMaxOutputTokens fall back to its safe default. This must never throw
+ * — it runs on the hot chat path.
+ */
+async function loadContextWindows(): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  try {
+    const { models } = await getVerifiedModels({ background: true });
+    for (const m of models) {
+      const ctx = (m as { contextWindow?: number }).contextWindow;
+      if (typeof ctx === "number" && ctx > 0) {
+        map.set(m.id, ctx);
+        const bare = bareModelId(m.id);
+        if (bare && !map.has(bare)) map.set(bare, ctx);
+      }
+    }
+  } catch {
+    /* catalog unavailable — safe default applies */
+  }
+  return map;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -114,10 +150,10 @@ export async function POST(request: NextRequest) {
       .map((m) => m.content)
       .join(" ");
 
-    const { messages: processedMessages, hadImages } = await preprocessMessages(
-      multimodalMessages as any,
-      userPrompt,
-    );
+// Vision preprocessing is DEFERRED until after routing (below) — whether the
+// target model accepts image parts is only known once a provider is chosen,
+// and describing images as text before that would strip them from a vision
+// model entirely.
 
     // --- Step 6: Route to optimal model ---
     const routingDecision = routeToModel(
@@ -165,17 +201,53 @@ export async function POST(request: NextRequest) {
         (p) => p.model.includes("claude") || p.model.includes("sonnet"),
       );
       if (premiumProvider) {
+        // MOVE, don't copy: `find` returns a reference into the same array, so a
+        // plain unshift left the identical config at BOTH index 0 and its
+        // original index — a transient failure then paid for the same premium
+        // model twice.
+        providerConfigs.splice(providerConfigs.indexOf(premiumProvider), 1);
         providerConfigs.unshift(premiumProvider);
       }
-    }
+  }
 
-    let stream: ReadableStream | null = null;
+  // --- Step 6b: Vision preprocessing (needs the routed provider) ---
+  // A vision-capable provider (OpenRouter → Gemini/Claude/GPT-4o, NVIDIA VLM)
+  // receives the image parts untouched, so it gets real image tokens. Anything
+  // else falls back to describing each image via the NVIDIA vision model.
+  // The provider flag alone is NOT enough. OpenRouter sets supportsVision=true
+// because it can proxy vision models, so picking a TEXT-ONLY model
+// (openai/gpt-oss-120b) with an OpenRouter key forwarded raw image_url parts
+// to a model that cannot decode them, while the UI announced "Image
+// analyzed." Both the transport AND the model must agree.
+const routedSupportsVision = canSendImageParts(
+  providerConfigs[0]?.supportsVision,
+  providerConfigs[0]?.model,
+);
+  const {
+    messages: processedMessages,
+    hadImages,
+    analyzedImages,
+    failedImages,
+  } = await preprocessMessages(
+    multimodalMessages as any,
+    userPrompt,
+    routedSupportsVision,
+  );
+
+  let stream: ReadableStream | null = null;
     let lastError = "";
     let attemptsMade = 0;
 
     // Reasoning effort from the prompt bar (low/medium/high). Medium is the
     // model default — only sent for models that support reasoning_effort.
     const effort = parsed.effort;
+
+    // Context windows (best-effort, ONCE per request) so the output budget can
+    // be clamped to something the model can actually hold. Any failure here is
+    // non-fatal: resolveMaxOutputTokens just falls back to its safe default.
+    const contextWindows = await loadContextWindows();
+    const contextWindowForModel = (id: string): number | undefined =>
+      contextWindows.get((id || "").trim()) ?? contextWindows.get(bareModelId(id));
 
     for (const provider of providerConfigs) {
       if (effort && effort !== "medium") {
@@ -189,11 +261,47 @@ export async function POST(request: NextRequest) {
       // and every request dies with HTTP 413. The compact profile + reduced
       // completion budget fits comfortably under the cap.
       const isGroq = provider.name.toLowerCase().includes("groq");
-      const requestBody = {
-        model: provider.model,
-        messages: [
-          {
-            role: "system",
+      // The 2048-token ceiling exists to fit the PLATFORM's shared Groq TPM
+      // budget. A user paying Groq with their OWN key is not consuming that
+      // budget, so starving them to 2048 was silently crippling a paid model.
+      // Compact prompt + compact tools stay for every Groq lane (a smaller
+      // payload only helps), but the output cap is per-payer.
+      const onPlatformGroqBudget = isGroq && provider.lane !== "personal";
+      // Output budget must fit the model ACTUALLY picked, not the effort tier.
+      // Asking a 16k-output paid model for the premium tier's 65536 returns an
+      // HTTP 400 outright — which is what made paid models look broken. Cap to
+      // the model's real ceiling here, and let fetchWithProviderRetry learn the
+      // exact number from the provider if we still guessed high.
+      const tierMaxTokens = routingDecision.model.maxTokens;
+      const maxCompletionTokens = resolveMaxOutputTokens(
+        provider.model,
+        onPlatformGroqBudget ? Math.min(2048, tierMaxTokens) : effort === "low" ? Math.min(4096, tierMaxTokens) : tierMaxTokens,
+        contextWindowForModel(provider.model)
+      );
+    // Per-attempt image gating. Routing picked ONE vision-capable provider, but
+    // a failure can fall through the ladder to a text-only one (Groq), which
+    // rejects a multimodal body outright. The adapter's flattening safety net
+    // does not apply here because this loop builds the payload itself, so strip
+    // the image parts for any non-vision attempt.
+    const attemptMessages = canSendImageParts(provider.supportsVision, provider.model)
+      ? processedMessages
+      : processedMessages.map((m: any) =>
+          Array.isArray(m.content)
+            ? {
+                ...m,
+                content: m.content
+                  .filter((p: any) => p.type === "text")
+                  .map((p: any) => p.text ?? "")
+                  .join("\n"),
+              }
+            : m
+        );
+
+    const requestBody = {
+      model: provider.model,
+      messages: [
+        {
+          role: "system",
             // The Master Prompt: one composed source of truth per mode —
             // full doctrine on turn 1, compact on repair/continue turns
             // (profile arrives from the worker via the request body).
@@ -207,7 +315,7 @@ export async function POST(request: NextRequest) {
               mcpSection,
             }),
           },
-          ...processedMessages,
+          ...attemptMessages,
         ],
         ...(mode === "ask"
           ? {}
@@ -224,12 +332,12 @@ export async function POST(request: NextRequest) {
               ],
               tool_choice: "auto",
             }),
-        max_completion_tokens: isGroq
-          ? Math.min(2048, routingDecision.model.maxTokens)
-          : effort === "low"
-            ? Math.min(4096, routingDecision.model.maxTokens)
-            : routingDecision.model.maxTokens,
-        temperature: routingDecision.model.temperature,
+        max_completion_tokens: maxCompletionTokens,
+        // Reasoning-family models (OpenAI o-series/gpt-5) reject a non-default
+        // temperature and Claude 4.7+ rejects anything below 1 — both are hard
+        // 400s. The tier's temperature (0.3/0.7/0.5) is tuned for the default
+        // Groq free model and must not be forced onto a paid pick.
+        ...(rejectsTemperature(provider.model) ? {} : { temperature: routingDecision.model.temperature }),
         ...(effort && effort !== "medium" && /gpt-oss/i.test(provider.model)
           ? { reasoning_effort: effort }
           : {}),
@@ -276,8 +384,15 @@ export async function POST(request: NextRequest) {
       // ("Fast answer failed: HTTP 503"), which historically left the chat
       // bubble empty with the spinner running. A notice stream renders as
       // text in the bubble and ends cleanly.
+// A 400 is PERMANENT — a bad parameter, bad model id or rejected tool schema
+      // will never "warm up". Telling the user to retry made a deterministic
+      // failure read as a transient outage, which is exactly how the
+      // temperature/max_tokens bugs above got mis-diagnosed for so long.
+      const permanentRejection = /\bHTTP 4(00|01|03|04|22)\b/.test(lastError);
       const message = requestedModel
-        ? `The selected model (${requestedModel}) is not responding right now — it may still be warming up on its provider. Send again in a minute or pick another model.`
+        ? permanentRejection
+          ? `The selected model (${requestedModel}) rejected the request — it is not a problem that will fix itself. Try a different model.`
+          : `The selected model (${requestedModel}) is not responding right now - it may still be warming up on its provider. Send again in a minute or pick another model.`
         : "All AI providers are currently unavailable. Please try again.";
       if (attemptsMade > 0) {
         console.warn(`[chat] all providers failed for "${requestedModel || "auto"}" — returning notice stream: ${lastError}`);
@@ -303,13 +418,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // --- Step 8: Prepend vision status if images were processed ---
-    if (hadImages) {
-      stream = prependStatusMessage(
-        stream,
-        "Image analyzed. Building response...\n\n",
-      );
-    }
+// --- Step 8: Prepend vision status if images were processed ---
+  // Distinguish "the model looked at your image" from "a vision model
+  // described your image for it". When the routed model is text-only the
+  // image is still processed, via the NVIDIA VLM, but the model never saw
+  // it — saying "Image analyzed." there overstated what happened.
+  if (hadImages && analyzedImages > 0) {
+    const seenNatively = routedSupportsVision;
+    stream = prependStatusMessage(
+      stream,
+      (failedImages > 0
+        ? `Analyzed ${analyzedImages} of ${analyzedImages + failedImages} image(s). ${failedImages} could not be processed.\n\n`
+        : seenNatively
+          ? "Image analyzed. Building response...\n\n"
+          : "Image described. Building response...\n\n"),
+    );
+  } else if (hadImages && failedImages > 0) {
+    stream = prependStatusMessage(
+      stream,
+      `Could not analyze ${failedImages} image(s) — image analysis is unavailable on this server.\n\n`,
+    );
+  }
 
     // --- Step 9: Return SSE stream ---
     return new Response(sseTransform(stream), {
