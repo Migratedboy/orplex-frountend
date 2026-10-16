@@ -2,8 +2,15 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { IconRefresh, IconAgent } from "./Icons";
+import { IconRefresh } from "./Icons";
 import RunLiveStatus from "./RunLiveStatus";
+import { AgentStatus } from "./ui";
+import { TaskProgress } from "./ui";
+import ProgressBar from "./ProgressBar";
+import AgentProgress from "./AgentProgress";
+import type { Step } from "./StepList";
+import type { ActivityEntry } from "./AgentActivityLog";
+import { LoadingView, EmptyView, ErrorInline } from "./StateViews";
 import { formatTokens, scheduledLabel, removeApprovalFromRuns } from "@/lib/board-format";
 import { apiFetch } from "@/lib/api-base";
 
@@ -58,25 +65,25 @@ interface BoardSummary {
 // === Status presentation ===
 
 const TASK_STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
-  pending: { label: "Pending", color: "#71717a", bg: "#f4f4f5" },
-  leased: { label: "Leased", color: "#2563eb", bg: "#dbeafe" },
-  running: { label: "Running", color: "#ea580c", bg: "#ffedd5" },
-  waiting_approval: { label: "Waiting approval", color: "#b45309", bg: "#fef3c7" },
-  verifying: { label: "Verifying", color: "#7c3aed", bg: "#ede9fe" },
-  completed: { label: "Done", color: "#15803d", bg: "#dcfce7" },
-  failed: { label: "Failed", color: "#b91c1c", bg: "#fee2e2" },
-  cancelled: { label: "Cancelled", color: "#71717a", bg: "#f4f4f5" },
+  pending: { label: "Pending", color: "var(--st-pending-fg)", bg: "var(--st-pending-bg)" },
+  leased: { label: "Leased", color: "var(--st-info-fg)", bg: "var(--st-info-bg)" },
+  running: { label: "Running", color: "var(--st-running-fg)", bg: "var(--st-running-bg)" },
+  waiting_approval: { label: "Waiting approval", color: "var(--st-warn-fg)", bg: "var(--st-warn-bg)" },
+  verifying: { label: "Verifying", color: "var(--st-verify-fg)", bg: "var(--st-verify-bg)" },
+  completed: { label: "Done", color: "var(--st-done-fg)", bg: "var(--st-done-bg)" },
+  failed: { label: "Failed", color: "var(--st-error-fg)", bg: "var(--st-error-bg)" },
+  cancelled: { label: "Cancelled", color: "var(--st-pending-fg)", bg: "var(--st-pending-bg)" },
 };
 
 const RUN_STATUS_META: Record<string, { label: string; color: string }> = {
-  pending: { label: "Pending", color: "#71717a" },
-  planning: { label: "Planning", color: "#2563eb" },
-  executing: { label: "Executing", color: "#ea580c" },
-  verifying: { label: "Verifying", color: "#7c3aed" },
-  waiting_approval: { label: "Waiting approval", color: "#b45309" },
-  completed: { label: "Completed", color: "#15803d" },
-  failed: { label: "Failed", color: "#b91c1c" },
-  cancelled: { label: "Cancelled", color: "#71717a" },
+  pending: { label: "Pending", color: "var(--st-pending-fg)" },
+  planning: { label: "Planning", color: "var(--st-info-fg)" },
+  executing: { label: "Executing", color: "var(--st-running-fg)" },
+  verifying: { label: "Verifying", color: "var(--st-verify-fg)" },
+  waiting_approval: { label: "Waiting approval", color: "var(--st-warn-fg)" },
+  completed: { label: "Completed", color: "var(--st-done-fg)" },
+  failed: { label: "Failed", color: "var(--st-error-fg)" },
+  cancelled: { label: "Cancelled", color: "var(--st-pending-fg)" },
 };
 
 // Note: dark-mode values applied via CSS variables in globals.css (.run-board overrides)
@@ -99,6 +106,13 @@ function timeAgo(iso: string): string {
 
 // === Components ===
 
+function taskStatusToAgentStatus(status: string): "active" | "waiting" | "done" | "error" {
+  if (status === "running" || status === "leased" || status === "verifying") return "active";
+  if (status === "completed" || status === "cancelled") return "done";
+  if (status === "failed") return "error";
+  return "waiting";
+}
+
 function TaskCard({ task }: { task: BoardTask }) {
   const meta = TASK_STATUS_META[task.status] || TASK_STATUS_META.pending;
   const isWaiting = task.status === "waiting_approval";
@@ -117,6 +131,7 @@ function TaskCard({ task }: { task: BoardTask }) {
         </span>
       </div>
       <div className="board-task-title">{task.title}</div>
+      {task.error && <ErrorInline error={task.error} />}
       {task.dependsOn.length > 0 && (
         <div className="board-task-deps">{task.dependsOn.length} dependency(ies)</div>
       )}
@@ -128,6 +143,9 @@ function RunLane({ run, onOpen, onDecide, decidingId }: { run: BoardRun; onOpen:
   const runMeta = RUN_STATUS_META[run.status] || RUN_STATUS_META.pending;
   const tasks = run.tasks || [];
   const doneCount = tasks.filter(t => t.status === "completed").length;
+  // Stable, render-pure timestamp for derived log entries (see the
+  // AgentProgress activityLog map below).
+  const runTs = new Date(run.createdAt).getTime() || 0;
   const approvals = run.pendingApprovals || [];
 
   return (
@@ -194,6 +212,53 @@ function RunLane({ run, onOpen, onDecide, decidingId }: { run: BoardRun; onOpen:
           </div>
         )}
       </div>
+      {run.isActive && tasks.length === 0 && (
+        <ProgressBar progress={null} status={runMeta.label} isRunning />
+      )}
+      {run.isActive && tasks.length > 0 && (
+        <TaskProgress
+          current={doneCount}
+          total={tasks.length}
+          currentFile={tasks.find(t => t.status === "running" || t.status === "leased")?.title}
+          status={run.status === "waiting_approval" ? "paused" : "running"}
+          unit="tasks"
+        />
+      )}
+      {/* Task-by-task detail for an ACTIVE run only. Finished lanes keep the
+          compact TaskProgress above — a step list for work that already
+          completed is noise. */}
+      {run.isActive && tasks.length > 0 && (
+        <AgentProgress
+          status={run.status === "waiting_approval" ? "Waiting for your approval" : runMeta.label}
+          progress={tasks.length ? (doneCount / tasks.length) * 100 : null}
+          steps={tasks.map<Step>((t, i) => ({
+            id: i,
+            label: t.title,
+            status:
+              t.status === "done" || t.status === "completed"
+                ? "done"
+                : t.status === "failed" || t.status === "error"
+                  ? "error"
+                  : t.status === "running" || t.status === "leased"
+                    ? "active"
+                    : "pending",
+          }))}
+          activityLog={tasks
+            .filter((t) => t.status === "failed" || t.status === "error")
+            .map<ActivityEntry>((t) => ({
+              // BoardTask carries no per-task timestamp, and Date.now() here
+              // was both an impure render call and a real bug: it produced a
+              // fresh value (and therefore a brand-new array identity) on
+              // every render, so the progress panel re-rendered continuously
+              // and the log's "when" column was meaningless. Anchor to the
+              // run's own createdAt — stable for the life of the run.
+              timestamp: runTs,
+              type: "error",
+              message: t.error || t.title,
+            }))}
+          isRunning
+        />
+      )}
       {approvals.length > 0 && (
         <div className="board-approvals">
           {approvals.map(a => (
@@ -289,8 +354,15 @@ export default function RunBoard() {
     }
     return [...byParent.entries()];
   })();
-  const childIds = new Set(runs.filter(r => r.parentRunId).map(r => r.id));
   const visibleStandaloneRuns = runs.filter(r => !r.parentRunId || r.status === "mission");
+  const activeAgents = runs
+    .filter(r => r.isActive)
+    .flatMap(r => (r.tasks || []).map(t => ({
+      id: t.id,
+      name: t.title,
+      role: t.role,
+      status: taskStatusToAgentStatus(t.status),
+    })));
 
   // Inline approve/deny from the board. Optimistic UI: the card disappears
   // immediately; the next poll (5s) reconciles with the server truth, and a
@@ -344,23 +416,20 @@ export default function RunBoard() {
         </div>
 
         {loading ? (
-          <div className="skeleton-list">
-            {[1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: 96 }} />)}
-          </div>
+          <LoadingView label="Loading runs…" />
         ) : runs.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-state-icon"><span style={{ opacity: 0.35 }}><IconAgent size={40} /></span></div>
-            <p className="empty-state-title">No agent runs yet</p>
-            <p className="empty-state-text">
-              Runs appear here once you queue agent tasks. Each run gets a lane;
-              every task inside it shows live status.
-            </p>
-          </div>
+          <EmptyView
+            icon="smart_toy"
+            title="No agent runs yet"
+            hint="Runs appear here once you queue agent tasks. Each run gets a lane; every task inside it shows live status."
+          />
         ) : (
           <div className="board-columns">
             {visibleStandaloneRuns.map(run => <RunLane key={run.id} run={run} onOpen={openRun} onDecide={decide} decidingId={decidingId} />)}
           </div>
         )}
+        <AgentStatus agents={activeAgents} visible={activeAgents.length > 0} />
+
         {missionGroups.length > 0 && (
           <div style={{ marginTop: 16 }}>
             <h3 style={{ fontSize: 13, margin: "0 0 8px", opacity: 0.7 }}>Missions</h3>

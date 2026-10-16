@@ -1,0 +1,6 @@
+{
+  "//": "Shipped app configuration. Read by the Electron MAIN process at boot.",
+  "//2": "A packaged app has no .env next to it (and must never ship one: it holds the DB password), so the cloud backend origin + lightweight mode live here. Repo-root .env and real shell env still win, which keeps local dev unchanged.",
+  "apiUrl": "https://orplex-backend.vercel.app",
+  "lightweight": true
+}

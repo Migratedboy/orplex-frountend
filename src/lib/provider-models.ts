@@ -31,10 +31,36 @@ export interface ListModelsResult {
   error?: string;
   /** HTTP status the provider returned, when known. */
   status?: number;
+  /** Ids the provider actually served, before any safety cap. */
+  listedTotal?: number;
+  /**
+   * True only when the DoS guard dropped entries. Every model the key can
+   * reach is returned unless a provider returns an absurd payload — the UI
+   * surfaces this so a truncated list is never silently shown as complete.
+   */
+  truncated?: boolean;
+  /** Pages fetched (1 = most providers return everything in one response). */
+  pages?: number;
 }
 
 const LIST_TIMEOUT_MS = 15_000;
-const MAX_MODELS = 200;
+/**
+ * DoS guard, NOT a product limit. This used to be 200, which silently threw
+ * away more than half of a real OpenRouter catalog (400+ ids) in whatever
+ * order the provider happened to return — that is why whole free models were
+ * missing from the picker. Real caps now come from `ProviderDef.modelsCap`,
+ * and this backstop is far above any provider's genuine catalogue size.
+ */
+const MAX_MODELS = 2000;
+/**
+ * How many listing pages to follow when the provider paginates.
+ *
+ * Defaults to 3 rather than 1 on purpose: following a cursor costs nothing
+ * when the provider sent none (the loop breaks immediately), but it means a
+ * provider that pages — or one we haven't audited yet — still yields its
+ * WHOLE catalogue instead of silently stopping at page one.
+ */
+const MAX_LIST_PAGES = 3;
 const MEM_TTL_MS = 10 * 60 * 1000;
 
 // --- tiny cache: provider + key-hash → result --------------------------------
@@ -101,17 +127,53 @@ interface RawListShape {
   models?: Array<Record<string, unknown>>;
 }
 
+/**
+ * Per-model "is this free to run" signal.
+ *
+ * OpenRouter encodes it as a `:free` id suffix, but that convention is not
+ * OpenRouter-only — any provider can (and some do) use it. So we check the
+ * suffix for EVERY provider, then the explicit boolean fields, then pricing.
+ * Pricing is read as both string ("0") and number (0) because providers
+ * disagree; the previous string-only check silently lost the free badge on
+ * every provider that returns numeric pricing.
+ */
+function detectFree(providerId: string, m: Record<string, unknown>, def: ProviderDef | undefined): boolean | undefined {
+  const id = typeof m.id === "string" ? m.id : "";
+  if (m.free === true || m.is_free === true || m.isFree === true) return true;
+  if (/:free$/i.test(id)) return true;
+
+  const pricing = m.pricing as { prompt?: unknown } | undefined;
+  const p = pricing?.prompt;
+  const num = typeof p === "string" ? Number(p) : typeof p === "number" ? p : NaN;
+  if (Number.isFinite(num)) return num === 0;
+
+  // OpenRouter always reports pricing, so absence means "paid" there. For
+  // everyone else, absence means "unknown" — say so instead of guessing.
+  if (providerId === "openrouter") return false;
+  if (def?.free === false) return false;
+  return undefined;
+}
+
+/**
+ * Display rank: free first, then largest context. Applied BEFORE any cap so
+ * that if the DoS guard ever bites, it drops the least useful models instead
+ * of an arbitrary slice of the provider's ordering.
+ */
+function rankForDisplay(a: ListedModel, b: ListedModel): number {
+  return Number(b.free ?? false) - Number(a.free ?? false) || (b.contextWindow ?? 0) - (a.contextWindow ?? 0);
+}
+
 function normalize(raw: RawListShape, providerId: string): ListedModel[] {
   const list: Array<Record<string, unknown>> = Array.isArray(raw.data) ? raw.data : Array.isArray(raw.models) ? raw.models : [];
   const out: ListedModel[] = [];
   const seen = new Set<string>();
+  const def = getProviderDef(providerId);
   for (const m of list) {
     const id = typeof m.id === "string" ? m.id : "";
     if (!id || seen.has(id)) continue;
     seen.add(id);
     // Tail-of-id filter (same rule as the platform catalog).
     if (NON_CHAT_RE.test(id.slice(id.lastIndexOf("/") + 1))) continue;
-    const def = getProviderDef(providerId);
     const ctx =
       typeof m.context_length === "number"
         ? m.context_length
@@ -120,21 +182,12 @@ function normalize(raw: RawListShape, providerId: string): ListedModel[] {
           : typeof m.contextWindow === "number"
             ? m.contextWindow
             : undefined;
-    const pricing = m.pricing as { prompt?: unknown } | undefined;
-    const pricingPrompt = pricing && typeof pricing.prompt === "string" ? Number(pricing.prompt) : NaN;
-    const free =
-      providerId === "openrouter"
-        ? id.endsWith(":free")
-        : def?.free
-          ? undefined
-          : Number.isFinite(pricingPrompt)
-            ? pricingPrompt === 0
-            : undefined;
+    const free = detectFree(providerId, m, def);
     const displayName = typeof m.display_name === "string" ? m.display_name : "";
     const name = displayName || (typeof m.name === "string" ? m.name : "") || prettify(id);
     out.push({ id, name, contextWindow: ctx, free });
   }
-  return out;
+  return out.sort(rankForDisplay);
 }
 
 /** Stable display name: "deepseek/deepseek-v4:free" → "Deepseek V4". */
@@ -151,6 +204,23 @@ function prettify(id: string): string {
 // --- public entry -------------------------------------------------------------
 
 /**
+ * Follow a provider's pagination cursor, if it sends one. Covers the shapes in
+ * the wild: OpenRouter-style `next_page`, Vercel/Google-style `next` + `after`,
+ * and Gemini-style `pageToken` + `has_more`. Returns null when the provider
+ * gave us everything (the common case) so the caller makes exactly one request.
+ */
+function nextPageCursor(json: unknown): { param: string; value: string } | null {
+  const j = json as Record<string, unknown> | null;
+  if (!j || typeof j !== "object") return null;
+  if (typeof j.next_page === "string" && j.next_page) return { param: "page", value: j.next_page };
+  if (typeof j.next === "string" && j.next) return { param: "after", value: j.next };
+  if (typeof j.next_page_token === "string" && j.next_page_token) return { param: "page_token", value: j.next_page_token };
+  if (j.has_more === true && typeof j.pageToken === "string") return { param: "pageToken", value: j.pageToken };
+  if (j.has_more === true && typeof j.next_page_token === "string") return { param: "page_token", value: j.next_page_token as string };
+  return null;
+}
+
+/**
  * Fetch + normalize a provider's model list with the user's key.
  * Cached 10 min per (provider, key-hash). Never throws.
  */
@@ -164,30 +234,61 @@ export async function listProviderModels(providerId: string, apiKey: string): Pr
   if (cached) return cached;
 
   const { url, headers } = buildListRequest(def);
+  const maxPages = Math.max(1, def.maxListPages ?? MAX_LIST_PAGES);
+  const cap = def.modelsCap ?? MAX_MODELS;
   let result: ListModelsResult;
   try {
-    const res = await fetch(url, {
+    // Page 1 (most providers return the entire catalogue here).
+    const first = await fetch(url, {
       method: "GET",
       headers: applyKey(headers, apiKey.trim()),
       signal: AbortSignal.timeout(LIST_TIMEOUT_MS),
     });
-    if (res.status === 401 || res.status === 403) {
-      result = { ok: false, models: [], error: "Key rejected by the provider — check the key and its permissions.", status: res.status };
-    } else if (res.status === 429) {
+
+    if (first.status === 401 || first.status === 403) {
+      result = { ok: false, models: [], error: "Key rejected by the provider — check the key and its permissions.", status: first.status };
+    } else if (first.status === 429) {
       result = { ok: false, models: [], error: "Provider rate limit hit — wait a moment and try again.", status: 429 };
-    } else if (!res.ok) {
-      result = { ok: false, models: [], error: `Provider responded with HTTP ${res.status}.`, status: res.status };
+    } else if (!first.ok) {
+      result = { ok: false, models: [], error: `Provider responded with HTTP ${first.status}.`, status: first.status };
     } else {
-      const ct = res.headers.get("content-type") || "";
+      const ct = first.headers.get("content-type") || "";
       if (!ct.includes("json")) {
-        result = { ok: false, models: [], error: "Unexpected response from the provider (not JSON).", status: res.status };
+        result = { ok: false, models: [], error: "Unexpected response from the provider (not JSON).", status: first.status };
       } else {
-        const raw = (await res.json().catch(() => null)) as RawListShape | null;
-        const models = raw ? normalize(raw, providerId).slice(0, MAX_MODELS) : [];
+        // Accumulate raw entries across pages, then normalize ONCE so dedupe
+        // and ranking see the complete catalogue rather than one page.
+        let rawJson = (await first.json().catch(() => null)) as RawListShape | null;
+        const collected: Array<Record<string, unknown>> = [];
+        if (rawJson) collected.push(...(Array.isArray(rawJson.data) ? rawJson.data : Array.isArray(rawJson.models) ? rawJson.models : []));
+        let pages = 1;
+
+        while (pages < maxPages && collected.length < cap) {
+          const cursor = nextPageCursor(rawJson);
+          if (!cursor) break;
+          const sep = url.includes("?") ? "&" : "?";
+          const nextUrl = `${url}${sep}${cursor.param}=${encodeURIComponent(cursor.value)}`;
+          const pageRes = await fetch(nextUrl, {
+            method: "GET",
+            headers: applyKey(headers, apiKey.trim()),
+            signal: AbortSignal.timeout(LIST_TIMEOUT_MS),
+          }).catch(() => null);
+          if (!pageRes?.ok) break; // partial catalogue beats a hard failure
+          const nextJson = (await pageRes.json().catch(() => null)) as RawListShape | null;
+          if (!nextJson) break;
+          const entries = Array.isArray(nextJson.data) ? nextJson.data : Array.isArray(nextJson.models) ? nextJson.models : [];
+          if (entries.length === 0) break;
+          collected.push(...entries);
+          rawJson = nextJson;
+          pages++;
+        }
+
+        const models = normalize({ data: collected }, providerId);
         if (models.length === 0) {
-          result = { ok: false, models: [], error: "No chat models found for this key — you can still type the model id manually.", status: res.status };
+          result = { ok: false, models: [], error: "No chat models found for this key — you can still type the model id manually.", status: first.status };
         } else {
-          result = { ok: true, models };
+          result = { ok: true, models: models.slice(0, cap), listedTotal: models.length, pages };
+          if (models.length > cap) result.truncated = true;
           const prefix = def.keyPrefix;
           if (prefix && !apiKey.trim().startsWith(prefix)) {
             result.warning = `Heads up: ${def.label} keys usually start with "${prefix}" — the provider accepted it anyway.`;

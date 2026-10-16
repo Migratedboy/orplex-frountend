@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
-import { listMemories, forgetMemory, retrieveWorkspaceMemories, formatMemoriesForPrompt, rememberFact } from "@/lib/workspace-memory";
-import { getWorkspaceKey } from "@/lib/run-ledger";
+import { listMemories, forgetMemory, retrieveWorkspaceMemories, formatMemoriesForPrompt, remember as rememberFact } from "@/lib/memory";
+import { getWorkspaceKey } from "@/lib/memory";
 
 export const dynamic = "force-dynamic";
 

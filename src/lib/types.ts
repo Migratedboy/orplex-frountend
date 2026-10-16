@@ -27,7 +27,33 @@ export type AgentEvent =
   | { type: "plan"; content: string }
   | { type: "thinking"; content: string }
   | { type: "done" }
-  | { type: "error"; content: string };
+  | { type: "error"; content: string }
+  /**
+   * The context was summarized to stay under the token budget. A system
+   * event, not a message — the timeline renders a collapsible marker for it
+   * (see ContextCompactedDivider). `tokensBefore`/`tokensAfter` are ESTIMATES
+   * (the app sizes context with a chars/4 heuristic), which is why the label
+   * renders them "~"-prefixed.
+   */
+  | {
+      type: "compacted";
+      tokensBefore: number;
+      tokensAfter: number;
+      mode: "automatic" | "manual";
+      summary?: string;
+    };
+
+export function isCompactionEvent(
+  event: AgentEvent
+): event is {
+  type: "compacted";
+  tokensBefore: number;
+  tokensAfter: number;
+  mode: "automatic" | "manual";
+  summary?: string;
+} {
+  return event.type === "compacted";
+}
 
 // Type guard functions
 export function isTextEvent(event: AgentEvent): event is { type: "text"; content: string } {

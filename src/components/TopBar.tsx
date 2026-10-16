@@ -104,7 +104,7 @@ function notifIcon(type: string) {
   return "ℹ";
 }
 
-export default function TopBar({ title = "Orplex Code", onBugReport, onTogglePanel, panelOpen, onToggleSidebar, sidebarCollapsed }: { title?: string; onBugReport?: () => void; onTogglePanel?: () => void; panelOpen?: boolean; onToggleSidebar?: () => void; sidebarCollapsed?: boolean }) {
+export default function TopBar({ title = "Orplex Code", onBugReport, onShowShortcuts, onTogglePanel, panelOpen, onToggleSidebar, sidebarCollapsed }: { title?: string; onBugReport?: () => void; onShowShortcuts?: () => void; onTogglePanel?: () => void; panelOpen?: boolean; onToggleSidebar?: () => void; sidebarCollapsed?: boolean }) {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [showResults, setShowResults] = useState(false);
@@ -204,6 +204,11 @@ export default function TopBar({ title = "Orplex Code", onBugReport, onTogglePan
         {onBugReport && (
           <button onClick={onBugReport} className="topbar-btn topbar-bug-btn">
             <IconBug size={17} /> <span className="topbar-btn-label">Report Bug</span>
+          </button>
+        )}
+        {onShowShortcuts && (
+          <button onClick={onShowShortcuts} className="topbar-icon-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+            <span className="ms ms-sm">help</span>
           </button>
         )}
         <button onClick={toggle} className="topbar-icon-btn" title={dark ? "Light Mode" : "Dark Mode"} aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}>

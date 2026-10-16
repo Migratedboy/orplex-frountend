@@ -223,6 +223,8 @@ export interface PromptBarProps {
   recentModels?: PromptBarModel[];
   /** True while the parent is fetching the live verified catalog — the model menu shows a small loading indicator instead of implying the short list is everything */
   modelsLoading?: boolean;
+  /** The blocking indicator already gave up but the catalog is still landing. Renders a quiet note instead of a spinner. */
+  modelsSettling?: boolean;
   /** Fired when the model menu opens so the parent can (re)load the verified catalog */
   onModelMenuOpened?: () => unknown;
   /** Extra condition that enables sending even with an empty draft (e.g. attached files) */
@@ -280,6 +282,7 @@ export default function PromptBar({
   recentModels,
   onModelMenuOpened,
   modelsLoading = false,
+  modelsSettling = false,
   onDraftChange,
   onRegisterClear,
   onRegisterControls,
@@ -410,6 +413,14 @@ export default function PromptBar({
     chunked ? list.slice(0, renderLimit) : list
   ) as (PromptBarSource & PromptBarCommand & PromptBarModel & PromptBarMode)[];
   const canSend = draft.trim().length > 0 || attachments.length > 0 || canSendExtra;
+  // P7: the catalog streams in AFTER the menu is already open. renderLimit only
+  // grew on scroll-to-bottom, so models that arrived while the user was reading
+  // the top of the list were sliced out of the DOM and stayed invisible until
+  // they scrolled back to the bottom. Grow to cover whatever is there now.
+  useEffect(() => {
+    if (!chunked) return;
+    setRenderLimit((c) => (list.length > c ? list.length : c));
+  }, [chunked, list.length]);
   const armed = busy || canSend;
   const level = efforts[effortIndex] ?? "";
   const maxed = efforts.length > 1 && effortIndex === efforts.length - 1;
@@ -884,12 +895,19 @@ export default function PromptBar({
                   </Fragment>
                 );
               })}
-              {open === "model" && modelsLoading ? (
-                <div className="prompt-bar__model-loading" role="status" aria-live="polite">
-                  <span className="prompt-bar__model-loading-spinner" aria-hidden="true" />
-                  <span>Fetching verified models…</span>
-                </div>
-              ) : null}
+{open === "model" && modelsLoading ? (
+        <div className="prompt-bar__model-loading" role="status" aria-live="polite">
+          <span className="prompt-bar__model-loading-spinner" aria-hidden="true" />
+          <span>Fetching verified models…</span>
+        </div>
+      ) : null}
+      {open === "model" && modelsSettling && !modelsLoading ? (
+        // Quiet phase: the fallback trio above is usable, so don't block on a
+        // spinner — just say the verified list is still growing.
+        <div className="prompt-bar__model-settling" role="status" aria-live="polite">
+          Still verifying models — this list will keep updating.
+        </div>
+      ) : null}
               {chunked && list.length > renderLimit ? (
                 <button
                   type="button"
@@ -1008,7 +1026,15 @@ export default function PromptBar({
                 setModeOpen(false);
                 setEffortOpen(false);
                 setModelQuery("");
-                setActive(Math.max(0, list.findIndex((m) => m.key === model?.key)));
+                // P6: compute the active row from the MODEL LIST, not `list`.
+                // `list` is derived from `filtered`, which returns [] for every
+                // non-"model" branch — and at click time `modelOpen` is still
+                // false, so `open` !== "model" and the lookup ALWAYS returned
+                // -1. That Math.max(0, …) then pinned the keyboard cursor to
+                // row 0, so opening the picker jumped away from the model you
+                // had actually selected (and Enter re-picked model #1).
+                const modelIdx = models.findIndex((m) => m.key === model?.key);
+                setActive(modelIdx >= 0 ? modelIdx : 0);
                 const opening = !modelOpen;
                 setModelOpen(opening);
                 if (opening) {

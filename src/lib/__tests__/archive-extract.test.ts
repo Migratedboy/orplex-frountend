@@ -124,9 +124,14 @@ describe("safeEntryName", () => {
 describe("defaultDest", () => {
   it("names the folder after the archive", () => {
     expect(defaultDest("bundle.zip")).toBe("bundle");
-    expect(defaultDest(".orplex/attachments/abc.zip")).toBe(
-      ".orplex/attachments/abc",
-    );
+    expect(defaultDest("src/bundle.zip")).toBe("src/bundle");
+  });
+
+  it("never defaults into the app's own state dir", () => {
+    // An attached archive is content-addressed under .orplex/attachments/, so
+    // defaulting to its parent would bury project files in app state.
+    expect(defaultDest(".orplex/attachments/abc.zip")).toBe("abc");
+    expect(defaultDest(".orplex/attachments/abc.zip", "my-app.zip")).toBe("my-app");
   });
 });
 

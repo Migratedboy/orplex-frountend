@@ -91,14 +91,25 @@ export async function describeImage(
  */
 export async function preprocessMessages(
   messages: Array<{ role: string; content: any }>,
-  userPrompt: string
+  userPrompt: string,
+  /** Target model accepts image parts natively — skip the text-description path. */
+  nativeVision = false,
 ): Promise<{
   messages: Array<{ role: string; content: any }>;
   hadImages: boolean;
+  /** Images that were successfully turned into a real description. */
+  analyzedImages: number;
+  /** Images we could NOT analyze (e.g. NVIDIA_API_KEY unset, provider error). */
+  failedImages: number;
   descriptions: string[];
+  /** True when images were forwarded natively (provider accepts image parts). */
+  usedNativeVision?: boolean;
 }> {
   const descriptions: string[] = [];
   let hadImages = false;
+  let analyzedImages = 0;
+  let failedImages = 0;
+  let usedNativeVision = false;
 
   const processed = await Promise.all(
     messages.map(async (msg) => {
@@ -113,6 +124,17 @@ export async function preprocessMessages(
         }
 
         hadImages = true;
+
+        // The target model accepts images itself (Gemini, Claude, GPT-4o via
+        // OpenRouter, NVIDIA VLM). Forward the parts untouched and let the
+        // adapter send them — describing them via NVIDIA and shipping text
+        // instead meant a vision model in the picker received NO image tokens
+        // at all, which is the whole point of picking one.
+        if (nativeVision) {
+          usedNativeVision = true;
+          analyzedImages += imageParts.length;
+          return msg;
+        }
 
         // Extract text part from the multimodal content
         const textPart = msg.content.find((p: any) => p.type === "text");
@@ -131,10 +153,23 @@ export async function preprocessMessages(
           if (result.success && result.text) {
             localDescriptions.push(result.text);
             descriptions.push(result.text);
+            analyzedImages++;
           } else {
-            // Fallback — tell the model the image couldn't be processed
-            localDescriptions.push(`[Image could not be analyzed: ${result.error || "unknown error"}]`);
-            descriptions.push(`[Image could not be analyzed: ${result.error || "unknown error"}]`);
+            // Do NOT fabricate an observation. The old placeholder
+            // ("[Image could not be analyzed: ...]") was injected into the
+            // prompt as if it were a real description, so the model would
+            // confidently answer about an image it never received — a
+            // hallucination the UI then reported as "Image analyzed.".
+            // This wording is an explicit instruction, not a caption.
+            failedImages++;
+            const notice =
+              "[UNAVAILABLE: this image could not be analyzed (" +
+              (result.error || "unknown error") +
+              "), so you cannot see it. Do not describe, infer, or answer " +
+              "anything about this image's contents. Tell the user the image " +
+              "could not be processed and offer to try again.]";
+            localDescriptions.push(notice);
+            descriptions.push(notice);
           }
         }
 
@@ -152,5 +187,5 @@ export async function preprocessMessages(
     })
   );
 
-  return { messages: processed, hadImages, descriptions };
+  return { messages: processed, hadImages, analyzedImages, failedImages, descriptions, usedNativeVision };
 }

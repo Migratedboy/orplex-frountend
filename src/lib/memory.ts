@@ -9,9 +9,15 @@
 // Ephemeral (exactly one):
 //   + Scratchpad — current plan/hypotheses/findings/next, per-task only (scratchpad.ts)
 //
-// Folded away (no parallel stores): compaction-memory (now workspace-memory
-// capture), playbook as a store (derived view over buckets 2+3),
-// semantic-cache (deprecated, no callers).
+// Folded away (no parallel stores): compaction-memory is now workspace-memory
+// capture, and semantic-cache is deprecated with zero callers (kept only so its
+// own test still compiles) — similar past tasks surface through the workspace-
+// learnings bucket + run ledger instead.
+//
+// Playbooks are NOT folded: `playbook.ts` is a first-class bucket with its own
+// Prisma store (the Learning table) and full CRUD (/api/playbook, /[id],
+// /capture, and the /playbook page). Only the executor's `playbook_search`
+// merges playbooks with learnings; the stores are otherwise independent.
 
 // --- Bucket 2: workspace learnings ---
 export {

@@ -130,6 +130,10 @@ export const IconChevronDown = (p: IconProps) => <Ms name="keyboard_arrow_down" 
 /** Chevron up — paired with IconChevronDown for expand/collapse disclosure. */
 export const IconChevronUp = (p: IconProps) => <Ms name="keyboard_arrow_up" {...p} />;
 export const IconChevronRight = (p: IconProps) => <Ms name="chevron_right" {...p} />;
+// Session insights popup (Outputs / Used in this session / learned patterns).
+export const IconInsights = (p: IconProps) => <Ms name="query_stats" {...p} />;
+// Vertical kebab (overflow menus).
+export const IconMore = (p: IconProps) => <Ms name="more_vert" {...p} />;
 export const IconCircle = (p: IconProps) => <Ms name="radio_button_unchecked" {...p} />;
 export const IconLoader = (p: IconProps) => <Ms name="progress_activity" {...p} />;
 export const IconMinus = (p: IconProps) => <Ms name="remove" {...p} />;

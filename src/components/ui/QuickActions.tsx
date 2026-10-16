@@ -19,17 +19,15 @@ export default function QuickActions({ onAction, hasFiles, isRunning }: QuickAct
   ];
 
   return (
-    <div className="flex flex-wrap gap-2 mb-3">
+    <div className="qa-bar">
       {actions.map((action) => (
         <button
           key={action.id}
           onClick={() => onAction(action.id)}
           disabled={!hasFiles && action.id !== "regenerate"}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          className="qa-chip"
         >
-          <span className="w-4 h-4 flex items-center justify-center bg-gray-200 dark:bg-gray-600 rounded text-[10px] font-bold">
-            {action.icon}
-          </span>
+          <span className="qa-chip-badge">{action.icon}</span>
           {action.label}
         </button>
       ))}

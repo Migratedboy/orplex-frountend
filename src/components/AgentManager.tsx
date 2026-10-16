@@ -46,24 +46,24 @@ interface Notification {
 // === Status Meta ===
 
 const RUN_STATUS: Record<string, { label: string; color: string; bg: string; icon: string }> = {
-  pending: { label: "Pending", color: "#71717a", bg: "#f4f4f5", icon: "schedule" },
-  planning: { label: "Planning", color: "#2563eb", bg: "#dbeafe", icon: "checklist" },
-  executing: { label: "Executing", color: "#ea580c", bg: "#ffedd5", icon: "bolt" },
-  verifying: { label: "Verifying", color: "#7c3aed", bg: "#ede9fe", icon: "search" },
-  waiting_approval: { label: "Needs Review", color: "#b45309", bg: "#fef3c7", icon: "visibility" },
-  completed: { label: "Done", color: "#15803d", bg: "#dcfce7", icon: "check_circle" },
-  failed: { label: "Failed", color: "#b91c1c", bg: "#fee2e2", icon: "cancel" },
-  cancelled: { label: "Cancelled", color: "#71717a", bg: "#f4f4f5", icon: "stop_circle" },
+  pending: { label: "Pending", color: "var(--st-pending-fg)", bg: "var(--st-pending-bg)", icon: "schedule" },
+  planning: { label: "Planning", color: "var(--st-info-fg)", bg: "var(--st-info-bg)", icon: "checklist" },
+  executing: { label: "Executing", color: "var(--st-running-fg)", bg: "var(--st-running-bg)", icon: "bolt" },
+  verifying: { label: "Verifying", color: "var(--st-verify-fg)", bg: "var(--st-verify-bg)", icon: "search" },
+  waiting_approval: { label: "Needs Review", color: "var(--st-warn-fg)", bg: "var(--st-warn-bg)", icon: "visibility" },
+  completed: { label: "Done", color: "var(--st-done-fg)", bg: "var(--st-done-bg)", icon: "check_circle" },
+  failed: { label: "Failed", color: "var(--st-error-fg)", bg: "var(--st-error-bg)", icon: "cancel" },
+  cancelled: { label: "Cancelled", color: "var(--st-pending-fg)", bg: "var(--st-pending-bg)", icon: "stop_circle" },
 };
 
 const TASK_STATUS: Record<string, { label: string; color: string }> = {
-  pending: { label: "Queued", color: "#71717a" },
-  leased: { label: "Assigned", color: "#2563eb" },
-  running: { label: "Working", color: "#ea580c" },
-  waiting_approval: { label: "Review", color: "#b45309" },
-  verifying: { label: "Verifying", color: "#7c3aed" },
-  completed: { label: "Done", color: "#15803d" },
-  failed: { label: "Failed", color: "#b91c1c" },
+  pending: { label: "Queued", color: "var(--st-pending-fg)" },
+  leased: { label: "Assigned", color: "var(--st-info-fg)" },
+  running: { label: "Working", color: "var(--st-running-fg)" },
+  waiting_approval: { label: "Review", color: "var(--st-warn-fg)" },
+  verifying: { label: "Verifying", color: "var(--st-verify-fg)" },
+  completed: { label: "Done", color: "var(--st-done-fg)" },
+  failed: { label: "Failed", color: "var(--st-error-fg)" },
 };
 
 const ROLE_META: Record<string, { icon: string; label: string }> = {

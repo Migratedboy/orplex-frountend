@@ -4,6 +4,7 @@ import { jwtOnlyOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { encryptKey, decryptKey, maskKey } from "@/lib/key-encryption";
 import { getProviderDef, providerLabel } from "@/lib/provider-registry";
+import { syncKeyCatalog, type SyncResult } from "@/lib/catalog-sync";
 
 // GET /api/settings/keys — List user's keys
 export async function GET() {
@@ -110,8 +111,8 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    // Encrypt and store
-    const encrypted = encryptKey(keyText);
+// Encrypt and store
+const encrypted = encryptKey(keyText);
     const key = await prisma.userApiKey.create({
       data: {
         userId: session.user.id,
@@ -124,6 +125,13 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    // AUTONOMOUS CATALOGUE: populate the key's full model list on its own.
+    // Waiting on this used to be the user's job ("Fetch models"), which meant
+    // most keys sat empty in the picker forever. It is awaited only because the
+    // user is staring at this response and expects the count; the catalogue is
+    // persisted here so the picker is complete the moment Settings closes.
+    const sync: SyncResult = await syncKeyCatalog(session.user.id, key.id).catch(() => ({ synced: false }));
+
     return NextResponse.json({
       key: {
         id: key.id,
@@ -131,8 +139,12 @@ export async function POST(request: NextRequest) {
         model: key.model,
         apiKeyMasked: maskKey(keyText),
         isValid: true,
-        message: "Key added successfully",
+        message: sync.synced
+          ? `Key added — ${sync.count} models available`
+          : "Key added successfully",
       },
+      modelsFetched: sync.synced === true,
+      modelCount: sync.count ?? 0,
       warning: prefixWarning,
     });
   } catch (err: any) {

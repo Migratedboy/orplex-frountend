@@ -18,18 +18,48 @@ export type StatusActivity = {
 
 export type StatusEvent = StatusStep | StatusActivity;
 
+/**
+ * Context compaction — the transcript was summarized to stay under budget.
+ *
+ * Deliberately a STRUCTURED event rather than a status string: a compaction
+ * has numbers worth showing (before → after) and a marker worth rendering,
+ * and neither survives being flattened into "Context compacted — earlier
+ * turns summarized…". The chat timeline renders a collapsible divider for it.
+ */
+export type StatusCompaction = {
+  type: "compaction";
+  tokensBefore: number;
+  tokensAfter: number;
+  mode: "automatic" | "manual";
+  summary?: string;
+};
+
+export type StatusMessage = StatusEvent | StatusCompaction;
+
+/**
+ * Emit a compaction event. Best-effort by design: a listener that throws is
+ * swallowed so a UI subscriber can never break the agent loop that compacted.
+ */
+export function emitCompaction(payload: Omit<StatusCompaction, "type">) {
+  for (const listener of _statusListeners) {
+    try {
+      listener({ type: "compaction", ...payload });
+    } catch {}
+  }
+}
+
 // === Status listeners ===
 
-let _statusListeners: Array<(event: StatusEvent) => void> = [];
+let _statusListeners: Array<(event: StatusMessage) => void> = [];
 
-export function onAgentStatus(listener: (event: StatusEvent) => void): () => void {
+export function onAgentStatus(listener: (event: StatusMessage) => void): () => void {
   _statusListeners.push(listener);
   return () => {
     _statusListeners = _statusListeners.filter((l) => l !== listener);
   };
 }
 
-export function emitStatus(event: StatusEvent) {
+export function emitStatus(event: StatusMessage) {
   for (const listener of _statusListeners) {
     try {
       listener(event);

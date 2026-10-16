@@ -23,7 +23,23 @@
   --text-dim: #767676;
   --brand: #a04100;
   --brand-vivid: #ff6b00;
+  /* Run/task status palette. These are semantic states, not chrome, so
+     they get their own tokens rather than being forced onto --brand. The old
+     values were light-mode tints baked into JS and applied via inline styles,
+     so every status badge rendered as a bright pastel slab on the dark canvas
+     (fee2e2 red, dcfce7 green, ffedd5 orange...). Each has a dark twin. */
+  --st-pending-fg: #71717a;   --st-pending-bg: #f4f4f5;
+  --st-info-fg: #2563eb;      --st-info-bg: #dbeafe;
+  --st-running-fg: #ea580c;   --st-running-bg: #ffedd5;
+  --st-warn-fg: #b45309;      --st-warn-bg: #fef3c7;
+  --st-verify-fg: #7c3aed;    --st-verify-bg: #ede9fe;
+  --st-done-fg: #15803d;      --st-done-bg: #dcfce7;
+  --st-error-fg: #b91c1c;     --st-error-bg: #fee2e2;
   --danger: #ba1a1a;
+  /* success = the green used by approval/confirmation affordances */
+  --success: #1a7f37;
+  --success-soft: #e6f4ea;
+  --danger-soft-surface: #ffdad6;
   /* Softened badge red — less saturated than --danger. */
   --danger-soft: #d64545;
   --ring-brand: rgba(160, 65, 0, 0.1);
@@ -55,7 +71,17 @@
   --text-dim: #8f8f8f;
   --brand: #ffb693;
   --brand-vivid: #ff6b00;
+  --st-pending-fg: #a1a1aa;   --st-pending-bg: #2a2a2a;
+  --st-info-fg: #93c5fd;      --st-info-bg: #17233d;
+  --st-running-fg: #fdba74;   --st-running-bg: #3a2412;
+  --st-warn-fg: #fcd34d;      --st-warn-bg: #362a10;
+  --st-verify-fg: #c4b5fd;    --st-verify-bg: #2a1f45;
+  --st-done-fg: #86efac;      --st-done-bg: #14301f;
+  --st-error-fg: #fca5a5;     --st-error-bg: #3a1414;
   --danger: #f87171;
+  --success: #4ade80;
+  --success-soft: #14301f;
+  --danger-soft-surface: #3a1414;
   --danger-soft: #e2555f;
   --ring-brand: rgba(255, 107, 0, 0.3);
 
@@ -3860,3 +3886,314 @@ html:not(.dark) .sb-expand-fab:hover { color:#a04100; border-color:#fdba74; }
     transition: none;
   }
 }
+
+/* === Session insights popup ================================================
+   A dismissible floating summary of what the agent produced and used.
+   Deliberately NOT part of .right-panel: it is a glanceable, optional read,
+   not a pinned workspace surface. Colours come from the same tokens the
+   rest of the app uses so it reads as native in light AND dark. */
+.sip-root { position: fixed; top: 72px; right: 16px; z-index: 45; }
+
+.sip-toggle {
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 8px; cursor: pointer;
+  background: var(--bg-panel, #fff); color: var(--text-secondary, #71717A);
+  border: 1px solid var(--border, #E4E4E7);
+  transition: color .15s, background .15s, border-color .15s;
+}
+.sip-toggle:hover { color: var(--accent, #a04100); border-color: var(--accent, #a04100); }
+.sip-toggle-open { color: var(--accent, #a04100); background: var(--accent-soft, #FFF7ED); border-color: var(--accent, #a04100); }
+.sip-toggle:focus-visible { outline: 2px solid var(--accent, #a04100); outline-offset: 2px; }
+
+.sip-popup {
+  position: absolute; top: 40px; right: 0; width: 320px; max-height: 70vh;
+  display: flex; flex-direction: column; overflow-y: auto;
+  background: var(--bg-panel, #fff); color: var(--text, #1a1c1d);
+  border: 1px solid var(--border, #E4E4E7); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.14);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+.sip-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-bottom: 1px solid var(--border, #E4E4E7);
+  position: sticky; top: 0; background: var(--bg-panel, #fff); z-index: 1;
+}
+.sip-title { font-size: 12px; font-weight: 700; }
+.sip-head-actions { display: flex; align-items: center; gap: 6px; }
+.sip-pin {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .04em; cursor: pointer;
+  padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border, #E4E4E7);
+  background: none; color: var(--text-secondary, #71717A); font-family: inherit;
+}
+.sip-pin:hover { color: var(--accent, #a04100); border-color: var(--accent, #a04100); }
+.sip-pin-on { color: var(--accent, #a04100); border-color: var(--accent, #a04100); background: var(--accent-soft, #FFF7ED); }
+.sip-close {
+  background: none; border: none; cursor: pointer; color: var(--text-secondary, #999);
+  display: flex; padding: 2px; border-radius: 4px;
+}
+.sip-close:hover { color: var(--error, #ef4444); }
+
+.sip-section { border-bottom: 1px solid var(--border, #E4E4E7); }
+.sip-section:last-of-type { border-bottom: none; }
+.sip-section-head {
+  width: 100%; display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px; background: none; border: none; cursor: pointer;
+  color: var(--text, #1a1c1d); font-family: inherit; text-align: left;
+}
+.sip-section-head:hover { background: var(--hover, #FAFAFA); }
+.sip-section-head:focus-visible { outline: 2px solid var(--accent, #a04100); outline-offset: -2px; }
+.sip-section-title { flex: 1; font-size: 11px; font-weight: 600; }
+.sip-count {
+  font-size: 9px; padding: 1px 5px; border-radius: 3px;
+  background: var(--bg-subtle, #f3f4f6); color: var(--text-secondary, #71717A);
+}
+.sip-section-body { padding: 2px 12px 10px; }
+
+.sip-row { display: flex; align-items: center; gap: 7px; padding: 4px 0; font-size: 11px; }
+.sip-row-block { align-items: flex-start; }
+.sip-row-block .sip-row-main { line-height: 1.4; }
+.sip-row-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sip-row-meta { font-size: 9px; color: var(--text-secondary, #999); flex-shrink: 0; }
+.sip-foot { margin: 6px 0 0; font-size: 9px; color: var(--text-secondary, #999); }
+.sip-empty { margin: 0; padding: 8px 0; font-size: 10px; color: var(--text-secondary, #999); }
+
+@media (max-width: 720px) {
+  .sip-root { right: 8px; }
+  .sip-popup { width: min(300px, calc(100vw - 24px)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sip-toggle { transition: none; }
+}
+
+/* === Context compacted divider =============================================
+   A quiet system event. Every tone is a neutral gray taken from the existing
+   tokens - the dark fill uses --well (#2a2a2a), the nearest existing surface
+   to the ~#262626 this needs. NO accent/brand colour anywhere: an orange row
+   would read as the assistant speaking rather than the system reporting. */
+.ccd { position: relative; margin: 10px 0; }
+.ccd-row-wrap { position: relative; display: flex; align-items: center; }
+
+.ccd-row {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 10px;
+  height: 52px; padding: 0 44px 0 16px;
+  border: 1px solid var(--border); border-radius: 14px;
+  background: var(--well); color: var(--text-secondary);
+  font-family: var(--font-sans); text-align: left; cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.ccd-row:hover { background: var(--surface); border-color: var(--text-tertiary); }
+.ccd-row:focus-visible { outline: 2px solid var(--text-tertiary); outline-offset: 2px; }
+
+/* Chevron rotates a quarter turn when the summary is open. */
+.ccd-chevron { display: inline-flex; flex-shrink: 0; color: var(--text-tertiary); transition: transform .18s ease; }
+.ccd-chevron-open { transform: rotate(90deg); }
+
+/* Text can now actually shrink: without min-width:0 + ellipsis, nowrap
+   flex children refuse to shrink and spill under the absolutely-positioned
+   kebab below ~450px. */
+.ccd-label { font-size: 15px; font-weight: 500; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* Token math reads as data: tabular figures stop the row twitching as it changes. */
+.ccd-delta {
+  font-size: 15px; color: var(--text-tertiary); white-space: nowrap;
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.ccd-mode { font-size: 15px; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex-shrink: 0; }
+.ccd-fill { flex: 1 1 auto; min-width: 12px; height: 1px; background: var(--border); opacity: .55; }
+
+.ccd-kebab {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 6px;
+  background: none; border: none; cursor: pointer; color: var(--text-tertiary);
+  transition: color .15s ease, background .15s ease;
+}
+.ccd-kebab:hover { color: var(--text-primary); background: var(--surface); }
+.ccd-kebab:focus-visible { outline: 2px solid var(--text-tertiary); outline-offset: 1px; }
+
+.ccd-menu {
+  position: absolute; right: 8px; top: 58px; z-index: 5; min-width: 168px;
+  display: flex; flex-direction: column; padding: 4px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.22);
+}
+.ccd-menu-item {
+  padding: 7px 10px; border: none; border-radius: 6px; background: none;
+  color: var(--text-secondary); font-family: var(--font-sans); font-size: 13px;
+  text-align: left; cursor: pointer;
+}
+.ccd-menu-item:hover { background: var(--well); color: var(--text-primary); }
+.ccd-menu-item:focus-visible { outline: 2px solid var(--text-tertiary); outline-offset: -2px; }
+
+/* Collapsed by default; the height animates between 0 and the capped panel. */
+.ccd-panel {
+  display: grid; grid-template-rows: 0fr;
+  transition: grid-template-rows .18s ease;
+}
+.ccd-panel-open { grid-template-rows: 1fr; }
+.ccd-panel > * { overflow: hidden; }
+/* Collapsed: remove the summary from the accessibility tree WITHOUT display:none,
+   which would kill the 0fr->1fr height transition. */
+.ccd-panel:not(.ccd-panel-open) > * { visibility: hidden; }
+.ccd-panel-divider { height: 1px; background: var(--border); opacity: .5; margin: 8px 0 0; }
+.ccd-summary {
+  margin: 8px 0 0; padding: 0 16px 14px;
+  max-height: 240px; overflow-y: auto;
+  font-family: var(--font-sans); font-size: 13px; line-height: 1.55;
+  color: var(--text-tertiary); white-space: pre-wrap; word-break: break-word;
+}
+.ccd-summary-empty { font-style: italic; }
+
+/* No kebab (no handlers supplied) -> the row must not reserve its gutter. */
+.ccd-row-wrap:not(:has(.ccd-kebab)) .ccd-row { padding-right: 16px; }
+/* Narrow: the mode tag is the least load-bearing cell, so it goes first. */
+@media (max-width: 520px) { .ccd-mode { display: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .ccd-row, .ccd-chevron, .ccd-kebab, .ccd-panel { transition: none; }
+}
+
+/* === Context compacted divider demo page =============================== */
+.ccd-demo { max-width: 860px; margin: 0 auto; padding: 32px 20px 80px; font-family: var(--font-sans); }
+.ccd-demo-head h1 { font-size: 26px; margin: 0 0 6px; color: var(--text-primary); }
+.ccd-demo-head p { margin: 0 0 28px; color: var(--text-secondary); font-size: 14px; }
+.ccd-demo h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 30px 0 4px; text-transform: uppercase; letter-spacing: .04em; }
+.ccd-demo-note { margin: 0 0 12px; font-size: 13px; color: var(--text-tertiary); }
+.ccd-demo code { font-family: var(--font-mono); font-size: 12px; background: var(--well); padding: 1px 5px; border-radius: 4px; }
+.ccd-demo-toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px; padding: 9px 14px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text-secondary); font-size: 13px; z-index: 60;
+}
+.ccd-demo-toast button { background: none; border: none; color: var(--text-tertiary); cursor: pointer; font-size: 12px; text-decoration: underline; }
+.ccd-demo-toast button:hover { color: var(--text-primary); }
+
+
+/* === Quick-action chips (components/ui/QuickActions) ===
+   Was hand-rolled Tailwind gray utilities, which ignored both palettes and
+   rendered as near-black pills on the white composer. Same pill vocabulary as
+   .empty-hero-pill / .topbar-btn. */
+.qa-bar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+.qa-chip { display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:999px; background:#f4f4f5; border:1px solid #e4e4e7; color:#3f3f46; font-size:11px; font-weight:500; cursor:pointer; transition:border-color .15s, color .15s, background .15s; }
+.qa-chip:hover { border-color:#ff6b00; color:#a04100; }
+.qa-chip:disabled { opacity:.4; cursor:not-allowed; }
+.qa-chip:disabled:hover { border-color:#e4e4e7; color:#3f3f46; }
+.qa-chip-badge { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border-radius:4px; background:#e4e4e7; color:#5f5e5e; font-size:9px; font-weight:700; }
+.dark .qa-chip { background:#26282b; border-color:#404040; color:#d4d4d8; }
+.dark .qa-chip:hover { border-color:#ff6b00; color:#ffb693; }
+.dark .qa-chip-badge { background:#404040; color:#a0a0a0; }
+
+/* === Shortcuts panel (components/ui/KeyboardShortcuts) === */
+.sc-panel { width:380px; max-width:92vw; max-height:80vh; overflow:auto; background:#fff; border:1px solid #e4e4e7; border-radius:12px; box-shadow:0 20px 50px rgba(0,0,0,.25); }
+.sc-header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid #e4e4e7; }
+.sc-title { font-size:13px; font-weight:600; color:#1a1c1d; }
+.sc-close { background:none; border:none; cursor:pointer; color:#a1a1aa; font-size:16px; line-height:1; padding:2px 6px; border-radius:4px; }
+.sc-close:hover { color:#a04100; }
+.sc-body { padding:16px; display:flex; flex-direction:column; gap:16px; }
+.sc-cat { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:#a1a1aa; margin-bottom:6px; }
+.sc-row { display:flex; align-items:center; justify-content:space-between; padding:4px 0; }
+.sc-desc { font-size:12px; color:#3f3f46; }
+.sc-kbd { font-family:'JetBrains Mono',monospace; font-size:10px; padding:2px 7px; border-radius:4px; background:#f4f4f5; border:1px solid #e4e4e7; color:#5f5e5e; white-space:nowrap; }
+.dark .sc-panel { background:#1a1c1d; border-color:#404040; }
+.dark .sc-header { border-color:#404040; }
+.dark .sc-title { color:#e5e2e1; }
+.dark .sc-close { color:#8f8f8f; }
+.dark .sc-close:hover { color:#ffb693; }
+.dark .sc-desc { color:#d4d4d8; }
+.dark .sc-kbd { background:#26282b; border-color:#404040; color:#a0a0a0; }
+
+
+/* === Playbook page (app/playbook) ===
+   Was dark-only Tailwind (text-white, bg-gray-800, bg-blue-600), so in light
+   mode the H1 rendered white-on-white and the input read as a black slab.
+   Now on the same vocabulary as .admin-* / .empty-hero-*. */
+.pb-wrap { max-width:900px; margin:0 auto; padding:24px; display:flex; flex-direction:column; gap:16px; }
+.pb-head { display:flex; align-items:baseline; justify-content:space-between; }
+.pb-title { font-size:20px; font-weight:700; margin:0; color:#1a1c1d; }
+.pb-count { font-size:11px; color:#a1a1aa; }
+.pb-error { background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; font-size:12px; border-radius:8px; padding:8px 16px; }
+.pb-input { flex:1; background:#fff; border:1px solid #e4e4e7; border-radius:8px; padding:8px 16px; font-size:13px; color:#1a1c1d; font-family:inherit; }
+.pb-input::placeholder { color:#a1a1aa; }
+.pb-input:focus { outline:none; border-color:#ff6b00; box-shadow:0 0 0 3px rgba(255,107,0,.12); }
+.pb-btn { padding:8px 16px; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; border:1px solid #e4e4e7; background:#f4f4f5; color:#3f3f46; transition:background .15s, border-color .15s, color .15s; }
+.pb-btn:hover { border-color:#ff6b00; color:#a04100; }
+.pb-btn:disabled { opacity:.5; cursor:not-allowed; }
+.pb-btn--primary { background:#a04100; border-color:#a04100; color:#fff; }
+.pb-btn--primary:hover { background:#8a3700; border-color:#8a3700; color:#fff; }
+.pb-btn--danger { background:#fff; border-color:#fecaca; color:#b91c1c; }
+.pb-btn--danger:hover { background:#fef2f2; border-color:#ef4444; color:#b91c1c; }
+.pb-empty { text-align:center; color:#a1a1aa; font-size:13px; padding:48px 0; }
+.pb-card { background:#f9f9fa; border:1px solid #e4e4e7; border-radius:8px; padding:16px; display:flex; flex-direction:column; gap:8px; }
+.pb-tag { font-size:10px; padding:2px 8px; border-radius:999px; background:#ff6b0020; color:#a04100; font-weight:600; }
+.pb-meta { font-size:11px; color:#a1a1aa; }
+.pb-body { font-size:13px; color:#3f3f46; margin:0; }
+.pb-textarea { width:100%; background:#fff; border:1px solid #e4e4e7; border-radius:6px; padding:8px 12px; font-size:13px; color:#1a1c1d; font-family:inherit; resize:vertical; }
+.pb-textarea:focus { outline:none; border-color:#ff6b00; }
+.pb-chip { font-size:10px; background:#e4e4e7; color:#5f5e5e; padding:2px 6px; border-radius:4px; }
+.dark .pb-title { color:#e5e2e1; }
+.dark .pb-count, .dark .pb-meta { color:#8f8f8f; }
+.dark .pb-error { background:#2a1414; border-color:#7f1d1d; color:#fecaca; }
+.dark .pb-input, .dark .pb-textarea { background:#1a1c1d; border-color:#404040; color:#e5e2e1; }
+.dark .pb-input::placeholder { color:#8f8f8f; }
+.dark .pb-btn { background:#26282b; border-color:#404040; color:#d4d4d8; }
+.dark .pb-btn:hover { border-color:#ff6b00; color:#ffb693; }
+.dark .pb-btn--primary { background:#ff6b00; border-color:#ff6b00; color:#1a1c1d; }
+.dark .pb-btn--primary:hover { background:#ff8b2b; border-color:#ff8b2b; }
+.dark .pb-btn--danger { background:#2a1414; border-color:#7f1d1d; color:#fecaca; }
+.dark .pb-card { background:#202020; border-color:#404040; }
+.dark .pb-body { color:#d4d4d8; }
+.dark .pb-tag { background:#ff6b0020; color:#ffb693; }
+.dark .pb-chip { background:#404040; color:#a0a0a0; }
+
+
+/* === Agent status / task progress / onboarding tour =====================
+   These three were written against literal Tailwind grays (bg-gray-50 /
+   dark:bg-gray-800) and bg-orange-500, so they ignored the app's token
+   system entirely: the surfaces didn't match the surrounding panels, the
+   accent was Tailwind orange rather than --brand, and several pairs had no
+   correct value in one mode. Converted to the same vocabulary as the rest of
+   the app (.topbar-btn / .empty-hero-pill): light default, .dark override. */
+
+.tp-card, .as-card, .ot-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+.tp-head, .as-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 16px; background:var(--well); font-size:13px; font-weight:500; color:var(--text-primary); }
+.tp-count, .as-count { font-size:11px; color:var(--text-tertiary); font-weight:400; }
+.tp-body { padding:12px 16px; }
+.tp-track { width:100%; height:8px; border-radius:999px; background:var(--well); overflow:hidden; }
+.tp-fill { height:100%; border-radius:999px; transition:width .5s ease; background:var(--brand); }
+.tp-fill--done { background:#22c55e; }
+.tp-fill--error { background:var(--danger); }
+.tp-file { margin:6px 0 0; font-size:11px; color:var(--text-tertiary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tp-card { margin-bottom:12px; }
+
+.as-card { margin-bottom:16px; }
+.as-list { display:flex; flex-direction:column; }
+.as-row { display:flex; align-items:center; gap:12px; padding:8px 16px; }
+.as-row + .as-row { border-top:1px solid var(--border); }
+.as-dot { width:8px; height:8px; border-radius:999px; flex-shrink:0; background:var(--text-tertiary); }
+.as-dot--active { background:var(--brand-vivid); animation:pulse-dot 1.5s ease-in-out infinite; }
+.as-dot--done { background:#22c55e; }
+.as-dot--error { background:var(--danger); }
+.as-role { width:48px; font-family:var(--font-mono); font-size:11px; color:var(--text-tertiary); flex-shrink:0; }
+.as-name { flex:1; font-size:13px; color:var(--text-primary); }
+.as-task { font-size:11px; color:var(--text-tertiary); max-width:192px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.as-track { width:64px; height:6px; border-radius:999px; background:var(--well); overflow:hidden; flex-shrink:0; }
+.as-fill { height:100%; background:var(--brand); border-radius:999px; transition:width .3s ease; }
+
+.ot-overlay { position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.55); backdrop-filter:blur(2px); }
+.ot-card { width:320px; max-width:92vw; padding:24px; border-radius:12px; box-shadow:0 20px 50px rgba(0,0,0,.28); }
+.ot-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+.ot-step { font-size:11px; color:var(--text-tertiary); }
+.ot-skip { background:none; border:none; cursor:pointer; font-size:11px; color:var(--text-tertiary); padding:2px 6px; border-radius:4px; }
+.ot-skip:hover { color:var(--brand); }
+.ot-title { font-size:16px; font-weight:600; margin:0 0 8px; color:var(--text-primary); }
+.ot-desc { font-size:13px; line-height:1.55; margin:0 0 24px; color:var(--text-secondary); }
+.ot-actions { display:flex; gap:8px; }
+.ot-btn { flex:1; padding:8px 16px; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; border:1px solid var(--border); background:var(--well); color:var(--text-primary); transition:background .15s, border-color .15s, color .15s; }
+.ot-btn:hover { border-color:var(--brand-vivid); color:var(--brand); }
+.ot-btn--primary { flex:1; padding:8px 16px; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; border:1px solid var(--brand); background:var(--brand); color:#fff; transition:background .15s, border-color .15s; }
+.ot-btn--primary:hover { background:var(--brand-vivid); border-color:var(--brand-vivid); color:#fff; }
+.dark .ot-btn--primary { color:#1a1c1d; }
+
+/* Quiet model-list notice (catalog still settling, fallback list usable). */
+.prompt-bar__model-settling { padding:8px 16px; font-size:11px; color:var(--text-tertiary); border-top:1px solid var(--border); }

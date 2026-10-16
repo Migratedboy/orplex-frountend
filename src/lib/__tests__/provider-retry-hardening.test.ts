@@ -91,12 +91,22 @@ describe("modelVariants — edge cases", () => {
     expect(modelVariants("   ")).toEqual([]);
   });
 
-  it("pairs bare and :free forms", () => {
+  it("downgrades paid -> free but NEVER upgrades free -> paid without consent", () => {
+    // Paid -> free is always allowed: it can only cost the user quota, never
+    // money, and it keeps a paid id answering when the paid route is throttled.
     expect(modelVariants("openai/gpt-x")).toEqual(["openai/gpt-x", "openai/gpt-x:free"]);
-    expect(modelVariants("openai/gpt-x:free")).toEqual(["openai/gpt-x:free", "openai/gpt-x"]);
+    expect(modelVariants(" model-x ")).toEqual(["model-x", "model-x:free"]);
+
+    // Free -> paid spends the USER'S OWN MONEY. It used to happen silently:
+    // pick a `:free` model, hit OpenRouter's free capacity, and the ladder
+    // quietly served the paid id and charged them.
+    expect(modelVariants("openai/gpt-x:free")).toEqual(["openai/gpt-x:free"]);
   });
 
-  it("trims stray whitespace", () => {
-    expect(modelVariants(" model-x ")).toEqual(["model-x", "model-x:free"]);
+  it("allows the paid upgrade only when a caller explicitly opts in", () => {
+    expect(modelVariants("openai/gpt-x:free", { allowPaidUpgrade: true })).toEqual([
+      "openai/gpt-x:free",
+      "openai/gpt-x",
+    ]);
   });
 });

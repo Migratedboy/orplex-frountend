@@ -161,6 +161,12 @@ export async function POST(request: NextRequest) {
     warning: listing.warning,
     persisted,
     count: finalModels.length,
+    // Ids the provider actually served + whether the DoS guard clipped any,
+    // so the UI can tell the user the truth instead of implying a truncated
+    // list is the provider's whole catalogue.
+    listedTotal: listing.listedTotal ?? finalModels.length,
+    truncated: listing.truncated === true,
+    pages: listing.pages ?? 1,
     probedCount,
     verifiedCount,
   });

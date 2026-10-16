@@ -79,12 +79,24 @@ export function safeEntryName(raw: string): string | null {
   return parts.join("/");
 }
 
-/** Default output directory for an archive: `<parent>/<name-without-ext>/`. */
-export function defaultDest(archivePath: string): string {
-  const base = archivePath.split("/").pop() || "archive";
-  const stem = base.replace(/\.[^.]+$/, "");
-  const dir = archivePath.slice(0, Math.max(0, archivePath.lastIndexOf("/")));
-  return dir && dir !== "." ? `${dir}/${stem}` : stem;
+/**
+ * Default output directory for an archive: `<parent>/<name-without-ext>/`.
+ *
+ * Attached archives live in `.orplex/attachments/<hash>.zip`, which is the
+ * app's own state directory — extracting there would bury the user's project
+ * files under `.orplex/attachments/<hash>/`. So when the archive comes from
+ * the attachment store, the destination is the WORKSPACE ROOT instead, named
+ * after the original upload where we can recover it.
+ */
+export function defaultDest(archivePath: string, originalName?: string): string {
+  const stem =
+    (originalName && originalName.replace(/\.[^.]+$/, "")) ||
+    (archivePath.split("/").pop() || "archive").replace(/\.[^.]+$/, "");
+  // Never default into our own state dir.
+  if (/(^|\/)\.orplex\/attachments\//.test(archivePath)) return stem;
+  const slash = archivePath.lastIndexOf("/");
+  const dir = slash === -1 ? "" : archivePath.slice(0, slash);
+  return dir ? `${dir}/${stem}` : stem;
 }
 
 /**

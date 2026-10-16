@@ -1,9 +1,10 @@
 "use client";
 
-import { Suspense, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { apiFetch } from "@/lib/api-base";
 import { useToast } from "@/components/Toast";
+import SessionInsightsPopup from "@/components/SessionInsightsPopup";
 import { useChatSession } from "@/hooks/useChatSession";
 import { AgentMode } from "@/components/ModeSelector";
 import { MessageSkeleton } from "@/components/Skeleton";
@@ -34,8 +35,22 @@ export default function ChatPage() {
   // Index of the failed bubble whose Retry is being sent (button feedback).
   const [retryingIdx, setRetryingIdx] = useState<number | null>(null);
 
-  const sendingRef = useRef(false);
-  const handleSend = async (text: string, fullContent: string, textFiles: any[], imageFiles: any[], mode: AgentMode, effort?: string, model?: string) => {
+  // ChatInput is dynamically imported (ssr:false), so its attach bridge is
+  // resolved at runtime rather than imported as a value.
+  const droppedFilesBridgeRef = useRef<((files: unknown[]) => void) | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void import("@/components/ChatInput").then((m) => {
+      if (cancelled) return;
+      droppedFilesBridgeRef.current = (files) => m.droppedFilesBridge.add?.(files as never);
+    });
+    return () => {
+      cancelled = true;
+      droppedFilesBridgeRef.current = null;
+    };
+  }, []);
+
+  const sendingRef = useRef(false);  const handleSend = async (text: string, fullContent: string, textFiles: any[], imageFiles: any[], mode: AgentMode, effort?: string, model?: string) => {
     if (sendingRef.current) return; // Prevent double-send (sync ref, no async lag)
     sendingRef.current = true;
     try {
@@ -175,7 +190,21 @@ export default function ChatPage() {
   };
 
   return (
-    <DragDropZone onFilesDropped={(dropped) => { toast(`${dropped.length} file(s) dropped`, "success"); }}>
+      <DragDropZone
+        onFilesDropped={(dropped) => {
+          // Route into the composer's attachment list instead of discarding.
+          // This read the files and then threw them away behind a toast, so
+          // drag-and-drop was a dead end: the user saw "N files dropped" and
+          // nothing was ever attached or sent.
+          const bridge = droppedFilesBridgeRef.current;
+          if (bridge && dropped.length > 0) {
+            bridge(dropped);
+            toast(`${dropped.length} file(s) attached`, "success");
+          } else {
+            toast("Open a conversation first, then drop files to attach them", "info");
+          }
+        }}
+      >
         {session.isEmpty ? (
           <FirstRunExperience />
         ) : (
@@ -235,6 +264,11 @@ export default function ChatPage() {
         />
 
       {showPreview && <FilePreviewModal files={[]} onRemove={() => {}} onClose={() => setShowPreview(false)} />}
+
+      {/* Floating, dismissible "what did the agent do" summary. A popup and not
+          a RightPanel tab: the panel is a pinned workspace surface, this is a
+          glanceable read the user opens and closes. */}
+      <SessionInsightsPopup />
     </DragDropZone>
   );
 }

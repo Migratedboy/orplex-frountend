@@ -1,10 +1,12 @@
 "use client";
 
-// ConflictCard — the human curation surface for CRDT-merged overlapping
-// edits. The merge engine (lib/merge/crdt.ts) converges automatically, but
-// when both peers edited the SAME lines the result deserves a human glance.
-// This card renders the conflicted region with both versions side by side
-// and lets the reviewer pick per-hunk: keep both, theirs, or mine.
+// ConflictCard — the human curation surface for overlapping edits produced by
+// worktree/branch merges (see /api/agent/runs/[id]/merge).
+//
+// It used to describe a CRDT merge engine at lib/merge/crdt.ts; that module
+// was removed and no CRDT code remains. Overlaps are now surfaced by the merge
+// preview, and this card renders the conflicted region with both versions side
+// by side so the reviewer can pick per-hunk: keep both, theirs, or mine.
 
 import { useState } from "react";
 

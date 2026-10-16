@@ -182,7 +182,10 @@ export function routeToModel(
     model,
     reason,
     estimatedCost,
-    routedToDistinctModel: model.model !== TIER_MODELS[2].model || model.model !== TIER_MODELS[1].model,
+    // `x !== a || x !== b` is false only when all three tiers share one model, so
+    // with TIER1==TIER2 the tier-1 prompt still claimed a distinct-model route.
+    // The correct predicate (an AND) already exists in this file.
+    routedToDistinctModel: tiersDiverge(),
   };
 }
 

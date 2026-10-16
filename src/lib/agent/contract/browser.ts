@@ -9,6 +9,9 @@
 import { formatToolError, formatToolResult } from "./results";
 import type { BrowserOpArgs, BrowserOpResult } from "../../agent-browser-session";
 
+// Re-exported for server lanes (type-only: erased at build, zero bundle cost).
+export type { BrowserOpArgs, BrowserOpResult } from "../../agent-browser-session";
+
 /** Canonical op names (tool name minus the `browser_` prefix). */
 export const BROWSER_OPS = [
   "navigate",
@@ -288,16 +291,12 @@ export async function runBrowserToolRaw(
   return { xml: formatBrowserResult(toolName, op, res), data: (res.data ?? null) as Record<string, unknown> | null };
 }
 
-/** Playwright backend: wraps the headless session runner (server + API route). */
-export function playwrightBackend(userId: string, sessionId?: string): BrowserBackend {
-  return {
-    kind: "playwright",
-    async run(op: BrowserOpName, args: BrowserOpArgs): Promise<BrowserOpResult> {
-      const { runBrowserOp } = await import("../../agent-browser-session");
-      return runBrowserOp(userId, op, sessionId ? { ...args, sessionId } : args);
-    },
-  };
-}
+/**
+ * Server-only backends live in ./browser-server (NOT here): this module must
+ * stay free of Node-only imports so the interactive client worker
+ * (background-worker → native-tools, bundled for the browser) can import the
+ * contract without dragging Playwright/child_process into the client build.
+ */
 
 /**
  * Electron backend: wraps the desktop shell's dedicated agent view

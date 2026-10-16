@@ -145,8 +145,16 @@ export function reportError(error: Error, context: ErrorContext = {}): void {
     timestamp: new Date().toISOString(),
   };
 
-  // Always log to console
-  console.error("[error-tracking]", payload);
+  // Always log. In development this is console.warn, NOT console.error: Next's
+  // dev overlay escalates console.error into a blocking "1 Issue" error screen
+  // that covers the whole app. A failed agent task is a product event, not a
+  // crash — it must not take the UI down with it. Production keeps
+  // console.error so it still lands in real error tooling.
+  if (process.env.NODE_ENV === "production") {
+    console.error("[error-tracking]", payload);
+  } else {
+    console.warn("[error-tracking]", payload.message, payload.component ?? "", payload.action ?? "");
+  }
 
   // Send to Bugsink if available (scrubbed — same redaction as console).
   if (initialized && typeof window !== "undefined") {

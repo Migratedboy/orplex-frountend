@@ -38,12 +38,61 @@ function nextId(): string {
  * Risk tier is derived automatically from the tool name + args; callers may
  * override it via `riskHint` (e.g. run_in_sandbox passes "medium").
  */
+/**
+ * Abort plumbing for pending approvals. Kept in a side map (not on the
+ * approval) so removing the listener is exact — a listener that outlives its
+ * approval would fire against a recycled id.
+ */
+const abortListeners = new Map<string, () => void>();
+
+function attachAbort(id: string, signal: AbortSignal): void {
+  const onAbort = () => {
+    const a = pending.get(id);
+    if (a && a.status === "pending") {
+      a.status = "rejected";
+      a.resolve?.(false);
+      pending.delete(id);
+    }
+    detachAbort(id, signal);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  abortListeners.set(id, () => signal.removeEventListener("abort", onAbort));
+}
+
+function detachAbort(id: string, _signal?: AbortSignal | null): void {
+  abortListeners.get(id)?.();
+  abortListeners.delete(id);
+}
+
+/**
+ * Reject every outstanding approval. Called when a task is cancelled/aborted so
+ * a dialog the user walked away from cannot be answered into a write.
+ */
+export function rejectAllPendingApprovals(): void {
+  for (const [id, a] of Array.from(pending.entries())) {
+    if (a.status === "pending") {
+      a.status = "rejected";
+      a.resolve?.(false);
+      pending.delete(id);
+    }
+    detachAbort(id);
+  }
+}
+
 export function requestApproval(
   type: ApprovalType,
   summary: string,
   details: Record<string, unknown>,
   diff?: string,
-  riskHint?: RiskLevel
+  riskHint?: RiskLevel,
+  /**
+   * The task's abort signal. Without it an approval dialog outlives Stop: the
+   * user presses Stop, the dialog stays on screen, and clicking Approve a
+   * minute later still performs the write — on a task the user already
+   * cancelled. Resolving `false` on abort also frees the worker thread that
+   * was parked on this promise for the full 5-minute timer.
+   */
+  signal?: AbortSignal | null
 ): Promise<boolean> {
   const assessment = riskHint
     ? { level: riskHint, reason: "Caller-classified", autoApprovable: false }
@@ -54,6 +103,9 @@ export function requestApproval(
   if (assessment.level !== "high" && hasAlwaysRule(type, details)) {
     return Promise.resolve(true);
   }
+
+  // Already aborted — never raise a dialog for a dead task.
+  if (signal?.aborted) return Promise.resolve(false);
 
   return new Promise<boolean>((resolve) => {
     const id = nextId();
@@ -80,11 +132,13 @@ export function requestApproval(
         a.status = "rejected";
         a.resolve?.(false);
         pending.delete(id);
+        detachAbort(id, signal);
       }
     }, 5 * 60 * 1000);
     if (typeof rejectTimer === "object" && rejectTimer && "unref" in rejectTimer) {
       (rejectTimer as { unref: () => void }).unref();
     }
+    if (signal) attachAbort(id, signal);
   });
 }
 

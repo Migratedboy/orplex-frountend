@@ -119,7 +119,13 @@ export interface TaskSnapshot {
 }
 
 const SNAPSHOT_KEY = "orplex:bg-task-snapshot";
-const SNAPSHOT_THROTTLE_MS = 300;
+// Reload-recovery snapshot cadence. This exists so a refresh/crash mid-run can
+// restore the transcript — it does NOT need to keep up with the 125ms notify
+// frame. At 300ms it serialized up to 200KB (~2000 chars/s) 3.3x/second for the
+// whole run: measured 0.86ms of blocking JSON.stringify each time, ~2.9ms/sec
+// of main thread, growing with answer length. 2s keeps recovery just as good
+// and cuts that to ~0.4ms/sec.
+const SNAPSHOT_THROTTLE_MS = 2000;
 const SNAPSHOT_MAX_CHARS = 200000;
 let lastSnapshotWrite = 0;
 let snapshotPageHideAdded = false;
@@ -604,12 +610,19 @@ export function cancelTask(options: { abort?: boolean } = {}) {
   // Same latch hygiene as failTask — cancelled plan tasks must not leak.
   try { clearPlanLatch(cancelledId); } catch {}
 
-  if (options.abort) {
-    // User pressed Stop (or New Chat while running) — kill the in-flight
-    // request so the worker stops burning provider tokens immediately.
-    currentTask.aborted = true;
-    abortController?.abort();
-  }
+if (options.abort) {
+  // User pressed Stop (or New Chat while running) - kill the in-flight
+  // request so the worker stops burning provider tokens immediately.
+  currentTask.aborted = true;
+  abortController?.abort();
+  // An open approval dialog is part of the in-flight work: the worker thread
+  // is parked on that promise. Without this the dialog survives Stop and can
+  // still be answered into a file write minutes later.
+  try {
+    const { rejectAllPendingApprovals } = require("./approval-store");
+    rejectAllPendingApprovals();
+  } catch {}
+}
 
   currentTask.status = "error";
   currentTask.statusDetail = "Cancelled";

@@ -6,31 +6,31 @@ interface TaskProgressProps {
   total: number;
   currentFile?: string;
   status: "running" | "paused" | "done" | "error";
+  /** Unit label for the counter ("files", "tasks", …). Defaults to "files". */
+  unit?: string;
 }
 
-export default function TaskProgress({ current, total, currentFile, status }: TaskProgressProps) {
+export default function TaskProgress({ current, total, currentFile, status, unit = "files" }: TaskProgressProps) {
   if (total === 0) return null;
   const percent = Math.round((current / total) * 100);
 
   return (
-    <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden mb-3">
-      <div className="px-4 py-2 bg-gray-50 dark:bg-gray-800 flex items-center justify-between text-sm">
-        <span className="text-gray-700 dark:text-gray-300 font-medium">
-          {status === "done" ? "Complete" : status === "error" ? "Error" : "Generating..."}
-        </span>
-        <span className="text-gray-500 text-xs">{current}/{total} files</span>
+    <div className="tp-card">
+      <div className="tp-head">
+        <span>{status === "done" ? "Complete" : status === "error" ? "Error" : "Generating…"}</span>
+        <span className="tp-count">{current}/{total} {unit}</span>
       </div>
-      <div className="px-4 py-3">
-        <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+      <div className="tp-body">
+        <div className="tp-track">
           <div
-            className={`h-full rounded-full transition-all duration-500 ${
-              status === "done" ? "bg-green-500" : status === "error" ? "bg-red-500" : "bg-orange-500"
+            className={`tp-fill${
+              status === "done" ? " tp-fill--done" : status === "error" ? " tp-fill--error" : ""
             }`}
             style={{ width: `${percent}%` }}
           />
         </div>
         {currentFile && status === "running" && (
-          <p className="mt-1 text-xs text-gray-500 truncate">Writing: {currentFile}</p>
+          <p className="tp-file">Writing: {currentFile}</p>
         )}
       </div>
     </div>

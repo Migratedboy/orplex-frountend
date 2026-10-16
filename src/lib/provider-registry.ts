@@ -21,6 +21,12 @@ export interface ProviderDef {
   /** OpenAI-compatible chat-completions base (no trailing slash). */
   baseUrl: string;
   authStyle: ProviderAuthStyle;
+  /**
+   * Provider accepts OpenAI-style multimodal `image_url` parts on its chat
+   * endpoint. When true the chat lane forwards attachments as real image
+   * tokens; when false/absent the NVIDIA vision model describes them instead.
+   */
+  supportsVision?: boolean;
   /** Env var holding a PLATFORM key for this provider (failover/sweeps). */
   keyEnvVar: string;
   /** Extra headers for listing (and chat where the provider demands it). */
@@ -40,6 +46,17 @@ export interface ProviderDef {
   listPath?: string;
   /** Per-provider probe pacing for sweeps (ms between probe starts). */
   probeSpacingMs?: number;
+  /**
+   * Hard ceiling on how many ids model-listing keeps. Defaults to a generous
+   * DoS backstop (2000) — set it only for a provider whose catalogue is
+   * genuinely enormous. Never set this low enough to hide models from the user.
+   */
+  modelsCap?: number;
+  /**
+   * How many listing pages to follow when the provider paginates. Default 1
+   * (most providers return the whole catalogue in one response).
+   */
+  maxListPages?: number;
 }
 
 const PROVIDERS: ProviderDef[] = [
@@ -62,6 +79,8 @@ const PROVIDERS: ProviderDef[] = [
     tagline: "Free tier, no credit card needed",
     baseUrl: "https://integrate.api.nvidia.com/v1",
     authStyle: "bearer",
+    // NIM serves VLM checkpoints on the OpenAI-compatible multimodal shape.
+    supportsVision: true,
     keyEnvVar: "NVIDIA_API_KEY",
     keyPrefix: "nvapi-",
     keyHintUrl: "https://build.nvidia.com",
@@ -74,11 +93,20 @@ const PROVIDERS: ProviderDef[] = [
     tagline: "Every model behind one key, pay-per-use",
     baseUrl: "https://openrouter.ai/api/v1",
     authStyle: "bearer",
+    // OpenRouter proxies Gemini / Claude / GPT-4o vision and accepts image parts.
+    supportsVision: true,
     keyEnvVar: "OPENROUTER_API_KEY",
     keyPrefix: "sk-or-",
     keyHintUrl: "https://openrouter.ai/settings/keys",
     fallbackModel: "qwen/qwen3.8-27b:free",
     extraHeaders: { "HTTP-Referer": "https://orplex.tech", "X-Title": "Orplex" },
+    // OpenRouter was the ONLY provider without spacing, so its models were
+    // swept in a 6-wide burst against a free tier with a very low RPM ceiling
+    // — a self-inflicted rate-limit storm. Space it like Groq.
+    probeSpacingMs: 1_500,
+    // OpenRouter aggregates 400+ models (paid AND :free). Never cap it low —
+    // that is what used to hide free models from the picker.
+    modelsCap: 2000,
   },
   {
     id: "anthropic",

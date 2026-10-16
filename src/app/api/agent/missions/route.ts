@@ -57,6 +57,49 @@ export async function POST(request: NextRequest) {
         },
       });
       children.push(child);
+
+      // Seed the child's task graph. Without this the runtime has nothing to
+      // schedule: createRuntimeRun() only ever made a lone architect task, and
+      // createRuntimeTask() had no callers, so no dependency edge could be
+      // written and leaseNextRuntimeTask's `every dependsOn completed` filter
+      // had nothing to gate on.
+      //
+      // architect -> developer -> verifier. Written with the same nested
+      // relation create the runtime service uses, so the edges land in
+      // AgentTaskDependency and the RunBoard renders them.
+      try {
+        const architect = await prisma.agentTask.create({
+          data: {
+            runId: child.id,
+            role: "architect",
+            title: `Blueprint: ${sub.slice(0, 120)}`,
+            input: { prompt: sub },
+          },
+          select: { id: true },
+        });
+        const developer = await prisma.agentTask.create({
+          data: {
+            runId: child.id,
+            role: "developer",
+            title: `Implement: ${sub.slice(0, 120)}`,
+            input: { prompt: sub },
+            dependencies: { create: [{ dependsOnId: architect.id }] },
+          },
+          select: { id: true },
+        });
+        await prisma.agentTask.create({
+          data: {
+            runId: child.id,
+            role: "verifier",
+            title: `Verify: ${sub.slice(0, 120)}`,
+            input: { prompt: sub },
+            dependencies: { create: [{ dependsOnId: developer.id }] },
+          },
+        });
+      } catch {
+        // The run still exists and is still executable by the plain executor;
+        // only the optional DAG view is missing. Never fail the mission.
+      }
     }
 
     return NextResponse.json({

@@ -29,28 +29,20 @@ export default function OnboardingTour({ onComplete }: OnboardingTourProps) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center">
-      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-80 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <span className="text-xs text-gray-500">Step {step + 1} of {STEPS.length}</span>
-          <button onClick={onComplete} className="text-xs text-gray-400 hover:text-gray-600">Skip</button>
+    <div className="ot-overlay">
+      <div className="ot-card">
+        <div className="ot-top">
+          <span className="ot-step">Step {step + 1} of {STEPS.length}</span>
+          <button onClick={onComplete} className="ot-skip">Skip</button>
         </div>
-        <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-2">{current.title}</h3>
-        <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">{current.description}</p>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setStep(step + 1)}
-            className="flex-1 px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-medium transition-colors"
-          >
+        <h3 className="ot-title">{current.title}</h3>
+        <p className="ot-desc">{current.description}</p>
+        <div className="ot-actions">
+          <button onClick={() => setStep(step + 1)} className="ot-btn--primary">
             {step === STEPS.length - 1 ? "Get Started" : "Next"}
           </button>
           {step > 0 && (
-            <button
-              onClick={() => setStep(step - 1)}
-              className="px-4 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm"
-            >
-              Back
-            </button>
+            <button onClick={() => setStep(step - 1)} className="ot-btn">Back</button>
           )}
         </div>
       </div>

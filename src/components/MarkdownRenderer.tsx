@@ -4,7 +4,8 @@ import remarkGfm from "remark-gfm";
 import dynamic from "next/dynamic";
 import { downloadCodeBlock } from "@/lib/file-adapter";
 import { IconCopy, IconDownload, IconImage } from "./Icons";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import type { Components } from "react-markdown";
 
 // Lazy-load react-markdown — removes ~80KB from main bundle
 const ReactMarkdown = dynamic(
@@ -108,16 +109,16 @@ function getFileExt(lang: string): string {
   return map[lang.toLowerCase()] || lang.toLowerCase();
 }
 
-export default function MarkdownRenderer({ content }: Props) {
-  // Sanitize HTML br tags — convert to markdown line breaks (two spaces + newline)
-  const sanitized = content
-    .replace(/<br\s*\/?>/gi, "  \n")
-    .replace(/<\/br\s*>/gi, "");
-
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
+/**
+ * react-markdown component overrides, hoisted to module scope.
+ *
+ * They were an inline object literal in JSX, so a new object with 30+ closures
+ * was built on EVERY render. react-markdown compares the `components` prop by
+ * identity, so a fresh object invalidated its internal memo and forced a full
+ * remark re-parse of the document on every frame - 8x/second while streaming.
+ * None of these closures capture props or state, so hoisting is safe.
+ */
+const MD_COMPONENTS: Components = {
         code({ className, children, ...props }) {
           const match = /language-(\w+)/.exec(className || "");
           const codeStr = String(children).replace(/\n$/, "");
@@ -252,7 +253,21 @@ export default function MarkdownRenderer({ content }: Props) {
             </div>
           );
         },
-      }}
+      };
+
+export default function MarkdownRenderer({ content }: Props) {
+  // Sanitize HTML br tags — convert to markdown line breaks (two spaces + newline)
+  // Two regex passes over the whole message, previously on every render.
+  const sanitized = useMemo(
+    () =>
+      content.replace(/<br\s*\/?>/gi, "  \n").replace(/<\/br\s*>/gi, ""),
+    [content]
+  );
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={MD_COMPONENTS}
     >
       {sanitized}
     </ReactMarkdown>

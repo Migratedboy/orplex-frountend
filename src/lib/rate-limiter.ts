@@ -2,9 +2,13 @@
  * rate-limiter.ts — Database-backed rate limiting with in-memory cache layer.
  *
  * Architecture:
- *   - Burst limiter: DB-backed per-minute sliding window (survives restarts)
- *   - Daily quota: Already DB-backed via UserQuota (unchanged)
- *   - Legacy rate limiter: DB-backed per-minute window (survives restarts)
+ *   - Burst limiter: DB-backed per-minute FIXED window (survives restarts).
+ *     Fixed, not sliding: the window is anchored to
+ *     floor(now / 60_000) * 60_000, so a burst straddling the boundary can
+ *     admit up to 2x BURST_LIMIT. Called a "sliding window" previously, which
+ *     described an implementation this file never had.
+ *   - Daily quota: DB-backed via UserQuota, rolled over on the UTC day key
+ *   - Legacy rate limiter: DB-backed per-minute FIXED window
  *
  * The in-memory Map acts as a write-through cache to avoid hitting the DB
  * on every single request. Stale entries are cleaned up by a periodic sweep.
@@ -100,7 +104,11 @@ export async function checkBurstLimit(userId: string): Promise<boolean> {
     console.error("[rate-limiter] DB error in checkBurstLimit — failing closed");
     const cachedFallback = cache.get(key);
     if (cachedFallback && now <= cachedFallback.expiresAt) {
-      return cachedFallback.count < BURST_LIMIT;
+      // Must CONSUME the slot, not just read it: returning the cached count
+      // without incrementing let every request in the window through during a
+      // DB outage — the limiter was fully open precisely when it was needed.
+      cachedFallback.count += 1;
+      return cachedFallback.count <= BURST_LIMIT;
     }
     return false;
   }
@@ -110,15 +118,39 @@ export async function checkBurstLimit(userId: string): Promise<boolean> {
 // Daily Quota (already DB-backed via UserQuota — unchanged)
 // ---------------------------------------------------------------------------
 
+/**
+ * The one daily-request limit for the free tier.
+ *
+ * This constant existed FOUR times with three different values (1000 here and
+ * in signup/schema, 50 as a bare fallback in checkUserQuota, Infinity as
+ * PRO_TIER's). quota-manager re-exports it as FREE_TIER.DAILY_LIMIT so there is
+ * a single source of truth.
+ */
+export const FREE_TIER_DAILY_LIMIT = 1000;
+
+/**
+ * The UTC day key every quota counter rolls over on.
+ *
+ * This MUST match free-tier/quota-manager's `today()`. They used to disagree —
+ * the enforcer compared LOCAL `toDateString()` while the display/reset path used
+ * UTC `toISOString()`. For any user not on UTC that is two different "today"s,
+ * so the daily cap rolled over twice and the dashboard could show a counter the
+ * enforcer disagreed with.
+ */
+export function quotaDayKey(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
 export function checkUserQuota(
   userId: string,
   quota?: { requestsToday: number; dailyLimit: number; lastResetAt: Date },
 ): { allowed: boolean; remaining: number; limit: number } {
-  const now = new Date();
-  const lastReset = quota?.lastResetAt || new Date(0);
-  const isNewDay = now.toDateString() !== lastReset.toDateString();
-  const requests = isNewDay ? 0 : (quota?.requestsToday || 0);
-  const limit = quota?.dailyLimit || 50;
+  const requests = quotaDayKey() === quotaDayKey(quota?.lastResetAt ?? new Date(0)) ? quota?.requestsToday || 0 : 0;
+  // No second magic number: a missing row falls back to the SAME constant
+  // signup, the Prisma default and FREE_TIER use (it used to silently enforce
+  // 50 here, so a brand-new user was capped an order of magnitude below
+  // everyone else).
+  const limit = quota?.dailyLimit ?? FREE_TIER_DAILY_LIMIT;
 
   return {
     allowed: requests < limit,
@@ -134,14 +166,17 @@ export async function incrementUserQuota(userId: string): Promise<void> {
   });
 
   if (!existing) {
-    await prisma.userQuota.create({
-      data: { userId, requestsToday: 1 },
-    });
+    // Read-then-create races: two concurrent first requests both see null, and
+    // userId is @unique, so one create throws P2002 and that user's request is
+    // silently lost. skipDuplicates makes the loser a no-op, and the update
+    // below then still counts it.
+    await prisma.userQuota
+      .createMany({ data: [{ userId, requestsToday: 1 }], skipDuplicates: true })
+      .catch(() => {});
     return;
   }
 
-  const isNewDay =
-    now.toDateString() !== existing.lastResetAt.toDateString();
+  const isNewDay = quotaDayKey(now) !== quotaDayKey(existing.lastResetAt);
 
   await prisma.userQuota.update({
     where: { userId },

@@ -15,6 +15,8 @@ import {
   incrementUserQuota,
 } from "@/lib/rate-limiter";
 import { prisma } from "@/lib/prisma";
+import { getProviderDef } from "@/lib/provider-registry";
+import { extractStatedOutputCap } from "@/lib/model-output-caps";
 import type { ChatMessageInput } from "@/lib/validators";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +38,25 @@ export interface ProviderConfig {
   apiKey: string;
   model: string;
   extraHeaders?: Record<string, string>;
+  /** Registry auth style. "x-api-key" providers get the key in that header. */
+  authStyle?: "bearer" | "x-api-key";
+  /** Provider accepts OpenAI-style multimodal `image_url` parts. */
+  supportsVision?: boolean;
+  /**
+   * Whose money is paying for this call.
+   *
+   * This was previously unrecoverable: every config was named
+   * `<provider>-personal` / `<provider>-pool` / `<provider label>` and callers
+   * inferred the payer from the provider NAME. That is why free-tier shaping
+   * (a 2048-token output ceiling, compact prompt, amputated tool set — all
+   * justified by the PLATFORM's shared Groq TPM budget) was applied to users
+   * who were paying Groq with their own key.
+   *
+   *   personal = the user's own BYOK key
+   *   pool     = the platform's shared key pool
+   *   platform = process.env (platform-run, unowned)
+   */
+  lane?: "personal" | "pool" | "platform";
 }
 
 // ---------------------------------------------------------------------------
@@ -94,18 +115,24 @@ export async function enforceBurstLimit(
 export async function enforceDailyQuota(
   userId: string,
 ): Promise<{ ok: true } | { ok: false; response: Response }> {
-  // Users with personal API keys bypass the daily quota
-  let hasPersonalKey = false;
+  // A user's OWN key lifts the platform quota — but only a key that is
+  // actually theirs to spend. Any key used to waive it, including free-tier
+  // only ones (Groq/NVIDIA free keys, Gemini's free allowance), which let a
+  // user drain the platform budget that funds everyone while their requests
+  // were actually served by THEIR free key. The registry's `free` flag is the
+  // single source of truth for that distinction.
+  let hasPaidPersonalKey = false;
   try {
     const userKeys = await prisma.userApiKey.findMany({
       where: { userId, isActive: true },
+      select: { provider: true },
     });
-    hasPersonalKey = userKeys.length > 0;
+    hasPaidPersonalKey = userKeys.some((k) => getProviderDef(k.provider)?.free !== true);
   } catch {
     // If the query fails, fall through to check quota normally
   }
 
-  if (hasPersonalKey) {
+  if (hasPaidPersonalKey) {
     return { ok: true };
   }
 
@@ -218,6 +245,11 @@ export async function getProviderConfigs(
    *  re-pointed at the requested model; fixed-model providers (Groq, NVIDIA
    *  NIM) keep their own and simply match or not downstream. */
   requestedModel?: string,
+  /**
+   * Opt-in: allow the ladder to substitute a PAID id for a requested `:free`
+   * one. Off by default — that substitution spends the user's own money.
+   */
+  opts?: { allowPaidUpgrade?: boolean }
 ): Promise<ProviderConfig[]> {
   const providers: ProviderConfig[] = [];
 
@@ -230,7 +262,8 @@ export async function getProviderConfigs(
     providerId: string,
     apiKey: string,
     model: string | undefined,
-    name: string
+    name: string,
+    lane: ProviderConfig["lane"]
   ): ProviderConfig | null => {
     const def = getProviderDef(providerId);
     if (!def) return null;
@@ -240,9 +273,19 @@ export async function getProviderConfigs(
       url: `${def.baseUrl}/chat/completions`,
       apiKey,
       model: model || envModel || def.fallbackModel,
+      // The registry's auth style must reach the transport. `x-api-key`
+      // providers (Anthropic-style) need the key in that header; sending only
+      // Bearer silently 401s the next provider registered this way. The
+      // model-listing lanes already honoured this — the chat lane did not.
       ...(def.extraHeaders || def.authStyle === "x-api-key"
         ? { extraHeaders: { ...(def.extraHeaders ?? {}) } }
         : {}),
+      authStyle: def.authStyle,
+      lane,
+      // Whether this provider accepts OpenAI-style image parts. The chat lane
+      // uses it to decide between forwarding images natively and describing
+      // them via the NVIDIA vision model.
+      supportsVision: def.supportsVision === true,
     };
   };
 
@@ -257,7 +300,7 @@ export async function getProviderConfigs(
       for (const uk of userKeys) {
         try {
           const decrypted = decryptKey(uk.apiKey);
-          const cfg = configFor(uk.provider, decrypted, uk.model || undefined, `${uk.provider}-personal`);
+          const cfg = configFor(uk.provider, decrypted, uk.model || undefined, `${uk.provider}-personal`, "personal");
           if (cfg) providers.push(cfg);
         } catch {
           /* provider unavailable */
@@ -273,7 +316,7 @@ export async function getProviderConfigs(
     const { getAvailableKey } = await import("@/lib/key-pool");
     const poolKey = await getAvailableKey();
     if (poolKey) {
-      const cfg = configFor(poolKey.provider, poolKey.apiKey, poolKey.model || undefined, `${poolKey.provider}-pool`);
+      const cfg = configFor(poolKey.provider, poolKey.apiKey, poolKey.model || undefined, `${poolKey.provider}-pool`, "pool");
       if (cfg) providers.push(cfg);
     }
   } catch {
@@ -288,20 +331,24 @@ export async function getProviderConfigs(
     const envKey = process.env[def.keyEnvVar] || "";
     if (!envKey) continue;
     if (providers.some((p) => p.name === `${def.id}-personal` || p.name === `${def.id}-pool`)) continue;
-    const cfg = configFor(def.id, envKey, undefined, def.label);
+    const cfg = configFor(def.id, envKey, undefined, def.label, "platform");
     if (cfg) providers.push(cfg);
   }
 
   // Prompt-bar model selection: all three providers are OpenAI-compatible
   // endpoints where the key serves the provider's whole catalog — the `model`
   // field is per-request. Re-point EVERY provider at the requested id, then
-  // add sibling-form fallbacks (`id` ↔ `id:free`) after the home attempts, so
-  // a paid slug with no credits falls through to its free variant and an
-  // OpenRouter-only listing of an NVIDIA-hosted id still reaches NVIDIA.
+  // add sibling-form fallbacks after the home attempts, so a paid slug with no
+  // credits falls through to its free variant and an OpenRouter-only listing of
+  // an NVIDIA-hosted id still reaches NVIDIA.
   // Providers that don't host an id just fail fast (~100ms) and the ladder
   // moves on — exactly what the per-attempt retry loop is for.
+  //
+  // NEVER add a paid id when the user asked for `:free`: that spends their
+  // own money with no notice. modelVariants enforces that; this flag only
+  // re-enables it for callers that have explicitly opted in.
   if (requestedModel && providers.length > 0) {
-    const variants = modelVariants(requestedModel);
+    const variants = modelVariants(requestedModel, { allowPaidUpgrade: opts?.allowPaidUpgrade === true });
     const [primary, ...fallbacks] = variants;
     for (const p of providers) p.model = primary;
     for (const alt of fallbacks) {
@@ -320,15 +367,23 @@ export async function getProviderConfigs(
 /** Sibling ids to try for a requested model: `x:free` ↔ `x`. OpenRouter lists
  *  free tiers under a `:free` suffix while NVIDIA/Groq host the bare id, and
  *  vice versa — trying both forms on every provider is what makes a picker
- *  entry answer even when its home route is out of credits or quota. */
-export function modelVariants(id: string): string[] {
+ *  entry answer even when its home route is out of credits or quota.
+ *
+ *  COST GUARD: upgrading free -> paid spends the USER'S OWN MONEY, so that
+ *  direction is off by default and only happens when the caller explicitly
+ *  opts in (`allowPaidUpgrade`). Downgrading paid -> free is always safe: it
+ *  costs the user nothing, it just may not serve the model. */
+export function modelVariants(id: string, opts: { allowPaidUpgrade?: boolean } = {}): string[] {
   const trimmed = (id || "").trim();
   if (!trimmed) return [];
   const variants = [trimmed];
   if (trimmed.endsWith(":free")) {
     const bare = trimmed.slice(0, ":free".length * -1);
-    if (bare && !variants.includes(bare)) variants.push(bare);
+    if (bare && opts.allowPaidUpgrade && !variants.includes(bare)) variants.push(bare);
   } else {
+    // A free-tier sibling is always a legal fallback: it can only cost quota,
+    // never money, and it is what keeps a paid id answering when the paid route
+    // is throttled.
     variants.push(`${trimmed}:free`);
   }
   return variants;
@@ -349,6 +404,11 @@ export async function fetchWithProviderRetry(
   const deadline = Date.now() + 75_000;
   let lastError = "";
   let body = requestBody;
+  // How many times we have lowered the output budget to match a provider's
+  // stated ceiling. Bounded so a provider that keeps complaining cannot spin
+  // the ladder.
+  let capFixes = 0;
+  const MAX_CAP_FIXES = 2;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (Date.now() > deadline) {
@@ -363,7 +423,11 @@ export async function fetchWithProviderRetry(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${provider.apiKey}`,
+          // Honour the registry auth style: x-api-key providers must not be
+          // sent a Bearer token (the listing lanes already do this correctly).
+          ...(provider.authStyle === "x-api-key"
+            ? { "x-api-key": provider.apiKey }
+            : { Authorization: `Bearer ${provider.apiKey}` }),
           ...provider.extraHeaders,
         },
         body: JSON.stringify(body),
@@ -389,22 +453,31 @@ export async function fetchWithProviderRetry(
         // → setTimeout(NaN) fires immediately (hot retry loop). Guard it.
         const retryAfterRaw = parseInt(res.headers.get("retry-after") || "3", 10);
         const retryAfter = Math.min(Number.isFinite(retryAfterRaw) ? Math.max(retryAfterRaw, 1) : 3, 10);
+        // Drain the body before retrying: `continue` skips the res.text() below,
+        // so the socket/FD stays open. Across a long ladder (providers x model
+        // variants x 4 attempts) that leaks descriptors under a retry storm.
+        await res.body?.cancel().catch(() => {});
         await new Promise((r) => setTimeout(r, retryAfter * 1000));
         continue;
       }
 
       if (!res.ok) {
         const errText = await res.text().catch(() => "unknown");
-        // Self-heal: small-context models (e.g. Groq allam-2-7b @ 4096)
-        // reject our default completion budget outright and name the cap in
-        // the error. Retry immediately with the provider's own limit.
-        const cap = errText.match(
-          /max_completion_tokens`?\s+must be less than or equal to\s+`?(\d+)/i,
-        );
-        if (cap) {
-          body = { ...body, max_completion_tokens: Number(cap[1]) };
-          continue;
+
+        // Provider-agnostic budget self-heal. Every provider rejects an
+        // oversized max_completion_tokens, but each phrases it differently —
+        // matching only Groq's sentence (as this used to) meant OpenAI,
+        // Anthropic, Mistral, Cerebras and OpenRouter never recovered and the
+        // request simply failed. Now we learn the real ceiling from whichever
+        // provider is complaining and retry at exactly that value.
+        const askedFor = Number(body.max_completion_tokens ?? body.max_tokens ?? 0);
+        const stated = extractStatedOutputCap(errText, askedFor);
+        if (stated !== null && stated < askedFor) {
+          body = { ...body, max_completion_tokens: stated, max_tokens: undefined };
+          capFixes++;
+          if (capFixes <= MAX_CAP_FIXES) continue;
         }
+
         lastError = `${provider.name} HTTP ${res.status}: ${errText.slice(0, 200)}`;
         break;
       }

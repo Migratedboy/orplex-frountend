@@ -4,14 +4,18 @@
  * No execution lane calls this module anymore: similar past tasks are
  * surfaced through the workspace-learnings bucket + run ledger (the
  * permanent memory buckets), not a fourth mechanism. The exports stay
- * functional so existing unit tests (orchestration-wiring) keep passing.
- * Scheduled for deletion once the tests migrate to the ledger assertions.
+ * functional so the existing orchestration-wiring unit test keeps passing.
+ * Scheduled for deletion once that test migrates to the ledger assertions.
  * Do NOT add new callers.
+ *
+ * Verified dead (2026-10): the only remaining references are comments in
+ * background-worker.ts and memory.ts. Nothing imports it.
  */
 
-// Client-safe id: the worker bundle (browser) imports this module — Node's
-// "crypto" import would break the webpack build. crypto.randomUUID exists on
-// both the Web Crypto API and modern Node (>=16.7) fallbacks below.
+// Note: this module USED to be pulled into the browser worker bundle, which
+// is why it avoids Node's "crypto" import and uses globalThis.crypto instead.
+// It is no longer in any bundle, but the implementation is left as-is until
+// the module is deleted rather than silently rewritten.
 function newId(): string {
   const g = globalThis as { crypto?: { randomUUID?: () => string } };
   if (g.crypto?.randomUUID) return g.crypto.randomUUID();

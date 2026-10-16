@@ -30,11 +30,11 @@ afterEach(() => {
   delete global.fetch;
 });
 
-const okList = (models: unknown[]) => ({
+const okList = (models: unknown[], extra: Record<string, unknown> = {}) => ({
   ok: true,
   status: 200,
   headers: new Headers({ "content-type": "application/json" }),
-  json: async () => ({ data: models }),
+  json: async () => ({ data: models, ...extra }),
 });
 
 describe("buildListRequest", () => {
@@ -79,11 +79,66 @@ describe("listProviderModels", () => {
     expect(r.models.find((m) => m.id === "openai/gpt-4o")?.free).toBe(false);
   });
 
-  it("caps the list at 200", async () => {
-    const many = Array.from({ length: 260 }, (_, i) => ({ id: `m-${i}` }));
+  it("returns the WHOLE catalogue (no 200 cap) and ranks free first", async () => {
+    // Regression guard: the engine used to slice to 200 in provider order,
+    // silently dropping most of a real OpenRouter catalogue (400+ ids).
+    const many = Array.from({ length: 460 }, (_, i) => ({ id: `vendor/model-${i}` }));
+    many.push({ id: "vendor/space-bunny-alpha:free" });
+    fetchMock.mockResolvedValueOnce(okList(many));
+    const r = await listProviderModels("openrouter", "sk-or-test");
+    expect(r.ok).toBe(true);
+    expect(r.models).toHaveLength(461);
+    expect(r.listedTotal).toBe(461);
+    expect(r.truncated).toBeUndefined();
+    // Free models rank ahead of paid ones so they survive any future cap.
+    expect(r.models[0].id).toBe("vendor/space-bunny-alpha:free");
+  });
+
+  it("caps only at the DoS backstop, and says so", async () => {
+    const many = Array.from({ length: 2500 }, (_, i) => ({ id: `m-${i}` }));
     fetchMock.mockResolvedValueOnce(okList(many));
     const r = await listProviderModels("mistral", "mk-test");
-    expect(r.models).toHaveLength(200);
+    expect(r.models).toHaveLength(2000);
+    expect(r.listedTotal).toBe(2500);
+    expect(r.truncated).toBe(true);
+  });
+
+  it("detects free models from numeric pricing and explicit flags, not just :free", async () => {
+    fetchMock.mockResolvedValueOnce(
+      okList([
+        { id: "vendor/numeric-free", pricing: { prompt: 0 } },
+        { id: "vendor/string-free", pricing: { prompt: "0" } },
+        { id: "vendor/flagged-free", free: true },
+        { id: "vendor/paid", pricing: { prompt: 0.000002 } },
+      ])
+    );
+    const r = await listProviderModels("groq", "gsk-test");
+    const free = r.models.filter((m) => m.free === true).map((m) => m.id).sort();
+    expect(free).toEqual(["vendor/flagged-free", "vendor/numeric-free", "vendor/string-free"]);
+    expect(r.models.find((m) => m.id === "vendor/paid")?.free).toBe(false);
+  });
+
+  it("still excludes non-chat ids across a full catalogue", async () => {
+    // The listing engine must not loosen the platform catalog's non-chat
+    // filter: embeddings/whisper/guard ids are junk in a chat picker.
+    fetchMock.mockResolvedValueOnce(
+      okList([
+        { id: "vendor/text-embedding-3-large" },
+        { id: "vendor/whisper-large-v3" },
+        { id: "vendor/llama-guard-classifier" },
+        { id: "vendor/normal-chat-model" },
+      ])
+    );
+    const r = await listProviderModels("openrouter", "sk-or-test");
+    expect(r.models.map((m) => m.id)).toEqual(["vendor/normal-chat-model"]);
+  });
+
+  it("follows pagination when the provider pages its catalogue", async () => {
+    fetchMock.mockResolvedValueOnce(okList([{ id: "a/one" }], { next_page: "p2" }));
+    fetchMock.mockResolvedValueOnce(okList([{ id: "a/two" }]));
+    const r = await listProviderModels("openrouter", "sk-or-test-paged");
+    expect(r.models.map((m) => m.id).sort()).toEqual(["a/one", "a/two"]);
+    expect(r.pages).toBe(2);
   });
 
   it("maps 401 to a friendly error without echoing the key", async () => {

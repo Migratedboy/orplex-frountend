@@ -54,10 +54,27 @@ export interface CatalogModel {
 
 export interface CatalogResult {
   models: CatalogModel[];
-  /** Confirmed-live models that only answered 429 — reported but not listed. */
+  /** Confirmed-live models that only answered 429 - reported but not listed. */
   throttledModels: CatalogModel[];
   probedAt: string;
   providers: string[];
+  /**
+   * Per-provider sweep triage. `lastFailureKind` was computed on every failed
+   * probe but NEVER read by the sweep, so an invalid key or an empty balance
+   * was indistinguishable from "these models are dead" — the app rendered a
+   * silently missing provider and said nothing. The picker surfaces these.
+   */
+  providerIssues?: ProviderIssue[];
+}
+
+export interface ProviderIssue {
+  provider: string;
+  kind: ProbeFailureKind;
+  detail: string;
+  /** How many models hit this failure. */
+  count: number;
+  /** How many of that provider's models ended up in the picker anyway. */
+  liveCount: number;
 }
 
 /** A model verified more recently than this is green and skips re-probing. */
@@ -267,9 +284,15 @@ function prettify(id: string): string {
 function withTimeout(ms: number): { signal: AbortSignal; done: Promise<void>; cancel: () => void } {
   const ctrl = new AbortController();
   let resolveDone: () => void = () => undefined;
+  // Keep the handle so `cancel` can clear it. The comment below claimed the
+  // timer was cleared but no clearTimeout existed: every probe left a live
+  // timer for its FULL budget (20s sweep / 120s wake), holding the
+  // AbortController and closure alive and keeping the event loop referenced.
+  // A 500-model sweep leaked hundreds of pending timers.
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const done = new Promise<void>((resolve) => {
     resolveDone = resolve;
-    setTimeout(() => {
+    timer = setTimeout(() => {
       ctrl.abort();
       resolve();
     }, ms);
@@ -281,6 +304,10 @@ function withTimeout(ms: number): { signal: AbortSignal; done: Promise<void>; ca
     // so awaiting probes finish in their actual round-trip time instead of
     // always burning the full timeout window.
     cancel: () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
       ctrl.abort();
       resolveDone();
     },
@@ -428,6 +455,7 @@ export async function probeModel(
     if (!res.ok) {
       const detail = await res.text().catch(() => "").then((t) => t.slice(0, 300));
       lastFailureKind = classifyFailure(res.status, detail);
+      recordProviderFailure(provider, lastFailureKind, lastFailureDetail ?? `HTTP ${res.status}`);
       if (lastFailureKind === "invalid_key" || lastFailureKind === "no_credits" || lastFailureKind === "network") {
         lastFailureDetail = `HTTP ${res.status}${detail ? `: ${detail.slice(0, 160)}` : ""}`;
       }
@@ -449,6 +477,7 @@ export async function probeModel(
       const msg = String(json.error.message || "");
       if (code === 429) return "rate_limited";
       lastFailureKind = classifyFailure(code, msg);
+      recordProviderFailure(provider, lastFailureKind, lastFailureDetail ?? (code ? `code ${code}` : "error"));
       if (lastFailureKind === "invalid_key" || lastFailureKind === "no_credits" || lastFailureKind === "network") {
         lastFailureDetail = `${code ? `code ${code}` : "error"}${msg ? `: ${msg.slice(0, 160)}` : ""}`;
       }
@@ -513,7 +542,12 @@ async function probeAll(
   const verdicts = new Map<string, ProbeVerdict>();
   // Round-trip ms per job — health telemetry (picker's green/amber dot and
   // the relative speed signal), not used for verdicts.
-  latenciesByJob.clear();
+  //
+  // Scope the reset to THIS call's jobs. sweepCatalog runs probeAll TWICE
+  // (initial pass, then a rate-limited retry pass), and a blanket .clear()
+  // made the second call erase every latency the first one recorded — which is
+  // why 15 of 16 models in the live cache had no probeLatencyMs at all.
+  for (const j of jobs) latenciesByJob.delete(jobKey(j));
 
   const spacingFor = (provider: string): number =>
     getProviderDef(provider)?.probeSpacingMs ?? 0;
@@ -606,19 +640,68 @@ export async function getVerifiedModels(
   // the sweep, so answer immediately with an empty catalog and let the
   // background refresher populate it — the client keeps its fallback trio and
   // re-fetches until the real list lands.
-  if (!opts.background) {
-    ensureCatalogRefresh();
-    return { models: [], throttledModels: [], probedAt: new Date().toISOString(), providers: [] };
-  }
-  return sweepCatalog();
+  //
+  // `background: true` used to `return sweepCatalog()` here, i.e. run the
+  // whole multi-minute probe sweep INLINE. Its only caller is
+  // loadContextWindows() on the /api/chat hot path, whose own doc comment
+  // claimed "a cold cache simply yields an empty map" — which was false. On a
+  // fresh instance (empty filesystem) the first chat message blocked for
+  // minutes. Kick and answer instead; the next request reads a warm cache.
+  ensureCatalogRefresh();
+  return { models: [], throttledModels: [], probedAt: new Date().toISOString(), providers: [] };
 }
 
 /** Per-provider dead/other tallies for the current sweep — probeModel logs once per provider instead of per model. */
+/** Per-provider sweep tally — replaced once per sweep. */
 const sweepTally = new Map<string, { dead: number; other: number }>();
+/**
+ * Attribute one failed probe to its provider. Actionable kinds
+ * (invalid_key / no_credits / network) replace whatever was recorded before;
+ * generic "dead" only records a count, so it can never mask a real cause.
+ */
+function recordProviderFailure(provider: string, kind: ProbeFailureKind, detail: string): void {
+  failureCountByProvider.set(provider, (failureCountByProvider.get(provider) ?? 0) + 1);
+  if (kind === "dead") return;
+  failureKindByProvider.set(provider, kind);
+  if (detail) failureDetailByProvider.set(provider, detail);
+}
+/** Per-provider dominant failure — populated by probeModel, read by the sweep (fix 5). */
+const failureKindByProvider = new Map<string, ProbeFailureKind>();
+const failureDetailByProvider = new Map<string, string>();
+const failureCountByProvider = new Map<string, number>();
 
-/** The full listing + probe sweep. Only ever runs via ensureCatalogRefresh(). */
-async function sweepCatalog(): Promise<CatalogResult> {
+/**
+ * Sweep entry point with a hard concurrency guard.
+ *
+ * `refreshInFlight` only protected `ensureCatalogRefresh`, so DIRECT callers —
+ * `getVerifiedModels({ background: true })` (the chat hot path) and
+ * `runSweepForTests()` — bypassed it. On a cold instance the disk cache is
+ * empty, `memCache` is only assigned at the END of a sweep, and every
+ * concurrent cold-start chat request therefore launched its OWN full sweep:
+ * N requests => N simultaneous sweeps => doubled probe cost and a
+ * self-inflicted rate-limit storm that (via the rate_limited/dead
+ * classification) removed models from the picker.
+ *
+ * Everyone now shares one in-flight sweep.
+ */
+let sweepInFlight: Promise<CatalogResult> | null = null;
+function sweepCatalog(): Promise<CatalogResult> {
+  if (sweepInFlight) return sweepInFlight;
+  sweepInFlight = sweepCatalogInner().finally(() => {
+    sweepInFlight = null;
+  });
+  return sweepInFlight;
+}
+
+/** The full listing + probe sweep. Always entered through sweepCatalog(). */
+async function sweepCatalogInner(): Promise<CatalogResult> {
   sweepTally.clear();
+  // Per-provider triage is per-SWEEP. Never left module-global across runs:
+  // a stale kind from an unrelated earlier sweep would be attributed to
+  // whatever ran next.
+  failureKindByProvider.clear();
+  failureDetailByProvider.clear();
+  failureCountByProvider.clear();
   // Registry-driven: every platform key present in .env joins the sweep.
   const defs = listProviderDefs().filter((d) => (process.env[d.keyEnvVar] || "").trim() !== "");
 
@@ -632,17 +715,36 @@ async function sweepCatalog(): Promise<CatalogResult> {
 
   const listing: Array<{ provider: string; raw: RawModel[]; key: string }> = [];
   const providers: string[] = [];
-  // Fetches run in parallel, but results land in FIXED registry display
-  // order. Pushing on completion would let a slow provider steal the dedupe
-  // tag for ids listed by several providers (gpt-oss-120b exists on Groq AND
-  // NVIDIA AND OpenRouter).
-  const rawLists = await Promise.all(
-    defs.map(async (d) => (await listProviderModelsRaw(d)) ?? ([] as RawModel[]))
-  );
+  const out_carried = new Set<string>();
+  const carriedFromFailedProvider: CatalogModel[] = [];
+  // Fetch in parallel, but KEEP the null sentinel: `null` means "this provider's
+  // listing FAILED" (429/500/DNS/15s timeout) and is completely different from
+  // "the provider listed nothing". Collapsing the two used to delete every one
+  // of a provider's models for the whole cache cycle on a single blip —
+  // including models that were freshly verified and therefore skipped probing.
+  const rawLists = await Promise.all(defs.map((d) => listProviderModelsRaw(d)));
+  const failedProviders = new Set<string>();
   defs.forEach((d, i) => {
     providers.push(d.id);
-    listing.push({ provider: d.id, raw: rawLists[i], key: (process.env[d.keyEnvVar] || "").trim() });
+    const raw = rawLists[i];
+    if (raw === null) failedProviders.add(d.id);
+    listing.push({ provider: d.id, raw: raw ?? [], key: (process.env[d.keyEnvVar] || "").trim() });
   });
+  if (failedProviders.size > 0) {
+    // Carry those providers' last-known models forward rather than dropping
+    // them. Their health ages normally; only a provider that LISTS the model
+    // and then refuses it should ever remove it.
+    for (const m of prev?.models ?? []) {
+      if (!failedProviders.has(m.provider)) continue;
+      const already = out_carried.has(`${m.provider}::${m.id}`);
+      if (already) continue;
+      out_carried.add(`${m.provider}::${m.id}`);
+      carriedFromFailedProvider.push(m);
+    }
+    console.warn(
+      `[model-catalog] listing failed for ${[...failedProviders].join(", ")} — carrying forward ${carriedFromFailedProvider.length} known model(s) instead of dropping them`
+    );
+  }
 
   // Probe scope: free OpenRouter models + first N paid (by context desc),
   // full lists for the other providers. Dedupes ids (same id can list twice).
@@ -728,7 +830,12 @@ async function sweepCatalog(): Promise<CatalogResult> {
       // carry their last health forward untouched so the dot stays green.
       if (prior && isFreshlyVerified(prior)) {
         seenIds.add(m.id);
-        out.push({ ...prior, name: m.name || prior.name, contextWindow: m.contextWindow });
+        // Preserve a previously-known contextWindow when the listing omits it.
+        // Groq and NVIDIA don't report context_length, so `m.contextWindow`
+        // is undefined for most models — assigning it directly ERASED the
+        // value every sweep, which silently degraded both the picker's "131k"
+        // badge and every context-window consumer downstream.
+        out.push({ ...prior, name: m.name || prior.name, contextWindow: m.contextWindow ?? prior.contextWindow });
         continue;
       }
       const v = best(m.id);
@@ -760,6 +867,38 @@ async function sweepCatalog(): Promise<CatalogResult> {
       }
     }
   }
+  // Models from providers whose listing failed this sweep (see the rawLists
+  // fetch above). Appended last so a provider that DID list still wins the
+  // dedupe tag, and only when the id isn't already present.
+  for (const m of carriedFromFailedProvider) {
+    if (seenIds.has(m.id)) continue;
+    seenIds.add(m.id);
+    out.push(m);
+  }
+  // Per-provider triage (fix 5): a provider whose models all failed for the
+  // SAME actionable reason (invalid key, no credits, network) gets reported so
+  // the user sees WHY their provider contributes nothing — instead of the
+  // picker silently omitting it. A provider with any live model is not an
+  // "issue" even if some of its models are dead.
+  const providerIssues: ProviderIssue[] = [];
+  for (const p of providers) {
+    if (out.some((m) => m.provider === p) || throttledOut.some((m) => m.provider === p)) continue;
+    const kind = failureKindByProvider.get(p);
+    if (!kind) continue;
+    providerIssues.push({
+      provider: p,
+      kind,
+      detail: failureDetailByProvider.get(p) ?? "",
+      count: failureCountByProvider.get(p) ?? 0,
+      liveCount: 0,
+    });
+  }
+  if (providerIssues.length > 0) {
+    for (const i of providerIssues) {
+      console.warn(`[model-catalog] provider "${i.provider}" contributed 0 models — ${i.kind}${i.detail ? `: ${i.detail}` : ""} (${i.count} failed probe(s))`);
+    }
+  }
+
   // Fully-verified first, then provider + name for stable order.
   out.sort(
     (a, b) => a.provider.localeCompare(b.provider) || a.name.localeCompare(b.name)
@@ -770,6 +909,7 @@ async function sweepCatalog(): Promise<CatalogResult> {
     throttledModels: throttledOut,
     probedAt: new Date().toISOString(),
     providers,
+    providerIssues,
   };
   // One summary line per sweep replaces the old per-model warning flood.
   const tallyLine = [...sweepTally.entries()]
@@ -780,6 +920,21 @@ async function sweepCatalog(): Promise<CatalogResult> {
     console.log(
       `[model-catalog] sweep done — ${out.length} live, ${throttledOut.length} throttled (${tallyLine})`
     );
+  }
+  // Refuse to persist a DEGENERATE catalog. An all-listing-failure sweep
+  // produces out=[], and writing that with a fresh probedAt made the next 30
+  // minutes serve "no models" from a poisoned cache. Keep serving the last
+  // good catalog instead and say so loudly.
+  const prevModelCount = prev?.models.length ?? 0;
+  const degenerate = out.length === 0 && prevModelCount > 0;
+  if (degenerate) {
+    console.warn(
+      `[model-catalog] sweep produced 0 models but the previous catalog had ${prevModelCount} — refusing to overwrite the disk cache (every provider listing probably failed)`
+    );
+    if (prev) {
+      memCache = { at: Date.now(), data: prev };
+      return prev;
+    }
   }
   memCache = { at: Date.now(), data };
   writeDiskCache(data);
@@ -794,17 +949,49 @@ async function sweepCatalog(): Promise<CatalogResult> {
 // ---------------------------------------------------------------------------
 
 /**
- * Durable bell notification when a cold model answers and joins the picker.
- * Physical split: this row is delivered by the BACKEND copy of the wake
- * engine (backend/src/lib/model-catalog.ts), which owns the session
- * (next-auth), the database (prisma) and the durable notify() surface. The
- * frontend copy is a deliberate no-op so next-auth and @prisma/client never
- * enter the UI bundle.
+ * Announce that a cold model answered and joined the picker.
+ *
+ * This module exists in TWO copies (the app and the backend). Both run sweeps,
+ * but only the backend copy used to notify — so promotions performed by this
+ * copy were silent, and TopBar's "Cold model woke up" listener plus the
+ * `orplex:wake-promoted` bridge fired for nobody.
+ *
+ * notify() is next-auth/Prisma-backed, which must never enter the UI bundle,
+ * so it is reached through a dynamic import and its absence (client realm) is
+ * not an error. The window event is the transport the picker actually listens
+ * to; the durable notification is a bonus for the server realm.
  */
 function notifyWakePromotion(modelId: string): void {
-  if (!modelId) return; // signature parity with the backend copy
-  // Frontend: notifications arrive via the normal /api/notifications poll —
-  // nothing to do locally.
+  if (!modelId) return;
+  // Transport the picker actually listens to — works in both realms.
+  try {
+    window.dispatchEvent(new CustomEvent("orplex:wake-promoted", { detail: { id: modelId } }));
+  } catch {}
+  // Durable bell notification, server realm only. notify() pulls in
+  // next-auth + @prisma/client, which must never enter the UI bundle, so it is
+  // behind a dynamic import guarded by a realm check and a dynamic require so
+  // the bundler leaves it alone. Any failure is swallowed — a promotion that
+  // can't announce itself must still count as promoted.
+  if (typeof window !== "undefined") return;
+  void (async () => {
+    try {
+      const req = eval("typeof require === 'function' ? require : null") as ((id: string) => unknown) | null;
+      if (!req) return;
+      const { notify } = (req("@/lib/notify") ?? req("./notify")) as { notify: (u: string, i: unknown) => Promise<void> };
+      const { prisma } = (req("@/lib/prisma") ?? req("./prisma")) as { prisma: { user: { findFirst(): Promise<{ id: string } | null> } } };
+      // Platform-wide sweep: attribute to the first active user. Better than
+      // dropping the announcement entirely.
+      const owner = await prisma.user.findFirst();
+      if (!owner) return;
+      await notify(owner.id, {
+        type: "success",
+        title: "Cold model woke up",
+        message: `${modelId} is responding now and is available in the model picker.`,
+      });
+    } catch {
+      /* non-fatal */
+    }
+  })();
 }
 
 /** Probe function shape — dependency-injectable for tests. */
@@ -897,6 +1084,16 @@ export function wakeColdModels(
         if (Number.isFinite(lastProbeMs)) m.probeLatencyMs = lastProbeMs;
         if (st) st.state = "woke";
         console.log(`[model-catalog] woke ${m.id} — promoted to verified`);
+        // Publish IMMEDIATELY. The single publish at the end of the cycle was
+        // the reason a woken model stayed invisible long after its
+        // "Cold model woke up" notification: a cycle covers up to
+        // WAKE_MAX_MODELS × (120s + 5s + 90s + 5s + 60s) ≈ 35 minutes, and the
+        // picker reads memCache (5 min TTL) or the disk cache — so a promotion
+        // made at minute 2 was invisible until minute 35, and any concurrent
+        // `readDiskCache()` in between re-assigned memCache to the PRE-wake
+        // file, detaching the very object being mutated.
+        memCache = { at: Date.now(), data };
+        writeDiskCache(data);
         onPromoted(m.id);
       } else {
         if (st) st.state = confirmedDead ? "dead" : "failed";

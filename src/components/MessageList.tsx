@@ -8,7 +8,9 @@ import ToolCallDisplay from "./ToolCallDisplay";
 import { MessageSkeleton } from "./Skeleton";
 import ClarificationCard from "./ClarificationCard";
 import { Message } from "@/hooks/useMessages";
-import { AgentEvent, isToolCallEvent, isToolResultEvent } from "@/lib/types";
+import { AgentEvent, isToolCallEvent, isToolResultEvent, isCompactionEvent } from "@/lib/types";
+import ContextCompactedDivider from "./ContextCompactedDivider";
+import { useToast } from "./Toast";
 import type { RunPhase, PendingQuestion } from "@/lib/background-chat";
 import { isFailedMessage } from "@/lib/message-retry";
 import { downloadAsMarkdown } from "@/lib/file-download";
@@ -42,10 +44,17 @@ type RenderableItem = {
  * switching threads reuses index keys for different content. Content-derived
  * keys change with the content, so state never bleeds (the trailing index
  * only disambiguates same-ms duplicates; order is append-only).
+ *
+ * The key deliberately excludes the content LENGTH. Including it meant every
+ * streamed delta produced a brand-new key, so React unmounted and remounted the
+ * entire row on every token — which reset ThinkingCard's elapsed timer, its
+ * expanded state, CollapsibleText's expansion, and re-fired the VirtualList
+ * measuring ref (a forced getBoundingClientRect) per token. `time` + `role` +
+ * `index` are stable for the life of a message: the timestamp is fixed at
+ * creation and messages are append-only.
  */
 function msgKey(msg: Message, index: number): string {
-  const head = (msg.content || "").slice(0, 32);
-  return `msg-${msg.role}-${msg.time}-${msg.content?.length ?? 0}-${head}-${index}`;
+  return `msg-${msg.role}-${msg.time}-${index}`;
 }
 
 interface MessageListProps {
@@ -85,6 +94,16 @@ function estimateMessageHeight(item: RenderableItem): number {
 }
 
 export default function MessageList({ messages, agentEvents, agentRunning, agentStatus, onFastAnswer, onRetryMessage, retryingIdx = null, runPhase = "idle", runLabel = "", clarification = null, clarificationAskCount = 1, onAnswerClarification, onSkipClarification }: MessageListProps) {
+  const { toast } = useToast();
+  // "Copy summary" needs no extra plumbing, so the divider always gets a copy
+  // handler here — without one the kebab renders NOTHING (the component hides
+  // items it has no handler for) and the row reserves a dead 44px gutter.
+  const copyCompactionSummary = (summary: string) => {
+    navigator.clipboard
+      ?.writeText(summary)
+      .then(() => toast("Compaction summary copied", "success"))
+      .catch(() => toast("Could not copy the summary", "error"));
+  };
   // Merge messages + agent events into a single ordered list
   const items: RenderableItem[] = [];
   messages.forEach((msg, i) => {
@@ -153,9 +172,15 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
               isLast={item.kind === "message" && item.index === messages.length - 1}
               onRetryMessage={onRetryMessage}
               retryingIdx={retryingIdx}
+              onCopySummary={copyCompactionSummary}
             />
           )}
         />
+        {/* The virtual path had NO auto-scroll anchor, so a conversation past
+            20 items — i.e. every real agent session, since each turn also
+            emits tool events — stopped following the stream. The user has to
+            scroll manually while the answer grows below the fold. */}
+        <AutoScrollAnchor itemsLength={items.length} streamKey={streamKey} />
         {tail}
       </div>
     );
@@ -178,6 +203,20 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
         ))}
 
         {agentEvents.map((event, i) => {
+          if (isCompactionEvent(event)) {
+            // Same render as the virtual-list branch (see RenderableItem) so the
+            // divider looks and behaves identically on either path.
+            return (
+              <ContextCompactedDivider
+                key={`evt-compact-${i}`}
+                tokensBefore={event.tokensBefore}
+                tokensAfter={event.tokensAfter}
+                mode={event.mode}
+                summary={event.summary}
+                onCopy={copyCompactionSummary}
+              />
+            );
+          }
           if (isToolCallEvent(event)) {
             return (
               <ToolCallDisplay
@@ -304,7 +343,7 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
 }
 
 /** Wrapper that renders a RenderableItem — used by the virtual list */
-function RenderableItem({ item, agentRunning, liveThinking = false, isLast, onRetryMessage, retryingIdx = null }: {
+function RenderableItem({ item, agentRunning, liveThinking = false, isLast, onRetryMessage, retryingIdx = null, onCopySummary }: {
   item: RenderableItem;
   agentRunning: boolean;
   /** Run is in the thinking phase — the only time the Thinking block is live. */
@@ -312,12 +351,29 @@ function RenderableItem({ item, agentRunning, liveThinking = false, isLast, onRe
   isLast: boolean;
   onRetryMessage?: (assistantIdx: number) => void;
   retryingIdx?: number | null;
+  /** Passed down so the compaction divider can copy its summary from either path. */
+  onCopySummary?: (summary: string) => void;
 }) {
   if (item.kind === "event") {
     const event = item.event;
-    if (isToolCallEvent(event)) {
-      return <ToolCallDisplay tool={event.tool} args={event.args} />;
+    if (isCompactionEvent(event)) {
+      // MUST be handled here too, not only in the short-list branch: past 20
+      // items MessageList renders through <VirtualList>, so a missing branch
+      // makes the divider vanish exactly in the long sessions where compaction
+      // actually fires.
+      return (
+        <ContextCompactedDivider
+          tokensBefore={event.tokensBefore}
+          tokensAfter={event.tokensAfter}
+          mode={event.mode}
+          summary={event.summary}
+          onCopy={onCopySummary}
+        />
+      );
     }
+      if (isToolCallEvent(event)) {
+        return <ToolCallDisplay tool={event.tool} args={event.args} />;
+      }
     if (isToolResultEvent(event)) {
       return <ToolCallDisplay tool={event.tool} result={event.result} success={event.success} />;
     }

@@ -39,14 +39,17 @@ function splitDeploymentCookies(): Partial<Record<string, CookieOption>> | undef
 
 // Fail fast in production when secrets are missing — signing JWTs with
 // `undefined` silently breaks all sessions and is undebuggable at runtime.
-if (process.env.NODE_ENV === "production" && !process.env.NEXTAUTH_SECRET) {
+if (process.env.NODE_ENV === "production" && !String(process.env.NEXT_PHASE || "").includes("build") && !process.env.NEXTAUTH_SECRET) {
   throw new Error("[auth] NEXTAUTH_SECRET is unset in production — refusing to boot. Generate with: openssl rand -base64 32");
 }
 
 // Fail fast: localhost callback URLs on a cloud host break every OAuth flow
 // (laptop dev values leaked into production env). Crash the boot loudly.
+// Skipped during `next build` (NEXT_PHASE): static collection evaluates
+// modules with build-time env; the running server enforces on boot.
 if (
   process.env.NODE_ENV === "production" &&
+  !String(process.env.NEXT_PHASE || "").includes("build") &&
   process.env.NEXTAUTH_URL &&
   /localhost|127\.0\.0\.1/.test(process.env.NEXTAUTH_URL)
 ) {

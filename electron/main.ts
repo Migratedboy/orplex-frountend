@@ -35,6 +35,33 @@ import path from "node:path";
   } catch {}
 })();
 
+// A PACKAGED app has no .env beside it (electron-builder deliberately never
+// ships one — it holds the database password), so cloud mode would silently
+// fall back to booting an embedded local Postgres + local API. Ship the
+// backend origin in electron/app-config.json instead and apply it as a
+// DEFAULT only: repo-root .env and real shell env keep winning, so local dev
+// and self-hosted installs are unaffected.
+(function loadAppConfig() {
+  try {
+    const candidates = [
+      path.join(__dirname, "..", "electron", "app-config.json"),
+      app.isPackaged
+        ? path.join(process.resourcesPath, "app", "electron", "app-config.json")
+        : path.join(process.cwd(), "electron", "app-config.json"),
+    ];
+    for (const p of candidates) {
+      if (!fs.existsSync(p)) continue;
+      const cfg = JSON.parse(fs.readFileSync(p, "utf8")) as {
+        apiUrl?: string;
+        lightweight?: boolean;
+      };
+      if (cfg.apiUrl && !process.env.ORPLEX_API_URL) process.env.ORPLEX_API_URL = cfg.apiUrl;
+      if (cfg.lightweight && !process.env.ORPLEX_LIGHTWEIGHT) process.env.ORPLEX_LIGHTWEIGHT = "1";
+      return;
+    }
+  } catch {}
+})();
+
 const isDev = !app.isPackaged;
 // Electron OWNS both Next.js processes — the user never runs one separately.
 // ORPLEX_PORT / ORPLEX_API_PORT only override for special setups.
@@ -470,15 +497,30 @@ function startNextServer(which: "ui" | "api"): void {
     else apiProcess = child;
     wireChild(child);
   } else {
-    // Packaged: run Next's server entry with Electron's bundled Node via
-    // ELECTRON_RUN_AS_NODE (no separate node.exe needs to ship). The pack
-    // ships `app/` (the standalone UI); the API lives in the cloud backend.
+    // Packaged: run the standalone server bundle that ships in app/.next/
+    // standalone. `next start` cannot work here — standalone deliberately
+    // ships no `next` CLI and no top-level .next/server, only its own
+    // self-contained server.js. Electron's bundled Node runs it directly via
+    // ELECTRON_RUN_AS_NODE, so no separate node.exe has to ship.
     const root = projectRoot();
     const appRoot = path.join(root, "app");
-    const nextBin = path.join(appRoot, "node_modules", "next", "dist", "bin", "next");
-    const child = spawn(process.execPath, [nextBin, "start", "-p", String(port)], {
-      cwd: appRoot,
-      env: { ...runAsNode, NODE_ENV: "production" },
+    const standalone = path.join(appRoot, ".next", "standalone");
+    const serverEntry = path.join(standalone, "server.js");
+    if (!fs.existsSync(serverEntry)) {
+      dialog.showErrorBox(
+        "Orplex install is incomplete",
+        `The app server is missing:\n${serverEntry}\n\nReinstall Orplex Code.`
+      );
+      app.exit(1);
+    }
+    const child = spawn(process.execPath, [serverEntry], {
+      cwd: standalone,
+      env: {
+        ...runAsNode,
+        NODE_ENV: "production",
+        PORT: String(port),
+        HOSTNAME: "127.0.0.1",
+      },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });

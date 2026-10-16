@@ -5,6 +5,8 @@ import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { useState, useEffect, useCallback } from "react";
 import ScrollFadeManager from "./ScrollFadeManager";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { ShortcutsPanel } from "./ui";
 
 const ArtifactPanel = dynamic(() => import("./ArtifactPanel"), { ssr: false });
 const RightPanel = dynamic(() => import("./RightPanel"), { ssr: false });
@@ -94,6 +96,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
   }, [rightPanelOpen, rightPanelTab]);
   const [rightPanelResizing, setRightPanelResizing] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   // === Left sidebar collapse ===
   // User-controlled collapse (separate from the automatic left-hidden when
@@ -163,11 +166,31 @@ export default function AppLayout({ children }: AppLayoutProps) {
         // Ctrl+\: collapse/expand the left sidebar.
         e.preventDefault();
         toggleSidebar();
+      } else if (e.key === "?" && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) {
+        // "?" (shift+/) — shortcut help. Guarded so typing "?" into any
+        // input doesn't pop the overlay.
+        e.preventDefault();
+        setShortcutsOpen(true);
       }
     };
     document.addEventListener("keydown", handleKeyDown, true);
     return () => document.removeEventListener("keydown", handleKeyDown, true);
   }, []);
+
+  // Global chat shortcuts. Ctrl+K never reaches this hook — the document
+  // capture handler above intercepts it (stopImmediatePropagation) and
+  // opens the command palette instead. Ctrl+N and Escape are handled here.
+  useKeyboardShortcuts({
+    onSearch: () => {
+      document.querySelector<HTMLInputElement>('[aria-label="Search conversations"]')?.focus();
+    },
+    onNewChat: () => {
+      window.dispatchEvent(new CustomEvent("orplex:new-chat"));
+    },
+    onStop: () => {
+      void import("@/lib/background-chat").then((m) => m.abortCurrentTask());
+    },
+  });
 
   // Register the global open/close functions (assigned in an effect, not render)
   useEffect(() => {
@@ -194,7 +217,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
     <>
       <div className={`app-root ${rightPanelOpen ? "left-hidden" : ""} ${sidebarCollapsed ? "sb-collapsed" : ""}`}>
         <SidebarInner />
-        <TopBarInner title={title} onBugReport={() => setBugReportOpen(true)} onTogglePanel={() => setRightPanelOpen(!rightPanelOpen)} panelOpen={rightPanelOpen} onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed} />
+        <TopBarInner title={title} onBugReport={() => setBugReportOpen(true)} onShowShortcuts={() => setShortcutsOpen(true)} onTogglePanel={() => setRightPanelOpen(!rightPanelOpen)} panelOpen={rightPanelOpen} onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed} />
         {sidebarCollapsed && (
           <button className="sb-expand-fab" onClick={toggleSidebar} title="Expand sidebar (Ctrl+\)" aria-label="Expand sidebar">
             <span className="ms">left_panel_open</span>
@@ -220,6 +243,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
           </div>
         )}
       {bugReportOpen && <BugReportModal onClose={() => setBugReportOpen(false)} />}
+      {shortcutsOpen && <ShortcutsPanel visible={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />}
       <ProductivityOverlays />
     </div>        <RightPanel open={rightPanelOpen} onClose={() => setRightPanelOpen(false)} defaultTab={rightPanelTab as any} onResizingChange={setRightPanelResizing} />
       {paletteOpen && (

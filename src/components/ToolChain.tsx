@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import ThinkingCard from "./ThinkingCard";
+import { ErrorInline } from "./StateViews";
 import type { ChainItem, ToolKind, ToolRow, ToolRowState } from "@/lib/tool-chain";
 
 /**
@@ -95,7 +96,11 @@ function ToolRowView({ row, runLive }: { row: ToolRow; runLive: boolean }) {
         <StatusDot state={state} />
         <span className="tool-chain__name">{row.name}</span>
         {row.args ? <span className="tool-chain__args">{row.args}</span> : null}
-        <span className="tool-chain__state">{label}</span>
+        {state === "error" ? (
+          <ErrorInline error={row.detail} />
+        ) : (
+          <span className="tool-chain__state">{label}</span>
+        )}
         {expandable ? <Glyph name="chevron_right" className="tool-chain__chevron" /> : null}
       </button>
       <div className="tool-chain__panel" aria-hidden={!expandable || !open}>

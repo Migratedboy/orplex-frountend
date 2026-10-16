@@ -20,8 +20,11 @@ function buildPrismaClient() {
   // Fail fast: a localhost DB URL can never work on a cloud host — it means
   // laptop dev values leaked into production env (Vercel dashboard). Crash
   // the boot loudly instead of serving 500s on every DB call.
+  // Skipped during `next build` (NEXT_PHASE): static collection evaluates
+  // modules with build-time env; the running server enforces on boot.
   if (
     process.env.NODE_ENV === "production" &&
+    !String(process.env.NEXT_PHASE || "").includes("build") &&
     DATABASE_URL &&
     /localhost|127\.0\.0\.1/.test(DATABASE_URL)
   ) {

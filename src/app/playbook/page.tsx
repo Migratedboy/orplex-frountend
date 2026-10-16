@@ -16,12 +16,7 @@ interface PlaybookEntry {
   updatedAt: string;
 }
 
-const PATTERN_COLORS: Record<string, string> = {
-  "file-layout": "bg-blue-500/20 text-blue-300",
-  "typecheck-fix": "bg-green-500/20 text-green-300",
-  stack: "bg-purple-500/20 text-purple-300",
-  skill: "bg-yellow-500/20 text-yellow-300",
-};
+const PATTERN_CLASS = "pb-tag";
 
 export default function PlaybookPage() {
   const [entries, setEntries] = useState<PlaybookEntry[]>([]);
@@ -125,158 +120,131 @@ export default function PlaybookPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64 text-gray-400">
+      <div className="pb-empty" style={{ paddingTop: 96 }}>
         Loading playbook…
       </div>
     );
   }
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Playbook</h1>
-        <span className="text-sm text-gray-400">{entries.length} entries</span>
-      </div>
-
-      {error && (
-        <div className="bg-red-900/40 border border-red-700 text-red-200 text-sm rounded-lg px-4 py-2">
-          {error}
+      <div className="pb-wrap">
+        <div className="pb-head">
+          <h1 className="pb-title">Playbook</h1>
+          <span className="pb-count">{entries.length} entries</span>
         </div>
-      )}
 
-      <div className="flex gap-2">
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && doSearch()}
-          placeholder="Search playbooks…"
-          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-        />
-        <button
-          onClick={doSearch}
-          disabled={loading}
-          aria-busy={loading}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
-        >
-          Search
-        </button>
-        {search && (
+        {error && <div className="pb-error">{error}</div>}
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && doSearch()}
+            placeholder="Search playbooks…"
+            className="pb-input"
+          />
           <button
-            onClick={() => { setSearch(""); load(); }}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+            onClick={doSearch}
+            disabled={loading}
+            aria-busy={loading}
+            className="pb-btn pb-btn--primary"
           >
-            Clear
+            Search
           </button>
-        )}
-      </div>
-
-      {entries.length === 0 ? (
-        <div className="text-center text-gray-500 py-12">
-          No playbook entries yet. Complete a verified task to derive learnings.
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {entries.map((entry) => (
-            <div
-              key={entry.id}
-              className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 space-y-2"
+          {search && (
+            <button
+              onClick={() => { setSearch(""); load(); }}
+              className="pb-btn"
             >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full ${
-                        PATTERN_COLORS[entry.pattern] || "bg-gray-600 text-gray-300"
-                      }`}
-                    >
-                      {entry.pattern}
-                    </span>
-                    <span className="text-xs text-gray-500">
-                      {Math.round(entry.confidence * 100)}% confidence
-                    </span>
-                    {entry.useCount > 1 && (
-                      <span className="text-xs text-gray-500">
-                        used {entry.useCount}×
-                      </span>
+              Clear
+            </button>
+          )}
+        </div>
+
+        {entries.length === 0 ? (
+          <div className="pb-empty">
+            No playbook entries yet. Complete a verified task to derive learnings.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {entries.map((entry) => (
+              <div key={entry.id} className="pb-card">
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <span className={PATTERN_CLASS}>{entry.pattern}</span>
+                      <span className="pb-meta">{Math.round(entry.confidence * 100)}% confidence</span>
+                      {entry.useCount > 1 && (
+                        <span className="pb-meta">used {entry.useCount}×</span>
+                      )}
+                      {entry.pinned && <span className="pb-meta">📌 pinned</span>}
+                    </div>
+                    {editing === entry.id ? (
+                      <textarea
+                        value={editContent}
+                        onChange={(e) => setEditContent(e.target.value)}
+                        className="pb-textarea"
+                        rows={3}
+                      />
+                    ) : (
+                      <p className="pb-body">{entry.content}</p>
                     )}
-                    {entry.pinned && (
-                      <span className="text-xs text-yellow-400">📌 pinned</span>
+                    {entry.tags.length > 0 && (
+                      <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                        {entry.tags.map((t, i) => (
+                          <span key={`${t}-${i}`} className="pb-chip">{t}</span>
+                        ))}
+                      </div>
                     )}
                   </div>
-                  {editing === entry.id ? (
-                    <textarea
-                      value={editContent}
-                      onChange={(e) => setEditContent(e.target.value)}
-                      className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
-                      rows={3}
-                    />
-                  ) : (
-                    <p className="text-gray-200 text-sm">{entry.content}</p>
-                  )}
-                  {entry.tags.length > 0 && (
-                    <div className="flex gap-1 mt-1">
-                      {entry.tags.map((t, i) => (
-                        <span
-                          key={`${t}-${i}`}
-                          className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded"
+                  <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                    {editing === entry.id ? (
+                      <>
+                        <button
+                          onClick={() => saveEdit(entry.id)}
+                          disabled={busy === entry.id}
+                          className="pb-btn pb-btn--primary"
                         >
-                          {t}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="flex gap-1 shrink-0">
-                  {editing === entry.id ? (
-                    <>
-                      <button
-                        onClick={() => saveEdit(entry.id)}
-                        disabled={busy === entry.id}
-                        className="text-xs px-2 py-1 bg-green-600 hover:bg-green-500 text-white rounded transition-colors"
-                      >
-                        Save
-                      </button>
-                      <button
-                        onClick={() => setEditing(null)}
-                        className="text-xs px-2 py-1 bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
-                      >
-                        Cancel
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        onClick={() => {
-                          setEditing(entry.id);
-                          setEditContent(entry.content);
-                        }}
-                        className="text-xs px-2 py-1 bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => togglePin(entry.id, entry.pinned)}
-                        disabled={busy === entry.id}
-                        className="text-xs px-2 py-1 bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
-                      >
-                        {entry.pinned ? "Unpin" : "Pin"}
-                      </button>
-                      <button
-                        onClick={() => remove(entry.id)}
-                        disabled={busy === entry.id}
-                        className="text-xs px-2 py-1 bg-red-600/80 hover:bg-red-500 text-white rounded transition-colors"
-                      >
-                        Delete
-                      </button>
-                    </>
-                  )}
+                          Save
+                        </button>
+                        <button onClick={() => setEditing(null)} className="pb-btn">
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => {
+                            setEditing(entry.id);
+                            setEditContent(entry.content);
+                          }}
+                          className="pb-btn"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => togglePin(entry.id, entry.pinned)}
+                          disabled={busy === entry.id}
+                          className="pb-btn"
+                        >
+                          {entry.pinned ? "Unpin" : "Pin"}
+                        </button>
+                        <button
+                          onClick={() => remove(entry.id)}
+                          disabled={busy === entry.id}
+                          className="pb-btn pb-btn--danger"
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+            ))}
+          </div>
+        )}
+      </div>
+    );
 }

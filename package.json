@@ -11,7 +11,7 @@
     "dev": "electron .",
     "dev:ui": "next dev -p 5000",
     "prebuild": "node scripts/fetch-fonts.mjs",
-    "build": "next build",
+    "build": "next build && node scripts/prepare-standalone.mjs",
     "start": "npm run electron:build:main && electron .",
     "electron:dev": "npm run dev",
     "electron:start": "npm run start",
@@ -56,6 +56,8 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.3",
     "@types/jest": "^30.0.0",
     "@types/node": "^20.12.0",
     "@types/nodemailer": "^8.0.2",
@@ -70,6 +72,7 @@
     "eslint": "^9.0.0",
     "eslint-config-next": "^16.3.3",
     "jest": "^30.5.0",
+    "jest-environment-jsdom": "^30.5.2",
     "playwright": "^1.62.1",
     "postcss": "^8.4.0",
     "prisma": "^5.22.0",
@@ -98,26 +101,18 @@
     },
     "files": [
       "electron-dist/**/*",
+      "electron/app-config.json",
       "electron/assets/icon.ico",
       "electron/assets/icon.png",
       "electron/assets/icon32.png",
       "electron/assets/tray.png",
       "electron/assets/icon.icns",
       ".next/standalone/**/*",
-      ".next/static/**/*",
-      "public/**/*",
+      "!node_modules/**/*",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "node_modules/next/dist",
-        "to": "app/node_modules/next/dist"
-      },
-      {
-        "from": "node_modules/next/package.json",
-        "to": "app/node_modules/next/package.json"
-      }
-    ],
+    "npmRebuild": false,
+    "extraResources": [],
     "win": {
       "target": "nsis",
       "icon": "electron/assets/icon.ico"

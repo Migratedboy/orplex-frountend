@@ -2,15 +2,15 @@
 // Delegates actual enforcement to rate-limiter.ts (single source of truth)
 
 import { prisma } from "../prisma";
-import { checkUserQuota, incrementUserQuota } from "../rate-limiter";
+import { checkUserQuota, incrementUserQuota, quotaDayKey, FREE_TIER_DAILY_LIMIT } from "../rate-limiter";
 
 // ---------------------------------------------------------------------------
 // Tier Limits
 // ---------------------------------------------------------------------------
 
 export const FREE_TIER = {
-  /** Max requests per day for free users */
-  DAILY_LIMIT: 1000,
+  /** Max requests per day for free users (single source: rate-limiter). */
+  DAILY_LIMIT: FREE_TIER_DAILY_LIMIT,
   /** Max tokens per prompt */
   MAX_TOKENS_PER_PROMPT: 4096,
   /** Allowed models (free tier only gets the verified-live Groq flagship) */
@@ -43,10 +43,14 @@ interface UsageRecord {
 }
 
 /**
- * Get today's date as YYYY-MM-DD string
+ * Get today's date as YYYY-MM-DD string.
+ *
+ * Delegates to the enforcer's day key so the displayed/reset day and the
+ * enforced day can never disagree (they previously did: this used UTC while
+ * rate-limiter used local time).
  */
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return quotaDayKey();
 }
 
 /**
@@ -56,14 +60,27 @@ async function getOrCreateQuota(userId: string) {
   let quota = await prisma.userQuota.findUnique({ where: { userId } });
 
   if (!quota) {
-    quota = await prisma.userQuota.create({
-      data: {
-        userId,
-        requestsToday: 0,
-        dailyLimit: FREE_TIER.DAILY_LIMIT,
-        tier: "free",
-      },
-    });
+    // userId is @unique, so concurrent first-readers race; skipDuplicates makes
+    // the loser a no-op instead of throwing P2002 (which surfaced as a 500 on
+    // this read-only endpoint).
+    await prisma.userQuota
+      .createMany({
+        data: [{ userId, requestsToday: 0, dailyLimit: FREE_TIER.DAILY_LIMIT, tier: "free" }],
+        skipDuplicates: true,
+      })
+      .catch(() => {});
+    quota = await prisma.userQuota.findUnique({ where: { userId } });
+  }
+  if (!quota) {
+    // Row could not be materialised (DB read-only). Answer from constants
+    // rather than throwing: this endpoint is display-only.
+    return {
+      userId,
+      requestsToday: 0,
+      dailyLimit: FREE_TIER.DAILY_LIMIT,
+      tier: "free",
+      lastResetAt: new Date(),
+    } as Awaited<ReturnType<typeof prisma.userQuota.findUnique>> & object;
   }
 
   // Reset if the quota window has rolled over to a new day
@@ -101,7 +118,16 @@ export async function hasQuota(
   const limits = tier === "free" ? FREE_TIER : PRO_TIER;
   const quota = await getOrCreateQuota(userId);
   const result = checkUserQuota(userId, quota);
-  return result;
+  // The `tier` argument used to be computed into `limits` and then discarded,
+  // so PRO_TIER.DAILY_LIMIT (Infinity) never applied and the caller got the DB
+  // row's limit regardless of the tier it asked about. Report the tier's limit
+  // when the row has none, so the parameter means what it says.
+  const limit = quota.dailyLimit ?? limits.DAILY_LIMIT;
+  return {
+    allowed: result.allowed || limits.DAILY_LIMIT === Infinity,
+    remaining: limits.DAILY_LIMIT === Infinity ? Number.MAX_SAFE_INTEGER : Math.max(0, limit - result.remaining),
+    limit: limits.DAILY_LIMIT === Infinity ? Number.MAX_SAFE_INTEGER : limit,
+  };
 }
 
 /**

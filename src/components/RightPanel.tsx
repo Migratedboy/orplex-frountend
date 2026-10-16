@@ -6,6 +6,8 @@ import { useBackgroundChat } from "@/hooks/useBackgroundChat";
 import { useScratchpad } from "@/hooks/useScratchpad";
 import DiffView from "./DiffView";
 import { apiFetch } from "@/lib/api-base";
+import { ErrorView } from "./StateViews";
+import { QueuePanelSkeleton, FilesPanelSkeleton, ChangesPanelSkeleton } from "./PanelSkeletons";
 
 type Tab = "queue" | "changes" | "files" | "preview" | "terminal" | "scratch";
 
@@ -19,22 +21,13 @@ class TabErrorBoundary extends Component<{ children: ReactNode; tab: string }, {
   }
   render() {
     if (this.state.error) {
-      const showStack = process.env.NODE_ENV !== "production";
       return (
-        <div className="rp-empty" style={{ padding: 16 }}>
-          <div style={{ color: '#ef4444', marginBottom: 8, fontWeight: 600 }}><span className="ms">warning</span> Tab error</div>
-          <div style={{ fontSize: 12, color: '#666', marginBottom: 8, wordBreak: 'break-word' }}>Something went wrong in this tab. Try again.</div>
-          {showStack && this.state.errorInfo && (
-            <details style={{ fontSize: 11, color: '#999', marginBottom: 8 }}>
-              <summary style={{ cursor: 'pointer' }}>Stack trace</summary>
-              <pre style={{ marginTop: 4, whiteSpace: 'pre-wrap', fontSize: 10 }}>{this.state.errorInfo}</pre>
-            </details>
-          )}
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={() => this.setState({ error: null, errorInfo: null })} style={{ color: '#a04100', background: 'none', border: '1px solid #a04100', borderRadius: 4, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}>Retry</button>
-            <button onClick={() => { navigator.clipboard?.writeText(`${this.state.error}\n${this.state.errorInfo || ''}`); }} style={{ color: '#666', background: 'none', border: '1px solid #ddd', borderRadius: 4, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}>Copy error</button>
-          </div>
-        </div>
+        <ErrorView
+          error={this.state.error}
+          title="Tab error"
+          retry={() => this.setState({ error: null, errorInfo: null })}
+          className="rp-empty"
+        />
       );
     }
     return this.props.children;
@@ -51,6 +44,13 @@ interface RightPanelProps {
 // === Queue Tab ===
 function QueueTab() {
   const { task } = useBackgroundChat();
+  // Skeleton only while the first read is in flight. useBackgroundChat starts
+  // with task === undefined, which is indistinguishable from "no task" — showing
+  // the skeleton on a genuine no-task state would leave it spinning forever, so
+  // the skeleton is confined to the very first paint.
+  const firstPaint = useRef(true);
+  useEffect(() => { firstPaint.current = false; }, []);
+  if (!task && firstPaint.current) return <QueuePanelSkeleton />;
   if (!task) return <div className="rp-empty">No active tasks</div>;
 
   const statusColor = task.status === "done" ? "#22c55e" : task.status === "error" ? "#ef4444" : "#f97316";
@@ -81,6 +81,10 @@ function ChangesTab() {
   const [changes, setChanges] = useState<ChangeItem[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [appliedNote, setAppliedNote] = useState<string | null>(null);
+  // Distinguishes "still fetching the first page" from "fetched, and there is
+  // genuinely nothing yet" — without it the empty state flashes before the
+  // first poll resolves.
+  const [changesLoaded, setChangesLoaded] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -90,11 +94,21 @@ function ChangesTab() {
         const data = await res.json();
         if (alive && data.changes) setChanges(data.changes);
       } catch {}
+      finally {
+        // Must be in `finally`: a failed first poll would otherwise leave the
+        // skeleton on screen forever instead of falling through to the empty
+        // state.
+        if (alive) setChangesLoaded(true);
+      }
     };
     poll();
     const interval = setInterval(poll, 3000); // poll every 3s
     return () => { alive = false; clearInterval(interval); };
   }, []);
+
+  if (!changesLoaded) {
+    return <ChangesPanelSkeleton />;
+  }
 
   if (changes.length === 0) {
     return <div className="rp-empty">No file changes yet — changes appear here as the agent writes files</div>;
@@ -173,6 +187,13 @@ function FilesTab() {
   );
 
   const noFolder = !directoryName && fileTree.length === 0;
+
+  // A folder can be mapped while its tree is still streaming in. Render the
+  // skeleton until the first non-empty tree lands so the panel doesn't show
+  // "No files found" for a second and then snap to the real listing.
+  const [treeSettled, setTreeSettled] = useState(false);
+  useEffect(() => { if (fileTree.length > 0) setTreeSettled(true); }, [fileTree.length]);
+  if (!noFolder && !treeSettled) return <FilesPanelSkeleton />;
 
   return (
     <div className="rp-files">
@@ -504,17 +525,27 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
   // Keep the native view positioned over the viewport placeholder.
   useEffect(() => {
     if (!native) return;
+    // Coalesce to one sync per frame. The listener was a raw capture-phase
+    // window handler, so scrolling the message list fired it at the display
+    // refresh rate — and each call did a forced getBoundingClientRect() plus
+    // an IPC round-trip to the Electron main process. That is up to ~120
+    // setBounds messages per second.
+    let raf = 0;
     const sync = () => {
-      const el = viewportRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const mainId = nativeMapRef.current.get(activeIdRef.current);
-      if (mainId === undefined) return;
-      void native.setBounds(mainId, {
-        x: Math.round(rect.left),
-        y: Math.round(rect.top),
-        width: Math.round(rect.width),
-        height: Math.round(rect.height),
+      if (raf) return; // already scheduled this frame
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const el = viewportRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const mainId = nativeMapRef.current.get(activeIdRef.current);
+        if (mainId === undefined) return;
+        void native.setBounds(mainId, {
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        });
       });
     };
     sync();
@@ -528,6 +559,9 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
       window.removeEventListener("scroll", sync, true);
       window.removeEventListener("resize", sync);
       clearInterval(iv);
+      // Cancel a frame that was scheduled but never ran, so it can't fire
+      // setBounds against an unmounted native view.
+      if (raf) cancelAnimationFrame(raf);
     };
   }, [native]);
 

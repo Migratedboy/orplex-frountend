@@ -79,12 +79,21 @@ export function VirtualList<T>({
     offsetsRef.current = offsets;
   }, [items.length, estimatedHeight]);
 
-  // Measure a rendered item's height
+  // Measure a rendered item's height.
+  //
+  // Cache reads are cheap; getBoundingClientRect() is a FORCED synchronous
+  // layout, and the inline ref callback below created a new closure every
+  // render, so React detached + re-attached it on every commit and every
+  // visible row re-measured on every frame (~160 forced reflows/second while
+  // streaming). Now the callback is stable per index.
   const measureItem = useCallback(
     (index: number, el: HTMLDivElement | null) => {
       if (!el) return;
-      const measured = el.getBoundingClientRect().height;
+      // Cheap guard BEFORE the forced layout: if the cached height is within a
+      // pixel of last frame's, skip the measurement entirely.
       const cached = heightsRef.current.get(index);
+      if (cached !== undefined && Math.abs(cached - el.offsetHeight) < 1 && el.offsetHeight > 0) return;
+      const measured = el.getBoundingClientRect().height;
       if (cached !== measured) {
         heightsRef.current.set(index, measured);
         // Invalidate offsets from this index onward
@@ -94,6 +103,26 @@ export function VirtualList<T>({
     },
     [recomputeOffsets]
   );
+
+  // One stable ref callback per index, memoised across renders. This is the
+  // whole point: an inline arrow is a NEW function every render, so React calls
+  // the old ref with null and the new one with the element on EVERY commit.
+  const measureRefCache = useRef(new Map<number, (el: HTMLDivElement | null) => void>());
+  const measureRef = useCallback(
+    (index: number) => {
+      const cache = measureRefCache.current;
+      let fn = cache.get(index);
+      if (!fn) {
+        fn = (el: HTMLDivElement | null) => measureItem(index, el);
+        cache.set(index, fn);
+      }
+      return fn;
+    },
+    [measureItem]
+  );
+  // Drop cached callbacks for rows that scrolled away so the map cannot grow
+  // without bound across a long conversation. (Declared here; the effect that
+  // uses it needs startIndex/endIndex, so it lives below their computation.)
 
   // Recompute on items change
   useEffect(() => {
@@ -122,6 +151,15 @@ export function VirtualList<T>({
   }
 
   const visibleItems = items.slice(startIndex, endIndex);
+
+  // Prune the per-index ref cache to the rendered window so it cannot grow
+  // without bound across a long conversation.
+  useEffect(() => {
+    const cache = measureRefCache.current;
+    for (const k of Array.from(cache.keys())) {
+      if (k < startIndex || k >= endIndex + 1) cache.delete(k);
+    }
+  }, [startIndex, endIndex]);
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
@@ -159,10 +197,14 @@ export function VirtualList<T>({
           const actualIndex = startIndex + i;
           const key = getItemKey ? getItemKey(item, actualIndex) : actualIndex;
           const offset = getOffset(actualIndex);
+          // Stable per-index ref. An inline arrow made React detach + re-attach
+          // the ref on every commit, so every visible row ran a forced layout
+          // every frame.
+          const setRef = measureRef(actualIndex);
           return (
             <div
               key={key}
-              ref={(el) => measureItem(actualIndex, el)}
+              ref={setRef}
               style={{
                 position: "absolute",
                 top: offset,

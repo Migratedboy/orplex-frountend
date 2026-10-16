@@ -5,6 +5,25 @@ const nextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   compress: true,
+  // Self-contained server bundle. This is what the PACKAGED desktop app runs
+  // (.next/standalone/server.js): electron-builder then ships only the traced
+  // production deps instead of the whole monorepo node_modules tree, which is
+  // both far smaller and dramatically faster to package.
+  output: "standalone",
+  // Native/heavy deps must stay OUT of the traced bundle: they ship their own
+  // binaries and are loaded lazily at runtime (or not at all in the desktop
+  // UI, which proxies /api to the cloud backend).
+  serverExternalPackages: [
+    "@prisma/client",
+    "prisma",
+    "@prisma/engines",
+    ".prisma",
+    "playwright",
+    "playwright-core",
+    "@huggingface/transformers",
+    "better-sqlite3",
+    "electron",
+  ],
   // The bottom-corner "dev" badge overlaps the composer area in screenshots —
   // errors are still surfaced by the overlay/console, so hide the badge.
   devIndicators: false,

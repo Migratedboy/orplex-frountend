@@ -173,9 +173,9 @@ export default function SignInPage() {
   const hasGitHub = !!availableProviders["github"] || !!desktopAuth;
 
   return (
-    <div className="bg-[#f9f9fa] min-h-screen flex font-['Fraunces',serif] text-[#1a1c1d] antialiased">
+    <div className="bg-[var(--canvas)] min-h-screen flex font-['Fraunces',serif] text-[var(--text-primary)] antialiased">
       {/* Left Panel - Branding (desktop only) */}
-      <div className="hidden md:flex md:w-1/2 relative bg-[#dadadb] items-end justify-start p-[64px]">
+      <div className="hidden md:flex md:w-1/2 relative bg-[var(--border)] items-end justify-start p-[64px]">
         {/* Background gradient overlay */}
         <div className="absolute inset-0 z-0">
           <div
@@ -185,7 +185,7 @@ export default function SignInPage() {
                 "url('https://lh3.googleusercontent.com/aida-public/AB6AXuCuoiHm68KaOzmGbXR5YLCW0rpSdPCm5oP6Lx7Sp76nUKt7sWu91_rH4CfdIPyus8i7pgqv0cHBRghSBVv3sMUU-Psh64f1Dzb6yDV44EjbghViIGBbp2AMrROb5cb5XVJ2X5FBosPNZZWw2ThhvavA0dkhpAng1ZyoXcjpLXQGVUFX9mJnFd68Y_cuT2ETRVpsoydWRftqHbgpxDZYxoasMGJcgOxokFyuba3fUGB3VEdiOs_teYBV')",
             }}
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-[#dadadb] via-transparent to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-t from-[var(--border)] via-transparent to-transparent" />
         </div>
         <div className="relative z-10 w-full max-w-md">
           <div className="mb-[24px]">
@@ -194,11 +194,11 @@ export default function SignInPage() {
               <img src="/logo.svg" alt="Orplex Code" className="w-full h-full object-cover" />
             </div>
           </div>
-          <h1 className="text-[64px] font-bold leading-[1.1] tracking-[-0.03em] text-[#1a1c1d] mb-[4px]">
+          <h1 className="text-[64px] font-bold leading-[1.1] tracking-[-0.03em] text-[var(--text-primary)] mb-[4px]">
             ORPLEX
           </h1>
           <p
-            className="text-[10px] font-bold text-[#ff6b00] tracking-[0.15em] uppercase border-l-4 border-[#ff6b00] pl-[4px]"
+            className="text-[10px] font-bold text-[var(--brand-vivid)] tracking-[0.15em] uppercase border-l-4 border-[var(--brand-vivid)] pl-[4px]"
             style={{ lineHeight: "1" }}
           >
             ARCHITECTING TOMORROW.
@@ -209,34 +209,34 @@ export default function SignInPage() {
       </div>
 
       {/* Right Panel - Auth Form */}
-      <div className="w-full md:w-1/2 flex items-center justify-center p-[32px] md:p-[64px] bg-white relative z-20">
+      <div className="w-full md:w-1/2 flex items-center justify-center p-[32px] md:p-[64px] bg-[var(--surface)] relative z-20">
         <div className="w-full max-w-[384px] flex flex-col gap-[32px]">
           {/* Mobile Logo */}
           <div className="md:hidden flex flex-col items-center gap-[4px] text-center">
             <div className="h-20 w-20 rounded-lg overflow-hidden mb-[4px]">
               <img src="/logo.svg" alt="Orplex Code" className="w-full h-full object-cover" />
             </div>
-            <h1 className="text-[24px] font-semibold leading-[1.2] text-[#1a1c1d]">
+            <h1 className="text-[24px] font-semibold leading-[1.2] text-[var(--text-primary)]">
               Authenticate Sequence
             </h1>
-            <p className="text-[#5f5e5e] text-[14px] leading-[1.5] font-['JetBrains_Mono',monospace]">
+            <p className="text-[var(--text-secondary)] text-[14px] leading-[1.5] font-['JetBrains_Mono',monospace]">
               Secure access to Orplex core.
             </p>
           </div>
 
           {/* Desktop Header */}
           <div className="hidden md:block">
-            <h2 className="text-[32px] font-semibold leading-[1.2] text-[#1a1c1d]">
+            <h2 className="text-[32px] font-semibold leading-[1.2] text-[var(--text-primary)]">
               Authenticate Sequence
             </h2>
-            <p className="text-[14px] leading-[1.5] text-[#5a4136] mt-[4px] font-['JetBrains_Mono',monospace]">
+            <p className="text-[14px] leading-[1.5] text-[var(--text-secondary)] mt-[4px] font-['JetBrains_Mono',monospace]">
               Secure access to Orplex Code core.
             </p>
           </div>
 
           {/* Error Message */}
           {error && (
-            <div className="bg-[#ffdad6] border border-[#ba1a1a] text-[#93000a] px-4 py-3 rounded text-[14px] font-['JetBrains_Mono',monospace]">
+            <div className="bg-[var(--danger-soft-surface)] border border-[var(--danger)] text-[var(--danger)] px-4 py-3 rounded text-[14px] font-['JetBrains_Mono',monospace]">
               {error}
             </div>
           )}
@@ -244,8 +244,8 @@ export default function SignInPage() {
           {/* Desktop sign-in status — OAuth runs in the system browser and
               deep-links back; this tells the user where to look. */}
           {desktopAuth && (
-            <div className="bg-[#FFF7ED] border border-[#ff6b00]/30 rounded-lg p-3">
-              <p className="text-[11px] text-[#a04100] font-['JetBrains_Mono',monospace] leading-[1.5]">
+            <div className="bg-[var(--well)] border border-[color:var(--brand-vivid)] rounded-lg p-3">
+              <p className="text-[11px] text-[var(--brand)] font-['JetBrains_Mono',monospace] leading-[1.5]">
                 {awaitingBrowser
                   ? "Finish signing in inside your browser — Orplex Code returns you here automatically."
                   : "Sign-in opens in your browser and returns you to the app automatically."}
@@ -256,7 +256,7 @@ export default function SignInPage() {
                     setAwaitingBrowser(false);
                     setLoading(false);
                   }}
-                  className="mt-2 text-[10px] font-bold text-[#a04100] underline hover:text-[#ff6b00] font-['JetBrains_Mono',monospace]"
+                  className="mt-2 text-[10px] font-bold text-[var(--brand)] underline hover:text-[var(--brand-vivid)] font-['JetBrains_Mono',monospace]"
                 >
                   Cancel — I closed the browser window
                 </button>
@@ -265,7 +265,7 @@ export default function SignInPage() {
                 <input
                   id="desktop-code-input"
                   placeholder="Or paste the code from the browser here"
-                  className="flex-1 min-w-0 text-[11px] font-['JetBrains_Mono',monospace] border border-[#ff6b00]/30 rounded px-2 py-1.5 bg-white text-[#1a1c1d] placeholder:text-[#8a8a8a]"
+                  className="flex-1 min-w-0 text-[11px] font-['JetBrains_Mono',monospace] border border-[color:var(--brand-vivid)] rounded px-2 py-1.5 bg-[var(--surface)] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)]"
                 />
                 <button
                   onClick={() => {
@@ -279,7 +279,7 @@ export default function SignInPage() {
                     setError("");
                     void exchangeDesktopCode({ code });
                   }}
-                  className="text-[11px] font-bold text-white bg-[#ff6b00] hover:bg-[#e55f00] rounded px-3 py-1.5 font-['JetBrains_Mono',monospace]"
+                  className="text-[11px] font-bold text-white bg-[var(--brand-vivid)] hover:bg-[var(--brand-vivid)] rounded px-3 py-1.5 font-['JetBrains_Mono',monospace]"
                 >
                   Use code
                 </button>
@@ -288,8 +288,8 @@ export default function SignInPage() {
           )}
 
           {/* Security Notice */}
-          <div className="bg-[#FFF7ED] border border-[#ff6b00]/30 rounded-lg p-4">
-            <p className="text-[12px] text-[#a04100] font-['JetBrains_Mono',monospace]">
+          <div className="bg-[var(--well)] border border-[color:var(--brand-vivid)] rounded-lg p-4">
+            <p className="text-[12px] text-[var(--brand)] font-['JetBrains_Mono',monospace]">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{verticalAlign: "middle", marginRight: "4px"}}><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0110 0v4" /></svg> <strong>OAuth Only</strong> — For your security, authentication is handled exclusively through trusted providers (Google, GitHub). No passwords are stored.
             </p>
           </div>
@@ -300,7 +300,7 @@ export default function SignInPage() {
               <button
                 onClick={() => handleOAuth("google")}
                 disabled={loading}
-                className="w-full bg-white border-2 border-[#E4E4E7] hover:border-[#ff6b00] hover:bg-[#FFF7ED] text-[#1a1c1d] text-[12px] font-bold font-['JetBrains_Mono',monospace] py-4 rounded-lg transition-colors flex items-center justify-center gap-3 disabled:opacity-50"
+                className="w-full bg-[var(--surface)] border-2 border-[var(--border)] hover:border-[var(--brand-vivid)] hover:bg-[var(--well)] text-[var(--text-primary)] text-[12px] font-bold font-['JetBrains_Mono',monospace] py-4 rounded-lg transition-colors flex items-center justify-center gap-3 disabled:opacity-50"
               >
                 <svg className="w-5 h-5" viewBox="0 0 24 24">
                   <path
@@ -328,7 +328,7 @@ export default function SignInPage() {
               <button
                 onClick={() => handleOAuth("github")}
                 disabled={loading}
-                className="w-full bg-[#24292f] hover:bg-[#1a1e22] text-white text-[12px] font-bold font-['JetBrains_Mono',monospace] py-4 rounded-lg transition-colors flex items-center justify-center gap-3 disabled:opacity-50"
+                className="w-full bg-[#24292f] hover:bg-[#111] text-white text-[12px] font-bold font-['JetBrains_Mono',monospace] py-4 rounded-lg transition-colors flex items-center justify-center gap-3 disabled:opacity-50"
               >
                 <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
@@ -340,24 +340,24 @@ export default function SignInPage() {
 
           {/* Dev-only bypass — rendered only when the dev session endpoint is enabled */}
           {devEnabled && (
-            <div className="border-2 border-dashed border-[#ff6b00]/40 rounded-lg p-4 bg-[#FFFBFF]">
-              <p className="text-[10px] font-bold text-[#a04100] tracking-[0.12em] uppercase font-['JetBrains_Mono',monospace] mb-2">
+            <div className="border-2 border-dashed border-[var(--brand-vivid)]/40 rounded-lg p-4 bg-[var(--surface)]">
+              <p className="text-[10px] font-bold text-[var(--brand)] tracking-[0.12em] uppercase font-['JetBrains_Mono',monospace] mb-2">
                 Development Only
               </p>
               {devNotice === "ended" && (
-                <p className="text-[11px] font-['JetBrains_Mono',monospace] text-[#1a7f37] bg-[#e6f4ea] border border-[#1a7f37]/30 rounded px-2 py-1.5 mb-2 leading-[1.4]">
+                <p className="text-[11px] font-['JetBrains_Mono',monospace] text-[var(--success)] bg-[var(--success-soft)] border border-[color:var(--success)]/30 rounded px-2 py-1.5 mb-2 leading-[1.4]">
                   ✓ Dev session ended — you can now sign in with a different identity.
                 </p>
               )}
               {devNotice === "none" && (
-                <p className="text-[11px] font-['JetBrains_Mono',monospace] text-[#8a8a8a] bg-[#f4f4f5] border border-[#d4d4d8] rounded px-2 py-1.5 mb-2 leading-[1.4]">
+                <p className="text-[11px] font-['JetBrains_Mono',monospace] text-[var(--text-tertiary)] bg-[var(--well)] border border-[var(--text-primary)] rounded px-2 py-1.5 mb-2 leading-[1.4]">
                   No active dev session — already signed out.
                 </p>
               )}
               <button
                 onClick={handleDevLogin}
                 disabled={loading}
-                className="w-full border-2 border-[#ff6b00] bg-[#ff6b00] hover:bg-[#e55f00] text-white text-[12px] font-bold font-['JetBrains_Mono',monospace] py-3 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                className="w-full border-2 border-[var(--brand-vivid)] bg-[var(--brand-vivid)] hover:bg-[var(--brand-vivid)] text-white text-[12px] font-bold font-['JetBrains_Mono',monospace] py-3 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="16 18 22 12 16 6" />
@@ -369,7 +369,7 @@ export default function SignInPage() {
                 onClick={handleDevLogout}
                 disabled={loading}
                 title="Clears the local dev session cookie so you can test the OAuth sign-in flow"
-                className="w-full mt-2 border-2 border-[#a04100]/40 hover:border-[#a04100] text-[#a04100] hover:bg-[#FFF7ED] text-[12px] font-bold font-['JetBrains_Mono',monospace] py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                className="w-full mt-2 border-2 border-[var(--brand)]/40 hover:border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--well)] text-[12px] font-bold font-['JetBrains_Mono',monospace] py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -378,20 +378,20 @@ export default function SignInPage() {
                 </svg>
                 {loading ? "Ending session…" : "End dev session"}
               </button>
-              <p className="text-[10px] text-[#8a8a8a] font-['JetBrains_Mono',monospace] mt-2 leading-[1.5]">
+              <p className="text-[10px] text-[var(--text-tertiary)] font-['JetBrains_Mono',monospace] mt-2 leading-[1.5]">
                 Local test session — bypasses OAuth. Log out to test the real sign-in flow. Never shown in production.
               </p>
             </div>
           )}
 
           {/* Footer */}
-          <p className="text-center text-[11px] text-[#5f5e5e] font-['JetBrains_Mono',monospace] mt-[16px]">
+          <p className="text-center text-[11px] text-[var(--text-secondary)] font-['JetBrains_Mono',monospace] mt-[16px]">
             By continuing, you agree to Orplex Code&apos;s{" "}
-            <a className="text-[#a04100] hover:text-[#dd8339] transition-colors" href="#">
+            <a className="text-[var(--brand)] hover:text-[var(--brand-vivid)] transition-colors" href="#">
               Terms
             </a>{" "}
             and{" "}
-            <a className="text-[#a04100] hover:text-[#dd8339] transition-colors" href="#">
+            <a className="text-[var(--brand)] hover:text-[var(--brand-vivid)] transition-colors" href="#">
               Privacy Policy
             </a>
           </p>

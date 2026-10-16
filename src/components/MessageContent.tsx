@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import MarkdownRenderer from "./MarkdownRenderer";
 import ThinkingCard from "./ThinkingCard";
 import ToolChain from "./ToolChain";
@@ -14,17 +14,21 @@ import { buildChainGroups } from "@/lib/tool-chain";
 const COLLAPSE_THRESHOLD = 150; // words
 
 function CollapsibleText({ content }: { content: string }) {
-  const wordCount = content.split(/\s+/).length;
+  // One split, not two. This ran `content.split(/\s+/)` twice per render (once
+  // for the count, once for the preview) — measured at 1.59ms on a 51KB
+  // message, ~10x the cost of the markdown parse it feeds, and it re-ran on
+  // every one of the 8 frames/sec the store notifies during streaming.
+  const words = useMemo(() => content.split(/\s+/), [content]);
+  const wordCount = words.length;
   const needsCollapse = wordCount > COLLAPSE_THRESHOLD;
   const [expanded, setExpanded] = useState(false);
+  // Unconditional: a hook after the early return below would be a
+  // rules-of-hooks violation.
+  const preview = useMemo(() => words.slice(0, 100).join(" "), [words]);
 
   if (!needsCollapse) {
     return <MarkdownRenderer content={content} />;
   }
-
-  // Show first ~100 words when collapsed
-  const words = content.split(/\s+/);
-  const preview = words.slice(0, 100).join(" ");
 
   return (
     <div className="collapsible-text">
@@ -97,7 +101,12 @@ export default function MessageContent({
   onRetry?: () => void;
   retrying?: boolean;
 }) {
-  const segments = parseContent(content);
+  // Parsed once per content change, not once per render. These ran on every
+  // one of the 8 store notifications per second while streaming.
+  const segments = useMemo(() => parseContent(content), [content]);
+  // Unconditional: the early returns below would make a later hook call
+  // conditional (rules-of-hooks violation).
+  const groups = useMemo(() => buildChainGroups(segments, isThinking), [segments, isThinking]);
 
   // If no segments but thinking is active, show empty thinking pill
   if (segments.length === 0) {
@@ -113,7 +122,7 @@ export default function MessageContent({
 
   // Check if any thinking segment exists
   const hasThinking = segments.some(s => s.type === "thinking");
-  const groups = buildChainGroups(segments, isThinking);
+
 
   return (
     <div className="message-content-mixed">

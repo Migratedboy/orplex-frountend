@@ -16,10 +16,15 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { getWorkspaceCwdForUser, resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import { parseToolCalls, parseBareJsonToolCalls } from "@/lib/tool-text";
-import { createLoopStreaks, trackToolTurn, buildLoopBreakDirective } from "@/lib/loop-detect";
+import {
+  createLoopStreaks,
+  trackToolTurn,
+  buildLoopBreakDirective,
+} from "@/lib/agent/contract";
 import { validateToolArgs } from "@/lib/agent/contract/tools";
 import { isCommandAllowed } from "@/lib/exec-guard";
-import { createProviderAdapter, createAdapterForProvider, type AIProviderAdapter, type NativeToolDef, type NativeToolCall } from "@/lib/ai-providers";
+import { createProviderAdapter, createAdapterForProvider, adapterModelId, type AIProviderAdapter, type NativeToolDef, type NativeToolCall } from "@/lib/ai-providers";
+import { resolveRunCredential } from "@/lib/byok-credentials";
 import { isRateLimitError, isTransientError } from "@/lib/retry";
 import { withVerifySlot, verifyPortForRun } from "./verify-gate";
 import { isClaimsPaused, isMemoryPressureHigh } from "@/lib/hardware";
@@ -30,7 +35,7 @@ import {
   accumulateDelta,
   type AutoCheckpointState,
 } from "../auto-checkpoint";
-import { projectMemoryBlock } from "@/lib/project-memory";
+import { projectMemoryBlock } from "@/lib/memory";
 import { loadUserSkills, renderSkillRoster, skillBody } from "@/lib/user-skills";
 import { recordRuntimeLog } from "@/lib/runtime-log";
 import { runtimeState } from "@/lib/runtime-state";
@@ -49,11 +54,13 @@ import { grepSearch, codeSearch } from "@/lib/grep-search";
 import {
   createScratchpad,
   seedScratchpad,
-  updateScratchpadSection,
+  update_scratchpad as updateScratchpadSection,
   renderScratchpadBlock,
   type ScratchpadState,
   type ScratchpadSection,
-} from "@/lib/scratchpad";
+  // Reached through the barrel, not the raw module: memory.ts is the single
+  // documented entry point for every memory write.
+} from "@/lib/memory";
 import type { VerifyResult } from "@/lib/browser-verification";
 import { loadToolHooks, evaluateDenyRules, matchesNotifyRules, type CompiledHooks } from "@/lib/tool-hooks";
 import { runUserHooks } from "@/lib/user-hooks";
@@ -64,9 +71,16 @@ import type { RuntimeArtifact } from "@/lib/agent/runtime/types";
 
 const POLL_INTERVAL_MS = 4000;
 const TURN_LIMIT = 60;
-const MAX_TOKENS = 8192;
-// Transcript budget for compaction — mirrors the worker's free-tier math.
-const MSG_BUDGET_TOKENS = 8000 - 400 - 2000 - 2500;
+// Transcript budget for compaction, used ONLY when a model's real context
+// window is unknown.
+//
+// This used to be a fixed 3100 tokens (an 8k Groq free-tier artifact: 8000
+// minus prompt/tool/scratchpad overhead). Applied unconditionally it summarized
+// away the context of a 200k-context paid model roughly every two turns —
+// and each compaction is an extra BILLED model call, so the paid lane both
+// lost the most context and paid the most per turn. The budget is now derived
+// from the resolved model's context window (see resolveTranscriptBudget).
+const FALLBACK_TRANSCRIPT_BUDGET_TOKENS = 3100;
 const APPROVAL_WAIT_TIMEOUT_MS = 10 * 60_000;
 const APPROVAL_POLL_MS = 2000;
 const TOOL_WHITELIST = new Set([
@@ -122,6 +136,39 @@ interface QueuedRun {
 // Weak models drop the XML wrapper and emit bare JSON (live-observed); the
 // text-protocol fallbacks stay, but native tool calling removes that whole
 // bug class on models that support it.
+
+/**
+ * Transcript budget for compaction, sized to the model that will serve the
+ * run rather than to a fixed free-tier constant.
+ *
+ * A 200k-context model must not have its history summarized away every couple
+ * of turns — and because compaction is itself a model call, the paid lane was
+ * paying for those summaries too. Small/free models keep the conservative
+ * fallback, which is exactly the case that number was derived from.
+ */
+function resolveTranscriptBudget(adapter: AIProviderAdapter): number {
+  const id = adapterModelId(adapter);
+  const known = id !== "(auto)" ? KNOWN_CONTEXT_WINDOWS.find(([re]) => re.test(id))?.[1] : undefined;
+  if (!known) return FALLBACK_TRANSCRIPT_BUDGET_TOKENS;
+  // Leave generous headroom: the live transcript is only part of the window
+  // (system prompt, tool schemas and the scratchpad consume the rest).
+  return Math.max(FALLBACK_TRANSCRIPT_BUDGET_TOKENS, Math.floor(known * 0.5));
+}
+
+/**
+ * Context windows for families the executor runs on. Deliberately keyed by
+ * SUBSTRING rather than exact id: these arrive namespaced (`openai/gpt-4o`,
+ * `qwen/…:free`) and an exact map would silently miss every one of them.
+ */
+const KNOWN_CONTEXT_WINDOWS: Array<[RegExp, number]> = [
+  [/(^|\/)(o1|o3|o4|gpt-5)/i, 200_000],
+  [/gpt-oss/i, 131_072],
+  [/gpt-4o|gpt-4\.1/i, 128_000],
+  [/claude/i, 200_000],
+  [/gemini/i, 1_000_000],
+  [/llama|qwen|mistral|mixtral|deepseek|command/i, 131_072],
+  [/nemotron/i, 131_072],
+];
 
 /** Lane adapter: legacy in-run defs → the shared builder's input (C5). */
 function toBuilderTool(t: McpToolDef): BuilderTool {
@@ -275,6 +322,20 @@ async function emit(runId: string, type: string, payload: Record<string, unknown
   } catch {}
 }
 
+/**
+ * read_file returns at most this many chars. Uncapped, a single read of a large
+ * log (the exact case the paged branch below exists for) materializes the whole
+ * file into the transcript and then into a request body — enough to OOM the
+ * executor on the target box. Matches the cap the browser lane already applies.
+ */
+const MAX_READ_CHARS = 200_000;
+
+/** Append an explicit marker so the model never reasons from a silent cut. */
+function truncateWithNotice(text: string, limit: number, label: string): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n\n[truncated — showing first ${limit.toLocaleString()} of ${text.length.toLocaleString()} chars${label ? ` (${label})` : ""}. Re-read with offset/limit for the rest.]`;
+}
+
 async function artifact(
   runId: string,
   kind: string,
@@ -285,7 +346,17 @@ async function artifact(
 ): Promise<void> {
   try {
     await prisma.agentArtifact.create({
-      data: { runId, kind, name, mediaType, content: content.slice(0, 200_000), ...(taskId ? { taskId } : {}) },
+      // Truncation is marked, not silent: a 300k unified diff cut mid-hunk
+      // leaves the Manager review drawer showing a patch that simply ends,
+      // with no indication anything is missing.
+      data: {
+        runId,
+        kind,
+        name,
+        mediaType,
+        content: truncateWithNotice(content, 200_000, kind),
+        ...(taskId ? { taskId } : {}),
+      },
     });
   } catch {}
 }
@@ -293,11 +364,29 @@ async function artifact(
 // ── Tool execution inside the worktree ────────────────────────────────────
 
 async function readLocalFile(root: string, rel: string): Promise<string> {
-  const { readFile } = await import("fs/promises");
+  const { readFile, stat } = await import("fs/promises");
   const { resolve, sep, isAbsolute } = await import("path");
   const p = isAbsolute(rel) ? resolve(rel) : resolve(root, rel);
   const rootR = resolve(root);
   if (p !== rootR && !p.startsWith(rootR + sep)) throw new Error("path escapes workspace");
+  // Cap BEFORE reading: the file may be far larger than the cap, and reading it
+  // whole is what takes the process down.
+  try {
+    const st = await stat(p);
+    if (st.size > MAX_READ_CHARS) {
+      const { open } = await import("fs/promises");
+      const handle = await open(p, "r");
+      try {
+        const buf = Buffer.alloc(MAX_READ_CHARS);
+        const { bytesRead } = await handle.read(buf, 0, MAX_READ_CHARS, 0);
+        return truncateWithNotice(buf.subarray(0, bytesRead).toString("utf8"), MAX_READ_CHARS, rel);
+      } finally {
+        await handle.close();
+      }
+    }
+  } catch {
+    // stat/open failed — fall through to a plain read and let its error surface.
+  }
   return readFile(p, "utf8");
 }
 
@@ -631,8 +720,15 @@ async function executeTool(
     if (!["plan", "hypotheses", "findings", "next"].includes(section)) {
       return `error: section must be one of: plan, hypotheses, findings, next.`;
     }
-    scratchpad.update(section as ScratchpadSection, content.slice(0, 2000));
-    return `recorded ${section} (${content.length} chars). It will be re-shown every turn.`;
+const kept = content.slice(0, 2000);
+        scratchpad.update(section as ScratchpadSection, kept);
+        // Report what was ACTUALLY kept. Claiming the full length while storing
+        // a 2000-char prefix meant the model believed it had banked findings
+        // that were then re-rendered out of existence every turn — and it
+        // reasoned from them in the meantime.
+        return kept.length < content.length
+          ? `recorded ${section} (${kept.length} of ${content.length} chars — only the first ${kept.length} are kept). Shorten it to keep it all.`
+          : `recorded ${section} (${kept.length} chars). It will be re-shown every turn.`;
   }
 
   // playbook_search — derived view over playbooks + workspace learnings.
@@ -810,7 +906,8 @@ async function executeTool(
   // agent/contract/browser.ts — shared with the interactive client worker.
   if (typeof name === "string" && name.startsWith("browser_")) {
     try {
-      const { browserOpOf, playwrightBackend, runBrowserTool } = await import("@/lib/agent/contract/browser");
+      const { browserOpOf, runBrowserTool } = await import("@/lib/agent/contract/browser");
+      const { playwrightBackend } = await import("@/lib/agent/contract/browser-server");
       if (!browserOpOf(name)) return `error: ${name} is not supported in server runs`;
       // Session fixation guard: the session key stays run-scoped — a
       // model-supplied sessionId must never escape this run's browser.
@@ -848,7 +945,7 @@ async function executeTool(
           { cwd: ctx.worktreeDir, timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true, env: { ...process.env } },
           (err, stdout, stderr) => {
             if (err && !stdout && !stderr) resolve(`error: ${err.message.slice(0, 300)}`);
-            else resolve([stdout, stderr].filter(Boolean).join("\n").slice(0, 8000) || "(no output)");
+            else resolve(truncateWithNotice([stdout, stderr].filter(Boolean).join("\n"), 8000, "combined stdout+stderr") || "(no output)");
           }
         );
       });
@@ -910,12 +1007,24 @@ export interface ExecutorResult {
 }
 
 export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
-  const adapter = createProviderAdapter(run.modelOverride);
+  // Resolve the RUN USER's own key before falling back to the platform env.
+  // This used to read process.env only, so a user who had paid for and
+  // configured a key in Settings got it honoured in chat and completely
+  // ignored here — their background runs silently executed on the platform's
+  // free shared key, against a model they never picked.
+  const credential = await resolveRunCredential(run.userId, run.modelOverride);
+  const adapter = credential
+    ? createAdapterForProvider(credential.provider, run.modelOverride ?? credential.model ?? null, credential.apiKey)
+    : createProviderAdapter(run.modelOverride);
+  // True when this run is on a platform/free allowance (no paid BYOK key), so
+  // free-tier shaping (compact prompt, reduced tools, tighter budgets) and
+  // quota accounting apply to it — and never to a user's paid key.
+  const onFreeTierLane = credential ? credential.isFreeTier : true;
   // Durable resolution: session Map → DB (survives server restarts).
   const workDir = (await resolveWorkspaceCwd(run.userId)) || process.cwd();
   let ctx: WorktreeContext | null = null;
   let transcript: Array<{ role: "user" | "assistant"; content: string }> = [
-    { role: "user", content: run.prompt.slice(0, 100_000) },
+    { role: "user", content: truncateWithNotice(run.prompt, 100_000, "task prompt") },
   ];
   let turns = 0;
   let summary = "";
@@ -925,6 +1034,10 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
   let scratch: ScratchpadState = seedScratchpad(run.prompt);
   // Paths written this run (for the verification lane + artifacts).
   const writtenFiles = new Set<string>();
+  // Ordered tool names this run invoked — the raw material for the trajectory
+  // and for pattern mining (see agent-insights.ts).
+  const toolsUsed: string[] = [];
+  const startedAt = Date.now();
   // Auto-checkpoint state: pre-write checkpoints with cooldown + per-run cap.
   const autoCp: AutoCheckpointState = newAutoCheckpointState();
   // Token metering (native function-calling turns only; text-protocol turns
@@ -934,7 +1047,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
   // Failover state lives at function scope: the catch block reports which
   // provider actually served the run before it failed.
   let currentAdapter: AIProviderAdapter = adapter;
-  let servedProvider = process.env.AI_PROVIDER || "nvidia";
+  let servedProvider = adapter.name || process.env.AI_PROVIDER || "nvidia";
   // Flips when the provider rejects the function-calling request shape —
   // the rest of the run then uses the text protocol.
   let nativeBroken = false;
@@ -1074,7 +1187,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
             userId: run.userId,
             lane: "server_run",
             provider: servedProvider,
-            model: run.modelOverride || "(auto)",
+            model: adapterModelId(currentAdapter),
             ok: true,
             latencyMs: Date.now() - t0,
           });
@@ -1084,7 +1197,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
             userId: run.userId,
             lane: "server_run",
             provider: servedProvider,
-            model: run.modelOverride || "(auto)",
+            model: adapterModelId(currentAdapter),
             ok: false,
             errorMessage: String((err as Error).message),
             latencyMs: Date.now() - t0,
@@ -1093,7 +1206,15 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
           if (!next || !isRateLimitError(err)) throw err;
           chainIdx++;
           const from = servedProvider;
-          currentAdapter = createAdapterForProvider(next, run.modelOverride);
+          // Do NOT carry the primary's model id to a different provider: an
+          // id chosen for Groq (e.g. "openai/gpt-oss-120b") is a 404 on
+          // OpenRouter, and a 404 is not a rate limit — so the chain died at
+          // the first hop and the fallback could never actually fire. Only an
+          // override we can attribute to THIS provider survives; otherwise the
+          // target provider serves its own registry default.
+          const overrideForNext =
+            run.modelOverride && next === servedProvider ? run.modelOverride : null;
+          currentAdapter = createAdapterForProvider(next, overrideForNext);
           servedProvider = next;
           await emit(run.id, "provider-failover", { from, to: next, reason: String((err as Error).message).slice(0, 200) }).catch(() => {});
         }
@@ -1105,7 +1226,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
 
       // Compact before the call when the transcript is over budget.
       const transcriptTokens = transcript.reduce((s, m) => s + Math.ceil(m.content.length / 4), 0);
-      const budget = Math.floor(MSG_BUDGET_TOKENS);
+      const budget = resolveTranscriptBudget(currentAdapter);
       if (transcriptTokens > budget) {
         const compacted = await compactor.compact(transcript, budget).catch(() => null);
         if (compacted) {
@@ -1120,7 +1241,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       // bare-JSON recovery as the fallbacks. A provider that rejects the
       // tools param (400/404 on the request shape) degrades to text mode for
       // the rest of the run instead of failing the run.
-      const nativeMode = typeof adapter.completeWithTools === "function" && !nativeBroken;
+      const nativeMode = typeof currentAdapter.completeWithTools === "function" && !nativeBroken;
       const messages = [
         { role: "system", content: buildSystemPrompt(
           mcpTools,
@@ -1192,7 +1313,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
             .concat(parseToolCalls(text).length === 0 ? parseBareJsonToolCalls(text) : [])
             .filter((c) => TOOL_WHITELIST.has(String(c.name)) || String(c.name).startsWith("mcp__"));
       if (calls.length === 0) {
-        summary = text.slice(0, 20_000);
+        summary = truncateWithNotice(text, 20_000, "final report");
         break; // plain-text answer = done
       }
 
@@ -1215,8 +1336,13 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
 
       const results: string[] = [];
       for (const call of calls) {
+        const toolName = String(call.name);
+        // Feed the insight store's ordered tool sequence. Bounded so a runaway
+        // loop cannot grow this array without limit (the trajectory writer
+        // truncates too, but bounding here keeps memory flat).
+        if (toolName && toolsUsed.length < 400) toolsUsed.push(toolName);
         // use_skill resolves against the discovered skill list before dispatch.
-        if (String(call.name) === "use_skill") {
+        if (toolName === "use_skill") {
           (call as Record<string, unknown>).__skillBody = skillBody(skills, String((call as Record<string, unknown>).name_of_skill ?? "")) ?? "";
         }
         const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, {
@@ -1485,6 +1611,21 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
 
     await emit(run.id, "run-finished", { turns, changedFiles: changed.length, sha, provider: servedProvider });
 
+    // Durable insight record: this is what feeds /api/agent/insights (tasks,
+    // tool-call audit, the run trajectory, and eventually learned patterns).
+    // Fire-and-forget and individually guarded — telemetry must never delay or
+    // fail a completed run.
+    await recordRunInsights({
+      run,
+      ok: true,
+      summary,
+      turns,
+      filesWritten: changed,
+      tokenUsage: usageKnown ? usageTotal : null,
+      toolsUsed,
+      durationMs: Date.now() - startedAt,
+    }).catch(() => {});
+
     return {
       status: "completed",
       summary,
@@ -1500,6 +1641,18 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
     summary = summary || `Run failed: ${message}`;
     await artifact(run.id, "log", "Failure log", summary, "text/plain");
     await emit(run.id, "run-failed", { error: message });
+    // Same durable insight record on the failure path — a failed run is often
+    // the more interesting one (it is what the pattern miner learns from).
+    await recordRunInsights({
+      run,
+      ok: false,
+      summary,
+      turns,
+      filesWritten: [...writtenFiles],
+      tokenUsage: usageKnown ? usageTotal : null,
+      toolsUsed,
+      durationMs: Date.now() - startedAt,
+    }).catch(() => {});
     // on-fail user hooks (opt-in) — best-effort, never mask the failure.
     await runUserHooks(workDir, "on-fail", {}).catch(() => {});
     return {
@@ -1594,6 +1747,87 @@ export async function requeueOrphanedRuns(): Promise<number> {
   } catch {
     return 0;
   }
+}
+
+/**
+ * Record a finished (or failed) run into the durable insight store.
+ *
+ * This is the wiring that gives Task, ToolCall, PipelineStep, SonaTrajectory,
+ * SonaPattern and VectorMemoryEntry actual writers. Every step is individually
+ * guarded: an insight write that fails must never turn a good run into a bad
+ * one, and a partially-recorded run is far better than none.
+ *
+ * Pattern mining is NOT run here — it is a batch job over trajectories,
+ * triggered by GET /api/agent/insights?learn=1, because mining on every run
+ * would re-scan the whole table N times.
+ */
+async function recordRunInsights(input: {
+  run: QueuedRun;
+  ok: boolean;
+  summary: string;
+  turns: number;
+  filesWritten: string[];
+  tokenUsage: { promptTokens: number; completionTokens: number } | null;
+  toolsUsed: string[];
+  durationMs: number;
+}): Promise<void> {
+  const { run } = input;
+  const { recordTask, completeTask, recordToolCall, recordPipelineStep, recordTrajectory, rememberSemantic } =
+    await import("@/lib/agent-insights");
+
+  // 1) Task — the per-user durable record for this run.
+  const taskId = await recordTask({ userId: run.userId, prompt: run.prompt, mode: "code", runId: run.id });
+
+  if (taskId) {
+    // 2) ToolCall — the audit trail of what the agent actually invoked.
+    // One row per DISTINCT tool with its invocation count, so a 200-call run
+    // does not write 200 rows.
+    const counts = new Map<string, number>();
+    for (const t of input.toolsUsed) counts.set(t, (counts.get(t) ?? 0) + 1);
+    for (const [tool, n] of counts) {
+      await recordToolCall({
+        taskId,
+        tool,
+        args: "",
+        status: input.ok ? "success" : "error",
+        duration: input.durationMs,
+        result: `invoked ${n}x`,
+      }).catch(() => {});
+    }
+    await completeTask(taskId, input.summary, input.ok).catch(() => {});
+  }
+
+  // 3) PipelineStep — per-stage timing for this run.
+  await recordPipelineStep({
+    runId: run.id,
+    state: "executor",
+    input: input.summary.slice(0, 2_000),
+    output: `${input.turns} turns · ${input.filesWritten.length} files · ${input.toolsUsed.length} tool calls`,
+    duration: input.durationMs,
+    success: input.ok,
+  }).catch(() => {});
+
+  // 4) SonaTrajectory — the full record the pattern miner reads.
+  await recordTrajectory({
+    task: run.prompt,
+    outcome: input.ok ? "success" : "failure",
+    toolsUsed: input.toolsUsed,
+    filesChanged: input.filesWritten,
+    steps: input.toolsUsed.map((tool) => ({ tool, ok: input.ok })),
+    totalTokens: input.tokenUsage ? input.tokenUsage.promptTokens + input.tokenUsage.completionTokens : 0,
+    totalDuration: input.durationMs,
+  }).catch(() => {});
+
+  // 5) VectorMemoryEntry — semantic memory of what this run achieved, so a
+  // later similar task can recall it. Type is `pattern` for successes (the
+  // reusable knowledge) and `error` for failures (the thing to avoid).
+  await rememberSemantic({
+    type: input.ok ? "pattern" : "error",
+    content: `${run.prompt}\n\n${input.summary}`.slice(0, 8_000),
+    filePath: input.filesWritten[0],
+    success: input.ok,
+    tags: [...new Set(input.toolsUsed)].slice(0, 20),
+  }).catch(() => {});
 }
 
 async function loop(): Promise<void> {

@@ -87,10 +87,10 @@ interface WakeModelStateUI {
 }
 
 const WAKE_STATE_STYLE: Record<WakeModelStateUI["state"], { label: string; color: string; bg: string }> = {
-  waking: { label: "waking", color: "#d97706", bg: "rgba(217,119,6,.12)" },
-  woke: { label: "✓ woke", color: "#10b981", bg: "rgba(16,185,129,.15)" },
-  dead: { label: "unreachable", color: "#ef4444", bg: "rgba(239,68,68,.12)" },
-  failed: { label: "no answer", color: "#9ca3af", bg: "rgba(156,163,175,.15)" },
+  waking: { label: "waking", color: "var(--st-warn-fg)", bg: "rgba(217,119,6,.12)" },
+  woke: { label: "✓ woke", color: "var(--st-done-fg)", bg: "rgba(16,185,129,.15)" },
+  dead: { label: "unreachable", color: "var(--st-error-fg)", bg: "rgba(239,68,68,.12)" },
+  failed: { label: "no answer", color: "var(--text-tertiary)", bg: "rgba(156,163,175,.15)" },
 };
 
 function WarmModelsCard({ toast }: { toast: (msg: string, type?: "info" | "error" | "success") => void }) {
@@ -169,7 +169,7 @@ function WarmModelsCard({ toast }: { toast: (msg: string, type?: "info" | "error
                   aria-hidden="true"
                   style={{
                     width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                    background: m.state === "waking" ? "#d97706" : m.state === "woke" ? "#10b981" : "#9ca3af",
+                    background: m.state === "waking" ? "var(--st-warn-fg)" : m.state === "woke" ? "var(--st-done-fg)" : "var(--text-tertiary)",
                     animation: m.state === "waking" ? "settings-pulse 1.4s ease-in-out infinite" : undefined,
                   }}
                 />
@@ -195,9 +195,9 @@ function WarmModelsCard({ toast }: { toast: (msg: string, type?: "info" | "error
 
 function tierBadge(def: ProviderDef) {
   return def.free ? (
-    <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(16,185,129,.15)", color: "#10b981", fontWeight: 600 }}>FREE TIER</span>
+    <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(16,185,129,.15)", color: "var(--st-done-fg)", fontWeight: 600 }}>FREE TIER</span>
   ) : (
-    <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(99,102,241,.12)", color: "#818cf8", fontWeight: 600 }}>PAY-PER-USE</span>
+    <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(99,102,241,.12)", color: "var(--st-verify-fg)", fontWeight: 600 }}>PAY-PER-USE</span>
   );
 }
 
@@ -216,7 +216,27 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
   const [models, setModels] = useState<ListedModel[] | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState("");
+  // Engine-reported metadata: lets the UI state honestly whether the whole
+  // catalogue arrived, instead of implying a truncated list is complete.
+  const [modelsTruncated, setModelsTruncated] = useState(false);
+  const [modelMeta, setModelMeta] = useState({ free: 0, paid: 0, unknown: 0 });
+  const freeModelCount = modelMeta.free;
+  const paidModelCount = modelMeta.paid + modelMeta.unknown;
   const [modelQuery, setModelQuery] = useState("");
+
+  /**
+   * Record what the engine actually returned, so the list can state honestly
+   * whether the WHOLE catalogue arrived. A list that silently drops half its
+   * entries (the old 200-cap) is how models went missing without explanation.
+   */
+  const applyModelMeta = (list: Array<{ free?: boolean }>, truncated?: boolean) => {
+    setModelsTruncated(truncated === true);
+    setModelMeta({
+      free: list.filter((m) => m.free === true).length,
+      paid: list.filter((m) => m.free === false).length,
+      unknown: list.filter((m) => m.free === undefined).length,
+    });
+  };
 
   const fetchKeys = async () => {
     try {
@@ -252,6 +272,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
       const j = await res.json();
       if (j.success && Array.isArray(j.models)) {
         setModels(j.models);
+        applyModelMeta(j.models, j.truncated);
         if (j.warning) setAddWarning(j.warning);
         if (!model && j.models.length > 0) setModel("");
       } else {
@@ -302,7 +323,10 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
       const q = modelQuery.toLowerCase();
       return m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q);
     })
-    .slice(0, 80);
+    // No display truncation: the list container scrolls, and slicing here used
+    // to make 300+ of a real provider's models unreachable no matter what the
+    // user typed. The cap is only a render-speed backstop.
+    .slice(0, 1000);
 
   return (
     <div className="settings-section">
@@ -429,10 +453,10 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                   placeholder={selectedDef.keyPrefix ? `e.g. ${selectedDef.keyPrefix}…` : "Paste your API key here"}
                   value={apiKey}
                   onChange={e => { setApiKey(e.target.value); setModels(null); setModelsError(""); }}
-                  style={{ width: "100%", padding: 8, fontSize: 12, borderRadius: 4, border: "1px solid var(--set-line, #e4e4e7)", background: "var(--set-input-bg, #fff)", color: "inherit", marginBottom: 6 }}
+                  style={{ width: "100%", padding: 8, fontSize: 12, borderRadius: 4, border: "1px solid var(--set-line, var(--border))", background: "var(--set-input-bg, #fff)", color: "inherit", marginBottom: 6 }}
                 />
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                  <a href={selectedDef.keyHintUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#818cf8" }}>
+                  <a href={selectedDef.keyHintUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "var(--st-verify-fg)" }}>
                     Get a {selectedDef.label} key ↗
                   </a>
                   <button
@@ -445,8 +469,8 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                   </button>
                 </div>
 
-                {modelsError && <p style={{ fontSize: 11, color: "#ef4444", marginBottom: 8 }}>{modelsError}</p>}
-                {addWarning && <p style={{ fontSize: 11, color: "#d97706", marginBottom: 8 }}>{addWarning}</p>}
+                {modelsError && <p style={{ fontSize: 11, color: "var(--st-error-fg)", marginBottom: 8 }}>{modelsError}</p>}
+                {addWarning && <p style={{ fontSize: 11, color: "var(--st-warn-fg)", marginBottom: 8 }}>{addWarning}</p>}
 
                 {models && models.length > 0 && (
                   <div style={{ marginBottom: 12 }}>
@@ -454,7 +478,7 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                       placeholder="Search models…"
                       value={modelQuery}
                       onChange={e => setModelQuery(e.target.value)}
-                      style={{ width: "100%", padding: 6, fontSize: 12, borderRadius: 4, border: "1px solid var(--set-line, #e4e4e7)", background: "var(--set-input-bg, #fff)", color: "inherit", marginBottom: 6 }}
+                      style={{ width: "100%", padding: 6, fontSize: 12, borderRadius: 4, border: "1px solid var(--set-line, var(--border))", background: "var(--set-input-bg, #fff)", color: "inherit", marginBottom: 6 }}
                     />
                     <div className="set-model-list" style={{ maxHeight: 220, overflowY: "auto" }}>
                       {filteredModels.map((m) => (
@@ -463,27 +487,31 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                           onClick={() => setModel(m.id)}
                           style={{
                             display: "block", width: "100%", textAlign: "left", padding: "7px 10px",
-                            borderBottom: "1px solid var(--set-row-line, #f3f4f6)", background: model === m.id ? "rgba(99,102,241,.1)" : "transparent",
+                            borderBottom: "1px solid var(--set-row-line, var(--well))", background: model === m.id ? "rgba(99,102,241,.1)" : "transparent",
                             border: "none", cursor: "pointer",
                           }}
                         >
                           <div style={{ fontSize: 12, display: "flex", justifyContent: "space-between", gap: 8 }}>
                             <span style={{ fontWeight: 500 }}>{m.name}</span>
                             <span style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                              {m.free && <span style={{ fontSize: 10, color: "#10b981", fontWeight: 600 }}>FREE</span>}
-                              {m.contextWindow ? <span style={{ fontSize: 10, color: "#9ca3af" }}>{Math.round(m.contextWindow / 1024)}k ctx</span> : null}
+                              {m.free && <span style={{ fontSize: 10, color: "var(--st-done-fg)", fontWeight: 600 }}>FREE</span>}
+                              {m.contextWindow ? <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>{Math.round(m.contextWindow / 1024)}k ctx</span> : null}
                             </span>
                           </div>
-                          <div style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>{m.id}</div>
+                          <div style={{ fontSize: 10, color: "var(--text-tertiary)", fontFamily: "monospace" }}>{m.id}</div>
                         </button>
                       ))}
                       {filteredModels.length === 0 && (
-                        <p style={{ fontSize: 11, color: "#9ca3af", padding: 10 }}>No models match &quot;{modelQuery}&quot;.</p>
+                        <p style={{ fontSize: 11, color: "var(--text-tertiary)", padding: 10 }}>No models match &quot;{modelQuery}&quot;.</p>
                       )}
                     </div>
-                    <p style={{ fontSize: 10, color: "#9ca3af", marginTop: 4 }}>
-                      Showing {filteredModels.length} of {models.length} fetched models.
-                    </p>
+                    <p style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 4 }}>
+                        Showing {filteredModels.length} of {models.length} fetched models
+                        {freeModelCount > 0 ? ` · ${freeModelCount} free` : ""}
+                        {paidModelCount > 0 ? ` · ${paidModelCount} paid` : ""}
+                        {modelsTruncated ? " · list truncated for safety" : ""}
+                        .
+                      </p>
                   </div>
                 )}
 
@@ -492,15 +520,15 @@ function SettingsApiKeyTab({ toast }: { toast: (msg: string, type?: "info" | "er
                   placeholder={selectedDef.fallbackModel}
                   value={model}
                   onChange={e => setModel(e.target.value)}
-                  style={{ width: "100%", padding: 8, fontSize: 12, borderRadius: 4, border: "1px solid #e4e4e7", marginBottom: 8 }}
+                  style={{ width: "100%", padding: 8, fontSize: 12, borderRadius: 4, border: "1px solid var(--border)", marginBottom: 8 }}
                 />
                 {!model.trim() && (
-                  <p style={{ fontSize: 10, color: "#9ca3af", marginBottom: 8 }}>
+                  <p style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 8 }}>
                     Empty = default model ({selectedDef.fallbackModel}).
                   </p>
                 )}
 
-                {addStatus && <p style={{ fontSize: 11, color: addStatus.includes("success") || addStatus.includes("added") ? "green" : "#ef4444", marginBottom: 8 }}>{addStatus}</p>}
+                {addStatus && <p style={{ fontSize: 11, color: addStatus.includes("success") || addStatus.includes("added") ? "green" : "var(--st-error-fg)", marginBottom: 8 }}>{addStatus}</p>}
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={addKey} disabled={adding || !apiKey.trim()} className="settings-save-btn">
                     {adding ? "Testing..." : "Add Key"}
@@ -550,10 +578,10 @@ interface SpendData {
 // an afternoon.
 
 const UPTIME_DOT: Record<ReturnType<typeof uptimeHealth>, { color: string; bg: string }> = {
-  green: { color: "#10b981", bg: "rgba(16,185,129,.15)" },
-  amber: { color: "#d97706", bg: "rgba(217,119,6,.12)" },
-  red: { color: "#ef4444", bg: "rgba(239,68,68,.12)" },
-  none: { color: "#9ca3af", bg: "rgba(156,163,175,.15)" },
+  green: { color: "var(--st-done-fg)", bg: "rgba(16,185,129,.15)" },
+  amber: { color: "var(--st-warn-fg)", bg: "rgba(217,119,6,.12)" },
+  red: { color: "var(--st-error-fg)", bg: "rgba(239,68,68,.12)" },
+  none: { color: "var(--text-tertiary)", bg: "rgba(156,163,175,.15)" },
 };
 
 function ReliabilityCard({ uptime }: { uptime: UptimeSummary | null }) {
@@ -690,7 +718,7 @@ function SettingsCostTab() {
         {loading ? (
           <p className="settings-hint">Loading usage...</p>
         ) : error ? (
-          <p className="settings-hint" style={{ color: "#ef4444" }}>{error}</p>
+          <p className="settings-hint" style={{ color: "var(--st-error-fg)" }}>{error}</p>
         ) : bars.length === 0 ? (
           <p className="settings-hint">No token usage recorded yet — run an agent task and it will show up here.</p>
         ) : (
@@ -808,8 +836,8 @@ function ResetRecoveryTab({ toast }: { toast: (msg: string, type?: "info" | "err
       </div>
 
       {result && (
-        <div className="settings-card" style={{ marginBottom: 12, borderLeft: "3px solid #10b981" }}>
-          <p className="settings-hint" style={{ color: "#10b981" }}>{result}</p>
+        <div className="settings-card" style={{ marginBottom: 12, borderLeft: "3px solid var(--st-done-fg)" }}>
+          <p className="settings-hint" style={{ color: "var(--st-done-fg)" }}>{result}</p>
         </div>
       )}
 
