@@ -6,11 +6,25 @@ import { jwtOnlyOptions } from "@/lib/auth";
 import { resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import {
   isValidAttachmentId,
+  locateAttachment,
   mimeForPath,
-  readAttachment,
 } from "@/lib/attachment-store";
 
 export const dynamic = "force-dynamic";
+
+/** The user's durable workspace path from the DB, used as a fallback root. */
+async function recordedWorkspaceFor(userId: string): Promise<string | null> {
+  try {
+    const { prisma } = await import("@/lib/prisma");
+    const u = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { workspacePath: true },
+    });
+    return u?.workspacePath || null;
+  } catch {
+    return null;
+  }
+}
 
 export async function GET(
   request: NextRequest,
@@ -48,10 +62,22 @@ export async function GET(
       );
     }
 
-    const data = await readAttachment(workspace, match[1], ext);
-    if (!data) {
+    // The current workspace is the common case, but the reference stored in the
+    // message body is workspace-AGNOSTIC while the bytes live in whichever
+    // folder was open at upload time. Falling back to the user's recorded
+    // workspace path keeps historical images resolvable after the folder is
+    // closed or the user switches projects - previously they all 404'd even
+    // though the files were still on disk.
+    const roots: string[] = [];
+    if (workspace) roots.push(workspace);
+    const recorded = await recordedWorkspaceFor(session.user.id);
+    if (recorded) roots.push(recorded);
+
+    const found = await locateAttachment(roots, match[1], ext);
+    if (!found) {
       return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
     }
+    const data = found.data;
 
     // An SVG served inline executes its <script> when navigated to directly -
     // nosniff does not help, because the declared type really is

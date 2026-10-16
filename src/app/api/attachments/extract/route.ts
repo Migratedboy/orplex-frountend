@@ -19,6 +19,12 @@ import { join } from "node:path";
 
 export const dynamic = "force-dynamic";
 
+// Cap concurrent extractions. Each holds the whole archive in memory (see
+// archive-extract), so N parallel requests multiply the peak.
+let inFlight = 0;
+const MAX_INFLIGHT = 2;
+const MAX_BODY_BYTES = 64 * 1024;
+
 /** Cap on the text we inline, so a 5k-file archive cannot blow the context. */
 const MAX_INLINE_BYTES = 120_000;
 const MAX_INLINE_FILES = 40;
@@ -37,11 +43,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No workspace open" }, { status: 404 });
     }
 
-    const body = (await request.json().catch(() => ({}))) as {
-      id?: unknown;
-      ext?: unknown;
-      dest?: unknown;
-    };
+  // Refuse an oversized body BEFORE parsing. Same reason as the upload route:
+  // request.json() materialises the whole body as a string, and this route has
+  // no body limit, so one huge request OOMs the Next process.
+  const declared = Number(request.headers?.get?.("content-length") || "0");
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+    return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  }
+
+  const body = (await request.json().catch(() => ({}))) as {
+    id?: unknown;
+    ext?: unknown;
+    dest?: unknown;
+  };
     const id = typeof body.id === "string" ? body.id : "";
     if (!isValidAttachmentId(id)) {
       return NextResponse.json({ error: "Invalid attachment id" }, { status: 400 });
@@ -54,7 +68,19 @@ export async function POST(request: NextRequest) {
     const dest = typeof body.dest === "string" && body.dest.trim() ? body.dest.trim() : undefined;
     const archiveRel = `.orplex/attachments/${id}${ext}`;
 
-    const out = await extractZip({ root: workspace, archivePath: archiveRel, destRel: dest });
+  if (inFlight >= MAX_INFLIGHT) {
+    return NextResponse.json(
+      { error: "Another extraction is already running — try again in a moment." },
+      { status: 429 },
+    );
+  }
+  inFlight++;
+  // (the outer try/catch/finally below covers this block; inFlight is released there)
+    const out = await extractZip({
+      root: workspace,
+      archivePath: archiveRel,
+      destRel: dest,
+    });
     if (!out.ok) {
       return NextResponse.json({ error: out.summary, code: out.error }, { status: 400 });
     }
@@ -89,5 +115,7 @@ export async function POST(request: NextRequest) {
       { error: e instanceof Error ? e.message : "Failed to extract" },
       { status: 500 },
     );
+  } finally {
+    inFlight = Math.max(0, inFlight - 1);
   }
 }

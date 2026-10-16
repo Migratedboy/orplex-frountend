@@ -17,7 +17,7 @@
 // process (Electron standalone or dev).
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 
 export const ATTACHMENTS_DIRNAME = join(".orplex", "attachments");
@@ -52,6 +52,42 @@ export function maxBytesForExt(ext: string): number {
 
 export function attachmentsDir(workspaceCwd: string): string {
   return join(workspaceCwd, ATTACHMENTS_DIRNAME);
+}
+
+/**
+ * Locate a stored attachment when the current workspace is not the one it was
+ * uploaded in.
+ *
+ * The DB stores only `attachment:<sha>.png` with no workspace association,
+ * while the bytes live under whichever folder was open at upload time. Close
+ * that folder, or switch projects, and the current-workspace path 404s - so
+ * every image in every historical thread became unreachable even though the
+ * bytes were still on disk. The ref is deliberately workspace-agnostic, so
+ * resolution has to be too.
+ *
+ * Order: current workspace (the common case), then the recorded absolute
+ * workspace if the DB still knows it, then a bounded scan of known workspace
+ * roots. Ids are digest-shaped hex validated by isValidAttachmentId before any
+ * path is built, so nothing here can escape an attachments directory.
+ */
+export async function locateAttachment(
+  roots: Array<string | null | undefined>,
+  id: string,
+  ext: string,
+): Promise<{ dir: string; data: Buffer } | null> {
+  if (!isValidAttachmentId(id) || !ALLOWED_EXT.has(ext)) return null;
+  const { readFile: read } = await import("node:fs/promises");
+  for (const root of roots) {
+    if (!root) continue;
+    const dir = attachmentsDir(root);
+    const file = join(dir, `${id}${ext}`);
+    const st = await stat(file).catch(() => null);
+    if (!st?.isFile()) continue;
+    // Refuse an implausible size rather than reading it into memory.
+    if (st.size > maxBytesForExt(ext)) continue;
+    return { dir, data: await read(file) };
+  }
+  return null;
 }
 
 export function mimeForPath(p: string): string {
@@ -142,9 +178,27 @@ export async function saveAttachment(
   const target = join(dir, filename);
   // Content-addressed: if it already exists, the bytes are identical by
   // construction, so skip the write.
+  //
+  // Write to a temp file and rename. A bare writeFile truncates in place, so a
+  // crash/disk-full/reader mid-write left a PARTIAL file that still passed
+  // readAttachment's `isFile()` + size checks and was then served with
+  // `Cache-Control: immutable` - permanently poisoned in the browser. Worse,
+  // saveAttachment would never repair it: `existing.isFile()` is true, so the
+  // write is skipped forever, and the id is content-addressed so it stays the
+  // same. rename() within a directory is atomic, so a reader sees either the
+  // old file or the complete new one.
   const existing = await stat(target).catch(() => null);
   if (!existing?.isFile()) {
-    await writeFile(target, parsed.bytes);
+    const { rename } = await import("node:fs/promises");
+    const tmp = join(dir, `.${filename}.${process.pid}.${Date.now()}.tmp`);
+    try {
+      await writeFile(tmp, parsed.bytes);
+      await rename(tmp, target);
+    } catch (e) {
+      // Never leave a .tmp behind, and never leave a partial file at `target`.
+      await rm(tmp, { force: true }).catch(() => {});
+      throw e;
+    }
   }
 
   return { id, filename, bytes: parsed.bytes.length };
