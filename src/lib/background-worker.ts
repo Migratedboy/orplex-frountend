@@ -13,7 +13,7 @@ import { virtualFS } from "./virtual-fs";
 import { beforeToolCall, afterToolCall, onFileWrite, onFileEdit, onTaskStart, onTaskComplete, onTaskFail } from "./plugins/registry";
 import { initializePlugins, isPluginEnabled } from "./plugins/initializer";
 import { TIMEOUTS, LIMITS, isBlockedCommand } from "./constants";
-import { readStream, deduplicateWords, dedupeStreamedChunk, replaceLastStatus, parseToolCalls, normalizeThinkingBlocks, stripRedundantFences, appendTaskAnchor, repairInterleavedReplay, type ToolCall, type StreamResult } from "./stream-reader";
+import { readStream, deduplicateWords, dedupeStreamedChunk, replaceLastStatus, parseToolCalls, normalizeThinkingBlocks, stripRedundantFences, appendTaskAnchor, repairInterleavedReplay, type ToolCall, type StreamResult, type StreamCallbacks } from "./stream-reader";
 import {
   createLoopStreaks,
   trackToolTurn,
@@ -300,7 +300,7 @@ async function callModel(
   apiMessages: { role: string; content: string }[],
   runState: RunState,
   conversationId: string | null,
-  callbacks: { onChunk: (content: string) => void; onThinking?: (thinking: string) => void },
+  callbacks: StreamCallbacks,
   mode: string,
   images: string[],
   signal?: AbortSignal | null,
@@ -1059,6 +1059,23 @@ export async function runInBackground(
    * proportional to the chunk, not the transcript length.
    */
   const composeDisplay = (text: string) => {
+    // composeDisplay("") is how a thinking delta refreshes the display, so an
+    // EMPTY text must mean "no new content" rather than "the stream is empty".
+    // The old guard `text.length >= streamedText.length && startsWith` is false
+    // for "" once anything has streamed, so every reasoning block after content
+    // fell into the else branch and reset sealedClean + repairedTail - the
+    // partially-streamed answer visibly VANISHED for the whole thinking block
+    // and only reappeared on the next content delta. It also permanently
+    // clobbered streamedText's role as a monotonic growth cursor.
+    if (text === "") {
+      // Refresh only the thinking block; leave the answer text intact.
+      const excess = repairedTail.length - STREAM_REPAIR_TAIL;
+      if (excess > 0) {
+        sealedClean += repairedTail.slice(0, excess);
+        repairedTail = repairedTail.slice(excess);
+      }
+      return fullDisplayContent + thinkingBlock() + sealedClean + repairedTail;
+    }
     if (text.length >= streamedText.length && text.startsWith(streamedText)) {
       // Continuation of this turn's stream — clean only the new tail.
       repairedTail = dedupeStreamedChunk(repairedTail, text.slice(streamedText.length));
@@ -1128,9 +1145,14 @@ export async function runInBackground(
         : imageDataUrls;
       pendingShotImages = [];
 
-      const streamResult = await callModel(
-        apiMessages,
-        runState,
+  // Set when the provider's stream actually terminated ([DONE]). A connection
+  // dropped mid-answer looks identical to a clean finish from the caller's
+  // side, and the truncated text used to be saved to the DB as a successful
+  // exchange.
+  let streamEndedCleanly = false;
+  const streamResult = await callModel(
+    apiMessages,
+    runState,
         conversationId,
         {
           onChunk: (content) => {
@@ -1139,14 +1161,17 @@ export async function runInBackground(
             // chunk used to freeze the UI mid-run.
             setDisplayContent(composeDisplay(content));
           },
-          onThinking: (thinking) => {
-            // Display M3 thinking in real-time inside the collapsible block
-            thinkingDisplay += thinking;
-            setDisplayContent(composeDisplay(""));
-            // Emit thinking activity
-            emitActivity({ type: "thinking", message: thinking.slice(-80) });
-          },
-        },
+    onThinking: (thinking) => {
+      // Display M3 thinking in real-time inside the collapsible block
+      thinkingDisplay += thinking;
+      setDisplayContent(composeDisplay(""));
+      // Emit thinking activity
+      emitActivity({ type: "thinking", message: thinking.slice(-80) });
+    },
+    onDone: () => {
+      streamEndedCleanly = true;
+    },
+  },
         mode,
         turnImages,
         abortSignal,
@@ -1159,11 +1184,22 @@ export async function runInBackground(
         selectedModel
       );
 
-      // Abort mid-stream (Stop pressed) — discard this turn, unwind to the
-      // catch below which exits quietly instead of failing the task.
-      if (abortSignal?.aborted) {
-        throw new DOMException("Aborted", "AbortError");
-      }
+  // Abort mid-stream (Stop pressed) — discard this turn, unwind to the
+  // catch below which exits quietly instead of failing the task.
+  if (abortSignal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+
+  // The stream ended without a [DONE] marker: the connection dropped partway
+  // through the answer. Mark it so the text is not persisted and displayed as
+  // if it were the complete reply.
+  if (!streamEndedCleanly) {
+    const cut = normalizeThinkingBlocks(streamResult?.content ?? "");
+    if (cut.trim()) {
+      fullDisplayContent += `${cut}\n\n[INCOMPLETE — the connection dropped before this reply finished. The text above is a partial answer.]`;
+    }
+    setDisplayContent(fullDisplayContent);
+  }
 
       const streamedContent = streamResult.content;
       if (!streamedContent && streamResult.toolCalls.length === 0) {

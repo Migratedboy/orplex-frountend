@@ -483,6 +483,8 @@ export interface StreamResult {
 export interface StreamCallbacks {
   onChunk: (content: string) => void;
   onThinking?: (thinking: string) => void;
+  /** The provider's stream ended cleanly ([DONE]). Absent for a mid-stream drop. */
+  onDone?: () => void;
 }
 
 // Split-deployment MCP visibility: the desktop instance is the ONLY owner of
@@ -571,7 +573,7 @@ export async function readStream(
 ): Promise<StreamResult> {
   const model = opts.model;
   const mcpRemotes = opts.mcpRemotes;
-  const { onChunk, onThinking } = callbacks;
+  const { onChunk, onThinking, onDone } = callbacks;
 
   const isAborted = () => signal?.aborted === true;
 
@@ -661,7 +663,16 @@ export async function readStream(
   const processDataLine = (line: string) => {
     if (!line.startsWith("data: ")) return;
     const data = line.slice(6).trim();
-    if (data === "[DONE]") return;
+    if (data === "[DONE]") {
+    // Report that the stream terminated normally. Without this the reader
+    // returned silently, so a connection dropped mid-answer was
+    // indistinguishable from a clean finish: the worker saw no error, treated
+    // the truncated text as the complete reply, and SAVED it to the database as
+    // a successful exchange. A cut-off answer is now distinguishable from a
+    // finished one.
+    onDone?.();
+    return;
+  }
     try {
       const parsed = JSON.parse(data);
 
