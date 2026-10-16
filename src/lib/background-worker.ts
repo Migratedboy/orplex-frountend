@@ -229,19 +229,48 @@ const TOKEN_LIMIT_RE = /tokens per minute|Request too large|\b413\b/i;
  * Model call with budget fitting + pacing + one adaptive retry on TPM 413s.
  * Mirrors readStream's signature - all worker model calls go through here.
  */
-// The original task text, set by runInBackground — used by callModel to keep
-// the task anchored in the trimmed context (see appendTaskAnchor).
-let anchorTaskMessage = "";
-// Per-task summarizing compactor (see compaction.ts). Created lazily on the
-// first over-budget callModel, reset when a new task starts.
-let taskCompactor: import("./compaction").TranscriptCompactor | null = null;
-// Eviction high-water mark for the CURRENT task. callModel re-enters this
-// block on every tool turn (and again for review/repair lanes), and
-// compactTranscript keeps returning non-null because it takes the incremental
-// path — so emitting unconditionally stamped up to ~11 near-identical
-// dividers for one logical compaction. Only emit when the eviction actually
-// advanced.
-let lastCompactedThrough = 0;
+
+/**
+ * State that belongs to ONE run, not to the module.
+ *
+ * These four were module-level `let`s, written when a run started and read
+ * inside callModel with network awaits in between. Two overlapping runs (queue
+ * concurrency is 3, and the detached lanes run in parallel) therefore wrote
+ * into each other's state:
+ *
+ *  - anchorTaskMessage: run B set the anchor mid-run, so run A's next callModel
+ *    appended B's sentence labelled "ORIGINAL TASK - never ask for
+ *    clarification about it". Silent prompt poisoning.
+ *  - taskCompactor: ONE shared instance holding {coveredCount, summary,
+ *    fingerprint}. B's reset() landed during A's summarizer request, A's
+ *    completion wrote its summary back, and B then folded its new tail onto A's
+ *    summary - so B's model context literally contained the other run's
+ *    compressed history.
+ *  - lastCompactedThrough / taskMemoriesUsed: one run's counters attributed to
+ *    the other.
+ *
+ * They now live in a RunState created per run and threaded through callModel,
+ * so an overlap cannot reach another run's state at all.
+ */
+interface RunState {
+  /** The original task text - keeps the task anchored in the trimmed context. */
+  anchorTaskMessage: string;
+  /** Lazily created per-run summarizing compactor (see compaction.ts). */
+  taskCompactor: import("./compaction").TranscriptCompactor | null;
+  /** Eviction high-water mark, so one logical compaction emits one divider. */
+  lastCompactedThrough: number;
+  /** How many memory entries were injected, for the run record. */
+  taskMemoriesUsed: number;
+}
+
+function createRunState(userMessage: string): RunState {
+  return {
+    anchorTaskMessage: userMessage,
+    taskCompactor: null,
+    lastCompactedThrough: 0,
+    taskMemoriesUsed: 0,
+  };
+}
 
 // Semantic response cache — opt-in via env (default off to preserve behavior).
 // Set SEMANTIC_CACHE=1 to enable. Cache is in-memory, per-process, TTL 24h.
@@ -265,13 +294,11 @@ function summarizeForDisplay(compacted: Array<{ content?: string }>): string | u
   const body = (m?.[1] ?? "").trim();
   return body.length > 0 ? body : undefined;
 }
-// Number of workspace-memory entries injected into the current task's prompt
-// (surfaced on the run record so the Manager can show retrieval firing).
-let taskMemoriesUsed = 0;
 // The task object carries optional telemetry fields beyond the core interface.
 type BackgroundTaskLike = { memoriesUsed?: number };
 async function callModel(
   apiMessages: { role: string; content: string }[],
+  runState: RunState,
   conversationId: string | null,
   callbacks: { onChunk: (content: string) => void; onThinking?: (thinking: string) => void },
   mode: string,
@@ -288,7 +315,7 @@ async function callModel(
   // original task entirely (live run: the model asked "what would you like me
   // to help with?" mid-build). The anchor rides on the LAST message — the one
   // message the budget can never drop.
-  const anchored = appendTaskAnchor(apiMessages, anchorTaskMessage);
+  const anchored = appendTaskAnchor(apiMessages, runState.anchorTaskMessage);
   // Summarizing compaction BEFORE truncation: when the transcript outgrows
   // the budget, evicted messages become a <context_so_far> summary instead of
   // being dropped. Incremental state = one bounded summary call per eviction.
@@ -299,7 +326,7 @@ async function callModel(
   const MSG_BUDGET_TOKENS = msgBudgetFor(await contextWindowForModel(model));
   try {
     const { createTranscriptCompactor } = await import("./compaction");
-    taskCompactor ||= createTranscriptCompactor(async (prompt, maxTokens) => {
+    runState.taskCompactor ||= createTranscriptCompactor(async (prompt, maxTokens) => {
       const res = await readStream(
         [{ role: "user", content: prompt }],
         null,
@@ -314,7 +341,7 @@ async function callModel(
       return res.content || "";
     });
     // Resolved once per callModel for THIS model's real context window.
-    const compacted = await taskCompactor.compact(anchored, MSG_BUDGET_TOKENS, signal);
+    const compacted = await runState.taskCompactor.compact(anchored, MSG_BUDGET_TOKENS, signal);
     if (compacted) {
       fitted = fitMessagesToBudget(compacted, MSG_BUDGET_TOKENS);
       emitActivity({ type: "status", message: "Context compacted — earlier turns summarized to stay under the token budget", agent: "coder" });
@@ -330,8 +357,8 @@ async function callModel(
       // turn and again for review/repair, and each pass compacts a little more.
       // One logical compaction should read as ONE divider in the timeline.
       const evictedNow = anchored.length - compacted.length;
-      if (evictedNow > lastCompactedThrough) {
-        lastCompactedThrough = evictedNow;
+  if (evictedNow > runState.lastCompactedThrough) {
+    runState.lastCompactedThrough = evictedNow;
         const charsToTokens = (msgs: Array<{ content?: string }>) =>
           Math.round(msgs.reduce((sum, m) => sum + (m.content || "").length, 0) / 4);
         emitCompaction({
@@ -855,10 +882,10 @@ export async function runInBackground(
   }
 
   // Fire plugin hooks
-  anchorTaskMessage = userMessage; // for callModel's trim-proof task anchor
-  taskCompactor?.reset(); // fresh summary state per task
-  lastCompactedThrough = 0; // ...and a fresh compaction-marker baseline
-  taskMemoriesUsed = 0;
+  // Per-run state, created fresh for THIS run and threaded into every
+  // callModel below. Previously these were module-level `let`s, so overlapping
+  // runs shared one task anchor and one compactor - see the RunState doc.
+  const runState = createRunState(userMessage);
   getCurrentTask() && ((getCurrentTask() as BackgroundTaskLike).memoriesUsed = 0);
   onTaskStart(userMessage).catch(() => {});
 
@@ -910,9 +937,9 @@ export async function runInBackground(
         setDisplayContent(fullDisplayContent);
         // Count injected entries so the run record can show retrieval firing
         // (the block is one "- [TAG] ..." line per memory).
-        taskMemoriesUsed = memoryBlock.split("\n").filter((l) => l.startsWith("- [")).length;
-        const t = getCurrentTask();
-        if (t) (t as BackgroundTaskLike).memoriesUsed = taskMemoriesUsed;
+    runState.taskMemoriesUsed = memoryBlock.split("\n").filter((l) => l.startsWith("- [")).length;
+    const t = getCurrentTask();
+    if (t) (t as BackgroundTaskLike).memoriesUsed = runState.taskMemoriesUsed;
       }
     } catch {}
     // Playbook: evidence-backed learnings from previous VERIFIED runs.
@@ -1103,6 +1130,7 @@ export async function runInBackground(
 
       const streamResult = await callModel(
         apiMessages,
+        runState,
         conversationId,
         {
           onChunk: (content) => {
@@ -1569,7 +1597,7 @@ export async function runInBackground(
           content: qualityReviewDirective(issueLines),
         });
 
-        const reviewStream = await callModel(apiMessages, conversationId, {
+        const reviewStream = await callModel(apiMessages, runState, conversationId, {
           onChunk: (c) => setDisplayContent(composeDisplay(c)),
           onThinking: (t) => {
             thinkingDisplay += t;
@@ -1636,7 +1664,7 @@ export async function runInBackground(
           role: "user",
           content: SELF_REVIEW_DIRECTIVE,
         });
-        const recheckStream = await callModel(apiMessages, conversationId, {
+        const recheckStream = await callModel(apiMessages, runState, conversationId, {
           onChunk: (c) => setDisplayContent(composeDisplay(c)),
           onThinking: (t) => {
             thinkingDisplay += t;
@@ -1792,6 +1820,7 @@ export async function runInBackground(
 
         const repairStream = await callModel(
           apiMessages,
+          runState,
           conversationId,
           {
             onChunk: (c) => setDisplayContent(composeDisplay(c)),
@@ -1906,6 +1935,7 @@ export async function runInBackground(
 
           const swarmStream = await callModel(
             apiMessages,
+            runState,
             conversationId,
             {
               onChunk: (c) => setDisplayContent(composeDisplay(c)),
@@ -2075,6 +2105,7 @@ export async function runInBackground(
 
             const uiRepairStream = await callModel(
               apiMessages,
+              runState,
               conversationId,
               {
                 onChunk: (c) => setDisplayContent(composeDisplay(c)),
