@@ -50,6 +50,7 @@ import {
   failTask,
   isCurrentTask,
   getCurrentTask,
+  getGeneration,
   getTaskAbortSignal,
   setTodos,
   completeTodo,
@@ -188,20 +189,39 @@ export function fitMessagesToBudget(
  * Pace requests so the tokens sent in any rolling 60s window stay under the
  * provider's TPM limit. Sleeps (with a status update) when the window is full.
  */
-async function reserveTokenWindow(tokens: number): Promise<void> {
-  const now = Date.now();
-  for (let i = SENT_LOG.length - 1; i >= 0; i--) {
-    if (now - SENT_LOG[i].t > 60_000) SENT_LOG.splice(i, 1);
+  async function reserveTokenWindow(tokens: number, abortSignal?: AbortSignal | null): Promise<void> {
+    const now = Date.now();
+    for (let i = SENT_LOG.length - 1; i >= 0; i--) {
+      if (now - SENT_LOG[i].t > 60_000) SENT_LOG.splice(i, 1);
+    }
+    const used = SENT_LOG.reduce((s, e) => s + e.tokens, 0);
+    const overflow = used + tokens - (TPM_LIMIT - TPM_SAFETY);
+    if (overflow > 0) {
+      const waitMs = Math.min(65_000, Math.ceil((overflow / TPM_LIMIT) * 60_000) + 1_000);
+      updateTaskStatus("streaming", `Rate limit: waiting ${Math.ceil(waitMs / 1000)}s for the token window to reset...`);
+      // The sleep had no abort check, so pressing Stop during a rate-limit
+      // wait did not unwind for up to 65s. Wait in slices and bail on abort.
+      const deadline = Date.now() + waitMs;
+      while (Date.now() < deadline) {
+        if (abortSignal?.aborted) return;
+        await new Promise((r) => setTimeout(r, Math.min(250, deadline - Date.now())));
+      }
+      if (abortSignal?.aborted) return;
+      // The old code pushed unconditionally after the wait, so two concurrent
+      // runs could both observe overflow, both sleep, and both push - putting
+      // up to 2x the intended tokens in one 60s window, which is exactly the
+      // HTTP 413 storm this function exists to prevent. It also stamped the
+      // entry AFTER the sleep, attributing it to a later window than the one
+      // that was checked.
+    }
+    // Reserve against the post-wait truth.
+    const postWaitUsed = SENT_LOG.reduce((s, e) => (Date.now() - e.t <= 60_000 ? s + e.tokens : s), 0);
+    // Still full: do NOT reserve optimistically (that is what caused double-counts).
+    // Fail open - the caller proceeds and the provider's 413 path already has a
+    // retry with backoff, which is better than deadlocking here.
+    if (postWaitUsed + tokens > TPM_LIMIT) return;
+    SENT_LOG.push({ t: Date.now(), tokens });
   }
-  const used = SENT_LOG.reduce((s, e) => s + e.tokens, 0);
-  const overflow = used + tokens - (TPM_LIMIT - TPM_SAFETY);
-  if (overflow > 0) {
-    const waitMs = Math.min(65_000, Math.ceil((overflow / TPM_LIMIT) * 60_000) + 1_000);
-    updateTaskStatus("streaming", `Rate limit: waiting ${Math.ceil(waitMs / 1000)}s for the token window to reset…`);
-    await new Promise(r => setTimeout(r, waitMs));
-  }
-  SENT_LOG.push({ t: Date.now(), tokens });
-}
 
 const TOKEN_LIMIT_RE = /tokens per minute|Request too large|\b413\b/i;
 
@@ -376,7 +396,7 @@ async function callModel(
       }));
     }
   } catch {}
-  await reserveTokenWindow(estimate(fitted));
+  await reserveTokenWindow(estimate(fitted), signal);
   // Transient-blip retry: LIVE-VALIDATED (run 4) — a dropped connection
   // ("fetch failed") on call #2 killed an otherwise-healthy task after it had
   // already produced its plan. One retry with a short backoff covers both
@@ -431,7 +451,7 @@ async function callModel(
     // retry once with a tighter budget (aggressively trimmed context).
     SENT_LOG.push({ t: Date.now(), tokens: OUTPUT_RESERVE + 1000 });
     const tighter = fitMessagesToBudget(apiMessages, Math.floor(MSG_BUDGET_TOKENS / 2));
-    await reserveTokenWindow(estimate(tighter));
+    await reserveTokenWindow(estimate(tighter), signal);
     return await attempt(tighter);
   }
 }
@@ -500,11 +520,20 @@ async function executeOrchestratedWrites(
     bumpStat: (s: "toolCalls") => void;
     setFilesChanged: (n: number) => void;
     label: string;
+    /** Stop must interrupt a batch mid-flight. */
+    abortSignal?: AbortSignal | null;
+    /** Abandon the batch when a newer run has claimed the task slot. */
+    isStale?: () => boolean;
   }
 ): Promise<number> {
   let count = 0;
   for (const call of toolCalls) {
     if (call.name !== "write_file" || !call.path || call.content === undefined) continue;
+    // This loop had no abort check and the call site sat outside the try/catch
+    // and every other abort guard, so pressing Stop mid-batch left files 3..N
+    // still being written while the "Stopped" note was already on screen.
+    if (ctx.abortSignal?.aborted) break;
+    if (ctx.isStale?.()) break;
     updateTaskStatus("tool_executing", `${ctx.label}: writing ${call.path}…`);
     emitActivity({ type: "file", message: `${ctx.label}: ${call.path}`, agent: "coder" });
     try {
@@ -743,34 +772,15 @@ export async function runInBackground(
   }
   if (sparcDirective) contentWithFiles = `${sparcDirective}\n\n${contentWithFiles}`;
 
-  // === Deep orchestration attempt (code/plan mode, complex tasks) ==========
-  // ONE deterministic router call: it picks scaffold | branch-compare |
-  // implement | plan from the task shape and produces write_file calls the
-  // loop below executes through the audited path. If the route is unavailable
-  // the plan-first directive stays in place and the normal loop does the work.
-  let orchestrationSummary = "";
-  let orchestrationLabel = "Strategy";
-  let orchestratedWrites = 0;
-  let orchestratedToolCalls: Array<Partial<ToolCall>> = [];
-  if (sparcDirective) {
-    updateTaskStatus("streaming", "Planning with the strategy router…");
-    const routed = await runOrchestration("auto", {
-      task: basePrompt,
-      context: contentWithFiles.slice(0, 20_000),
-      existingFileCount: _fileTree.reduce((n: number, node: any) => n + (node.kind === "file" ? 1 : 0), 0),
-    });
-    if (routed && Array.isArray(routed.toolCalls) && routed.toolCalls.length > 0) {
-      orchestrationLabel = String(routed.strategy || "strategy").toUpperCase();
-      orchestrationSummary = `[${orchestrationLabel}] ${routed.summary || ""}`.trim();
-      contentWithFiles = `${orchestrationSummary}\n\n${basePrompt}`;
-      orchestratedToolCalls = routed.toolCalls;
-    }
-    // Router unavailable/empty → the SPARC plan-first directive still gates
-    // writes until the model has planned via todo_list, so nothing is lost.
-  }
-
-  // If a task is still running (e.g. from a previous send), kill it properly
-  // so it stops burning tokens and never writes over the new task.
+  // === Claim the task slot FIRST ==========================================
+  // This used to happen AFTER the orchestration await below, which can park
+  // for up to 330s (AbortSignal.timeout(330_000) in runOrchestration). During
+  // that window nothing owned the task slot, so a second send could claim it
+  // and start streaming - and when the FIRST run finally woke up it reached
+  // the cancel-previous logic, found the SECOND (newer) task streaming, and
+  // aborted it. The user saw their newest message die with an empty bubble,
+  // while the older run answered it. Claiming before the await closes the
+  // window; the generation guard below closes the residual race.
   const { cancelTask } = await import("./background-chat");
   const existing = getCurrentTask();
   if (existing && (existing.status === "streaming" || existing.status === "tool_executing" || existing.status === "awaiting_approval")) {
@@ -785,7 +795,43 @@ export async function runInBackground(
 
   const allMessages = [...priorMessages, userMsg];
   const taskId = startTask(conversationId, userMessage, allMessages, mode, selectedModel);
+  // Our generation. If anything else claims the slot while we are awaiting,
+  // this run must unwind instead of writing into the newer task's store.
+  const myGeneration = getGeneration();
   startRubricObservation(taskId, userMessage, mode); // test-mode rubric observation (no-op unless TEST_MODE/live session)
+
+  // === Deep orchestration attempt (code/plan mode, complex tasks) ==========
+  // ONE deterministic router call: it picks scaffold | branch-compare |
+  // implement | plan from the task shape and produces write_file calls the
+  // loop below executes through the audited path. If the route is unavailable
+  // the plan-first directive stays in place and the normal loop does the work.
+  let orchestrationSummary = "";
+  let orchestrationLabel = "Strategy";
+  let orchestratedWrites = 0;
+  let orchestratedToolCalls: Array<Partial<ToolCall>> = [];
+  if (sparcDirective) {
+    // Only now safe to touch the shared status: the task slot is ours.
+    updateTaskStatus("streaming", "Planning with the strategy router…");
+    const routed = await runOrchestration("auto", {
+      task: basePrompt,
+      context: contentWithFiles.slice(0, 20_000),
+      existingFileCount: _fileTree.reduce((n: number, node: any) => n + (node.kind === "file" ? 1 : 0), 0),
+    });
+    // A newer send may have claimed the slot during those up-to-330s. Unwind
+    // rather than continue writing into another run's task.
+    if (myGeneration !== getGeneration()) {
+      return;
+    }
+    if (routed && Array.isArray(routed.toolCalls) && routed.toolCalls.length > 0) {
+      orchestrationLabel = String(routed.strategy || "strategy").toUpperCase();
+      orchestrationSummary = `[${orchestrationLabel}] ${routed.summary || ""}`.trim();
+      contentWithFiles = `${orchestrationSummary}\n\n${basePrompt}`;
+      orchestratedToolCalls = routed.toolCalls;
+    }
+    // Router unavailable/empty → the SPARC plan-first directive still gates
+    // writes until the model has planned via todo_list, so nothing is lost.
+  }
+
   // Rubric/meter data captured during the run; readable from the error path too.
   let savingsPct: number | null = null;
   let modelCallCount = 0;
@@ -1015,6 +1061,8 @@ export async function runInBackground(
       bumpStat,
       setFilesChanged,
       label: orchestrationLabel,
+      abortSignal,
+      isStale: () => myGeneration !== getGeneration(),
     });
     orchestratedWrites = written;
     if (written > 0) {
