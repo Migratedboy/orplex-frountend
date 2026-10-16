@@ -149,6 +149,11 @@ export function approveRequest(id: string): boolean {
   a.status = "approved";
   a.resolve?.(true);
   pending.delete(id);
+  // The abort listener was only detached on the FAILURE paths (the auto-reject
+  // timer and rejectAllPendingApprovals), so every approval the user accepted
+  // leaked an entry that retains the task's AbortController and keeps a live
+  // {once:true} listener on it. A heavy day of agent work is hundreds of these.
+  detachAbort(id);
   return true;
 }
 
@@ -159,6 +164,7 @@ export function rejectRequest(id: string): boolean {
   a.status = "rejected";
   a.resolve?.(false);
   pending.delete(id);
+  detachAbort(id);
   return true;
 }
 
@@ -238,6 +244,7 @@ export function approveRequestAlways(id: string): boolean {
   a.status = "approved";
   a.resolve?.(true);
   pending.delete(id);
+  detachAbort(id);
   return true;
 }
 

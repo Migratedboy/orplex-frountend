@@ -35,21 +35,39 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let body: { dataUrl?: unknown };
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-    }
+// Refuse an oversized body BEFORE parsing it.
+//
+// App Router route handlers get the raw Web Request, and next.config.js sets
+// no body limit (the 1MB bodyParser default is Pages-Router only). So
+// `await request.json()` materialised the ENTIRE body as a string and only then
+// did the length check below run - one request with a 1GB body OOMs the local
+// Next process. Content-Length is a cheap pre-check; the parsed length is still
+// verified afterwards because Content-Length is client-supplied and absent on
+// chunked requests.
+const MAX_BODY_BYTES = Math.ceil(MAX_ARCHIVE_ATTACHMENT_BYTES * 1.4);
+const declaredLength = Number(request.headers?.get?.("content-length") || "0");
+if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+  return NextResponse.json(
+    { error: `Request body exceeds ${Math.ceil(MAX_BODY_BYTES / 1024 / 1024)}MB` },
+    { status: 413 },
+  );
+}
 
-    if (typeof body.dataUrl !== "string" || !body.dataUrl) {
-      return NextResponse.json({ error: "dataUrl is required" }, { status: 400 });
-    }
+let body: { dataUrl?: unknown };
+try {
+  body = await request.json();
+} catch {
+  return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+}
 
-    // A base64 payload inflates ~33%, so reject obviously oversized bodies
-    // before decoding. The decoded size is re-checked in parseImageDataUrl
-    // against the per-type ceiling (archives get a larger one).
-    if (body.dataUrl.length > MAX_ARCHIVE_ATTACHMENT_BYTES * 1.4) {
+if (typeof body.dataUrl !== "string" || !body.dataUrl) {
+  return NextResponse.json({ error: "dataUrl is required" }, { status: 400 });
+}
+
+// A base64 payload inflates ~33%, so reject obviously oversized bodies
+// before decoding. The decoded size is re-checked in parseImageDataUrl
+// against the per-type ceiling (archives get a larger one).
+if (body.dataUrl.length > MAX_ARCHIVE_ATTACHMENT_BYTES * 1.4) {
       return NextResponse.json(
         {
           error: `File exceeds ${Math.floor(MAX_ARCHIVE_ATTACHMENT_BYTES / 1024 / 1024)}MB`,

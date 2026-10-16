@@ -430,6 +430,12 @@ function destroyPreviewTab(tabId: number): void {
     (view.webContents as any).destroy?.();
   } catch {}
   previewViews.delete(tabId);
+  // consoleBuffers was never deleted here, and previewNextTabId only ever
+  // increases, so every closed tab stranded up to 150 {level,text,at} entries
+  // (~300KB) for the life of the long-lived main process. networkBuffers IS
+  // deleted on close, so the omission was an oversight, not a decision.
+  consoleBuffers.delete(tabId);
+  visiblePreviewTabs.delete(tabId);
 }
 
 function normalizePreviewUrl(raw: string): string | null {
