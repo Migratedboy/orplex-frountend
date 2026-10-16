@@ -291,15 +291,31 @@ export function useChatSession() {
           });
         }
 
-        // Save conversation to DB when task completes — only if the task
-        // belongs to the conversation currently being viewed.
-        if (isCurrentConvo && task && task.status === "done" && task.displayContent) {
-          const userMsg = task.userMessage || "";
-          const assistantMsg = normalizeThinkingBlocks(task.displayContent);
-          if (userMsg && assistantMsg) {
-            convoRef.current.saveConversation(userMsg, assistantMsg, undefined, directoryNameRef.current).catch(() => {});
-          }
-        }
+    // Save conversation to DB when task completes — only if the task
+    // belongs to the conversation currently being viewed.
+    //
+    // A task the user STOPPED is `status === "error"` + `aborted`, so this
+    // used to skip it entirely and the partial answer was lost on reload —
+    // the "Stopped" note was all that survived. An interrupted answer is
+    // still the answer the user has, so persist it; only skip when there is
+    // genuinely no content (a failed task with nothing but an error is
+    // handled by the [FAILED] stamping path below).
+    const shouldPersist =
+      isCurrentConvo &&
+      task &&
+      (task.status === "done" || (task.status === "error" && task.aborted)) &&
+      task.displayContent;
+    if (shouldPersist) {
+      const userMsg = task.userMessage || "";
+      const assistantMsg = normalizeThinkingBlocks(task.displayContent!);
+      if (userMsg && assistantMsg) {
+        convoRef.current
+        .saveConversation(userMsg, assistantMsg, undefined, directoryNameRef.current, (msg) => toastRef.current(msg, "error"))
+        .catch(() => {
+          /* already surfaced via onSaveError */
+        });
+      }
+    }
 
         // A FAILED task (model died mid-response, all providers down, notice
         // stream from the server) must still land in the bubble: write the
@@ -419,10 +435,18 @@ export function useChatSession() {
       setBgTask(null);
       setThinking(false);
       setStreaming(false);
-      clearPhaseTimer();
-      setRunPhase("idle");
-      setRunLabel("");
-      setStopped(false);
+    clearPhaseTimer();
+    setRunPhase("idle");
+    setRunLabel("");
+    setStopped(false);
+    // The hook's own returned newChat() clears the queue, but this event path
+    // (Sidebar button and Ctrl+N) did not - and page.tsx never unmounts on the
+    // "/" navigation, so the state survived. Queue two prompts, click New Chat,
+    // then send anything: the new task completes, the subscriber auto-dequeues,
+    // and the old thread's queued prompt is appended to the NEW chat and saved
+    // under the new conversation.
+    setQueue([]);
+    queueRef.current = [];
       // Navigate to / if not already there — use Next.js router for instant client-side nav
       if (window.location.pathname !== "/") {
         router.push("/");
@@ -541,10 +565,20 @@ export function useChatSession() {
     if (snap.conversationId && !activeConvoId) {
       c.setConversationId(snap.conversationId);
     }
-    c.saveConversation(userText, assistantText, snap.conversationId || undefined, directoryNameRef.current).catch(() => {});
-
-    t("Your previous task was interrupted by the reload — partial output restored.", "info");
-    clearTaskSnapshot();
+    // The snapshot is the ONLY remaining copy of an interrupted run's partial
+    // output, and saveConversation swallows its own failures — so clearing it
+    // unconditionally destroyed the only copy whenever the save failed
+    // (offline, DB down, 500, or a 404 because the conversation was deleted).
+    // Clear only after a confirmed save.
+    c.saveConversation(userText, assistantText, snap.conversationId || undefined, directoryNameRef.current)
+      .then(() => {
+        t("Your previous task was interrupted by the reload — partial output restored.", "info");
+        clearTaskSnapshot();
+      })
+      .catch(() => {
+        // Still not persisted — keep the snapshot so a later attempt can save it.
+        t("Restored your partial output, but saving it failed. It is kept in this tab only — retrying or closing the tab will lose it.", "error");
+      });
   }, [session?.user?.id, convo.loadingConvo, convo.conversationId]);
 
   const sendMessageInner = useCallback(async (

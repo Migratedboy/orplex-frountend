@@ -31,12 +31,33 @@ export async function GET(request: NextRequest) {
     const id = request.nextUrl.searchParams.get("id");
 
     if (id) {
-      // Single conversation: one query (message list capped to avoid OOM on huge threads)
-      const conversation = await prisma.conversation.findFirst({
-        where: { id, userId: session.user.id },
-        include: { messages: { orderBy: { createdAt: "asc" }, take: 500 } },
-      });
-      return NextResponse.json({ conversation });
+  // Single conversation: one query (message list capped to avoid OOM on huge
+  // threads).
+  //
+  // The cap used to be `orderBy: {createdAt:"asc"}, take: 500`, which Prisma
+  // applies AFTER ordering - so it returned the OLDEST 500 rows. Past 250
+  // turns the user's actual recent history was unreachable: the transcript just
+  // appeared to end mid-conversation, while the sidebar snippet showed newer
+  // messages. Every new turn kept appending to a thread the UI could not show.
+  //
+  // Take the NEWEST 500 (descending), then reverse back to ascending for the
+  // client. `createdAt` alone is not a stable sort: it is
+  // TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP, and both messages of a turn are
+  // inserted in one nested-create transaction, so every user/assistant pair
+  // shares an identical timestamp. `id` breaks the tie deterministically.
+  const conversation = await prisma.conversation.findFirst({
+    where: { id, userId: session.user.id },
+    include: {
+      messages: {
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 500,
+      },
+    },
+  });
+  if (conversation) {
+    conversation.messages.reverse();
+  }
+  return NextResponse.json({ conversation });
     }
 
     // Single efficient query: list conversations with only the latest message snippet.
@@ -97,12 +118,27 @@ export async function POST(request: NextRequest) {
     if (rawMessages.length > 200) {
       return NextResponse.json({ error: "Too many messages (max 200)" }, { status: 400 });
     }
-    // Role allowlist + per-message caps: raw roles/content flow straight
-    // into Message rows — unbounded input is DB bloat.
-    const messages = rawMessages.map((m) => ({
+  // Role allowlist + per-message caps: raw roles/content flow straight
+  // into Message rows — unbounded input is DB bloat.
+  //
+  // The 50k cap silently amputated any long answer mid-sentence with no
+  // marker, so a bubble that looked complete in-session ended abruptly at
+  // 50k after a reload, and the client was never told its content had been
+  // shortened. Mark it in the stored content (so the truncation is visible
+  // where the data is read) and report it in the response (so the client can
+  // surface it).
+  const MAX_MESSAGE_CHARS = 50_000;
+  const TRUNCATION_MARKER = "\n\n[... truncated at 50000 characters — the full text was not persisted]";
+  let truncatedCount = 0;
+  const messages = rawMessages.map((m) => {
+    const raw = typeof m.content === "string" ? m.content : "";
+    const wasTruncated = raw.length > MAX_MESSAGE_CHARS;
+    if (wasTruncated) truncatedCount++;
+    return {
       role: m.role === "user" || m.role === "assistant" || m.role === "system" ? m.role : "user",
-      content: typeof m.content === "string" ? m.content.slice(0, 50_000) : "",
-    }));
+      content: wasTruncated ? raw.slice(0, MAX_MESSAGE_CHARS) + TRUNCATION_MARKER : raw,
+    };
+  });
 
     // Guard against FK violations from stale JWTs: a session token minted
     // before a DB reset can carry a userId that no longer exists. Upsert the
@@ -156,7 +192,13 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({ conversationId: conv.id, success: true });
+    return NextResponse.json({
+      conversationId: conv.id,
+      success: true,
+      // Tell the caller when its content was shortened, so it can warn rather
+      // than let the user believe a long answer was stored in full.
+      ...(truncatedCount > 0 ? { truncatedMessages: truncatedCount } : {}),
+    });
   } catch (error) {
     console.error("[Conversations POST] Error:", error);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });

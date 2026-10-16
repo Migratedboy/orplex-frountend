@@ -87,7 +87,9 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
     conversationIdOverride?: string | null,
     // Workspace folder (NAME) the thread belongs to — stamps new conversations
     // and refreshes existing ones so the sidebar groups threads per project.
-    workspaceName?: string | null
+    workspaceName?: string | null,
+    /** Surfaced to the user when a save fails or truncates content. */
+    onSaveError?: (message: string) => void,
   ) => {
     try {
       const targetId = conversationIdOverride !== undefined ? conversationIdOverride : conversationId;
@@ -107,16 +109,42 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
         }),
       });
       const data = await res.json();
+      // apiFetch does not throw on non-2xx, so a 401/500 used to resolve
+      // normally with no conversationId, no error and no toast: the exchange
+      // rendered fine in-session and vanished on the next reload.
+      if (!res.ok) {
+        onSaveError?.(`Conversation not saved (HTTP ${res.status})`);
+        throw new Error(`save failed: HTTP ${res.status}`);
+      }
+      if (data.truncatedMessages > 0) {
+        onSaveError?.(
+          `${data.truncatedMessages} message(s) were too long to save in full and were truncated at 50,000 characters.`,
+        );
+      }
       if (data.conversationId) setConversationId(data.conversationId);
       // Refresh shared conversation cache so Sidebar + History page
       // see the new/updated conversation immediately.
       refresh();
-    } catch {
-      // Silent fail for persistence
+    } catch (e) {
+      // Network/abort failure - the conversation is NOT persisted, and the
+      // caller must know that rather than assume the reload-recovery snapshot
+      // can be discarded. Re-throw so callers can gate destructive follow-up
+      // (the restore path only clears the snapshot after a confirmed save);
+      // it swallowed this before, making every .catch() at the call site dead
+      // code that could never observe a failure.
+      onSaveError?.("Conversation not saved — the request failed.");
+      throw e;
     }
   }, [conversationId, refresh]);
 
   const newChat = useCallback(() => {
+    // Invalidate any in-flight conversation load. loadConversation guards
+    // staleness with loadTokenRef, but nothing bumped it here - so clicking a
+    // thread in the sidebar and then hitting New Chat before the GET resolved
+    // let the response win: the "empty" new chat was repopulated with the old
+    // conversation's messages and setConversationId re-attached it. The next
+    // message was then appended to the thread the user had walked away from.
+    loadTokenRef.current++;
     setMessages(() => []);
     setConversationId(null);
   }, [setMessages]);
