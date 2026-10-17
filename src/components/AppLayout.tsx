@@ -175,7 +175,9 @@ export default function AppLayout({ children }: AppLayoutProps) {
     };
     document.addEventListener("keydown", handleKeyDown, true);
     return () => document.removeEventListener("keydown", handleKeyDown, true);
-  }, []);
+    // toggleSidebar is a useCallback with no deps, so this stays a one-time
+    // document listener.
+  }, [toggleSidebar]);
 
   // Global chat shortcuts. Ctrl+K never reaches this hook — the document
   // capture handler above intercepts it (stopImmediatePropagation) and

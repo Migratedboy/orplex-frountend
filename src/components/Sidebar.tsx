@@ -154,6 +154,7 @@ export default function Sidebar() {
   const navContent = (
     <>
       <div className="sidebar-brand">
+        {/* eslint-disable-next-line @next/next/no-img-element -- SVG logo: next/image cannot optimize SVG without dangerouslyAllowSVG, which Next.js advises against */}
         <img src="/logo.svg" alt="Orplex Code" className="sidebar-brand-logo" />
         <div className="sidebar-brand-text">
           <h1>Orplex Code</h1>
@@ -310,6 +311,7 @@ export default function Sidebar() {
         <div className="sidebar-user-info">
           {session?.user?.image ? (
             <div className="sidebar-user-avatar">
+              {/* eslint-disable-next-line @next/next/no-img-element -- arbitrary OAuth avatar host; next/image needs a remotePatterns entry per provider */}
               <img src={session.user.image} alt="User" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; (e.target as HTMLImageElement).nextElementSibling?.classList.remove("avatar-fallback-hidden"); }} />
               <span className="avatar-fallback avatar-fallback-hidden">{(session?.user?.name || "U")[0].toUpperCase()}</span>
             </div>

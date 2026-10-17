@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
 // RecoverSessionPrompt.tsx — "Recover previous session?" after a crash.
 //
@@ -15,6 +16,7 @@ const KEY = "orplex.recoverPromptShown";
 
 export default function RecoverSessionPrompt() {
   const [show, setShow] = useState(false);
+  const router = useRouter();
 
   useEffect(() => {
     let alive = true;
@@ -43,7 +45,7 @@ export default function RecoverSessionPrompt() {
       <span className="recover-strip-text">
         Orplex didn&apos;t shut down cleanly last time. Your agent runs are safe on the server — pick up where you left off?
       </span>
-      <button className="recover-strip-btn" onClick={() => { setShow(false); window.location.assign("/manager"); }}>
+      <button className="recover-strip-btn" onClick={() => { setShow(false); router.push("/manager"); }}>
         Recover session
       </button>
       <button className="recover-strip-btn recover-strip-btn--ghost" onClick={() => setShow(false)}>

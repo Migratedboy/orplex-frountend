@@ -153,6 +153,12 @@ export function useChatSession() {
       stoppedTimerRef.current = null;
     }, 8000);
   };
+  // Stable handle for the mount-only stall watchdog below.
+  // showStoppedNote is re-created on every render, so listing it as a dependency
+  // would tear down and recreate the 15s interval each render and the watchdog
+  // would never actually fire. Same pattern as sendMessageRef.
+  const showStoppedNoteRef = useRef(showStoppedNote);
+  showStoppedNoteRef.current = showStoppedNote;
   // Last time the active task produced ANY update — a stream that goes silent
   // for the whole stall window is dead, not "still thinking".
   const lastActivityRef = useRef(0);
@@ -464,9 +470,9 @@ export function useChatSession() {
       if (Date.now() - lastActivityRef.current < STALL_TIMEOUT_MS) return;
       abortCurrentTask();
       setRunPhase("stopped");
-      setRunLabel("No response — run stopped");
-      showStoppedNote();
-    }, 15000);
+setRunLabel("No response — run stopped");
+    showStoppedNoteRef.current();
+  }, 15000);
     return () => {
       clearInterval(id);
       clearPhaseTimer();
@@ -510,7 +516,10 @@ export function useChatSession() {
     };
     window.addEventListener("orplex:new-chat", handler);
     return () => window.removeEventListener("orplex:new-chat", handler);
-  }, []);
+    // Both are stable for the life of the component: cancelQueue is a
+    // useCallback with no deps and the App Router's router is a singleton, so
+    // this stays a mount-only listener registration.
+  }, [cancelQueue, router]);
 
   // Stable refs
   const msgRef = useRef(msg);

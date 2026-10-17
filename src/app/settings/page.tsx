@@ -1,4 +1,6 @@
 "use client";
+
+/* eslint-disable @next/next/no-img-element -- Every image here is either a remote avatar from an arbitrary OAuth host or user content. next/image would need a remotePatterns entry per provider and static dimensions we do not have. */
 import { useState, useEffect, useRef, useCallback } from "react";
 import { apiFetch } from "@/lib/api-base";
 import { useSession } from "next-auth/react";

@@ -28,6 +28,7 @@ export default function GeometricLoader() {
       <div className="gloader-vignette" aria-hidden="true" />
 
       <div className="gloader-ui">
+        {/* eslint-disable-next-line @next/next/no-img-element -- SVG logo: next/image cannot optimize SVG without dangerouslyAllowSVG, which Next.js advises against */}
         <img src="/logo.svg" alt="" className="gloader-logo" />
 
         <div className="gloader-ring-wrap">

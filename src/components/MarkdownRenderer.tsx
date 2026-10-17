@@ -230,6 +230,7 @@ const MD_COMPONENTS: Components = {
           if (!src || !/^(https?:|data:image\/(png|jpe?g|gif|webp);base64,)/i.test(src.trim())) return null;
           return (
             <div className="md-image-wrap">
+              {/* eslint-disable-next-line @next/next/no-img-element -- dynamic user-content URL; next/image needs static dimensions plus a remotePatterns allowlist */}
               <img src={src} alt={alt || ""} className="md-image" loading="lazy" referrerPolicy="no-referrer" />
               <div className="md-image-actions">
                 <button

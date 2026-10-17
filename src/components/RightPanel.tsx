@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- Browser-tab favicons are resolved from arbitrary tool URLs; next/image needs a remotePatterns allowlist. */
+
 import { useState, useEffect, useCallback, useRef, Component, type ReactNode } from "react";
 import { useFileSystemContext } from "./FileSystemProvider";
 import { useBackgroundChat } from "@/hooks/useBackgroundChat";
@@ -945,7 +947,7 @@ function TerminalTab() {
     void refreshServers();
     const t = setInterval(() => { void refreshServers(); }, 8000);
     return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   const clearTerminal = () => {
@@ -1150,7 +1152,7 @@ export default function RightPanel({ open, onClose, defaultTab, onResizingChange
       }
     } catch {}
     // Run once after hydration.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   // Sync tab when defaultTab changes (e.g. from Ctrl+T) + persist choice
@@ -1181,7 +1183,9 @@ export default function RightPanel({ open, onClose, defaultTab, onResizingChange
   useEffect(() => {
     onResizingChange?.(resizing);
     return () => onResizingChange?.(false);
-  }, [resizing]);
+    // onResizingChange is a setState passed from AppLayout, so it is stable;
+    // this stays scoped to actual resizing start/stop transitions.
+  }, [resizing, onResizingChange]);
 
   useEffect(() => {
     if (!resizing) return undefined;

@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- Screenshot frames are served from the workspace file API or an arbitrary run URL; next/image needs static dimensions plus a remotePatterns allowlist. */
+
 import { useState, useEffect, useRef, useCallback } from "react";
 import CommentInput from "./CommentInput";
 import MarkdownRenderer from "./MarkdownRenderer";
@@ -176,7 +178,6 @@ export default function ArtifactCard({ artifact }: { artifact: Artifact }) {
             onClick={handleScreenshotClick}
             title="Click anywhere to pin a comment"
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={`/api/workspace-file?path=${encodeURIComponent(shotPath)}`}
               alt={artifact.name}

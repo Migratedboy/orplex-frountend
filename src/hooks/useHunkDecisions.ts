@@ -48,9 +48,9 @@ export function useHunkDecisions() {
           `[APPLY] Applied filtered diff to ${filePath} — ${_acceptedIds.length} hunk(s) accepted`
         );
       }
-    },
-    [writeFile, readFile]
-  );
+},
+  [writeFile]
+);
 
   // Expose on window for RightPanel's DiffView callback
   useEffect(() => {

@@ -41,6 +41,7 @@ export default function FirstRunExperience() {
   return (
     <div className="empty-hero">
       <div className="empty-hero-center">
+        {/* eslint-disable-next-line @next/next/no-img-element -- SVG logo: next/image cannot optimize SVG without dangerouslyAllowSVG, which Next.js advises against */}
         <img src="/logo.svg" alt="" aria-hidden="true" className="empty-hero-logo" width={44} height={44} />
         <h1 className="empty-hero-title">Let&apos;s build with Orplex</h1>
 

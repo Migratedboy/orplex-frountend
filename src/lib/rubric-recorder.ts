@@ -325,7 +325,7 @@ function getNodeLibs(): NodeLibs | null {
   if (typeof window === "undefined") {
     try {
       // eval'd require is invisible to bundlers — the whole point.
-      // eslint-disable-next-line no-eval
+
       const req = eval("typeof require === 'function' ? require : null") as
         | ((id: string) => unknown)
         | null;

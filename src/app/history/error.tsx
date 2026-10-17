@@ -1,5 +1,7 @@
 "use client";
 
+import { useRouter } from "next/navigation";
+
 export default function HistoryError({
   error,
   reset,
@@ -7,6 +9,7 @@ export default function HistoryError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const router = useRouter();
   return (
     <div className="app-root">
       <div className="main-content">
@@ -25,7 +28,7 @@ export default function HistoryError({
               <button onClick={reset} className="error-page-retry">
                 Try again
               </button>
-              <button onClick={() => window.location.href = "/"} className="error-page-home">
+              <button onClick={() => router.push("/")} className="error-page-home">
                 Go to Home
               </button>
             </div>

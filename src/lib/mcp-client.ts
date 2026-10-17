@@ -70,7 +70,7 @@ export interface McpServerConfig {
 export function loadMcpConfig(configDir: string): Record<string, McpServerConfig> {
   try {
     // Lazy fs import keeps this module importable from any bundle.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+
     const fs = require("fs") as typeof import("fs");
     const path = require("path") as typeof import("path");
     const raw = fs.readFileSync(path.join(configDir, "orplex.config.json"), "utf8");

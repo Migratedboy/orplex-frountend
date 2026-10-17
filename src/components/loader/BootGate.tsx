@@ -11,6 +11,7 @@ const GeometricLoader = dynamic(() => import("./GeometricLoader"), {
     <div className="gloader" role="status" aria-label="Loading Orplex">
       <div className="gloader-vignette" />
       <div className="gloader-ui">
+        {/* eslint-disable-next-line @next/next/no-img-element -- SVG logo: next/image cannot optimize SVG without dangerouslyAllowSVG, which Next.js advises against */}
         <img src="/logo.svg" alt="" className="gloader-logo" />
       </div>
     </div>

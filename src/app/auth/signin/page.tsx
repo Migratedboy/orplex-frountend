@@ -73,6 +73,11 @@ export default function SignInPage() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "Desktop sign-in exchange failed");
+      // Hard navigation is required, not lazy: the session cookie was just set
+      // on this origin by the proxy rewrite, and only a full document load
+      // guarantees server components re-read it. A soft router.push can race
+      // the cookie and render the signed-out tree.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
       window.location.href = afterAuthUrl;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Desktop sign-in failed. Please try again.");
@@ -97,7 +102,7 @@ export default function SignInPage() {
       })
       .catch(() => {});
     return off;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   const handleDevLogin = async () => {
@@ -109,6 +114,7 @@ export default function SignInPage() {
       if (!res.ok) throw new Error(data?.error || "dev login failed");
       // Cookie is set (host-only on THIS origin via the proxy rewrite);
       // navigate into the app.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
       window.location.href = afterAuthUrl;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Dev login failed. Please try again.");
@@ -128,6 +134,11 @@ export default function SignInPage() {
       // NextAuth session state is dropped too and the tester can sign in
       // with a different identity. Otherwise just say so in place.
       if (data?.hadSession) {
+        // Deliberate full reload: the httpOnly cookie is already expired, and
+        // only reloading the document drops the in-memory NextAuth session
+        // state too. A soft client-side transition would keep that stale state
+        // alive in memory.
+        // eslint-disable-next-line @next/next/no-location-assign-relative-destination
         window.location.href = "/auth/signin?devSessionEnded=1";
       } else {
         setDevNotice("none");
@@ -191,6 +202,7 @@ export default function SignInPage() {
           <div className="mb-[24px]">
             {/* Logo */}
             <div className="h-16 w-16 rounded-lg overflow-hidden mb-[4px]">
+              {/* eslint-disable-next-line @next/next/no-img-element -- SVG logo: next/image cannot optimize SVG without dangerouslyAllowSVG, which Next.js advises against */}
               <img src="/logo.svg" alt="Orplex Code" className="w-full h-full object-cover" />
             </div>
           </div>
@@ -214,6 +226,7 @@ export default function SignInPage() {
           {/* Mobile Logo */}
           <div className="md:hidden flex flex-col items-center gap-[4px] text-center">
             <div className="h-20 w-20 rounded-lg overflow-hidden mb-[4px]">
+              {/* eslint-disable-next-line @next/next/no-img-element -- SVG logo: next/image cannot optimize SVG without dangerouslyAllowSVG, which Next.js advises against */}
               <img src="/logo.svg" alt="Orplex Code" className="w-full h-full object-cover" />
             </div>
             <h1 className="text-[24px] font-semibold leading-[1.2] text-[var(--text-primary)]">

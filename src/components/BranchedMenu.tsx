@@ -105,9 +105,17 @@ export default function BranchedMenu({
   const [open, setOpen] = useState<Set<number>>(() => toSet(defaultOpen));
   // Follow external expansion changes (Sidebar's expandedProjects is the
   // source of truth for project branches; e.g. reopenProject auto-expands).
+  //
+  // The parent hands us a NEW array identity on every render, so depending on
+  // defaultOpen directly would reset local expand/collapse state constantly and
+  // fight the user's clicks. Depend on a content key instead, and read the
+  // array through a ref so this stays stable and lint-clean.
+  const defaultOpenKey = JSON.stringify(defaultOpen);
+  const defaultOpenRef = useRef(defaultOpen);
+  defaultOpenRef.current = defaultOpen;
   useEffect(() => {
-    setOpen(toSet(defaultOpen));
-  }, [JSON.stringify(defaultOpen)]);
+    setOpen(toSet(defaultOpenRef.current));
+  }, [defaultOpenKey]);
   const [active, setActive] = useState<string>(() => {
     if (defaultActive) return defaultActive;
     const first = items.find((it, i) => it.children && toSet(defaultOpen).has(i));

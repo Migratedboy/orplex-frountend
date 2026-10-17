@@ -114,9 +114,14 @@ export default function ArtifactPanel({ open, runId, onClose }: ArtifactPanelPro
     };
   }, [open, runId]);
 
-  // Poll for updates while run is active
+  // Poll for updates while run is active.
+  // Depend on the primitive status, NOT on `run` itself: the poller calls
+  // setRun() with a fresh object every 3s, so listing `run` would tear down and
+  // recreate the interval on every response and poll as fast as the API allows.
+  const runStatus = run?.status;
+  const hasRun = run != null;
   useEffect(() => {
-    if (!open || !runId || !run || run.status === "done" || run.status === "failed") return;
+    if (!open || !runId || !hasRun || runStatus === "done" || runStatus === "failed") return;
 
     const interval = setInterval(() => {
       apiFetch(`/api/agent/runs/${runId}`)
@@ -126,7 +131,7 @@ export default function ArtifactPanel({ open, runId, onClose }: ArtifactPanelPro
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [open, runId, run?.status]);
+  }, [open, runId, hasRun, runStatus]);
 
   const selectedTaskData = run?.tasks?.find((t) => t.id === selectedTask);
   const terminal = run?.status === "completed" || run?.status === "failed" || run?.status === "cancelled";

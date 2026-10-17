@@ -41,7 +41,7 @@ function mockChatApi(body: ReadableStream<Uint8Array>): void {
 }
 
 afterEach(() => {
-  // eslint-disable-next-line no-undef
+
   jest.restoreAllMocks();
 });
 

@@ -66,6 +66,7 @@ export default function FilePreviewModal({ files, onRemove, onClose }: Props) {
               </div>
               {f.type === "image" && f.dataUrl && (
                 <div className="file-preview-thumb">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- data: URL; next/image has no data: source support */}
                   <img src={f.dataUrl} alt={f.name} />
                 </div>
               )}

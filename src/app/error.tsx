@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 export default function Error({
   error,
@@ -9,6 +10,7 @@ export default function Error({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const router = useRouter();
   useEffect(() => {
     // Full error (Prisma/SQL/paths) goes to console + tracker only — never rendered.
     console.error("[route-error]", error);
@@ -32,7 +34,7 @@ export default function Error({
           <button onClick={reset} className="error-page-retry">
             Try again
           </button>
-          <button onClick={() => window.location.href = "/"} className="error-page-home">
+          <button onClick={() => router.push("/")} className="error-page-home">
             Go to Home
           </button>
         </div>
