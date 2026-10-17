@@ -65,14 +65,22 @@ function loadEnforcement() {
 function probeCapabilities() {
   return CAPABILITY_PROBES.map((probe) => {
     const abs = p(probe.file);
-    const present = existsSync(abs);
+    const exists = existsSync(abs);
     let lines = 0;
-    if (present) lines = readFileSync(abs, "utf8").split("\n").length;
+    let content = "";
+    if (exists) {
+      content = readFileSync(abs, "utf8");
+      lines = content.split("\n").length;
+    }
+    // A file existing is not enough — an empty stub or a renamed leftover must
+    // not count as a capability. When the probe declares a marker, the
+    // enforcing code has to actually be in there.
+    const present = exists && (!probe.marker || probe.marker.test(content));
     return {
       id: probe.id,
       area: probe.area,
       file: probe.file,
-      status: present ? "present" : "missing",
+      status: present ? "present" : exists ? "stub" : "missing",
       lines: present ? lines : 0,
     };
   });
@@ -365,8 +373,8 @@ function main() {
     }
     lines.push("");
     lines.push("  Missing capabilities:");
-    for (const c of capabilities.filter((x) => x.status === "missing")) {
-      lines.push(`    - ${c.area.padEnd(8)} ${c.id}`);
+    for (const c of capabilities.filter((x) => x.status !== "present")) {
+      lines.push(`    - ${c.area.padEnd(8)} ${c.id}${c.status === "stub" ? " (file present, marker absent)" : ""}`);
     }
     lines.push("");
     lines.push(`  written: ${outPath}`);

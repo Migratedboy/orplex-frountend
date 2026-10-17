@@ -39,6 +39,29 @@ import {
 } from "./scratchpad";
 import { stampFailedMessage } from "./message-retry";
 import { lowMemoryNote } from "./memory-note";
+// === Reliability gate pipeline (plan Phase 1, all behind RELIABILITY_* flags) ===
+// Every import here is a no-op unless RELIABILITY_GATES=1, so the default
+// behaviour of this worker is byte-for-byte unchanged.
+import {
+  reliabilityGatesEnabled,
+  reliabilityEditLockEnabled,
+  reliabilityTestLaneEnabled,
+  reliabilityBaselineEnabled,
+} from "./reliability/flags";
+import {
+  runGatePipeline,
+  captureBaseline,
+  formatGateResult,
+  type GateExec,
+  type WorkspaceBaseline,
+} from "./reliability/gates";
+import {
+  acquireEditLock,
+  clearLane,
+  isEditLocked,
+  recordRefusedWrite,
+  releaseEditLock,
+} from "./reliability/edit-lock";
 
 let _pluginsInitialized = false;
 import {
@@ -1036,6 +1059,12 @@ export async function runInBackground(
   // Files written/edited this task (path → final content) — feeds the
   // self-review pass after the tool loop.
   const writtenFiles = new Map<string, string>();
+  // Reliability gate (Phase 1, RELIABILITY_GATES=1): the pre-task baseline is
+  // captured lazily on the FIRST mutating tool call, so a read-only task never
+  // pays for a tsc run. Without a baseline the gate cannot tell a regression
+  // from a pre-existing failure, so capturing it is mandatory under the flag.
+  let gateBaseline: WorkspaceBaseline | null = null;
+  let gateBaselineCaptured = false;
   // One collapsible [THINKING] block per turn — rebuilt in place as
   // reasoning streams in, then closed once the turn's answer text folds in.
   let thinkingDisplay = "";
@@ -1568,6 +1597,54 @@ export async function runInBackground(
           continue;
         }
 
+        // === EDIT LOCK (reliability, Phase 1) ===
+        // A red gate must refuse further mutations, not just display them. The
+        // lock is checked here, at the single dispatch point every write path
+        // funnels through, so a repair turn that keeps writing onto a red gate
+        // gets an explicit refusal it can adapt to instead of silently deepening
+        // the failure. run_command is deliberately NOT locked: it is the lane the
+        // repair loop uses to clear the gate, and locking it would wedge the task.
+        if (
+          reliabilityEditLockEnabled() &&
+          (call.name === "write_file" || call.name === "write_file_chunk" || call.name === "edit_file" || call.name === "batch_edit")
+        ) {
+          const lock = isEditLocked(taskId);
+          if (lock) {
+            recordRefusedWrite(taskId);
+            const redList = [...lock.redLanes].join(", ");
+            toolResults += `<tool_result name="${call.name}">BLOCKED by edit lock: the ${redList} gate is failing. Fix the reported errors first (they are in the last verification block), then retry ${call.name}. Writing while the gate is red only adds more errors.</tool_result>\n`;
+            fullDisplayContent += `[GATE] ${call.name} blocked — edit lock (${redList})\n`;
+            setDisplayContent(fullDisplayContent);
+            continue;
+          }
+        }
+
+        // Lazily capture the pre-task baseline on the FIRST mutating call, so a
+        // read-only task never pays for a tsc run. This MUST happen before the
+        // write, not after: the baseline is the "before" snapshot the gate diffs
+        // against to decide whether a failure is this task's fault.
+        if (
+          reliabilityBaselineEnabled() &&
+          !gateBaselineCaptured &&
+          (call.name === "write_file" || call.name === "write_file_chunk" || call.name === "edit_file" || call.name === "batch_edit")
+        ) {
+          gateBaselineCaptured = true;
+          updateTaskStatus("tool_executing", "Capturing pre-task verification baseline…");
+          gateBaseline = await captureBaseline(
+            (cmd, timeoutMs) =>
+              apiFetch("/api/agent/exec", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ command: cmd, timeout: timeoutMs }),
+                signal: abortSignal ?? undefined,
+              }).then(async (r) => {
+                const d = await r.json();
+                return { exitCode: d?.exitCode as number | undefined, stdout: d?.stdout as string, stderr: d?.stderr as string };
+              }),
+            abortSignal ?? undefined,
+          );
+        }
+
         // A throwing tool must not take down the turn. Several tools are only
         // partially guarded internally (read_file's whole-file read,
         // list_files, the write/edit approval paths, ask_question), and an
@@ -1837,6 +1914,44 @@ export async function runInBackground(
   // Did the typecheck lane actually RUN? A lane that could not execute is not
   // a pass, and must never report one.
   let typecheckRan = false;
+  // Reliability gate (Phase 1): when armed, the whole tiered pipeline replaces
+  // the single tsc call. The repair machinery below is REUSED unchanged — the
+  // pipeline only decides what `findings` contains and whether the failure is a
+  // regression worth blocking on.
+  let gateResult: Awaited<ReturnType<typeof runGatePipeline>> | null = null;
+  if (reliabilityGatesEnabled()) {
+    gateResult = await runGatePipeline({
+      taskId,
+      baseline: gateBaseline,
+      exec: async (cmd, timeoutMs) => {
+        const res = await apiFetch("/api/agent/exec", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ command: cmd, timeout: timeoutMs }),
+          signal: abortSignal ?? undefined,
+        });
+        const d = await res.json();
+        return { exitCode: d?.exitCode as number | undefined, stdout: d?.stdout as string, stderr: d?.stderr as string };
+      },
+      changedFiles: [...writtenFiles.keys()],
+      includeTestLane: reliabilityTestLaneEnabled(),
+      signal: abortSignal ?? undefined,
+    });
+    for (const r of gateResult.results) recordLaneOutcome(r.lane, r.outcome);
+    fullDisplayContent += formatGateResult(gateResult) + "\n";
+    setDisplayContent(fullDisplayContent);
+    const tc = gateResult.results.find((r) => r.lane === "typecheck");
+    typecheckRan = !!tc && tc.outcome !== "skipped";
+    // Only REGRESSIONS (new errors vs the baseline) become repair findings. A
+    // pre-existing failure is reported in the gate summary but must not send
+    // the model chasing errors it did not cause.
+    findings = gateResult.blocking
+      .map((r) => `### ${r.lane} lane\n${r.findings || r.newErrors.join("\n")}`)
+      .join("\n\n");
+    if (tc?.outcome === "fail" && tc.newErrors.length > 0) {
+      recordFailure("typecheck", tc.findings, [...writtenFiles.keys()]);
+    }
+  } else {
         try {
           const res = await apiFetch("/api/agent/exec", {
             method: "POST",
@@ -1863,6 +1978,7 @@ export async function runInBackground(
           // exec route unavailable (e.g. unit tests without the server) — the
           // lane did NOT run. typecheckRan stays false so it is never a pass.
         }
+  }
 
         if (!typecheckRan && !findings) {
           fullDisplayContent +=
@@ -1884,7 +2000,24 @@ export async function runInBackground(
 
         if (round === MAX_REPAIR_ROUNDS) {
           fullDisplayContent += `\n**Verification still failing** after ${MAX_REPAIR_ROUNDS} repair round(s):\n\n\`\`\`\n${findings.slice(0, 1500)}\n\`\`\`\n`;
-          recordLaneOutcome("typecheck", "fail");
+          // When the reliability gate is armed, the lane outcomes were already
+          // recorded by the pipeline. Re-recording "typecheck" here would
+          // clobber a real lane result, so only the legacy path stamps it.
+          if (!reliabilityGatesEnabled()) recordLaneOutcome("typecheck", "fail");
+          // HARD GATE: the pipeline is red and every repair round is spent.
+          // Take the edit lock so further mutations in this task are refused —
+          // this is what turns "the gate reported a failure" into "the gate
+          // refuses the next write". Released only by a green pipeline or a
+          // task end.
+          if (reliabilityEditLockEnabled() && gateResult && gateResult.verdict === "FAIL") {
+            const redLanes = gateResult.blocking.map((r) => r.lane).join(", ");
+            acquireEditLock(
+              taskId,
+              redLanes,
+              `${gateResult.blocking.length} verification lane(s) still failing after ${MAX_REPAIR_ROUNDS} repair round(s)`,
+            );
+            fullDisplayContent += `\n**Edit lock engaged** — the ${redLanes} lane(s) are still red. Further writes are refused until they pass.\n`;
+          }
           setDisplayContent(fullDisplayContent);
           break;
         }
@@ -2451,6 +2584,10 @@ export async function runInBackground(
     // Stale check: don't complete if user stopped/started a new task
     if (isCurrentTask(taskId) && !abortSignal?.aborted) {
       clearPlanLatch(taskId);
+      // Reliability gate: the task is closing. Drop any edit lock so a red
+      // close cannot wedge the NEXT task — the lock's job is to refuse writes
+      // while a gate is red WITHIN a task, not to punish the next one.
+      releaseEditLock(taskId);
       // A model that answered empty (no text, no tools) is a failure wearing a
       // success: stamp the bubble [FAILED] so Retry is offered. (The stamp
       // rides the final content — failTask/completeTask content is what the
@@ -2491,6 +2628,8 @@ export async function runInBackground(
           );
           setDisplayContent(partial);
         }
+        // Reliability gate: an aborted task must not leak an edit lock.
+        releaseEditLock(taskId);
         return;
       }
       const errMsg = String((err as Error)?.message || "Unknown error");
@@ -2507,6 +2646,9 @@ export async function runInBackground(
         ? normalizeThinkingBlocks(deduplicateWords(repairInterleavedReplay(fullDisplayContent.trim())))
         : "";
       setDisplayContent(stampFailedMessage(partial ? `${partial}\n\n${failMsg}` : failMsg));
+      // Reliability gate: a failed task must not leak an edit lock into the
+      // next one. Same reasoning as the success path.
+      releaseEditLock(taskId);
       failTask(failMsg);
       // === PLUGIN HOOK: onTaskFail ===
       onTaskFail(userMessage, failMsg).catch(() => {});

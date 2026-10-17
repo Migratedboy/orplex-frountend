@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-10-17T08:37:48.595Z",
+  "generatedAt": "2026-10-17T12:38:33.725Z",
   "schema": 1,
-  "capability_present": 1,
+  "capability_present": 4,
   "capability_total": 18,
   "trap_tasks": 6,
   "test_tamper_attempts": 1,
@@ -12,22 +12,22 @@
   "loop_events": 7,
   "unverified_checks": 10,
   "gate_time_p50_ms": null,
-  "harness_duration_ms": 167,
+  "harness_duration_ms": 1151,
   "details": {
     "capabilities": [
       {
         "id": "tiered-gate-pipeline",
         "area": "phase1",
-        "file": "src/lib/gates/pipeline.ts",
-        "status": "missing",
-        "lines": 0
+        "file": "src/lib/reliability/gates.ts",
+        "status": "present",
+        "lines": 330
       },
       {
         "id": "baseline-diagnostics",
         "area": "phase1",
-        "file": "src/lib/gates/baseline.ts",
-        "status": "missing",
-        "lines": 0
+        "file": "src/lib/reliability/gates.ts",
+        "status": "present",
+        "lines": 330
       },
       {
         "id": "flake-control",
@@ -39,9 +39,9 @@
       {
         "id": "edit-lock",
         "area": "phase1",
-        "file": "src/lib/agent/repair-loop.ts",
-        "status": "missing",
-        "lines": 0
+        "file": "src/lib/reliability/edit-lock.ts",
+        "status": "present",
+        "lines": 102
       },
       {
         "id": "shadow-worktree-browser-lane",
@@ -139,7 +139,7 @@
         "area": "phase8",
         "file": "evals/reliability/run.mjs",
         "status": "present",
-        "lines": 396
+        "lines": 404
       }
     ],
     "traps": [
@@ -345,5 +345,12 @@
         ]
       }
     ]
+  },
+  "phase": 1,
+  "note": "Post-Phase-1 baseline. Capabilities +3 (tiered-gate-pipeline, baseline-diagnostics, edit-lock) behind RELIABILITY_GATES. Trap metrics unchanged — those are Phase 2-5 work. Deterministic across 2 runs.",
+  "phase0": {
+    "capability_present": 1,
+    "test_tamper_passed": 1,
+    "unverified_checks": 10
   }
 }

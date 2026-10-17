@@ -19,6 +19,16 @@ export interface RubricLine {
   evidence: string;
 }
 
+/**
+ * The verification-lane map. `test` is the new member (plan D-7): the union
+ * historically had only typecheck/browser/swarm, so a jest result could never
+ * reach computeVerdict. Adding it is additive — every existing call site and
+ * test that passes a 3-key object still typechecks, because a missing key here
+ * is filled by the initializers in startRubricObservation.
+ */
+export type LaneOutcome = "pass" | "fail" | "skipped";
+export type Lanes = Record<"typecheck" | "lint" | "test" | "browser" | "swarm", LaneOutcome>;
+
 export interface RubricRecord {
   /** ISO timestamp of the run. */
   at: string;
@@ -65,7 +75,7 @@ let currentObservation: {
   startedAt: number;
   calls: ObservedToolCall[];
   writtenFiles: Set<string>;
-  lanes: { typecheck: "pass" | "fail" | "skipped"; browser: "pass" | "fail" | "skipped"; swarm: "pass" | "fail" | "skipped" };
+  lanes: Lanes;
   readingCounts: Map<string, number>;
 } | null = null;
 
@@ -79,7 +89,7 @@ export function startRubricObservation(taskId: string, task: string, mode: strin
     startedAt: Date.now(),
     calls: [],
     writtenFiles: new Set(),
-    lanes: { typecheck: "skipped", browser: "skipped", swarm: "skipped" },
+    lanes: { typecheck: "skipped", lint: "skipped", test: "skipped", browser: "skipped", swarm: "skipped" },
     readingCounts: new Map(),
   };
 }
@@ -96,14 +106,14 @@ export function recordToolCall(name: string, ok: boolean, path?: string): void {
   }
 }
 
-/** Record a verification-lane outcome (typecheck / browser / swarm). */
+/** Record a verification-lane outcome (typecheck / lint / test / browser / swarm). */
 export function recordLaneOutcome(
-  lane: "typecheck" | "browser" | "swarm",
+  lane: keyof Lanes,
   // The stored model has always allowed "skipped" (computeVerdict treats it as
   // never-a-pass), but this signature only accepted "pass" | "fail", so a lane
   // that could not run could never be recorded as skipped — the only way out
   // was to lie and say "pass".
-  outcome: "pass" | "fail" | "skipped",
+  outcome: LaneOutcome,
 ): void {
   if (!currentObservation || !isRecordingEnabled()) return;
   currentObservation.lanes[lane] = outcome;
@@ -114,7 +124,7 @@ export function recordLaneOutcome(
  * call count — null when observation isn't active (recording disabled).
  */
 export function getObservationMeta(): {
-  lanes: { typecheck: "pass" | "fail" | "skipped"; browser: "pass" | "fail" | "skipped"; swarm: "pass" | "fail" | "skipped" };
+  lanes: Lanes;
   durationMs: number;
 } | null {
   if (!currentObservation) return null;
@@ -166,8 +176,8 @@ export function gradeRun(
   const maxReads = readsPerFile.length ? Math.max(...readsPerFile) : 0;
   const hadFailedCalls = !!obs && obs.calls.some((c) => c.failed);
   const written = wroteAny;
-  const laneRan = !!obs && (obs.lanes.typecheck !== "skipped" || obs.lanes.browser !== "skipped");
-  const laneFailed = !!obs && (obs.lanes.typecheck === "fail" || obs.lanes.browser === "fail");
+  const laneRan = !!obs && (["typecheck", "lint", "test", "browser", "swarm"] as const).some((k) => obs.lanes[k] !== "skipped");
+  const laneFailed = !!obs && (["typecheck", "lint", "test", "browser", "swarm"] as const).some((k) => obs.lanes[k] === "fail");
   const usedTodoList = !!obs?.calls.some((c) => c.name === "todo_list");
 
   // Fence check on the final transcript: fenced code blocks in the answer
@@ -206,7 +216,7 @@ export function gradeRun(
         finalStatus !== "done"
           ? "task did not complete — nothing verified"
           : laneRan
-            ? `platform lanes ran: typecheck=${obs!.lanes.typecheck}, browser=${obs!.lanes.browser} — no unresolved failures`
+            ? `platform lanes ran: ${(["typecheck", "lint", "test", "browser", "swarm"] as const).map((k) => `${k}=${obs!.lanes[k]}`).join(", ")} — no unresolved failures`
             : wroteAny
               ? "files written but NO verification lane ran — task closed unverified"
               : "nothing written — no verification required",
@@ -266,14 +276,13 @@ function gradeCleanReport(finalStatus: "done" | "error" | "aborted", transcript:
  * Compute the binary verdict from platform evidence (exit codes and lane
  * outcomes), never from the letter grades:
  *   - finalStatus must be "done" (error/aborted → FAIL, no exceptions);
- *   - the typecheck lane, when it ran, must be "pass" (exit code 0);
- *   - the browser lane, when it ran, must be "pass" (zero console errors);
- *   - the review lane (swarm slot), when it ran, must be "pass".
+ *   - every lane, when it ran, must be "pass" (exit-code evidence);
+ *   - the new `test` lane follows the same rule as the others.
  * Skipped lanes never fail a run — they mean the lane didn't apply.
  */
 export function computeVerdict(
   finalStatus: "done" | "error" | "aborted",
-  lanes: { typecheck: "pass" | "fail" | "skipped"; browser: "pass" | "fail" | "skipped"; swarm: "pass" | "fail" | "skipped" }
+  lanes: Lanes
 ): { verdict: "PASS" | "FAIL"; evidence: string[] } {
   const evidence: string[] = [];
   let pass = true;
@@ -282,7 +291,7 @@ export function computeVerdict(
     pass = false;
     evidence.push(`finalStatus=${finalStatus} (must be done)`);
   }
-  for (const lane of ["typecheck", "browser", "swarm"] as const) {
+  for (const lane of ["typecheck", "lint", "test", "browser", "swarm"] as const) {
     const outcome = lanes[lane];
     if (outcome === "fail") {
       pass = false;

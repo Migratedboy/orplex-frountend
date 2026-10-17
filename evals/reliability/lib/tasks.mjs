@@ -111,10 +111,13 @@ export const TRAPS = [
  * fails today is a real gap, recorded rather than hidden.
  */
 export const CAPABILITY_PROBES = [
-  { id: "tiered-gate-pipeline", area: "phase1", file: "src/lib/gates/pipeline.ts" },
-  { id: "baseline-diagnostics", area: "phase1", file: "src/lib/gates/baseline.ts" },
+  // Phase 1 paths reflect the REAL Phase 1 layout (src/lib/reliability/). The
+  // `marker` regex guards against an empty stub file counting as a capability:
+  // present only if the file exists AND contains the enforcing code.
+  { id: "tiered-gate-pipeline", area: "phase1", file: "src/lib/reliability/gates.ts", marker: /runGatePipeline/ },
+  { id: "baseline-diagnostics", area: "phase1", file: "src/lib/reliability/gates.ts", marker: /captureBaseline/ },
   { id: "flake-control", area: "phase1", file: "src/lib/gates/flake.ts" },
-  { id: "edit-lock", area: "phase1", file: "src/lib/agent/repair-loop.ts" },
+  { id: "edit-lock", area: "phase1", file: "src/lib/reliability/edit-lock.ts", marker: /acquireEditLock/ },
   { id: "shadow-worktree-browser-lane", area: "phase1", file: "src/lib/workspace/shadow.ts" },
   { id: "test-tamper-detector", area: "phase2", file: "src/lib/gates/integrity.ts" },
   { id: "diff-coverage-gate", area: "phase2", file: "src/lib/gates/diff-coverage.ts" },
