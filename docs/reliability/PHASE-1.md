@@ -49,21 +49,22 @@ Phase 1 supplies the missing enforcement layer: a pipeline that can **refuse**.
 - **D-7:** `test` and `lint` added as lane members. `Lanes` is now `Record<"typecheck"|"lint"|"test"|"browser"|"swarm", LaneOutcome>`. Existing 3-key call sites still typecheck.
 - **D-8:** flake control is **not** in this phase — it needs a test lane to attach to and a test baseline to compare against. Sequenced for Phase 2 alongside the test-lane work.
 
+## Red closes are honest closes
+
+When the pipeline is **still red after every repair round**, the task closes as `[FAILED]`, not `done`:
+
+- `finalStatus` becomes `"error"` everywhere the terminal status is written — the rubric ledger (`finishRubricObservation`), the run ledger (`buildFinalizePayload`), workspace memory, and the plugin hook.
+- The bubble is stamped with `stampFailedMessage` so **Retry is offered**, exactly like the existing empty-response path at `background-worker.ts:2610`.
+- `failTask` is called (not `completeTask`), so the status is `error` and the failure notification fires.
+- The full gate report stays in the content above the stamp — the user needs the findings to fix it.
+
+This follows the codebase's own precedent: an empty response is already treated as *"a failure wearing a success"*. A red gate after every repair round is the same thing, and closing it as `done` would be exactly the "looks done vs is done" dishonesty the plan exists to kill.
+
 ## Not in this phase (deferred)
 
 - Flake control / rerun-on-failure (D-8 — needs the test baseline)
 - Shadow worktree for the browser lane
 - Content-hash caching / related-test selection for gate speed
-- Making the verdict block `completeTask` unconditionally (today it engages the edit lock and reports; the final status still reads `done` — see *Open question* below)
-
-## Open question for you
-
-When the gate is red after every repair round, Phase 1 engages the edit lock and prints an explicit refusal, but the task still closes with status `done` and a red verification block in the transcript. Two options:
-
-1. **Keep as-is** — the user sees a red gate + edit lock and decides.
-2. **Stamp the task failed** — a red gate closes as `[FAILED]` so Retry is offered and the ledger records `FAIL`.
-
-Option 2 is a behaviour change under the flag and matches `computeVerdict`'s semantics. Confirm which you want before Phase 2.
 
 ## Verification
 

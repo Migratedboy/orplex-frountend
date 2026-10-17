@@ -1065,6 +1065,11 @@ export async function runInBackground(
   // from a pre-existing failure, so capturing it is mandatory under the flag.
   let gateBaseline: WorkspaceBaseline | null = null;
   let gateBaselineCaptured = false;
+  // True when the gate pipeline is STILL red after every repair round. A task
+  // that ends in this state is a failure wearing a success — the files are
+  // written but the workspace does not compile — so it must close as [FAILED]
+  // (Retry offered, ledger records FAIL), exactly like an empty response does.
+  let gateRed = false;
   // One collapsible [THINKING] block per turn — rebuilt in place as
   // reasoning streams in, then closed once the turn's answer text folds in.
   let thinkingDisplay = "";
@@ -2004,11 +2009,18 @@ export async function runInBackground(
           // recorded by the pipeline. Re-recording "typecheck" here would
           // clobber a real lane result, so only the legacy path stamps it.
           if (!reliabilityGatesEnabled()) recordLaneOutcome("typecheck", "fail");
-          // HARD GATE: the pipeline is red and every repair round is spent.
-          // Take the edit lock so further mutations in this task are refused —
-          // this is what turns "the gate reported a failure" into "the gate
-          // refuses the next write". Released only by a green pipeline or a
-          // task end.
+          // The pipeline is red and every repair round is spent. This task did
+          // NOT end verified — record that honestly so the completion site
+          // stamps [FAILED] instead of reporting a clean close. Same reasoning
+          // as stampFailedMessage for an empty response: a failure wearing a
+          // success is worse than an visible failure.
+          if (reliabilityGatesEnabled() && gateResult && gateResult.verdict === "FAIL") {
+            gateRed = true;
+          }
+          // HARD GATE: take the edit lock so further mutations in this task are
+          // refused — this is what turns "the gate reported a failure" into
+          // "the gate refuses the next write". Released only by a green pipeline
+          // or a task end.
           if (reliabilityEditLockEnabled() && gateResult && gateResult.verdict === "FAIL") {
             const redLanes = gateResult.blocking.map((r) => r.lane).join(", ");
             acquireEditLock(
@@ -2542,10 +2554,17 @@ export async function runInBackground(
     // blocks): phrase-level replay repair → word-level dedup → normalization.
     const rawFinalContent = normalizeThinkingBlocks(deduplicateWords(repairInterleavedReplay(cleanContent || fullDisplayContent)));
     let finalContent = rawFinalContent;
+    // A task whose gate is STILL red after every repair round did not end
+    // verified — the files are written but the workspace does not compile.
+    // Record that honestly everywhere the terminal status is written (rubric
+    // ledger, run ledger, memory, UI) so a red close can never be reported as
+    // a clean one. Same reasoning as stampFailedMessage for an empty response:
+    // a failure wearing a success is worse than a visible failure.
+    const finalStatus: "done" | "error" = gateRed ? "error" : "done";
     setDisplayContent(finalContent);
     if (isRecordingEnabled()) {
       try {
-        const record = finishRubricObservation("done", finalContent, { modelCalls: modelCallCount, tokenSavingsPct: savingsPct });
+        const record = finishRubricObservation(finalStatus, finalContent, { modelCalls: modelCallCount, tokenSavingsPct: savingsPct });
         if (record) console.log("\n=== RUBRIC TREND ===\n" + formatTrendReport(readTrendHistoryForReport()) + "\n");
       } catch {}
     }
@@ -2560,7 +2579,7 @@ export async function runInBackground(
         workspaceKey: getWorkspaceKey(_directoryName),
         task: userMessage,
         mode,
-        finalStatus: "done",
+        finalStatus,
         lanes,
         durationMs: meta?.durationMs || 0,
       });
@@ -2576,7 +2595,7 @@ export async function runInBackground(
           task: userMessage,
           writtenFiles: writtenObj,
           lanes: { typecheck: lanes.typecheck, browser: lanes.browser },
-          finalStatus: "done",
+          finalStatus,
           directoryName: _directoryName ?? "",
         } as never);
       } catch {}
@@ -2601,13 +2620,27 @@ export async function runInBackground(
           : finalContent;
         finalContent = stampFailedMessage(withNote);
       }
-      completeTask(finalContent);
-      // === PLUGIN HOOK: onTaskComplete ===
-      onTaskComplete(userMessage, finalContent, {
-        files: Object.fromEntries(writtenFiles),
-        lanes: getObservationMeta()?.lanes as Record<string, string> | undefined,
-        finalStatus: "done",
-      }).catch(() => {});
+      if (gateRed) {
+        // The gate is still red after every repair round. Stamp the bubble
+        // [FAILED] so Retry is offered, exactly like an empty response — but
+        // keep the full gate report in the content above the stamp, because
+        // the user needs the findings to fix it. failTask preserves whatever
+        // was last set as display content and flips status to error.
+        const gateReason = `verification gate still red after ${MAX_REPAIR_ROUNDS} repair round(s) — the workspace does not compile`;
+        finalContent = stampFailedMessage(`${finalContent}\n\n**Task closed as FAILED** — ${gateReason}.`);
+        setDisplayContent(finalContent);
+        failTask(gateReason);
+        // === PLUGIN HOOK: onTaskFail ===
+        onTaskFail(userMessage, gateReason).catch(() => {});
+      } else {
+        completeTask(finalContent);
+        // === PLUGIN HOOK: onTaskComplete ===
+        onTaskComplete(userMessage, finalContent, {
+          files: Object.fromEntries(writtenFiles),
+          lanes: getObservationMeta()?.lanes as Record<string, string> | undefined,
+          finalStatus,
+        }).catch(() => {});
+      }
     }
   } catch (err) {
     const aborted = abortSignal?.aborted === true;
