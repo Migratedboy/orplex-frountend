@@ -23,6 +23,7 @@
     "postinstall": "node scripts/fetch-pgdump.mjs",
     "test": "jest --forceExit",
     "test:e2e": "playwright test",
+    "eval:reliability": "node evals/reliability/run.mjs",
     "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
     "check:fonts": "node scripts/check-fonts-sync.mjs",
     "db:local": "node scripts/local-db.mjs start",
