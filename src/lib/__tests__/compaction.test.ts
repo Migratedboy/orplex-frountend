@@ -81,13 +81,18 @@ describe("compactTranscript", () => {
 
   it("reuses prior state incrementally (second eviction summarizes only the new tail)", async () => {
     const big = fillTranscript(6, 300);
+    // Derive the fingerprint the way the implementation does. It used to be
+    // `content.length`, which is why this now needs a helper rather than a
+    // one-liner — see the collision regression test below.
+    const firstPass = await compactTranscript(big, BUDGET, async () => "earlier turns did setup");
     const state: CompactionState = {
-      coveredCount: 2,
+      coveredCount: firstPass!.evictedCount,
       summary: "earlier turns did setup",
-      fingerprint: big.slice(0, 2).map((m) => m.content.length),
+      fingerprint: firstPass!.newState.fingerprint,
     };
     const summarize = jest.fn(async (_prompt: string, _maxTokens: number) => "merged summary");
-    const result = await compactTranscript(big, BUDGET, summarize, {}, state);
+    const grown = [...big, msg("new turn arriving after the first eviction")];
+    const result = await compactTranscript(grown, BUDGET, summarize, {}, state);
 
     expect(result).not.toBeNull();
     // prompt should mention the previous summary (incremental path taken)
@@ -96,6 +101,34 @@ describe("compactTranscript", () => {
     expect(sentPrompt).toContain("earlier turns did setup");
     // new state covers everything evicted
     expect(result!.newState.coveredCount).toBe(result!.evictedCount);
+  });
+
+  it("detects a replaced prefix whose byte length is UNCHANGED", async () => {
+    // The fingerprint used to be content.length, so an edit that preserved
+    // length looked "stable": the incremental branch fired, re-summarized only
+    // the new tail, and kept a summary of content that no longer existed. The
+    // agent then reasoned from a summary describing the wrong code, with no
+    // signal that anything was off.
+    const original = fillTranscript(6, 300);
+    const firstPass = await compactTranscript(original, BUDGET, async () => "summary of ORIGINAL prefix");
+    expect(firstPass).not.toBeNull();
+
+    // Swap one character in the first covered message: same length, different
+    // content.
+    const covered = firstPass!.evictedCount;
+    const tampered = [...original];
+    tampered[0] = msg("MESSAGE-0 " + "x".repeat(300 * 4));
+    expect(tampered[0].content.length).toBe(original[0].content.length);
+
+    const summarize = jest.fn(async (_prompt: string, _maxTokens: number) => "summary of REPLACED prefix");
+    const result = await compactTranscript(tampered, BUDGET, summarize, {}, firstPass!.newState);
+
+    // Must take the FULL re-summarize path, not the incremental one.
+    const sentPrompt = summarize.mock.calls[0][0] as string;
+    expect(sentPrompt).toContain("Transcript to compress");
+    expect(sentPrompt).not.toContain("Previous summary");
+    expect(result!.newState.summary).toBe("summary of REPLACED prefix");
+    expect(covered).toBeGreaterThan(0);
   });
 
   it("falls back to full re-summarize when the fingerprint mismatches", async () => {

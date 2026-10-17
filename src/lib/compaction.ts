@@ -26,7 +26,14 @@ export interface CompactionState {
   coveredCount: number;
   /** The last accepted <context_so_far> body (without the wrapper). */
   summary: string;
-  /** Cheap fingerprint of the covered prefix (content lengths) — detects a replaced transcript. */
+  /**
+   * Per-message content hash of the covered prefix — detects a replaced
+   * transcript. This was a plain `content.length`, which collided: editing a
+   * message without changing its byte length (swap one identifier, retype a
+   * character) left the fingerprint "stable", so the incremental branch
+   * re-summarized only the new tail and silently kept a summary describing
+   * content that no longer existed. Hashing makes that collision impractical.
+   */
   fingerprint: number[];
 }
 
@@ -76,6 +83,33 @@ const SUMMARY_SYSTEM_PROMPT = `You compress a coding-agent transcript into a con
 const charCapFor = (tokens: number) => tokens * 4;
 
 /**
+ * Token cost of the fixed prose wrapped around the summary inside the emitted
+ * `<context_so_far>` block. Measured against the literal in `compactTranscript`
+ * below; kept as a named constant so the eviction math and the emitted block
+ * cannot drift apart unnoticed.
+ */
+const CONTEXT_BLOCK_WRAPPER_TOKENS = 50;
+
+/**
+ * FNV-1a over the message content, plus the length in the high bits so two
+ * different-length strings that hash alike still differ in practice.
+ *
+ * Cheap enough to run over the whole covered prefix on every compaction
+ * (O(total characters), once per call — the eviction loop below is the
+ * dominant cost), and unlike a bare length it actually changes when the text
+ * changes.
+ */
+function hashContent(text: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  // Fold the length in so the hash space is not pure 32-bit-truncated.
+  return (h ^ text.length) >>> 0;
+}
+
+/**
  * Compact a transcript under budgetTokens by summarizing evicted oldest
  * messages into a single <context_so_far> block. Returns null when nothing
  * needed compacting (caller keeps its input as-is).
@@ -106,10 +140,14 @@ export async function compactTranscript(
   const trigger = Math.floor(budgetTokens * triggerFraction);
   if (totalTokens(messages) <= trigger) return null;
 
-  // Evict oldest-first until (summary + remaining) fits the budget.
+// Evict oldest-first until (summary + remaining) fits the budget.
+  // The cost of the block we emit is the summary PLUS the fixed <context_so_far>
+  // wrapper (~190 chars ≈ 48 tokens). Budgeting only `summaryTokenCap` made
+  // `fits` under-count, so eviction stopped one or two messages short and the
+  // result could land ~50 tokens over budget.
+  const blockTokens = summaryTokenCap + CONTEXT_BLOCK_WRAPPER_TOKENS;
   let evictCount = 0;
-  const fits = (count: number) =>
-    totalTokens(messages.slice(count)) + summaryTokenCap <= budgetTokens;
+  const fits = (count: number) => totalTokens(messages.slice(count)) + blockTokens <= budgetTokens;
   while (evictCount < evictableEnd && !fits(evictCount)) evictCount++;
   if (evictCount < 2) return null; // barely over trigger — truncation handles it fine
 
@@ -126,7 +164,7 @@ export async function compactTranscript(
     fingerprint.length === covered &&
     messages
       .slice(0, covered)
-      .every((m, i) => m.content.length === fingerprint[i]);
+      .every((m, i) => hashContent(m.content) === fingerprint[i]);
 
   let prompt: string;
   if (prefixStable && prevSummary) {
@@ -166,7 +204,7 @@ export async function compactTranscript(
     newState: {
       coveredCount: evictCount,
       summary,
-      fingerprint: messages.slice(0, evictCount).map((m) => m.content.length),
+      fingerprint: messages.slice(0, evictCount).map((m) => hashContent(m.content)),
     },
   };
 }
