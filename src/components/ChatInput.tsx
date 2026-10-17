@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- Attachment thumbnails are data: URLs, which next/image does not support at all. */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useToast } from "./Toast";
 import PromptBar, { type PromptBarMode, type PromptBarModel, type PromptBarSource } from "./PromptBar";
@@ -63,27 +65,40 @@ const MODES: (PromptBarMode & { agentMode: AgentMode })[] = [
 
   /**
    * The models offered out of the box, shown under a persistent "Default
-   * Models" group. Every id here is real and current: the OpenRouter ones end
-   * in `:free` (no card, no credits, rate-limited per model) and the Groq ones
-   * are on Groq's free tier. They are deliberately NOT filtered by the catalog
-   * probe — availability is reported per row via the health dot, so a probe
-   * failure never silently empties the menu.
+   * Models" group.
+   *
+   * FREE ONLY. Every id ends in `:free` on OpenRouter, or is on Groq's free
+   * tier - a default row must never be able to bill the user per token without
+   * them having chosen to. Paid frontier models (Claude, GPT-5, Gemini Pro) are
+   * deliberately NOT here; they are reachable through the catalog once the
+   * user has a key and picks them.
+   *
+   * EVERY id was verified against OpenRouter's live /api/v1/models listing, not
+   * a search engine. An earlier revision shipped
+   * `stealth/space-bunny-alpha:free` from a pricing-page listing; that model is
+   * not in the live catalogue and every request to it failed. Free tiers
+   * rotate, so never add an id here without checking the API first.
    */
   const DEFAULT_MODELS: PromptBarModel[] = [
-    { key: "openai/gpt-oss-120b", name: "GPT-OSS 120B", tag: "Groq", detail: "free tier · 131K", group: "Default Models" },
-    { key: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B", tag: "Groq", detail: "free tier", group: "Default Models" },
-    { key: "stealth/space-bunny-alpha:free", name: "Space Bunny Alpha", tag: "OpenRouter", detail: "free · 1M · vision", group: "Default Models" },
-    { key: "thinkingmachines/inkling-small:free", name: "Inkling Small", tag: "OpenRouter", detail: "free · 1M · tools", group: "Default Models" },
+    // --- Groq free tier ---
+    { key: "openai/gpt-oss-120b", name: "GPT-OSS 120B", tag: "Groq", detail: "free · 131K", group: "Default Models" },
+    { key: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B", tag: "Groq", detail: "free · 1M", group: "Default Models" },
+
+    // --- OpenRouter free tier: the strongest free models available ---
     { key: "thinkingmachines/inkling:free", name: "Inkling", tag: "OpenRouter", detail: "free · 1M · tools · vision", group: "Default Models" },
+    { key: "thinkingmachines/inkling-small:free", name: "Inkling Small", tag: "OpenRouter", detail: "free · 1M · tools · vision", group: "Default Models" },
     { key: "nvidia/nemotron-3-ultra-550b-a55b:free", name: "Nemotron 3 Ultra", tag: "OpenRouter", detail: "free · 1M", group: "Default Models" },
-    { key: "nvidia/nemotron-3-super-120b-a12b:free", name: "Nemotron 3 Super", tag: "OpenRouter", detail: "free · 262K", group: "Default Models" },
+    { key: "nvidia/nemotron-3.5-super-vl:free", name: "Nemotron 3.5 Super VL", tag: "OpenRouter", detail: "free · 1M · vision · video", group: "Default Models" },
     { key: "nvidia/nemotron-3.5-lightning:free", name: "Nemotron 3.5 Lightning", tag: "OpenRouter", detail: "free · 1M", group: "Default Models" },
-    { key: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", name: "Nemotron 3 Nano Omni", tag: "OpenRouter", detail: "free · 256K · vision", group: "Default Models" },
+    { key: "dots-studio/dots-3-note-preview:free", name: "Dots3-Note Preview", tag: "OpenRouter", detail: "free · 512K · vision", group: "Default Models" },
+    { key: "nvidia/nemotron-3-super-120b-a12b:free", name: "Nemotron 3 Super", tag: "OpenRouter", detail: "free · 262K", group: "Default Models" },
     { key: "google/gemma-4-26b-a4b-it:free", name: "Gemma 4 26B A4B", tag: "OpenRouter", detail: "free · 262K · vision", group: "Default Models" },
     { key: "google/gemma-4-31b-it:free", name: "Gemma 4 31B", tag: "OpenRouter", detail: "free · 262K · vision", group: "Default Models" },
-    { key: "cohere/north-mini-code:free", name: "North Mini Code", tag: "OpenRouter", detail: "free · 256K · coding", group: "Default Models" },
     { key: "poolside/laguna-s-2.1:free", name: "Laguna S 2.1", tag: "OpenRouter", detail: "free · 262K · coding", group: "Default Models" },
-    { key: "dots-studio/dots-3-note-preview:free", name: "Dots3-Note Preview", tag: "OpenRouter", detail: "free · 512K", group: "Default Models" },
+    { key: "poolside/laguna-xs-2.1:free", name: "Laguna XS 2.1", tag: "OpenRouter", detail: "free · 262K · coding", group: "Default Models" },
+    { key: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", name: "Nemotron 3 Nano Omni", tag: "OpenRouter", detail: "free · 256K · vision", group: "Default Models" },
+    { key: "cohere/north-mini-code:free", name: "North Mini Code", tag: "OpenRouter", detail: "free · 256K · coding", group: "Default Models" },
+    { key: "liquid/lfm-2.5-2.6b:free", name: "LFM 2.5 2.6B", tag: "OpenRouter", detail: "free · 66K · compact", group: "Default Models" },
   ];
 
 
@@ -535,7 +550,7 @@ const finish = () => {
         });
     };
     tryFetch(0);
-  }, []);
+  }, [CATALOG_SETTLE_MS]);
   // Keep a stable handle to the latest loadCatalog so `finish` can schedule the
   // coalesced P1 refetch without re-creating the callback's deps.
   useEffect(() => {
