@@ -316,14 +316,22 @@ async function callModel(
   // to help with?" mid-build). The anchor rides on the LAST message — the one
   // message the budget can never drop.
   const anchored = appendTaskAnchor(apiMessages, runState.anchorTaskMessage);
+  // Resolved BEFORE the truncation below, for THIS model's real context window.
+  //
+  // It used to be resolved AFTER, and `fitMessagesToBudget(anchored)` was called
+  // with the default budget — msgBudgetFor(FALLBACK_CONTEXT_TOKENS) ≈ 16k. That
+  // default then survived whenever compaction returned null (transcript under
+  // the 0.8 trigger of the REAL budget), so a 1M-window model sent at most ~16k
+  // tokens of history: lossy truncation instead of summarization, and with the
+  // transcript already shrunk, compaction could never reach its trigger to
+  // recover it. Resolving first makes the fallback path use the same budget the
+  // compaction path already used.
+  const MSG_BUDGET_TOKENS = msgBudgetFor(await contextWindowForModel(model));
   // Summarizing compaction BEFORE truncation: when the transcript outgrows
   // the budget, evicted messages become a <context_so_far> summary instead of
   // being dropped. Incremental state = one bounded summary call per eviction.
   // Any failure falls back to fitMessagesToBudget below — never blocks a task.
-  let fitted = fitMessagesToBudget(anchored);
-  // Resolved once per callModel, for THIS model's real context window — used by
-  // both the compaction pass and the token-limit retry fallback below.
-  const MSG_BUDGET_TOKENS = msgBudgetFor(await contextWindowForModel(model));
+  let fitted = fitMessagesToBudget(anchored, MSG_BUDGET_TOKENS);
   try {
     const { createTranscriptCompactor } = await import("./compaction");
     runState.taskCompactor ||= createTranscriptCompactor(async (prompt, maxTokens) => {

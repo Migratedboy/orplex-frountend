@@ -58,4 +58,35 @@ describe("token budget", () => {
     fitMessagesToBudget(msgs, 500);
     expect(JSON.stringify(msgs)).toBe(snapshot);
   });
+
+  // The ordering bug this pins: callModel used to run
+  //   let fitted = fitMessagesToBudget(anchored);            // default ~16k budget
+  //   const MSG_BUDGET_TOKENS = msgBudgetFor(realWindow);   // resolved AFTER
+  // and only overwrite `fitted` when compaction returned a result. Whenever
+  // compaction declined (transcript under 0.8 of the real, much larger budget)
+  // the ~16k default survived, so a 1M-window model was truncated to 16k of
+  // history by LOSSY truncation rather than summarized.
+  it("keeps a large-window transcript whole when the real budget is passed", () => {
+    const fallbackBudget = 16_000; // msgBudgetFor(FALLBACK_CONTEXT_TOKENS = 32k)
+    const realBudget = 500_000; // a 1M-context model at the 0.5 ratio
+
+    // fitMessagesToBudget always caps each non-final message at OLDER_CAP
+    // (800 tokens); the budget argument only decides how many whole messages
+    // get DROPPED. So the fixture needs enough messages that the post-cap total
+    // still clears the 16k fallback: 40 messages -> 39*800 + 3000 ~= 34k.
+    const msgs = Array.from({ length: 40 }, (_, i) => ({
+      role: i % 2 ? "assistant" : "user",
+      content: `msg-${i} ${"q".repeat(12_000)}`, // 3000 tokens each
+    }));
+
+    // Real budget: over the fallback threshold, well under the real one, and no
+    // message may be dropped.
+    const out = fitMessagesToBudget(msgs, realBudget);
+    expect(out.length).toBe(msgs.length);
+
+    // Stale fallback default: whole turns are dropped. That is the regression -
+    // losing a turn entirely is not the same as capping it.
+    const squeezed = fitMessagesToBudget(msgs, fallbackBudget);
+    expect(squeezed.length).toBeLessThan(msgs.length);
+  });
 });
