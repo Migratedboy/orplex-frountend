@@ -65,4 +65,41 @@ describe("plan-gate", () => {
     expect(msg).toMatch(/plan gate/i);
     expect(msg).toMatch(/approv/i);
   });
+
+  // batch_edit, write_file_chunk and undo_last_change were all missing from
+  // WRITE_TOOLS. Each requests its own approval, but the plan gate is a
+  // stronger contract: in plan mode they were a way to change the workspace
+  // before the plan was approved.
+  it("blocks the write tools that were previously missing", () => {
+    expect(planGateBlocks("t1", "batch_edit")).toBe(true);
+    expect(planGateBlocks("t1", "write_file_chunk")).toBe(true);
+    expect(planGateBlocks("t1", "undo_last_change")).toBe(true);
+    expect(planGateBlocks("t1", "move_file")).toBe(true);
+    expect(planGateBlocks("t1", "delete_file")).toBe(true);
+  });
+
+  it("blocks every workspace-mutating tool the registry defines", () => {
+    // Guards against the set drifting from the tool registry again: anything
+    // whose name implies a write must be plan-gated, approval or not.
+    const MUTATING = /^(write|edit|batch_edit|undo_last_change|run_command|move|delete|patch)/;
+    const knownTools = [
+      "write_file",
+      "write_file_chunk",
+      "edit_file",
+      "batch_edit",
+      "undo_last_change",
+      "run_command",
+      "move_file",
+      "delete_file",
+    ];
+    const ungated = knownTools.filter((t) => MUTATING.test(t) && !planGateBlocks("t1", t));
+    expect(ungated).toEqual([]);
+  });
+
+  it("rejects them after the plan is approved, like every other write", () => {
+    approvePlan("t1");
+    for (const tool of ["write_file", "batch_edit", "write_file_chunk", "undo_last_change"]) {
+      expect(planGateBlocks("t1", tool)).toBe(false);
+    }
+  });
 });

@@ -49,6 +49,14 @@ export async function GET(_request: NextRequest) {
   const auth = await requireAuth();
   if (!auth.ok) return auth.response;
 
+  // Collapse a burst of picker polls into one query. The key MUST be the
+  // authenticated user: this response carries their BYOK model list, so a
+  // shared/global key would serve one user's keys to another.
+  const cached = RESPONSE_CACHE.get(auth.userId);
+  if (cached && Date.now() - cached.at < RESPONSE_TTL_MS) {
+    return Response.json(cached.body);
+  }
+
   try {
     // AUTONOMOUS REPAIR: any key whose catalogue is missing or older than the
     // staleness window is topped up in the background, AFTER this response is
@@ -106,7 +114,7 @@ export async function GET(_request: NextRequest) {
       /* BYOK section is best-effort */
     }
 
-    return Response.json({
+    const body = {
       success: true,
       models,
       // Throttled = the provider answered 429, which ACKNOWLEDGES the model
@@ -131,7 +139,20 @@ export async function GET(_request: NextRequest) {
       providerIssues: providerIssues ?? [],
       userModels,
       keysRev,
-    });
+    };
+
+    // Only a fully-built success body is cached. The `catch` fallback below
+    // returns an empty list, and caching THAT would keep the picker empty for
+    // the whole TTL after one transient failure.
+    RESPONSE_CACHE.set(auth.userId, { at: Date.now(), body });
+    // Bounded: evict the oldest entries rather than growing without limit.
+    while (RESPONSE_CACHE.size > RESPONSE_CACHE_MAX) {
+      const oldest = RESPONSE_CACHE.keys().next();
+      if (oldest.done) break;
+      RESPONSE_CACHE.delete(oldest.value);
+    }
+
+    return Response.json(body);
   } catch {
     return Response.json(
       { success: true, models: [], throttledModels: [], coldModelIds: [], providers: [], probedAt: new Date().toISOString(), userModels: [], keysRev: "" },

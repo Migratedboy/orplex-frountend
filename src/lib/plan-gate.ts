@@ -42,7 +42,23 @@ export function clearPlanLatch(taskId: string): void {
   latches.delete(taskId);
 }
 
-const WRITE_TOOLS = new Set(["write_file", "edit_file", "run_command", "move_file", "delete_file"]);
+// Every tool that can change the workspace belongs here. Derived from the tool
+// registry (src/lib/tool-definitions.ts) rather than kept by hand: batch_edit,
+// write_file_chunk and undo_last_change were all missing, so in plan mode the
+// agent could still rewrite, append to, or revert files without an approved
+// plan. They each request their own approval (native-tools.ts), but the plan
+// gate is a stronger contract - nothing state-changing runs until the plan is
+// approved, and these must not be the way around it.
+const WRITE_TOOLS = new Set([
+  "write_file",
+  "write_file_chunk",
+  "edit_file",
+  "batch_edit",
+  "undo_last_change",
+  "run_command",
+  "move_file",
+  "delete_file",
+]);
 
 /**
  * Should this tool call be blocked by the plan latch? Only meaningful in

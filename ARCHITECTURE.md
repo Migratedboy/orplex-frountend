@@ -213,6 +213,14 @@ detection, scratchpad, browser backends, result formatting).
   rather than claiming the full length was banked.
 - **Modes**: ask · code · plan (hard plan-approval gate before any write) ·
   self-review pass with one repair turn after the loop.
+  - The plan gate (`plan-gate.ts`) covers **every** workspace-mutating tool —
+    `write_file`, `write_file_chunk`, `edit_file`, `batch_edit`,
+    `undo_last_change`, `run_command`, `move_file`, `delete_file`.
+  - It also covers the **server-side strategy router**: SPARC/ToT planned
+    writes are gated too. Orchestration runs in plan mode (it is triggered for
+    any mode other than `ask`), so ungated it wrote to disk before approval
+    **and** seeded `writtenFiles`, which is the precondition that unlocks the
+    self-review / typecheck-repair / swarm lanes for further ungated writes.
 - **Failure learning**: `failure-memory.ts` + persistent `run-ledger.ts`
   re-seed new tasks with what actually failed last time; `master-prompt.ts`
   renders the Adaptive Failure Doctrine.
@@ -377,6 +385,11 @@ All writes go through the tiny API in `memory.ts` (`remember`,
   listed; cold-start models tagged `cold` and woken by a background engine.
   The endpoint never blocks on a sweep — cache answers instantly, cold start
   returns `[]` and sweeps in the background.
+  Its 5s response cache is keyed by **authenticated user id**, never globally:
+  the body carries that user's BYOK model list, so a shared key would leak one
+  user's keys to another. Only a fully-built success body is cached — the
+  empty `catch` fallback is not, or one transient failure would blank the
+  picker for the rest of the TTL.
 - **BYOK listing** (`provider-models.ts`): fetches a provider's **entire**
   catalogue with the user's key. The cap is a DoS backstop (**2000**) plus
   per-provider `modelsCap`, applied **after** ranking free-first then

@@ -1101,7 +1101,45 @@ export async function runInBackground(
 
   // === Execute orchestrator-planned writes (SPARC / ToT winners) =========
   // Runs through the audited write path (file history, plugins, counters).
-  if (orchestratedToolCalls.length > 0) {
+  //
+  // PLAN MODE MUST GATE THIS, exactly like the model's own tool calls do.
+  // The server-side strategy router is triggered for plan mode too
+  // (sparcDirective is set for any `mode !== "ask"`), and its returned
+  // write_file calls used to be written straight to disk here - no plan latch,
+  // no approval request. That defeated the hard plan gate completely: a
+  // complex task started in plan mode mutated the workspace before the user had
+  // approved anything. Worse, executeOrchestratedWrites seeds `writtenFiles`,
+  // which is the precondition for the self-review, typecheck-repair and swarm
+  // lanes below - so one ungated batch unlocked a chain of further ungated
+  // writes.
+  const orchestrateBlockedByPlan =
+    mode === "plan" && planGateBlocks(taskId, "write_file");
+  if (orchestrateBlockedByPlan) {
+    // Readable, non-fatal: the plan itself is still shown, and the withheld
+    // file list tells the agent what it still has to ask for.
+    const withheld = orchestratedToolCalls
+      .filter((c) => c.name === "write_file" && typeof c.path === "string")
+      .map((c) => `\`${c.path}\``)
+      .join(", ");
+    fullDisplayContent += `\n${orchestrationSummary}\n\n[GATE] Plan not approved — withheld ${orchestratedToolCalls.length} orchestrator write(s)${withheld ? `: ${withheld}` : ""}. Present your plan and wait for approval.\n`;
+    setDisplayContent(fullDisplayContent);
+    emitActivity({ type: "thinking", message: "Orchestrator writes blocked — awaiting plan approval" });
+    // Same latch semantics as the main loop: first block asks, and the answer
+    // opens (or permanently closes) the gate for the rest of the task.
+    if (!isPlanRejected(taskId)) {
+      void requestApproval(
+        "write_file",
+        "Plan approval needed before the orchestrator writes files",
+        { planGate: true, taskId, blockedTool: "write_file", tool: "write_file", summary: "Approve the plan to let the agent write files." },
+        undefined,
+        "medium"
+      ).then((approved) => {
+        if (approved) approvePlan(taskId);
+        else rejectPlan(taskId);
+      }).catch(() => {});
+    }
+  }
+  if (orchestratedToolCalls.length > 0 && !orchestrateBlockedByPlan) {
     fullDisplayContent += `\n${orchestrationSummary}\n`;
     setDisplayContent(fullDisplayContent);
     const written = await executeOrchestratedWrites(orchestratedToolCalls, {
