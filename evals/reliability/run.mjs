@@ -91,33 +91,31 @@ function probeCapabilities() {
 // the actual implementation, not for a promise in a doc comment.
 const DETECTOR_SIGNATURES = {
   "test-count-delta": [
-    { file: "src/lib/gates/integrity.ts", re: /countTests|testCount/i },
-    { file: "src/lib/agent/integrity.ts", re: /countTests|testCount/i },
+    { file: "src/lib/reliability/tamper-detector.ts", re: /test-count-delta|testCount/i },
   ],
   "matcher-weakened": [
-    { file: "src/lib/gates/integrity.ts", re: /toBeTruthy|weaken|matcherStrength/i },
-    { file: "src/lib/agent/integrity.ts", re: /toBeTruthy|weaken|matcherStrength/i },
+    { file: "src/lib/reliability/tamper-detector.ts", re: /matcher-weakened|toBeTruthy|weaken/i },
   ],
   "import-resolves": [
     { file: "src/lib/agent/import-resolver.ts", re: /resolve|exists/i },
   ],
   "injection-flagged": [
-    { file: "src/lib/security/injection-scanner.ts", re: /suspicion|injection/i },
+    { file: "src/lib/reliability/injection-scanner.ts", re: /scanForInjection|injection/i },
   ],
   "taint-set": [
-    { file: "src/lib/security/taint.ts", re: /taint/i },
+    { file: "src/lib/reliability/provenance.ts", re: /TaintStore|taint/i },
   ],
   "dangerous-action": [
-    { file: "src/lib/security/taint.ts", re: /requireApproval|deny/i },
+    { file: "src/lib/reliability/capability-policy.ts", re: /blocked|requiresApproval/i },
   ],
   "timeout-not-pass": [
-    { file: "src/lib/gates/pipeline.ts", re: /timeout/i },
+    { file: "src/lib/reliability/gates.ts", re: /timeout/i },
   ],
   "diff-coverage": [
     { file: "src/lib/gates/diff-coverage.ts", re: /coverage/i },
   ],
   "flake-not-consumed": [
-    { file: "src/lib/gates/flake.ts", re: /flaky|quarantine/i },
+    { file: "src/lib/reliability/flake-control.ts", re: /flaky|quarantine/i },
   ],
 };
 

@@ -62,6 +62,27 @@ import {
   recordRefusedWrite,
   releaseEditLock,
 } from "./reliability/edit-lock";
+// === Phases 2-7 integration ===
+import { reliabilityTamperDetectionEnabled } from "./reliability/flags";
+import { reliabilityProvenanceEnabled, reliabilityInjectionScanEnabled, reliabilityScrubbingEnabled } from "./reliability/flags";
+import { reliabilityEditOpsEnabled } from "./reliability/flags";
+import { reliabilityLoopGuardExtendedEnabled } from "./reliability/flags";
+import { TaintStore } from "./reliability/provenance";
+import { hasBlockingInjection } from "./reliability/injection-scanner";
+import { scrubSecrets } from "./reliability/scrubber";
+import { validateToolArgs, MUTATING_TOOL_NAMES } from "./reliability/tool-args";
+import {
+  normalizeCallSignature,
+  trackOscillation,
+  trackProgress,
+  recordBudget,
+  buildHardDenylist,
+  buildInterventionDirective,
+  checkWallClock,
+} from "@/lib/agent/contract";
+import { hashWorkspaceState, gateFingerprint } from "./reliability/progress-hash";
+import { reliabilityVerificationReportEnabled } from "./reliability/flags";
+import { buildVerificationReport, formatVerificationReport } from "./reliability/verification-report";
 
 let _pluginsInitialized = false;
 import {
@@ -1065,6 +1086,10 @@ export async function runInBackground(
   // from a pre-existing failure, so capturing it is mandatory under the flag.
   let gateBaseline: WorkspaceBaseline | null = null;
   let gateBaselineCaptured = false;
+  // Phase 4: per-task taint store. Keyed by tool path/name, records that a
+  // particular piece of untrusted content was flagged as injection-bearing, so a
+  // later write derived from it can be held for approval instead of auto-run.
+  const toolTaint = new TaintStore();
   // True when the gate pipeline is STILL red after every repair round. A task
   // that ends in this state is a failure wearing a success — the files are
   // written but the workspace does not compile — so it must close as [FAILED]
@@ -1624,6 +1649,51 @@ export async function runInBackground(
           }
         }
 
+        // === TOOL ARG VALIDATION (Phase 3) ===
+        // The dispatcher previously ran a linear if-chain with no schema check:
+        // `contract/tools.ts validateToolArgs` existed but was only called by the
+        // server executor, so the client lane validated nothing. Validating here
+        // means a malformed call becomes a readable tool_result the model can
+        // correct, instead of a `return null` fall-through or a partial write.
+        if (reliabilityEditOpsEnabled()) {
+          const checked = validateToolArgs(String(call.name), call);
+          if (!checked.ok) {
+            toolResults += `<tool_result name="${call.name}">invalid arguments: ${checked.error}</tool_result>\n`;
+            toolCtx.replaceStatus(`[ARGS] ${call.name} — invalid arguments`);
+            toolCtx.syncDisplay();
+            continue;
+          }
+        }
+
+        // === LOOP GUARD: hard denylist + oscillation (Phase 5) ===
+        // The pre-existing streak guard trips on a REPEATED call and then resets,
+        // so the identical failing call is free to run again. The hard denylist
+        // is the rung that refuses outright once a (tool,args) pair has failed
+        // `HARD_DENY_AFTER` times, and oscillation catches A,B,A,B which the
+        // streak guard structurally cannot see (no two consecutive repeats).
+        if (reliabilityLoopGuardExtendedEnabled()) {
+          const sig = normalizeCallSignature(String(call.name), { ...(call as unknown as Record<string, unknown>) });
+          const denylist = buildHardDenylist(loopStreaks);
+          if (denylist.has(sig)) {
+            toolResults += `<tool_result name="${call.name}">refused: this exact call has already failed repeatedly. Change the approach — do not retry it verbatim.</tool_result>\n`;
+            fullDisplayContent += `[LOOP] ${call.name} refused — hard denylist\n`;
+            setDisplayContent(fullDisplayContent);
+            continue;
+          }
+          const osc = trackOscillation(loopStreaks, sig);
+          if (osc.oscillating) {
+            toolResults += `<tool_result name="${call.name}">refused: you are oscillating between ${osc.period} repeating calls without making progress. Step back and choose a different approach.</tool_result>\n`;
+            fullDisplayContent += `[LOOP] ${call.name} refused — oscillation (period ${osc.period})\n`;
+            setDisplayContent(fullDisplayContent);
+            continue;
+          }
+          if (checkWallClock(loopStreaks).exceeded) {
+            fullDisplayContent += `\n**Task halted** — the wall-clock budget for this task is exhausted.\n`;
+            setDisplayContent(fullDisplayContent);
+            break;
+          }
+        }
+
         // Lazily capture the pre-task baseline on the FIRST mutating call, so a
         // read-only task never pays for a tsc run. This MUST happen before the
         // write, not after: the baseline is the "before" snapshot the gate diffs
@@ -1670,7 +1740,37 @@ export async function runInBackground(
           } catch {}
           continue;
         }
-        toolResults += outcome.resultXml;
+        // === PHASE 4: scrub + scan tool output BEFORE it reaches the model ===
+        // This is the single choke point where untrusted tool output enters LLM
+        // context. The audit found the product scrubbed write CONTENT but never
+        // scrubbed what came BACK: `read_file` returned .env verbatim, and
+        // client-signatures.ts:119 even boosted .env into context. Redacting
+        // here (rather than per-tool) means every future tool inherits it.
+        let resultXml = outcome.resultXml;
+        if (reliabilityScrubbingEnabled()) {
+          const scrubbed = scrubSecrets(resultXml);
+          if (scrubbed.redactions.length > 0) {
+            resultXml = scrubbed.text;
+            emitActivity({
+              type: "status",
+              message: `Scrubbed ${scrubbed.redactions.length} secret pattern(s) from ${call.name} output`,
+            });
+          }
+        }
+        // Injection scan + taint: content that reads like instructions must not
+        // be able to instruct. Mark it so a later WRITE derived from this read is
+        // held for approval by capability-policy rather than auto-approved.
+        if (reliabilityInjectionScanEnabled() && reliabilityProvenanceEnabled()) {
+          const finding = hasBlockingInjection(resultXml);
+          if (finding) {
+            toolTaint.mark(String(call.path ?? call.name), "prose_tool");
+            emitActivity({
+              type: "status",
+              message: `Prompt-injection markers in ${call.name} output — content tainted`,
+            });
+          }
+        }
+        toolResults += resultXml;
         if (outcome.dedupRead) skippedDueToDup = true;
         // Screenshot pixels → vision channel on the next turn (capped).
         if (outcome.imageDataUrl) {
@@ -2552,15 +2652,35 @@ export async function runInBackground(
     // the main answer text.
     // Final assembly re-sweeps everything (idempotent on already-repaired
     // blocks): phrase-level replay repair → word-level dedup → normalization.
+    const finalStatus: "done" | "error" = gateRed ? "error" : "done";
+    // === PHASE 7: Verification Report ===
+    // The plan's §14 report. Built and appended BEFORE finalContent is derived
+    // below, so it actually rides the message the user reads — deriving the
+    // content first and appending after would silently drop it. rubric-recorder
+    // already had a letter grade for "files written but NO lane ran"; this turns
+    // that into an explicit, itemised unverified[] list plus a residual risk.
+    if (reliabilityVerificationReportEnabled()) {
+      try {
+        const report = buildVerificationReport({
+          taskId,
+          finalStatus,
+          lanes: getObservationMeta()?.lanes as Record<string, "pass" | "fail" | "skipped"> | undefined,
+          filesWritten: [...writtenFiles.keys()],
+          editLockRefused: gateRed ? 1 : 0,
+        });
+        fullDisplayContent += "\n" + formatVerificationReport(report) + "\n";
+      } catch {
+        // The report is diagnostic — it must never take down a finished task.
+      }
+    }
     const rawFinalContent = normalizeThinkingBlocks(deduplicateWords(repairInterleavedReplay(cleanContent || fullDisplayContent)));
     let finalContent = rawFinalContent;
     // A task whose gate is STILL red after every repair round did not end
     // verified — the files are written but the workspace does not compile.
-    // Record that honestly everywhere the terminal status is written (rubric
-    // ledger, run ledger, memory, UI) so a red close can never be reported as
-    // a clean one. Same reasoning as stampFailedMessage for an empty response:
-    // a failure wearing a success is worse than a visible failure.
-    const finalStatus: "done" | "error" = gateRed ? "error" : "done";
+    // finalStatus (declared above, next to the report) is threaded through every
+    // terminal write so a red close can never be reported as a clean one. Same
+    // reasoning as stampFailedMessage for an empty response: a failure wearing a
+    // success is worse than a visible failure.
     setDisplayContent(finalContent);
     if (isRecordingEnabled()) {
       try {

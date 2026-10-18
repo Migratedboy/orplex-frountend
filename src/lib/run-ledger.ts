@@ -1,19 +1,30 @@
 /**
  * run-ledger.ts — Browser-side client for the persistent run ledger
- * (task_runs / task_failures in Postgres via /api/agent/history).
+ * (task_runs / task_failures in Postgres via /api/agent/ledger).
  *
  * Mission: the agent learns ACROSS RESTARTS. sessionStorage failure-memory
  * dies with the session; the ledger doesn't. At task start the worker pulls
  * this workspace's active failures (with recurrence counts) and hydrates the
  * Failure Doctrine; at finalize it records the run + verdicts + economics.
  *
+ * Endpoint note: this used to POST to /api/agent/history, which is the FILE
+ * UNDO route (it requires {path, next} and answered 400 to every ledger
+ * payload), so cross-restart learning never worked. /api/agent/ledger is the
+ * route that accepts { workspaceKey, task, mode, finalStatus, lanes,
+ * durationMs } and persists to task_runs / task_failures.
+ *
  * Best-effort by design: every call is guarded so a missing session, an
- * unreachable server, or an old DB schema can never break a task.
+ * unreachable server, an absent route (older deployment), or an old DB schema
+ * can never break a task — the worker runs in the browser and a 401/404 here
+ * must degrade to { ok:false } / null, never to an unhandled rejection.
  */
 
 import { computeTaskSavings } from "./prompt-meter";
 import { getFailures, mergeServerFailures, type FailureRecord, type FailureKind } from "./failure-memory";
 import { apiFetch } from "@/lib/api-base";
+
+/** The ledger route. Kept as one constant so POST and GET cannot drift apart. */
+export const LEDGER_ENDPOINT = "/api/agent/ledger";
 
 export interface RunLedgerResult {
   ok: boolean;
@@ -71,7 +82,7 @@ export function buildFinalizePayload(opts: {
 /** POST a finished run to the ledger. Resolves {ok:false} on any failure. */
 export async function postRunToLedger(payload: Record<string, unknown>): Promise<RunLedgerResult> {
   try {
-    const res = await apiFetch("/api/agent/history", {
+    const res = await apiFetch(LEDGER_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -88,7 +99,7 @@ export async function postRunToLedger(payload: Record<string, unknown>): Promise
 /** Active failure signatures for a workspace, from the server ledger. */
 export async function fetchLedgerFailures(workspaceKey: string): Promise<FailureRecord[] | null> {
   try {
-    const res = await apiFetch(`/api/agent/history?workspaceKey=${encodeURIComponent(workspaceKey)}`);
+    const res = await apiFetch(`${LEDGER_ENDPOINT}?workspaceKey=${encodeURIComponent(workspaceKey)}`);
     if (!res.ok) return null;
     const data = await res.json();
     if (!data?.ok || !Array.isArray(data.failures)) return null;

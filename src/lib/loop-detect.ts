@@ -33,6 +33,26 @@ export const MAX_SAME_CALL = 3; // identical call (same tool + same args) this m
 export const MAX_SAME_TARGET = 4; // same object (path window / query / command / URL) this many times in a row
 export const MAX_SAME_TURN = 3; // identical multi-call turn this many turns in a row
 
+// ── Phase 5 extension constants (oscillation / progress / budget / denylist) ──
+/** Signatures kept for oscillation detection (bounded so state cannot grow). */
+export const OSCILLATION_HISTORY_LIMIT = 20;
+/** Smallest repeating pattern oscillation looks for (A,B,A,B → period 2). */
+export const OSCILLATION_MIN_PERIOD = 2;
+/** Largest repeating pattern oscillation looks for (A,B,C,A,B,C → period 3). */
+export const OSCILLATION_MAX_PERIOD = 3;
+/** Full periods required before a pattern counts (2×period signatures). */
+export const OSCILLATION_MIN_PERIODS = 2;
+/** Identical (filesHash, gateFingerprint) snapshots before "no progress" trips. */
+export const PROGRESS_STALL_STEPS = 5;
+/** Snapshots retained for debugging/UI (the stall counter itself is O(1)). */
+export const STEP_SNAPSHOT_LIMIT = 20;
+/** Wall-clock budget for one run: 15 minutes. */
+export const BUDGET_MAX_WALL_MS = 15 * 60 * 1000;
+/** Token budget for one run: 200k tokens (provider-agnostic estimate). */
+export const BUDGET_MAX_TOKENS = 200_000;
+/** The same (tool, args) failing this many times → refused outright forever. */
+export const HARD_DENY_AFTER = 3;
+
 // Read-only tools: exempt from the same-tool streak (never extend, never
 // reset). Everything else — writes, commands, browser interactions,
 // searches with side effects, scratchpad/todo spam — counts.
@@ -62,6 +82,18 @@ export interface LoopStreaks {
   targetStreak: number;
   lastTurnFp: string | null;
   turnFpStreak: number;
+  // ── Phase 5 extensions (loop-guard.ts) — additive; the four streak signals
+  // above never read these fields, so existing behaviour is unchanged. ──────
+  /** Last N normalized call signatures, for A,B,A,B oscillation detection. */
+  oscillationHistory: string[];
+  /** Per-step workspace/gate snapshots, for no-progress detection (R5). */
+  stepSnapshots: Array<{ step: number; filesHash: string; gateFingerprint: string }>;
+  /** Consecutive steps with no files-hash AND gate-fingerprint change. */
+  stepsWithoutProgress: number;
+  /** Cumulative token/wall-clock budget for the run (R6). */
+  budget: { startedAt: number; tokenEstimate: number; maxWallMs: number; maxTokens: number };
+  /** Normalized-signature → consecutive-failure count, for the hard denylist. */
+  callFailureCounts: Map<string, number>;
 }
 
 export function createLoopStreaks(): LoopStreaks {
@@ -74,6 +106,16 @@ export function createLoopStreaks(): LoopStreaks {
     targetStreak: 0,
     lastTurnFp: null,
     turnFpStreak: 0,
+    oscillationHistory: [],
+    stepSnapshots: [],
+    stepsWithoutProgress: 0,
+    budget: {
+      startedAt: Date.now(),
+      tokenEstimate: 0,
+      maxWallMs: BUDGET_MAX_WALL_MS,
+      maxTokens: BUDGET_MAX_TOKENS,
+    },
+    callFailureCounts: new Map(),
   };
 }
 
@@ -347,4 +389,277 @@ export function buildLoopBreakDirective(verdict: LoopVerdict, lastToolResults?: 
     `Ground every claim in tool results from THIS task: a file counts as changed only when a write/edit call returned success, and never invent output you did not receive.`,
   ];
   return lines.filter(Boolean).join("\n");
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Phase 5 extensions — oscillation (R3), no-progress (R5), budget (R6),
+// hard (tool,args) denylist and the 5-rung intervention ladder.
+//
+// Everything below is ADDITIVE: the four streak signals above never read this
+// state, so existing behaviour is byte-identical. The extended signals are
+// opt-in per turn (each caller invokes the track* fn it needs) and gated by
+// reliabilityLoopGuardExtendedEnabled() at the wiring site.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── R3: oscillation (A,B,A,B) ──────────────────────────────────────────────
+
+/** Arg keys that never change call identity (paging, clocks, request ids). */
+const VOLATILE_ARG_KEYS = new Set([
+  "offset",
+  "limit",
+  "line",
+  "lines",
+  "page",
+  "cursor",
+  "timestamp",
+  "ts",
+  "now",
+  "requestId",
+  "request_id",
+  "nonce",
+  "uuid",
+  "startedAt",
+]);
+
+/** Strip volatile VALUE patterns: uuids, timestamps, line/position numbers. */
+function stripVolatileText(s: string): string {
+  return s
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<uuid>")
+    .replace(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g, "<ts>")
+    .replace(/\b1\d{12}\b/g, "<ts>")
+    .replace(/\bline\s+\d+(?::\d+)?\b/gi, "line <n>")
+    .replace(/\brow\s+\d+(?::\d+)?\b/gi, "row <n>")
+    .replace(/:\d+:\d+(?::\d+)?\b/g, ":<pos>");
+}
+
+function stripVolatileDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripVolatileDeep);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (VOLATILE_ARG_KEYS.has(k)) continue;
+      out[k] = stripVolatileDeep(v);
+    }
+    return out;
+  }
+  if (typeof value === "string") return stripVolatileText(value);
+  return value;
+}
+
+/**
+ * Stable call signature with volatile parts (line numbers, offsets, limit,
+ * timestamps, uuids) stripped, so two calls that differ ONLY in noise share a
+ * signature. Format is `tool|normalizedArgs` — the same key shape the hard
+ * denylist uses. Sorted keys keep it order-independent (like stableCallKey).
+ */
+export function normalizeCallSignature(name: string, args: Record<string, unknown>): string {
+  const normalized = stripVolatileDeep(args) as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+  for (const k of Object.keys(normalized).sort()) sorted[k] = normalized[k];
+  return `${name}|${JSON.stringify(sorted)}`;
+}
+
+/**
+ * Record one call signature and report whether the recent tail repeats a
+ * period-2 or period-3 pattern (R3). A,B,A,B trips at the 4th signature;
+ * A,B,C,A,B,C at the 6th. History is bounded to OSCILLATION_HISTORY_LIMIT.
+ * Purely additive — callers invoke this alongside (not inside) trackToolTurn.
+ */
+export function trackOscillation(
+  streaks: LoopStreaks,
+  signature: string
+): { oscillating: boolean; period?: number } {
+  streaks.oscillationHistory.push(signature);
+  if (streaks.oscillationHistory.length > OSCILLATION_HISTORY_LIMIT) {
+    streaks.oscillationHistory.splice(0, streaks.oscillationHistory.length - OSCILLATION_HISTORY_LIMIT);
+  }
+  const h = streaks.oscillationHistory;
+  for (let period = OSCILLATION_MIN_PERIOD; period <= OSCILLATION_MAX_PERIOD; period++) {
+    const need = period * OSCILLATION_MIN_PERIODS;
+    if (h.length < need) continue;
+    const tail = h.slice(h.length - need);
+    let repeating = true;
+    for (let i = 0; i < need; i++) {
+      if (tail[i] !== tail[i % period]) {
+        repeating = false;
+        break;
+      }
+    }
+    if (repeating) return { oscillating: true, period };
+  }
+  return { oscillating: false };
+}
+
+// ── R5: no-progress over N steps ───────────────────────────────────────────
+
+/**
+ * Record one step's workspace hash and gate fingerprint. The step counts as
+ * progress only when EITHER changed from the previous snapshot; when both are
+ * unchanged the no-progress counter increments. The FIRST snapshot seeds the
+ * counter at 1 (a run starts without a known green state), so
+ * PROGRESS_STALL_STEPS identical snapshots trip `stalled`.
+ */
+export function trackProgress(
+  streaks: LoopStreaks,
+  step: number,
+  filesHash: string,
+  gateFingerprint: string
+): { stalled: boolean; stepsWithoutProgress: number } {
+  const prev = streaks.stepSnapshots[streaks.stepSnapshots.length - 1];
+  if (prev && prev.filesHash === filesHash && prev.gateFingerprint === gateFingerprint) {
+    streaks.stepsWithoutProgress++;
+  } else {
+    streaks.stepsWithoutProgress = 1;
+  }
+  streaks.stepSnapshots.push({ step, filesHash, gateFingerprint });
+  if (streaks.stepSnapshots.length > STEP_SNAPSHOT_LIMIT) {
+    streaks.stepSnapshots.splice(0, streaks.stepSnapshots.length - STEP_SNAPSHOT_LIMIT);
+  }
+  return {
+    stalled: streaks.stepsWithoutProgress >= PROGRESS_STALL_STEPS,
+    stepsWithoutProgress: streaks.stepsWithoutProgress,
+  };
+}
+
+// ── R6: token / wall-clock budget ──────────────────────────────────────────
+
+/**
+ * Add this turn's estimated token spend to the run budget. `exceeded` turns
+ * the run's directive into a hard stop — the model has burnt the budget and
+ * must summarize and hand back, not keep iterating.
+ */
+export function recordBudget(
+  streaks: LoopStreaks,
+  tokenDelta: number
+): { exceeded: boolean; reason?: string } {
+  if (streaks.budget.startedAt === 0) streaks.budget.startedAt = Date.now();
+  streaks.budget.tokenEstimate += Math.max(0, tokenDelta);
+  if (streaks.budget.tokenEstimate > streaks.budget.maxTokens) {
+    return {
+      exceeded: true,
+      reason: `Token budget exceeded (${streaks.budget.tokenEstimate} > ${streaks.budget.maxTokens})`,
+    };
+  }
+  return { exceeded: false };
+}
+
+/** True once the run has been alive longer than budget.maxWallMs. */
+export function checkWallClock(streaks: LoopStreaks): { exceeded: boolean } {
+  if (streaks.budget.startedAt === 0) {
+    streaks.budget.startedAt = Date.now();
+    return { exceeded: false };
+  }
+  return { exceeded: Date.now() - streaks.budget.startedAt > streaks.budget.maxWallMs };
+}
+
+// ── Hard (tool, args) denylist ─────────────────────────────────────────────
+
+/**
+ * Record the outcome of one dispatched call. A failure increments the
+ * signature's count; a success for the SAME signature resets it (the error is
+ * fixed, so the call is not a retry loop). Returns the normalized signature
+ * and whether it just crossed HARD_DENY_AFTER.
+ */
+export function recordCallFailure(
+  streaks: LoopStreaks,
+  name: string,
+  args: Record<string, unknown>,
+  ok: boolean
+): { signature: string; count: number; denylisted: boolean } {
+  const signature = normalizeCallSignature(name, args);
+  if (ok) {
+    streaks.callFailureCounts.delete(signature);
+    return { signature, count: 0, denylisted: false };
+  }
+  const count = (streaks.callFailureCounts.get(signature) ?? 0) + 1;
+  streaks.callFailureCounts.set(signature, count);
+  return { signature, count, denylisted: count >= HARD_DENY_AFTER };
+}
+
+/**
+ * The set of `tool|normalizedArgs` signatures that have failed
+ * >= HARD_DENY_AFTER times. Callers MUST refuse these outright — do not
+ * dispatch, do not re-approve; rung 3 of the intervention ladder surfaces
+ * them to the model. Unlike the streak signals (which reset on compliance),
+ * this set is sticky for the rest of the run.
+ */
+export function buildHardDenylist(streaks: LoopStreaks): Set<string> {
+  const out = new Set<string>();
+  for (const [signature, count] of streaks.callFailureCounts) {
+    if (count >= HARD_DENY_AFTER) out.add(signature);
+  }
+  return out;
+}
+
+// ── 5-rung intervention ladder ─────────────────────────────────────────────
+
+export type InterventionRung = 1 | 2 | 3 | 4 | 5;
+
+export interface InterventionContext {
+  /** Last tool result, quoted as evidence (rungs 1–2). */
+  lastToolResults?: string;
+  /** Reason line for the directive (defaults to the generic loop reason). */
+  reason?: string;
+  /** Ref of the last green checkpoint (rung 4). */
+  checkpointRef?: string;
+  /** Signatures currently on the hard denylist (rung 3; derived if omitted). */
+  deniedSignatures?: string[];
+}
+
+/**
+ * The escalation ladder, rungs 1–5. Callers climb one rung at a time:
+ *   1. soft directive (the classic loop-break message)
+ *   2. HALT — stop emitting tool calls entirely
+ *   3. hard (tool,args) denylist — those exact calls are refused
+ *   4. rollback to the last-green checkpoint
+ *   5. ask the user — explicit, specific question
+ * Rung 1's text is byte-identical to buildLoopBreakDirective for the same
+ * reason/results, so existing injection sites can switch without a behaviour
+ * change.
+ */
+export function buildInterventionDirective(
+  streaks: LoopStreaks,
+  rung: InterventionRung,
+  context?: InterventionContext
+): string {
+  const reason = context?.reason ?? "You are repeating the same action";
+  const evidence = (context?.lastToolResults ?? "").trim().replace(/\s+/g, " ").slice(0, 700);
+  switch (rung) {
+    case 1:
+      return buildLoopBreakDirective({ loop: true, reason }, context?.lastToolResults);
+    case 2: {
+      const lines = [
+        `[LOOP HALT] ${reason}. STOP emitting tool calls now — no call from this turn will run again.`,
+        evidence ? `Your last tool result was: ${evidence}` : "",
+        `Do not retry any previous call. State plainly: what you tried, the exact error you observed, and what you need next. Execution stays halted until your next message contains a genuinely different plan.`,
+        `Ground every claim in tool results from THIS task: a file counts as changed only when a write/edit call returned success, and never invent output you did not receive.`,
+      ];
+      return lines.filter(Boolean).join("\n");
+    }
+    case 3: {
+      const denied = (context?.deniedSignatures ?? Array.from(buildHardDenylist(streaks))).slice(0, 20);
+      const lines = [
+        `[LOOP BREAK — HARD DENYLIST] ${reason}. The following exact calls failed ${HARD_DENY_AFTER}x+ and are REFUSED for the rest of this task — re-sending them will not dispatch:`,
+        ...denied.map((s) => `- ${s}`),
+        `Recover a different way: fix the underlying error the failures share, change the arguments so the failure mode is actually different, or stop and state the blocker.`,
+      ];
+      return lines.filter(Boolean).join("\n");
+    }
+    case 4: {
+      const ref = context?.checkpointRef ?? "the last green checkpoint";
+      const lines = [
+        `[LOOP BREAK — ROLLBACK] ${reason}. The workspace has not progressed; continuing on top of the current state will not succeed.`,
+        `Roll back to ${ref} and re-approach the task from that known-good state. Do not continue editing on top of the current broken state.`,
+        `After rolling back, take ONE different action — not a replay of the calls that got you here.`,
+      ];
+      return lines.filter(Boolean).join("\n");
+    }
+    case 5: {
+      const lines = [
+        `[LOOP BREAK — ASK THE USER] ${reason}. Autonomous retries have exhausted this line of approach. Stop and ask the user ONE specific question.`,
+        `Your message must state: what you tried, why each attempt failed (with the actual error), and the single decision or piece of information you need to proceed. Do not emit further tool calls until the user answers.`,
+      ];
+      return lines.join("\n");
+    }
+  }
 }

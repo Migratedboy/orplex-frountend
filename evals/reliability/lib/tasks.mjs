@@ -111,25 +111,38 @@ export const TRAPS = [
  * fails today is a real gap, recorded rather than hidden.
  */
 export const CAPABILITY_PROBES = [
-  // Phase 1 paths reflect the REAL Phase 1 layout (src/lib/reliability/). The
-  // `marker` regex guards against an empty stub file counting as a capability:
-  // present only if the file exists AND contains the enforcing code.
+  // Paths reflect the REAL shipped layout (src/lib/reliability/). Every probe
+  // carries a `marker` regex so an empty stub or a renamed leftover cannot count
+  // as a capability: present only if the file exists AND contains the enforcing
+  // code. Probes left without a marker are capabilities still NOT built.
   { id: "tiered-gate-pipeline", area: "phase1", file: "src/lib/reliability/gates.ts", marker: /runGatePipeline/ },
   { id: "baseline-diagnostics", area: "phase1", file: "src/lib/reliability/gates.ts", marker: /captureBaseline/ },
-  { id: "flake-control", area: "phase1", file: "src/lib/gates/flake.ts" },
+  { id: "flake-control", area: "phase1", file: "src/lib/reliability/flake-control.ts", marker: /classifyTestOutcome/ },
   { id: "edit-lock", area: "phase1", file: "src/lib/reliability/edit-lock.ts", marker: /acquireEditLock/ },
   { id: "shadow-worktree-browser-lane", area: "phase1", file: "src/lib/workspace/shadow.ts" },
-  { id: "test-tamper-detector", area: "phase2", file: "src/lib/gates/integrity.ts" },
+  { id: "test-tamper-detector", area: "phase2", file: "src/lib/reliability/tamper-detector.ts", marker: /detectTamper/ },
+  { id: "protected-path-policy", area: "phase2", file: "src/lib/reliability/protected-paths.ts", marker: /isProtectedTestPath/ },
+  { id: "acceptance-spec", area: "phase2", file: "src/lib/reliability/acceptance.ts", marker: /extractAcceptanceFromTask/ },
   { id: "diff-coverage-gate", area: "phase2", file: "src/lib/gates/diff-coverage.ts" },
-  { id: "structured-edit-ops", area: "phase3", file: "src/lib/agent/edit-ops.ts" },
+  { id: "structured-edit-ops", area: "phase3", file: "src/lib/reliability/edit-ops.ts", marker: /parseEditOp/ },
+  { id: "atomic-batch-rollback", area: "phase3", file: "src/lib/reliability/atomic-batch.ts", marker: /applyEditOpsAtomic/ },
+  { id: "path-jail", area: "phase3", file: "src/lib/reliability/path-jail.ts", marker: /assertSafeWrite/ },
+  { id: "tool-arg-validation", area: "phase3", file: "src/lib/reliability/tool-args.ts", marker: /validateToolArgs/ },
   { id: "import-resolver", area: "phase3", file: "src/lib/agent/import-resolver.ts" },
   { id: "add-dependency-tool", area: "phase3", file: "src/lib/agent/dependency.ts" },
-  { id: "taint-policy", area: "phase4", file: "src/lib/security/taint.ts" },
-  { id: "injection-scanner", area: "phase4", file: "src/lib/security/injection-scanner.ts" },
-  { id: "output-scrubber", area: "phase4", file: "src/lib/security/scrub.ts" },
-  { id: "loop-progress-guard", area: "phase5", file: "src/lib/agent/guard/progress.ts" },
-  { id: "failure-ledger-schema", area: "phase6", file: "src/lib/memory/ledger.ts" },
-  { id: "roles-review-stack", area: "phase7", file: "src/lib/agent/roles.ts" },
-  { id: "verification-report", area: "phase7", file: "src/lib/reliability/report.ts" },
+  { id: "taint-policy", area: "phase4", file: "src/lib/reliability/provenance.ts", marker: /TaintStore/ },
+  { id: "injection-scanner", area: "phase4", file: "src/lib/reliability/injection-scanner.ts", marker: /scanForInjection/ },
+  { id: "output-scrubber", area: "phase4", file: "src/lib/reliability/scrubber.ts", marker: /scrubSecrets/ },
+  { id: "egress-policy", area: "phase4", file: "src/lib/reliability/egress-policy.ts", marker: /classifyEgress/ },
+  { id: "capability-policy", area: "phase4", file: "src/lib/reliability/capability-policy.ts", marker: /evaluateCallCapability/ },
+  { id: "loop-progress-guard", area: "phase5", file: "src/lib/reliability/progress-hash.ts", marker: /gateFingerprint/ },
+  { id: "failure-ledger-schema", area: "phase6", file: "src/lib/reliability/failure-ledger.ts", marker: /FailureLedger/ },
+  { id: "durable-flake-registry", area: "phase6", file: "src/lib/reliability/flake-registry.ts", marker: /DurableFlakeRegistry/ },
+  { id: "compaction-state-persistence", area: "phase6", file: "src/lib/reliability/compaction-state.ts", marker: /serializeCompactionState/ },
+  { id: "roles-review-stack", area: "phase7", file: "src/lib/reliability/roles.ts", marker: /buildRoleSequence/ },
+  { id: "reviewer-panel", area: "phase7", file: "src/lib/reliability/reviewers.ts", marker: /REVIEWER_PANEL/ },
+  { id: "risk-tiering", area: "phase7", file: "src/lib/reliability/risk-tiering.ts", marker: /classifyChangeRisk/ },
+  { id: "verification-report", area: "phase7", file: "src/lib/reliability/verification-report.ts", marker: /buildVerificationReport/ },
+  { id: "acceptance-gate", area: "phase7", file: "src/lib/reliability/acceptance-gate.ts", marker: /verifyAcceptanceFirst/ },
   { id: "eval-harness", area: "phase8", file: "evals/reliability/run.mjs" },
 ];

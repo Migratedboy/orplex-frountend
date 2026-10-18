@@ -218,7 +218,7 @@ describe("orchestration wiring (code mode)", () => {
         }
         return streamOnce([textChunk("ok"), doneChunk()]);
       }
-      if (url.includes("/api/agent/history") && init?.method === "POST") {
+      if (url.includes("/api/agent/ledger") && init?.method === "POST") {
         ledgerPosts++;
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }

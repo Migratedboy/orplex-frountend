@@ -217,22 +217,63 @@ export async function captureWorkspaceMemories(input: CaptureInput): Promise<num
     }
   }
 
-  // Cap per workspace: drop the least-recently-seen overflow.
+  // Cap per workspace: drop the least-recently-seen overflow — but a PINNED
+  // fact (/remember) is never a victim, even past the cap. Retrieval already
+  // honours pins (they outrank statistics and skip stale-eviction); eviction
+  // must not contradict it by deleting the pin the prompt then promises.
   try {
-    const all = await prisma.workspaceMemory.findMany({
+    const rows = await prisma.workspaceMemory.findMany({
       where: { workspaceKey: input.workspaceKey },
       orderBy: { lastSeenAt: "desc" },
-      skip: MAX_ENTRIES_PER_WORKSPACE,
-      select: { id: true },
+      select: { id: true, evidence: true },
     });
-    if (all.length > 0) {
+    const { victimIds } = selectOverflowVictims(rows, MAX_ENTRIES_PER_WORKSPACE);
+    if (victimIds.length > 0) {
       await prisma.workspaceMemory.deleteMany({
-        where: { id: { in: all.map((r) => r.id) } },
+        where: { id: { in: victimIds } },
       });
     }
   } catch {}
 
   return stored;
+}
+
+/** True when a row's evidence marks a user-pinned fact (/remember). */
+export function isPinnedEvidence(evidence: unknown): boolean {
+  return !!(
+    typeof evidence === "object" &&
+    evidence !== null &&
+    (evidence as { pinned?: unknown }).pinned === true
+  );
+}
+
+/**
+ * Choose LRU overflow victims for the per-workspace cap. `rows` must be
+ * newest-first (lastSeenAt desc), as the caller fetches them.
+ *
+ * Rules (AUDIT §2 "Pinned-fact eviction immunity"):
+ *  - A pinned row is NEVER selected, wherever it sits.
+ *  - Victims are the least-recently-seen UNPINNED rows, walking from the
+ *    tail (LRU) toward the head until `overflow` victims are chosen.
+ *  - If there are not enough unpinned rows (down to the extreme where every
+ *    entry is pinned), fewer victims are returned and `effectiveCap` grows
+ *    above `cap` — the workspace simply keeps more entries rather than lose
+ *    a pin.
+ */
+export function selectOverflowVictims(
+  rows: Array<{ id: string; evidence: unknown }>,
+  cap: number
+): { victimIds: string[]; effectiveCap: number } {
+  const limit = Math.max(1, Math.floor(cap));
+  if (!Array.isArray(rows) || rows.length <= limit) {
+    return { victimIds: [], effectiveCap: limit };
+  }
+  const overflow = rows.length - limit;
+  const victimIds: string[] = [];
+  for (let i = rows.length - 1; i >= 0 && victimIds.length < overflow; i--) {
+    if (!isPinnedEvidence(rows[i].evidence)) victimIds.push(rows[i].id);
+  }
+  return { victimIds, effectiveCap: rows.length - victimIds.length };
 }
 
 export interface RetrievedMemory {

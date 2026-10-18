@@ -4,18 +4,28 @@
  * The eval harness must exercise the PRODUCT's enforcement code, not a
  * reimplementation of it. Node 20 cannot import TypeScript directly and the
  * repo has no ts-node/tsx/esbuild, but `typescript` is a devDependency — so we
- * transpile the single modules we need to CommonJS in a temp dir and require
- * them.
+ * register a require hook that transpiles any `.ts` file on demand and let
+ * Node's own resolver do the rest.
  *
- * Only dependency-free modules are loadable this way. plan-gate.ts,
- * risk-classifier.ts and loop-detect.ts all import nothing, which is what makes
- * this possible; a module that starts importing must be driven differently.
+ * The hook (rather than transpiling one file to a flat temp dir) is what makes
+ * the harness survive the product growing real imports: risk-classifier.ts now
+ * pulls in ./reliability/protected-paths and ./reliability/flags, and a flat
+ * temp-dir rewrite would fail to resolve them — a harness failure that would be
+ * misread as "capability missing". With `.ts` in require.extensions, an
+ * extensionless relative require resolves to the real .ts file and is
+ * transpiled on the spot, recursively.
+ *
+ * Bare specifiers (node builtins, npm packages) resolve normally, so a module
+ * that imports `fs` or `zod` behaves exactly as it does in production.
  */
 
-import { readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+
+/** Map `@/...` (the repo's tsconfig path alias) onto the repo root. */
+const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 const require_ = createRequire(import.meta.url);
 
@@ -27,36 +37,55 @@ try {
   process.exit(2);
 }
 
-const CACHE_DIR = join(tmpdir(), "orplex-eval-ts");
-let counter = 0;
+let hookInstalled = false;
+
+function installHook() {
+  if (hookInstalled) return;
+  require_.extensions[".ts"] = function compileTs(mod, filename) {
+    const source = readFileSync(filename, "utf8");
+    const out = ts.transpileModule(source, {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2020,
+        esModuleInterop: true,
+        // Allow importing .ts with an explicit extension too.
+        allowJs: true,
+      },
+      fileName: filename,
+    });
+    // Rewrite the `@/` alias to a real path so aliased imports resolve here the
+    // same way they do under the bundler/jest moduleNameMapper.
+    const rewritten = out.outputText.replace(
+      /require\(["'`]@\/([^"'`]+)["'`]\)/g,
+      (_m, rest) => `require(${JSON.stringify(join(REPO_ROOT, "src", rest))})`,
+    );
+    mod._compile(rewritten, filename);
+  };
+  hookInstalled = true;
+}
 
 /**
- * Transpile `absPath` and return its exports.
- * Throws a clear error rather than silently returning {} so a harness failure
- * is never mistaken for "capability missing".
+ * Transpile `absPath` and return its exports. Relative TS imports are resolved
+ * and transpiled recursively by the hook. Throws a clear error rather than
+ * silently returning {} so a harness failure is never mistaken for
+ * "capability missing".
  */
 export function loadTs(absPath) {
-  const source = readFileSync(absPath, "utf8");
-  const out = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020,
-      esModuleInterop: true,
-    },
-    fileName: absPath,
-  });
-  mkdirSync(CACHE_DIR, { recursive: true });
-  const stem = absPath.replace(/[^a-zA-Z0-9]/g, "_");
-  const jsPath = join(CACHE_DIR, `${stem}.${counter++}.cjs`);
-  writeFileSync(jsPath, out.outputText, "utf8");
+  installHook();
   try {
-    return require_(jsPath);
-  } finally {
-    // The module object is fully materialised; the file is no longer needed.
-    rmSync(jsPath, { force: true });
+    return require_(absPath);
+  } catch (err) {
+    throw new Error(
+      `loadTs failed for ${absPath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
 export function cleanup() {
-  rmSync(CACHE_DIR, { recursive: true, force: true });
+  // The require cache holds compiled modules; drop ours so a second run in the
+  // same process re-reads edited sources. Node builtins/other requires are left
+  // alone — they are not ours to manage.
+  for (const key of Object.keys(require_.cache)) {
+    if (key.endsWith(".ts")) delete require_.cache[key];
+  }
 }

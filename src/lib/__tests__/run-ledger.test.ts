@@ -170,3 +170,50 @@ describe("mergeServerFailures — cross-restart doctrine hydration", () => {
     expect(getFailures()).toHaveLength(0);
   });
 });
+
+describe("ledger endpoint — /api/agent/ledger, never the file-undo route", () => {
+  it("POSTs the ledger payload to /api/agent/ledger (the bug fix)", async () => {
+    let seenUrl = "";
+    let seenMethod = "";
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seenUrl = String(input);
+      seenMethod = init?.method || "GET";
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch;
+
+    const res = await postRunToLedger({ workspaceKey: "k", run: { task: "t" } });
+    expect(res.ok).toBe(true);
+    expect(seenMethod).toBe("POST");
+    // /api/agent/history requires {path, next} and 400'd every ledger POST.
+    expect(seenUrl).toContain("/api/agent/ledger");
+    expect(seenUrl).not.toContain("/api/agent/history");
+  });
+
+  it("reads open failures from /api/agent/ledger", async () => {
+    let seenUrl = "";
+    global.fetch = (async (input: RequestInfo | URL) => {
+      seenUrl = String(input);
+      return new Response(JSON.stringify({ ok: true, failures: [] }), { status: 200 });
+    }) as typeof fetch;
+
+    expect(await fetchLedgerFailures("orplex-local:demo")).toEqual([]);
+    expect(seenUrl).toContain("/api/agent/ledger?workspaceKey=orplex-local%3Ademo");
+    expect(seenUrl).not.toContain("/api/agent/history");
+  });
+
+  it("degrades gracefully on 401 and on an absent (404) route", async () => {
+    global.fetch = (async () =>
+      new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })) as typeof fetch;
+    const refused = await postRunToLedger({ workspaceKey: "k" });
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toBe("HTTP 401");
+    expect(await fetchLedgerFailures("k")).toBeNull();
+    expect(await hydrateFailureMemoryFromLedger("k")).toBe(false);
+
+    global.fetch = (async () => new Response("Not found", { status: 404 })) as typeof fetch;
+    const absent = await postRunToLedger({});
+    expect(absent.ok).toBe(false);
+    expect(await fetchLedgerFailures("k")).toBeNull();
+    expect(await hydrateFailureMemoryFromLedger("k")).toBe(false);
+  });
+});

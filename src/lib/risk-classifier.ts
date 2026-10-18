@@ -7,6 +7,14 @@
 //
 // Design goal: read-only operations never interrupt the user; shell commands,
 // destructive edits, and network-touching operations always do.
+//
+// Phase 2 (test integrity): test/CI/test-infra paths used to sit inside
+// SAFE_WRITE_PREFIXES — auto-approved as the *safest* writes in the repo,
+// which is backwards. They now classify high via isProtectedTestPath, unless
+// the user sets RELIABILITY_PROTECTED_WRITE_OVERRIDE=1.
+
+import { isProtectedTestPath, protectedPathReason } from "./reliability/protected-paths";
+import { reliabilityProtectedWriteOverride } from "./reliability/flags";
 
 export type RiskLevel = "low" | "medium" | "high";
 
@@ -69,11 +77,39 @@ const SAFE_COMMAND = /npm\s+(run\s+)?(dev|start|build|test)|npx\s+(serve|vite|ts
 /** Commands that mutate anything outside the workspace or touch the network/system */
 const DESTRUCTIVE_COMMAND = /rm\s+-rf|sudo|mkfs|dd\s+if=|shutdown|reboot|curl.*\|\s*(ba)?sh|wget.*\|\s*(ba)?sh|:\(\)\{|npm\s+publish|git\s+push|git\s+reset\s+--hard|chmod\s+777|>\s*\/dev\/sd/i;
 
-/** Writing inside these directories is considered safe/additive */
-const SAFE_WRITE_PREFIXES = ["src/", "app/", "components/", "lib/", "pages/", "public/", "styles/", "test/", "tests/", "__tests__/"];
+/** Writing inside these directories is considered safe/additive.
+ *  NOTE (Phase 2): "test/", "tests/" and "__tests__/" used to be in this list.
+ *  That inversion auto-approved test writes as low risk — removed. Protected
+ *  test/CI paths now classify high via isProtectedTestPath below. */
+const SAFE_WRITE_PREFIXES = ["src/", "app/", "components/", "lib/", "pages/", "public/", "styles/"];
 
-/** Files where edits can break builds/infra or leak secrets */
-const SENSITIVE_FILE = /(\.env|\.npmrc|\.ssh|id_rsa|credentials|secret|password|docker-compose|Dockerfile|nginx|ci|workflow|\.github[\\/]|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|prisma\/migrations)/i;
+/** Files where edits can break builds/infra or leak secrets.
+ *  Phase 2 additions: test files (*.test.*, *.spec.*), jest.config.*,
+ *  playwright.config.*, tsconfig.json, eslint.config.*, package.json — all
+ *  previously missing, so they fell through to the generic tiers. */
+const SENSITIVE_FILE = /(\.env|\.npmrc|\.ssh|id_rsa|credentials|secret|password|docker-compose|Dockerfile|nginx|ci|workflow|\.github[\\/]|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|prisma\/migrations|\.test\.|\.spec\.|(^|[\\/])jest\.config(\.|$)|(^|[\\/])playwright\.config(\.|$)|(^|[\\/])tsconfig[\w.-]*\.json$|(^|[\\/])eslint\.config\.|(^|[\\/])package\.json$)/i;
+
+/**
+ * The pure test-integrity members of SENSITIVE_FILE (*.test.*, *.spec.*,
+ * jest.config.*, playwright.config.*). These are the only sensitive patterns
+ * the protected-write override may unlock — secrets, CI, lockfiles, tsconfig,
+ * eslint config and package.json stay elevated no matter what. Without this
+ * split the override would be dead code for the most common protected path:
+ * a *.test.* file would re-match SENSITIVE_FILE the moment the protected-path
+ * gate was skipped.
+ */
+const SENSITIVE_TEST_INFRA_FILE = /(\.test\.|\.spec\.|(^|[\\/])jest\.config(\.|$)|(^|[\\/])playwright\.config(\.|$))/i;
+
+/**
+ * Sensitive-file check for a write/edit target. `allowTestInfraExempt` is set
+ * when the path is a protected test/CI path AND the user has opted into the
+ * override — only then may the test-integrity patterns be ignored.
+ */
+function isSensitiveWritePath(path: string, allowTestInfraExempt: boolean): boolean {
+  if (!SENSITIVE_FILE.test(path)) return false;
+  if (allowTestInfraExempt && SENSITIVE_TEST_INFRA_FILE.test(path)) return false;
+  return true;
+}
 
 /**
  * Classify a tool call before execution. Callers pass the tool name and its
@@ -110,7 +146,19 @@ export function classifyRisk(
   if (toolName === "write_file" || toolName === "write_file_chunk") {
     const path = String(args.path || "");
     const content = String(args.content || "");
-    if (SENSITIVE_FILE.test(path)) {
+    // Phase 2: protected test/CI paths are elevated unless the user has
+    // explicitly set RELIABILITY_PROTECTED_WRITE_OVERRIDE=1. Checked before
+    // SENSITIVE_FILE so the override can unlock test-integrity files.
+    const protectedPath = isProtectedTestPath(path);
+    const override = reliabilityProtectedWriteOverride();
+    if (protectedPath && !override) {
+      return {
+        level: "high",
+        reason: `Protected test/CI path — ${protectedPathReason(path)}`,
+        autoApprovable: false,
+      };
+    }
+    if (isSensitiveWritePath(path, protectedPath && override)) {
       return { level: "high", reason: "Sensitive file (config, secrets, or CI)", autoApprovable: false };
     }
     if (isSafeWritePath(path) && !content.includes("require(") && !content.includes("eval(")) {
@@ -124,7 +172,16 @@ export function classifyRisk(
     const paths = args.edits
       ? (args.edits as Array<{ path?: string }>).map(e => String(e.path || ""))
       : [String(args.path || "")];
-    if (paths.some(p => SENSITIVE_FILE.test(p))) {
+    const override = reliabilityProtectedWriteOverride();
+    const protectedPaths = paths.filter(p => isProtectedTestPath(p));
+    if (protectedPaths.length > 0 && !override) {
+      return {
+        level: "high",
+        reason: `Protected test/CI path — ${protectedPathReason(protectedPaths[0])}`,
+        autoApprovable: false,
+      };
+    }
+    if (paths.some(p => isSensitiveWritePath(p, override && isProtectedTestPath(p)))) {
       return { level: "high", reason: "Sensitive file (config, secrets, or CI)", autoApprovable: false };
     }
     // Deleting large blocks (old_text >> new_text) is riskier than adding
