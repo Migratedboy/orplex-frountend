@@ -109,9 +109,52 @@ const SECRET_PATTERNS: Pattern[] = [
   },
   {
     kind: "env_value",
-    re: /(?:^|\r?\n)[ \t]*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|SALT|DSN|AWS_ACCESS|PRIVATE)[A-Za-z0-9_]*)(\s*=\s*)([^\r\n]*)/,
+    // The name must be allowed to BE the keyword. The previous pattern required
+    // `[A-Za-z_][A-Za-z0-9_]*` before `(?:KEY|TOKEN|…)`, i.e. at least one
+    // character in front — so `PASSWORD=x` only matched by accident (P+PASSWORD)
+    // while `TOKEN=`, `KEY=`, `SECRET=`, `SALT=`, `DSN=`, `CREDENTIAL=` and
+    // `PRIVATE=` could NEVER match, and neither could `DATABASE_URL=` (URL is
+    // not in the keyword list). That is the module's own motivating case
+    // (`read_file` returns .env verbatim) leaking in cleartext. The first
+    // alternative is now `KEYWORD` on its own, the second `PREFIX_KEYWORD`.
+    re: /(?:^|\r?\n)[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|SALT|DSN|AWS_ACCESS|PRIVATE|DATABASE_URL|_URL|URL)[A-Za-z0-9_]*|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|SALT|DSN|PRIVATE)(\s*=\s*)([^\r\n]*)/,
     valueGroup: 3,
   },
+  // Connection strings carry a username AND a password in the authority
+  // position — the single most common secret shape in real tool output (a
+  // docker-compose, a README, an ORM error string, a psql banner). Previously
+  // zero coverage, and it compounded the env_value gap above.
+  {
+    kind: "connection_string",
+    // The `@` must be a LOOKAHEAD, not part of the match: scrubOnce computes
+    // the kept prefix as `raw.slice(0, raw.length - secretPart.length)`, which
+    // assumes the match ENDS with the secret. With the `@` inside the match the
+    // arithmetic was off by the separator, emitting `postgres://admin:s[REDACTED…]host`
+    // — a stray trailing char of the username and a deleted `@`.
+    re: /\b([a-z][a-z0-9+.\-]*:\/\/)([^\s:/@]+):([^\s@/]+)(?=@)/gi,
+    valueGroup: 3,
+  },
+  // Auth headers other than Bearer. `Basic` is base64 and trivially reversible,
+  // so the model received `user:password` verbatim. Cookies are the canonical
+  // session-token carrier and appear in curl -v, HTTP dumps and traces.
+  { kind: "basic_auth", re: /\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})/g, valueGroup: 1 },
+  {
+    kind: "cookie",
+    re: /\b((?:set-)?cookie)\s*:\s*([^\r\n]+)/gi,
+    valueGroup: 2,
+  },
+  // AWS STS temporary credentials use ASIA, not AKIA, and ship as a
+  // session-token pair — the standard shape in any CloudTrail or CLI dump.
+  { kind: "aws_key", re: /\bASIA[0-9A-Z]{16}\b/ },
+  // Stripe RESTRICTED keys. The live/test variants were covered; the restricted
+  // pair (the one every modern integration uses) was not covered at all.
+  { kind: "stripe_key", re: /\brk_(?:live|test)_[A-Za-z0-9]{16,}\b/ },
+  // GitHub: ghp_ is only one of six prefixes, and the fine-grained PAT is
+  // longer than the fixed {36} the old pattern anchored to.
+  { kind: "github_token", re: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b/ },
+  { kind: "github_token", re: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/ },
+  // Slack app-level (`xapp-`) and read-only (`xoxr-`) tokens.
+  { kind: "slack_token", re: /\bx(?:ox[bpsar]|app)-[A-Za-z0-9-]{10,}\b/ },
 ];
 
 /** Wrap `secret` in the redaction marker, keeping first/last 4 chars when

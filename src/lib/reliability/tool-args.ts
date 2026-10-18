@@ -374,9 +374,18 @@ export function validateToolArgs(
   toolName: string,
   args: unknown,
 ): { ok: true } | { ok: false; error: string } {
-  const spec = TOOL_REGISTRY[toolName];
-  if (!spec) return { ok: true };
+  // A plain-object lookup resolves Object.prototype members, so a tool named
+  // "constructor" / "toString" / "__proto__" returned a prototype object whose
+  // `.schema` is undefined — and the `spec.schema.safeParse` below then THREW.
+  // That throw escaped the worker tool loop before its only try/catch, killing
+  // every remaining tool call in the turn. The tool name is raw model output
+  // (stream-reader.ts pushes acc.name with no whitelist), so this was reachable
+  // from any injected content. Own-property check first, then normalise.
+  const name = typeof toolName === "string" ? toolName.trim() : "";
+  if (!name) return { ok: true };
+  if (!Object.prototype.hasOwnProperty.call(TOOL_REGISTRY, name)) return { ok: true };
+  const spec = TOOL_REGISTRY[name];
   const parsed = spec.schema.safeParse(args ?? {});
   if (parsed.success) return { ok: true };
-  return { ok: false, error: `${toolName}: ${formatZodError(parsed.error)}` };
+  return { ok: false, error: `${name}: ${formatZodError(parsed.error)}` };
 }

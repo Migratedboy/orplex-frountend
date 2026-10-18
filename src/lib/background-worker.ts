@@ -1749,11 +1749,21 @@ export async function runInBackground(
         let resultXml = outcome.resultXml;
         if (reliabilityScrubbingEnabled()) {
           const scrubbed = scrubSecrets(resultXml);
+          // ALWAYS take the scrubbed text. Gating on `redactions.length > 0`
+          // discarded the SCRUB_MAX_CHARS truncation whenever no secret matched,
+          // so any output over 20 KB — whose tail is never scanned, by design —
+          // was delivered to the model in full, defeating both the bound and
+          // the scan. `truncated` is part of the result for exactly this reason.
+          resultXml = scrubbed.text;
           if (scrubbed.redactions.length > 0) {
-            resultXml = scrubbed.text;
             emitActivity({
               type: "status",
               message: `Scrubbed ${scrubbed.redactions.length} secret pattern(s) from ${call.name} output`,
+            });
+          } else if (scrubbed.truncated) {
+            emitActivity({
+              type: "status",
+              message: `${call.name} output exceeded the scrub bound — tail dropped unscanned`,
             });
           }
         }

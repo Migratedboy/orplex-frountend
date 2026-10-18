@@ -55,10 +55,31 @@ export interface AcceptanceEvaluation extends AcceptanceTally {
   unverifiedItems: UnverifiedItem[];
 }
 
-function specItems(spec: AcceptanceSpec): AcceptanceItem[] {
-  if (Array.isArray(spec)) return spec.filter((i) => !!i && typeof i.description === "string");
-  if (spec && Array.isArray(spec.items)) return spec.items.filter((i) => !!i && typeof i.description === "string");
-  return [];
+/** The items a spec DECLARES, before any readability filtering. `null` when
+ *  no spec was supplied at all (the caller is not in acceptance mode). */
+function rawSpecItems(spec: AcceptanceSpec): unknown[] | null {
+  if (spec === null || spec === undefined) return null;
+  if (Array.isArray(spec)) return spec;
+  const items = (spec as { items?: unknown[] }).items;
+  return Array.isArray(items) ? items : [];
+}
+
+function specItems(raw: unknown[]): AcceptanceItem[] {
+  // Two shapes reach this gate and they disagreed on the text field:
+  // acceptance.ts's extractor emits `{ statement }`, the report's own type
+  // declares `{ description }`. Filtering on `description` alone silently
+  // dropped EVERY extracted item, so a spec with three declared requirements
+  // scored 0/0/0 complete:true — the acceptance-first rule rubber-stamping a
+  // task whose lanes were all red. Normalise both shapes.
+  const out: AcceptanceItem[] = [];
+  for (const i of raw) {
+    if (!i || typeof i !== "object") continue;
+    const o = i as Record<string, unknown>;
+    const text = typeof o.description === "string" ? o.description : o.statement;
+    if (typeof text !== "string" || text.trim().length === 0) continue;
+    out.push({ ...(o as object), description: text } as AcceptanceItem);
+  }
+  return out;
 }
 
 function laneOutcome(
@@ -78,7 +99,8 @@ export function evaluateAcceptance(
   spec: AcceptanceSpec,
   lanes: Record<string, LaneOutcome> | null | undefined,
 ): AcceptanceEvaluation {
-  const items = specItems(spec);
+  const raw = rawSpecItems(spec);
+  const items = specItems(raw ?? []);
   const unverifiedItems: UnverifiedItem[] = [];
   let verified = 0;
   let failed = 0;
@@ -111,7 +133,18 @@ export function evaluateAcceptance(
     }
   }
 
-  const complete = verified === items.length;
+  // `complete` was `verified === items.length`, which is 0 === 0 for an empty
+  // spec — so a spec that FAILED TO PARSE (every item unreadable) reported
+  // itself complete and the task passed with all lanes red.
+  //
+  // The distinction that matters: an ABSENT spec (`null`/`undefined`) means the
+  // caller is not in acceptance mode and must not block, whereas a spec that
+  // WAS supplied but yielded nothing readable means the requirements are
+  // unaccounted for. `raw` carries the former (null / zero declared items); the
+  // latter — items WERE declared but none were readable — falls through to the
+  // length check and blocks, which is the whole point of the fix.
+  const nothingDeclared = raw === null || raw.length === 0;
+  const complete = nothingDeclared || (items.length > 0 && verified === items.length);
   return {
     verified,
     failed,
