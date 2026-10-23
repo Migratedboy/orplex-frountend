@@ -326,7 +326,22 @@ export default function Sidebar() {
         <button
           type="button"
           className="sidebar-signout"
-          onClick={() => signOut({ callbackUrl: "/auth/signin" })}
+          onClick={() => {
+            // Sign out WITHOUT the built-in redirect, then hard-navigate locally.
+            // The API app's signout handler advertises its own origin as the
+            // post-signout URL (backend NEXTAUTH_URL), so the default redirect
+            // sent the whole window (or the desktop webview) to the CLOUD
+            // domain — that is why the login screen only appeared after a
+            // manual app reload. The cookie is still cleared by the proxied
+            // POST (host-only on this origin), and a full document load then
+            // drops the in-memory session state so /auth/signin renders clean.
+            // Full reload is deliberate (matches the sign-in page's dev
+            // logout): a soft router push would keep the stale session alive.
+            // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+            void signOut({ redirect: false }).then(() => {
+              window.location.href = "/auth/signin";
+            });
+          }}
           aria-label="Sign out"
           title="Sign out"
         >
