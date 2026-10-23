@@ -337,9 +337,9 @@ export default function Sidebar() {
             // drops the in-memory session state so /auth/signin renders clean.
             // Full reload is deliberate (matches the sign-in page's dev
             // logout): a soft router push would keep the stale session alive.
-            // eslint-disable-next-line @next/next/no-location-assign-relative-destination
             void signOut({ redirect: false }).then(() => {
-              window.location.href = "/auth/signin";
+              const next = new URL("/auth/signin", window.location.origin);
+              window.location.assign(next.toString());
             });
           }}
           aria-label="Sign out"

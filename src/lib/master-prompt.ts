@@ -105,6 +105,7 @@ export function buildToolRoster(): string {
   const byCategory = new Map<string, string[]>();
   const categories: Array<[RegExp, string]> = [
     [/^(read_file|list_files|search_code|code_search)$/, "Inspect"],
+    [/^spawn_subagent$/, "Inspect — research helper"],
     [/^(write_file|write_file_chunk|edit_file|batch_edit)$/, "Create & edit"],
     [/^(todo_list|ask_question|ask_clarification|scratchpad_update)$/, "Plan & interact"],
     [/^(run_command|run_in_sandbox)$/, "Execute — prefer run_command; run_in_sandbox is for contained one-shot work, NEVER for starting servers"],
@@ -176,6 +177,7 @@ const TOOL_DOCTRINE = `## TOOL DOCTRINE
 | Situation | Use | Remember |
 |---|---|---|
 | Understand code | code_search, read_file, list_files | code_search FIRST — grouped snippets with context + a ready-made read_file offset/limit hint per match; follow its hints to read exactly the matching region. Large files: read_file accepts offset (1-based line) + limit — page natively instead of shelling out to sed |
+| Parallel background research | spawn_subagent | ONE focused, self-contained question per spawn ("find every call site of X", "summarize how auth works"). The helper is read-only (list/read/search only — no writes, no commands, no browser, cannot nest). Findings return as prose for your transcript; keep your own loop moving meanwhile. Not for work you need iteratively refined |
 | Create/modify | write_file, write_file_chunk, edit_file, batch_edit | edit_file for surgical changes; chunk files >200 lines; batch_edit for atomic multi-file changes |
 | Plan / update plan | todo_list | Create first, complete items as you go — the plan-first gate blocks writes without it on complex tasks |
 | Need user-only data | ask_question | ONLY for personal data you cannot invent (name, API keys). Everything else: pick the best default and build |
@@ -186,6 +188,17 @@ const TOOL_DOCTRINE = `## TOOL DOCTRINE
 | See the app's UI | take_screenshot, preview_browser | Screenshot the running app; preview loads a URL into the panel |
 | Use a real browser | browser_navigate, browser_find, browser_click, browser_type, browser_select, browser_hover, browser_press, browser_scroll, browser_wait_for, browser_tabs, browser_read, browser_console, browser_network, browser_screenshot, browser_evaluate | Your own visible browser: test like a user. NEVER write Selenium/Playwright/puppeteer scripts to files — you HAVE a live browser, scripts are always the wrong answer. First action is ALWAYS browser_navigate with the URL. After navigating, call browser_find — click/type/hover/select with its refs (e1, e2, …) instead of guessing CSS selectors. Use browser_wait_for after clicks that trigger async loads; browser_network when a page loads blank (shows failing 4xx/5xx requests); browser_tabs for multi-tab flows; browser_screenshot with viewpoint=mobile to check responsive layouts. Every screenshot you take is auto-attached inline in the chat for you and the user — never say you cannot attach, embed, or see screenshots. The user watches it live |
 | Calling convention | native function-calling + <tool_call> XML fallback | Prefer your endpoint's native function-calling. If it is unavailable to you, emit each call as <tool_call>{"name":"tool_name", ...arguments}</tool_call> on its own line instead — results return as <tool_result> blocks. Never invent tools outside the roster above |`;
+
+// ============================================================
+// §4a STAGED FILES — deliverables that live in memory, not on disk
+// ============================================================
+
+const STAGED_FILES_DOCTRINE = `## STAGED FILES (create_file)
+create_file is the deliverable lane for when NO project folder is open — the user asked for "a summary of what we built", "put that checklist in a file for me", "save that snippet", but there is no workspace to write it into. Without open project, write_file has no home; create_file stages the TEXT in the app's memory (nothing is written to disk and nothing is sent anywhere) and shows the user a download card in the chat.
+- It works ONLY when no project is open: it refuses when a workspace IS attached — in that case the content belongs in the project, so retry with write_file (path + content).
+- Stage an HONEST artifact: summarise/write only what actually appears in THIS conversation. Chats are separate — you have no memory of other chats, and the presence of tools (MCP rosters, connectors) in your instructions is NOT conversation history. If there is nothing in this conversation to summarise, say so in the reply instead of staging a fabricated recap.
+- Files live 4 hours and the store keeps at most 2 — creating the 3rd evicts the oldest, and the tool result tells you which one died (mention it if it matters).
+- Never stage secrets (API keys, tokens, credentials): the bytes sit in memory for any viewer of the chat to download.`;
 
 // ============================================================
 // §4b CLARIFICATIONS — pausing to ask, not guessing
@@ -275,6 +288,33 @@ const FORMATTING_CODE = `## FORMATTING (chat text)
 const FORMATTING_ASK = `## FORMATTING (chat text)
 - Markdown only: tables for comparisons ("X vs Y" → table), bullets for lists, headers to structure. No raw HTML (no <br>, <div>).
 - Lead with the answer, then supporting detail. Don't pad.`;
+
+// ============================================================
+// ARTIFACT protocol — interactive widget the chat can run live
+// ============================================================
+//
+// Emit ONE [ARTIFACT] line containing a single-line JSON spec; the UI parses
+// it out of the text and renders the widget in a sandboxed iframe with the
+// declared controls as live inputs. Everything the model needs to stay
+// compatible lives here; the renderer validates the payload and silently
+// drops malformed ones, so a mistake costs the preview, not the message.
+
+const ARTIFACT_PROTOCOL = `## RUNNABLE ARTIFACTS (live code execution)
+When the user asks you to BUILD something they can interact with — a tool, mini-game, calculator, animation, visual explainer, form, or car/habit/experiment demo — reply with:
+1. One line starting with \`[ARTIFACT]:\` followed by a SINGLE-LINE JSON object:
+   \`\`\`
+   [ARTIFACT]:{"title":"Ball physics","files":[{"name":"index.html","content":"<!DOCTYPE html>..."}],"controls":[{"id":"gravity","type":"slider","min":0,"max":10,"step":0.1,"value":3,"label":"Gravity"}]}
+   \`\`\`
+   After that line, write one short paragraph on what it shows (the marker line itself is stripped from the transcript).
+2. File rules: \`index.html\` is REQUIRED (it becomes the page). Optional \`styles.css\` / \`app.js\` as separate files. The UI inlines them for you — never reference files by URL. Never load remote scripts, images, or APIs. No \`fetch\`/\`XMLHttpRequest\`/\`WebSocket\` — the sandbox has no network. Total under 60KB.
+3. Controls (optional, max 25): \`{"id":"speed","type":"slider","min":0,"max":100,"step":1,"value":50,"label":"Speed"}\`. Types: slider (min/max/step/value), toggle (value true/false), input (value string) for short texts, select (\`options\` array + value), button (label only; no value). Control updates arrive live, with NO page refresh.
+4. Reading control changes inside your code (exact API):
+   \`\`\`js
+   window.orplex.onUpdate(function (values) { /* values.speed, values.myToggle, ... */ });
+   document.addEventListener("orplex:action", function (e) { /* e.detail === "myButtonId" */ });
+   \`\`\`
+5. The widget runs in a sandboxed frame: no cookies, no storage, no parent-page access, and its memory resets on refresh/restart. Don't try to persist state; recompute from current control values instead.
+6. Only emit the artifact marker ONCE per reply. For plain technical answers, code review, or questions, do NOT emit one.`;
 
 // ============================================================
 // PLAN overlay — real planning doctrine for PLAN mode
@@ -450,6 +490,7 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
       `You are Orplex Code, a helpful AI assistant.`,
       ASK_OVERLAY,
       FORMATTING_ASK,
+      ARTIFACT_PROTOCOL,
       EFFORT_STYLE[effort ?? "medium"],
     ];
     if (MCP_SECTION) {
@@ -465,6 +506,7 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
           PRIME_DIRECTIVES,
           PLAN_OVERLAY,
           TOOL_DOCTRINE,
+          STAGED_FILES_DOCTRINE,
           CLARIFICATION_DOCTRINE,
           ...(MCP_SECTION ? [MCP_SECTION] : []),
           ...(PLAYBOOK_SECTION ? [PLAYBOOK_SECTION] : []),
@@ -482,6 +524,7 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
     OUTPUT_CONTRACT,
     INPUT_GROUNDING,
           TOOL_DOCTRINE,
+          STAGED_FILES_DOCTRINE,
           CLARIFICATION_DOCTRINE,
           ...(MCP_SECTION ? [MCP_SECTION] : []),
           ...(PLAYBOOK_SECTION ? [PLAYBOOK_SECTION] : []),

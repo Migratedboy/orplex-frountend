@@ -2833,6 +2833,76 @@ hr:has(+ .prompt-meter) { display:none; }
   .clarify-card { animation:none; }
 }
 
+/* ============================================================
+   create_file staging card — the agent backed an output into
+   app memory instead of the workspace. Three honest states:
+   live (download affordance), expired, removed.
+   ============================================================ */
+.file-card {
+  --file-tint: rgba(255,107,0,0.05);
+  display:flex; align-items:center; gap:10px;
+  max-width:min(560px,100%);
+  margin:6px 0 8px;
+  padding:10px 12px;
+  border:1px solid var(--border, #E4E4E7);
+  border-radius:12px;
+  background:var(--file-tint);
+  animation: filecard-in 150ms ease-out both;
+}
+@keyframes filecard-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+.file-card-icon {
+  display:flex; align-items:center; justify-content:center;
+  width:30px; height:30px; flex-shrink:0;
+  border-radius:8px;
+  background:var(--well, #f3f3f4);
+  color:var(--brand, #a04100);
+}
+.file-card-icon .ms { font-size:16px; }
+.file-card-body { min-width:0; flex:1; }
+.file-card-name {
+  font-family:'JetBrains Mono',monospace;
+  font-size:12px; font-weight:600;
+  color:var(--text-primary, #1a1c1d);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.file-card-meta {
+  margin-top:2px;
+  font-size:11px; color:var(--text-tertiary, #999);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.file-card-dl {
+  display:flex; align-items:center; gap:4px;
+  padding:7px 12px; flex-shrink:0;
+  border:none; border-radius:999px;
+  font-family:inherit; font-size:12px; font-weight:600;
+  background:var(--brand, #a04100); color:#fff;
+  cursor:pointer;
+  transition:opacity 120ms ease-out, transform 120ms ease-out;
+}
+.file-card-dl:hover { opacity:0.9; }
+.file-card-dl:active { transform:scale(0.97); }
+.file-card-dl:focus-visible { outline:2px solid var(--ring-brand, rgba(160,65,0,0.1)); outline-offset:2px; }
+.file-card-dl:disabled { opacity:0.5; cursor:default; }
+.file-card-dl .ms { font-size:14px; }
+
+/* Expired / Removed: inert, but not an error — the honest state is the UI. */
+.file-card--gone { --file-tint: var(--well, #f3f3f4); animation:none; }
+.file-card--gone .file-card-icon { color:var(--text-tertiary, #999); }
+.file-card--gone .file-card-name { color:var(--text-secondary, #5f5e5e); font-weight:500; }
+
+.dark .file-card { --file-tint: rgba(255,140,40,0.06); border-color:#2f2f2f; }
+.dark .file-card-icon { background:#1f1f1f; color:#ffb693; }
+.dark .file-card-name { color:#e5e5e5; }
+.dark .file-card-meta { color:#7c7c7c; }
+.dark .file-card-dl { background:#a04100; color:#fff; }
+.dark .file-card--gone { --file-tint:#141414; }
+.dark .file-card--gone .file-card-icon { color:#7c7c7c; }
+.dark .file-card--gone .file-card-name { color:#9d9d9d; }
+
+@media (prefers-reduced-motion: reduce) {
+  .file-card { animation:none; }
+}
+
 /* ===== PROGRESS BAR ===== */
 .progress-bar-container { margin:8px 0; padding:0 4px; }
 .progress-bar-status { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
@@ -4238,3 +4308,75 @@ html:not(.dark) .sb-expand-fab:hover { color:#a04100; border-color:#fdba74; }
 
 /* Quiet model-list notice (catalog still settling, fallback list usable). */
 .prompt-bar__model-settling { padding:8px 16px; font-size:11px; color:var(--text-tertiary); border-top:1px solid var(--border); }
+
+/* ============================================================
+   Sandbox artifact — the AI-authored live widget ([ARTIFACT]).
+   Frame + controls panel; the iframe itself is self-contained
+   (sandbox="allow-scripts") so nothing here touches its guts.
+   ============================================================ */
+.sandbox-artifact {
+  max-width:min(620px,100%);
+  margin:8px 0 10px;
+  border:1px solid var(--border);
+  border-radius:12px;
+  overflow:hidden;
+  background:var(--well, #f3f3f4);
+}
+.sandbox-artifact-head {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:7px 12px;
+  border-bottom:1px solid var(--border);
+  background:var(--panel, #fff);
+}
+.sandbox-artifact-title {
+  font-size:12px; font-weight:600; color:var(--text-primary);
+  display:flex; align-items:center; gap:6px;
+}
+.sandbox-artifact-title::before {
+  content:""; width:7px; height:7px; border-radius:50%;
+  background:#31b06e;
+  box-shadow:0 0 5px rgba(49,176,110,.6);
+}
+.sandbox-artifact-restart {
+  border:1px solid var(--border);
+  background:transparent;
+  color:var(--text-secondary);
+  font-size:11px; padding:3px 10px; border-radius:6px; cursor:pointer;
+}
+.sandbox-artifact-restart:hover { color:var(--text-primary); border-color:var(--text-tertiary); }
+.sandbox-artifact-frame {
+  display:block; width:100%;
+  border:0; background:#fff;
+}
+.dark .sandbox-artifact-frame { background:#191919; }
+.sandbox-artifact-controls {
+  padding:9px 12px;
+  border-top:1px solid var(--border);
+  display:grid; grid-template-columns:1fr 1fr; gap:7px 16px;
+}
+.sandbox-artifact-control { display:flex; align-items:center; gap:8px; min-width:0; }
+.sandbox-artifact-control label {
+  font-size:11px; color:var(--text-secondary);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  flex-shrink:0; max-width:40%;
+}
+.sandbox-artifact-control input[type="range"] { flex:1; min-width:0; accent-color:var(--brand, #a04100); cursor:pointer; }
+.sandbox-artifact-control input[type="text"], .sandbox-artifact-control select {
+  flex:1; min-width:0;
+  font-size:12px; padding:3px 6px;
+  border:1px solid var(--border); border-radius:6px;
+  background:var(--panel, #fff); color:var(--text-primary);
+}
+.sandbox-artifact-control input[type="checkbox"] { accent-color:var(--brand, #a04100); cursor:pointer; }
+.sandbox-artifact-control button {
+  font-size:12px; padding:4px 12px; border-radius:7px; cursor:pointer;
+  border:1px solid var(--brand, #a04100);
+  background:transparent; color:var(--brand, #a04100);
+}
+.sandbox-artifact-control button:hover { background:var(--brand, #a04100); color:#fff; }
+.sandbox-artifact-meta {
+  padding:5px 12px 7px;
+  font-size:10px; color:var(--text-dim);
+  font-family:var(--mono, monospace);
+  border-top:1px solid var(--border);
+}

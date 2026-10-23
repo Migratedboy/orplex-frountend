@@ -5,6 +5,8 @@ import MarkdownRenderer from "./MarkdownRenderer";
 import ThinkingCard from "./ThinkingCard";
 import ToolChain from "./ToolChain";
 import ClarificationCard from "./ClarificationCard";
+import FileCard from "./FileCard";
+import SandboxArtifact from "./SandboxArtifact";
 import { IconRefresh, IconChevronUp, IconChevronDown } from "./Icons";
 import { parseContent, type ContentSegment } from "@/lib/message-content";
 import { buildChainGroups } from "@/lib/tool-chain";
@@ -151,6 +153,14 @@ export default function MessageContent({
           case "clarified":
             return segment.data ? (
               <ClarificationCard key={i} compact data={segment.data} />
+            ) : null;
+          case "filecard":
+            return segment.file ? (
+              <FileCard key={i} file={segment.file} />
+            ) : null;
+          case "artifact":
+            return segment.artifact ? (
+              <SandboxArtifact key={i} artifact={segment.artifact} />
             ) : null;
           case "failed":
             return <FailedNotice key={i} onRetry={onRetry} retrying={retrying} />;
