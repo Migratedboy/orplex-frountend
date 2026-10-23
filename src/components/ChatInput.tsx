@@ -16,6 +16,7 @@ import WorkspaceSwitcher from "./WorkspaceSwitcher";
 import { QuickActions } from "./ui";
 import type { AgentMode } from "./ModeSelector";
 import { listProviderDefs } from "@/lib/provider-registry";
+import { getConversation } from "@/lib/conversations-transport";
 
 import { apiFetch } from "@/lib/api-base";
 interface ChatInputProps {
@@ -303,6 +304,53 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   >([]);
   const issuesRef = useRef<{ provider: string; kind: string; detail: string }[]>([]);
 
+  // --- AI follow-up chips (QuickActions) --------------------------------------
+  // The chips above the composer are AI-generated from the live transcript and
+  // refreshed after EVERY finished message (isWorking true→false edge below).
+  // `aiSuggestions.length === 0` keeps the static utility chips — offline /
+  // cold endpoint / brand-new chat never blanks the bar.
+  const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
+  const suggestionsBusyRef = useRef(false);
+  const fetchSuggestions = useCallback(async () => {
+    if (suggestionsBusyRef.current) return;
+    suggestionsBusyRef.current = true;
+    try {
+      // Anchor turn: last 6 turns from the open conversation when we have one,
+      // else the just-sent user message (New Chat before the run produced an id).
+      let messages: { role: "user" | "assistant"; content: string }[] = [];
+      if (conversationId) {
+        const convo = await getConversation(conversationId).catch(() => null);
+        const all = convo?.messages ?? [];
+        for (let i = all.length - 1; i >= 0 && messages.length < 6; i--) {
+          const m = all[i];
+          const role = m?.role === "assistant" ? "assistant" : m?.role === "user" ? "user" : null;
+          const content = typeof m?.content === "string" ? m.content.trim() : "";
+          if (role && content) messages.unshift({ role, content: content.slice(0, 600) });
+        }
+      }
+      if (messages.length === 0 && lastUserMessage) {
+        messages = [{ role: "user", content: lastUserMessage.slice(0, 600) }];
+      }
+      if (messages.length === 0) return;
+      const r = await apiFetch("/api/chat/suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages }),
+      });
+      if (!r.ok) return;
+      const j = (await r.json()) as { suggestions?: unknown };
+      if (Array.isArray(j.suggestions)) {
+        setAiSuggestions(
+          j.suggestions.filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 5)
+        );
+      }
+    } catch {
+      // Keep whatever chips are showing.
+    } finally {
+      suggestionsBusyRef.current = false;
+    }
+  }, [conversationId, lastUserMessage]);
+
   // A promoted model's short name matches its picker key exactly, or as the
   // provider-qualified suffix ("deepseek-v4.1-flash" ⊂ "deepseek-ai/deepseek-v4.1-flash").
   const keyMatchesPromotion = (key: string, name: string) =>
@@ -360,6 +408,90 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     setCatalogLoading(true);
     // Harvest wake promotions in parallel (see wakePromoted above).
     refreshWakeRef.current?.();
+
+    // SERVERLESS RESCUE. The cloud backend cannot run a sweep: caches are
+    // memory + disk only, a serverless cold start has neither, and the
+    // minutes-long background sweep is killed with the request. Its
+    // /api/models/available therefore answers empty FOREVER while this app —
+    // a long-lived local process — runs a real sweep at boot. When the cloud
+    // answers empty (or stale), this helper reads THIS machine's own sweep
+    // result (?local=1 keeps the proxy from forwarding), renders it
+    // immediately, and publishes it to /api/models/ingest so every later cold
+    // start gets the catalog back. Publishing is monotonic on probedAt, so a
+    // once-published newer list can't be rolled back by any client.
+    type RawAvailable = {
+      success?: boolean;
+      models?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean; cold?: boolean }[];
+      throttledModels?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
+      coldModelIds?: string[];
+      health?: Record<string, { health?: "green" | "amber"; lastVerifiedAt?: string; probeLatencyMs?: number }>;
+      probedAt?: string;
+      providers?: string[];
+      providerIssues?: { provider: string; kind: string; detail: string; count: number }[];
+      userModels?: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }[];
+      keysRev?: string;
+    };
+    const mapAvailable = (raw: { id: string; name: string; provider: string; contextWindow?: number; free?: boolean }, withHealth: boolean, health: Record<string, { health?: "green" | "amber"; lastVerifiedAt?: string; probeLatencyMs?: number }>) => ({
+      key: raw.id,
+      name: raw.name || raw.id,
+      tag: PROVIDER_TAG[raw.provider] || raw.provider,
+      ...(withHealth
+        ? {
+            healthDot: health[raw.id]?.health ?? "amber",
+            healthTitle: health[raw.id]?.lastVerifiedAt
+              ? `Last verified ${new Date(health[raw.id].lastVerifiedAt!).toLocaleString()}${
+                  health[raw.id]?.probeLatencyMs ? ` · probe ${(health[raw.id].probeLatencyMs! / 1000).toFixed(1)}s` : ""
+                }`
+              : undefined,
+          }
+        : {}),
+      detail:
+        [raw.free ? "free" : undefined, raw.contextWindow ? `${Math.round(raw.contextWindow / 1024)}k` : undefined]
+          .filter(Boolean)
+          .join(" · ") || undefined,
+    });
+    const rescueFromServerless = (cloudLooksEmpty: boolean, cloudProbedMs: number) => {
+      if (catalogCancelled.current) return;
+      apiFetch("/api/models/available?local=1")
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+        .then((local: RawAvailable) => {
+          if (catalogCancelled.current) return;
+          const localModels = (local.models ?? []).filter((m) => m.id);
+          if (localModels.length === 0) return;
+          const localColdSet = new Set(local.coldModelIds ?? []);
+          const localVisibleCount = localModels.filter(
+            (m) => !localColdSet.has(m.id)
+          ).length;
+          const localProbedMs = Date.parse(local.probedAt ?? "") || 0;
+          const newerThanCloud = localProbedMs > cloudProbedMs;
+          // Publish when the local sweep has something the cloud snapshot lacks:
+          // the cloud is empty, or this sweep is strictly newer (wake
+          // promotions / a fresh boot sweep land on the NEXT poll).
+          if (cloudLooksEmpty || newerThanCloud) {
+            apiFetch("/api/models/ingest", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                models: localModels,
+                throttledModels: local.throttledModels ?? [],
+                providerIssues: local.providerIssues ?? [],
+                probedAt: local.probedAt,
+                providers: local.providers ?? [],
+              }),
+            }).catch(() => {});
+          }
+          if (!cloudLooksEmpty) return; // display stays on the (working) cloud list
+          if (localVisibleCount === 0 && (local.throttledModels ?? []).length === 0) return;
+          const localList = localModels.map((m) => mapAvailable(m, true, local.health ?? {}));
+          const localThrottled = (local.throttledModels ?? []).map((m) => mapAvailable(m, false, {}));
+          setColdIds((prev) => new Set([...prev, ...localColdSet]));
+          setCatalogModels(localList);
+          setThrottledModels(localThrottled);
+          setCatalogSettling(false);
+          setCatalogLoading(false);
+        })
+        .catch(() => {});
+    };
 const finish = () => {
       catalogInFlight.current = false;
       setCatalogLoading(false);
@@ -399,6 +531,7 @@ const finish = () => {
           keysRev?: string;
           /** Configured providers that contributed 0 models, and why (fix 5). */
           providerIssues?: { provider: string; kind: string; detail: string; count: number }[];
+          probedAt?: string;
         }) => {
           // Picker contract: ONLY models proven to answer are rendered.
           //  - throttledModels are never sent by the picker endpoint anymore
@@ -483,13 +616,20 @@ const finish = () => {
           }
           // Retry only while NOTHING is visible: the catalog is empty or every
           // entry is cold. A throttled model counts as visible.
-          if (list.some((m) => !coldSet.has(m.key)) || throttledList.length > 0) {
+          const visibleCount = list.filter((m) => !coldSet.has(m.key)).length;
+          if (visibleCount > 0 || throttledList.length > 0) {
             setCatalogModels(list);
             setThrottledModels(throttledList);
+            // A serverless snapshot may still have REMAINING CATCH-UP to do if
+            // this machine locally swept later than its last publish — push the
+            // newer result without touching display (the next poll converges).
+            rescueFromServerless(false, Date.parse(j.probedAt ?? "") || 0);
             setCatalogSettling(false);
             finish();
             return;
           }
+          // Cloud has nothing visible: serverless probably lost its sweep.
+          rescueFromServerless(true, Date.parse(j.probedAt ?? "") || 0);
           // The server answers instantly but returns an empty list while its
           // probe sweep runs in the background. A full sweep is MINUTES
           // (hundreds of live completion probes), so this is two phases:
@@ -655,6 +795,15 @@ const finish = () => {
   }, [conversationId]);
 
   const isWorking = loading || agentRunning || busy;
+
+  // Message just finished (working true→false): refresh the AI chips. The busy
+  // ref inside fetchSuggestions collapses concurrent edges.
+  const prevWorkingRef = useRef(isWorking);
+  useEffect(() => {
+    const was = prevWorkingRef.current;
+    prevWorkingRef.current = isWorking;
+    if (was && !isWorking) void fetchSuggestions();
+  }, [isWorking, fetchSuggestions]);
 
   const handleSkillSelected = useCallback((skill: Skill) => {
     const prefix = `${skill.promptPrefix}\n\n`;
@@ -881,6 +1030,7 @@ const finish = () => {
           }}
           hasFiles={files.hasFiles}
           isRunning={isWorking}
+          suggestions={aiSuggestions}
         />
         <div className="chat-input-wrapper prompt-bar-wrapper">
           <input

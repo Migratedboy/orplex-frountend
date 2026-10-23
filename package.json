@@ -26,10 +26,8 @@
     "eval:reliability": "node evals/reliability/run.mjs",
     "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
     "check:fonts": "node scripts/check-fonts-sync.mjs",
-    "db:local": "node scripts/local-db.mjs start",
     "db:pgdump": "node scripts/fetch-pgdump.mjs",
     "db:restore-drill": "node scripts/restore-drill.mjs",
-    "db:local:stop": "node scripts/local-db.mjs stop",
     "bench:report": "node scripts/bench-report.mjs",
     "clean": "node scripts/clean.mjs",
     "setup": "node scripts/setup-env.mjs",
@@ -69,7 +67,6 @@
     "cross-env": "^7.0.3",
     "electron": "^41.7.1",
     "electron-builder": "^26.15.3",
-    "embedded-postgres": "^18.4.0-beta.17",
     "eslint": "^9.0.0",
     "eslint-config-next": "^16.3.3",
     "jest": "^30.5.0",
@@ -95,7 +92,7 @@
     "publish": {
       "provider": "github",
       "owner": "Migratedboy",
-      "repo": "orplex-agentic-codiing-"
+      "repo": "orplex-frountend"
     },
     "directories": {
       "output": "release"
