@@ -142,6 +142,45 @@ declare global {
           servers?: Array<{ id: number; command: string; cwd: string; port: number; url: string | null; startedAt: number }>;
         }>;
       };
+      /** Local-first conversation store (desktop only): on-device JSON file
+       * in userData replaces the cloud for chat history CRUD. */
+      conversations?: {
+        list: () => Promise<
+          Array<{
+            id: string;
+            title: string;
+            workspaceName: string | null;
+            createdAt: string;
+            updatedAt: string;
+            messages: { content: string }[];
+          }>
+        >;
+        get: (id: string) => Promise<{
+          id: string;
+          title: string;
+          workspaceName: string | null;
+          createdAt: string;
+          updatedAt: string;
+          messages: { role: string; content: string; createdAt: string }[];
+        } | null>;
+        save: (
+          input: {
+            conversationId?: string | null;
+            workspaceName?: string | null;
+            messages: Array<{ role: string; content: string }>;
+          }
+        ) => Promise<{ conversationId: string } | { error: string }>;
+        rename: (id: string, title: string) => Promise<boolean>;
+        remove: (id: string) => Promise<boolean>;
+        fork: (id: string) => Promise<{
+          id: string;
+          messages: { role: string; content: string; createdAt: string }[];
+        } | null>;
+        import: (
+          list: unknown[]
+        ) => Promise<{ imported: number; skipped: number }>;
+        flush: () => Promise<boolean>;
+      };
       /** MCP remote servers: OAuth 2.1 in main + Node-side JSON-RPC passthrough. */
       mcp?: {
         request: (params: {

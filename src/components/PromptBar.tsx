@@ -524,6 +524,7 @@ export default function PromptBar({
     const ctx = canvas.getContext("2d");
     if (!ctx) return undefined;
     let raf = 0;
+    let running = false;
     let last = performance.now();
     let w = 0;
     let h = 0;
@@ -561,8 +562,6 @@ export default function PromptBar({
       ctx.clearRect(0, 0, w, h);
       const spark = sparkColor || "#b39dff";
       ctx.fillStyle = spark;
-      ctx.shadowColor = spark;
-      ctx.shadowBlur = 6;
       for (let i = parts.length - 1; i >= 0; i -= 1) {
         const p = parts[i];
         p.life += dt;
@@ -578,17 +577,46 @@ export default function PromptBar({
         ctx.arc(p.x + Math.sin(now / 900 + p.phase) * p.sway, p.y, p.r * twinkle, 0, Math.PI * 2);
         ctx.fill();
       }
+      if (running) raf = requestAnimationFrame(tick);
+    };
+    // Occluded/backgrounded windows composite stale canvas frames (visible
+    // as a garbage streak under memory pressure), so the loop stops whenever
+    // the bar is not on screen — which is also the cheaper default.
+    const start = () => {
+      if (running || reduce) return;
+      running = true;
+      last = performance.now();
+      resize();
+      cancelAnimationFrame(raf);
       raf = requestAnimationFrame(tick);
     };
+    const stop = () => {
+      running = false;
+      cancelAnimationFrame(raf);
+      ctx.clearRect(0, 0, w, h);
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else start();
+    };
+    const ro = new ResizeObserver(() => (running ? resize() : undefined));
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting && !document.hidden) start();
+        else stop();
+      }
+    });
     resize();
     for (let i = 0; i < 26; i += 1) spawn(true);
-    const ro = new ResizeObserver(resize);
     ro.observe(canvas);
-    raf = requestAnimationFrame(tick);
+    io.observe(canvas);
+    document.addEventListener("visibilitychange", onVisibility);
+    start();
     return () => {
-      cancelAnimationFrame(raf);
+      stop();
       ro.disconnect();
-      ctx.clearRect(0, 0, w, h);
+      io.disconnect();
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [maxed, reduce, sparkColor]);
 

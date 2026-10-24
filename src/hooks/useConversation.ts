@@ -5,7 +5,11 @@ import { useSession } from "next-auth/react";
 import { useConversations } from "@/components/ConversationProvider";
 import { OPEN_CONVERSATION_EVENT } from "@/lib/navigation-events";
 import { Message } from "./useMessages";
-import { apiFetch } from "@/lib/api-base";
+import {
+  getConversation,
+  saveConversation as saveConversationTransport,
+  type SaveConversationInput,
+} from "@/lib/conversations-transport";
 import { refToUrl, refsInContent } from "@/lib/client-attachments";
 
 export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]) => void) {
@@ -28,11 +32,9 @@ export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]
     const token = ++loadTokenRef.current;
     navTokenRef.current++;
     setLoadingConvo(true);
-    apiFetch(`/api/conversations?id=${encodeURIComponent(convoId)}`)
-      .then((r) => r.json())
-      .then((data) => {
+    getConversation(convoId)
+      .then((conv) => {
         if (token !== loadTokenRef.current) return; // superseded — drop stale
-        const conv = data.conversation;
         if (conv) {
           setConversationId(conv.id);
 setMessages(() => conv.messages.map((m: { role: string; content: string; createdAt: string }) => {
@@ -101,32 +103,31 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
     const saveToken = navTokenRef.current;
     try {
       const targetId = conversationIdOverride !== undefined ? conversationIdOverride : conversationId;
-      const res = await apiFetch("/api/conversations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          conversationId: targetId,
-          // Always send the CURRENT folder when one is open (threads move with
-          // the workspace they continue in); omit entirely when none is open so
-          // an existing tag is never wiped by a folderless save.
-          ...(workspaceName ? { workspaceName } : {}),
-          messages: [
-            { role: "user", content: userContent },
-            { role: "assistant", content: assistantContent },
-          ],
-        }),
-      });
-      const data = await res.json();
+      const input: SaveConversationInput = {
+        // Always send the CURRENT folder when one is open (threads move with
+        // the workspace they continue in); omit entirely when none is open so
+        // an existing tag is never wiped by a folderless save.
+        ...(workspaceName ? { workspaceName } : {}),
+        ...(targetId !== undefined ? { conversationId: targetId } : {}),
+        messages: [
+          { role: "user", content: userContent },
+          { role: "assistant", content: assistantContent },
+        ],
+      };
+      const data = await saveConversationTransport(input);
       // apiFetch does not throw on non-2xx, so a 401/500 used to resolve
       // normally with no conversationId, no error and no toast: the exchange
-      // rendered fine in-session and vanished on the next reload.
-      if (!res.ok) {
-        onSaveError?.(`Conversation not saved (HTTP ${res.status})`);
-        throw new Error(`save failed: HTTP ${res.status}`);
+      // rendered fine in-session and vanished on the next reload. The
+      // transport normalizes this: an HTTP error or bridge error both surface
+      // as { error }.
+      if (data.error) {
+        onSaveError?.(`Conversation not saved (${data.error})`);
+        throw new Error(`save failed: ${data.error}`);
       }
-      if (data.truncatedMessages > 0) {
+      const truncated = data.truncatedMessages ?? 0;
+      if (truncated > 0) {
         onSaveError?.(
-          `${data.truncatedMessages} message(s) were too long to save in full and were truncated at 50,000 characters.`,
+          `${truncated} message(s) were too long to save in full and were truncated at 50,000 characters.`,
         );
       }
       // A save is as asynchronous as a load, so it needs the same staleness

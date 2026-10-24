@@ -155,6 +155,26 @@ const SECRET_PATTERNS: Pattern[] = [
   { kind: "github_token", re: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/ },
   // Slack app-level (`xapp-`) and read-only (`xoxr-`) tokens.
   { kind: "slack_token", re: /\bx(?:ox[bpsar]|app)-[A-Za-z0-9-]{10,}\b/ },
+  { kind: "provider_key", re: /\bsk-ant-[A-Za-z0-9_\-]{20,}\b/ },
+  { kind: "provider_key", re: /\bsk-proj-[A-Za-z0-9_\-]{20,}\b/ },
+  { kind: "provider_key", re: /\bhf_[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\br8_[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\bAIza[A-Za-z0-9_\-]{35}\b/ },
+  { kind: "provider_key", re: /\bnvapi-[A-Za-z0-9_\-]{16,}\b/ },
+  { kind: "provider_key", re: /\bgsk_[A-Za-z0-9_\-]{16,}\b/ },
+  { kind: "provider_key", re: /\bphc_[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\bglpat-[A-Za-z0-9_\-]{20,}\b/ },
+  { kind: "provider_key", re: /\bxai-[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\bpplx-[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\bfc-[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\bkey-[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\bsecret_[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\btoken_[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\bpat_[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\bctx7sk-[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\bdsn_[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\bwhsec_[A-Za-z0-9]{20,}\b/ },
+  { kind: "provider_key", re: /\bre_[A-Za-z0-9]{20,}\b/ },
 ];
 
 /** Wrap `secret` in the redaction marker, keeping first/last 4 chars when

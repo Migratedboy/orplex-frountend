@@ -72,6 +72,10 @@ export function isWriteDenied(absPath: string): { denied: boolean; reason?: stri
 
   const base = segments.length > 0 ? segments[segments.length - 1] : "";
   const lowerBase = base.toLowerCase();
+  // NTFS alternate data streams (::\$DATA) bypass extension/basename checks.
+  if (absPath.includes("::")) {
+    return { denied: true, reason: `writes to NTFS alternate data streams are refused (secret material)` };
+  }
   for (const pattern of WRITE_DENY_PATTERNS) {
     if (pattern.endsWith("/")) continue;
     if (pattern.startsWith("*.")) {
@@ -139,8 +143,14 @@ export async function containPath(
         break;
       }
       // Nothing exists from the target up to the root — no link can hide
-      // under it, and the write's own mkdir will create the rest.
-      if (probe === rootAbs) break;
+      // under it, and the write's own mkdir will create the rest. Only treat
+      // the root as a safe no-op stop when it actually exists; a missing root
+      // must not let the walk skip containment (junction-ancestor escape).
+      if (probe === rootAbs) {
+        const rootStat = await lstat(rootAbs).catch(() => null);
+        if (rootStat) break;
+        return { ok: false, reason: `"${targetPath}" could not be containment-checked: workspace root does not exist` };
+      }
       const parent = dirname(probe);
       if (parent === probe) break; // reached the filesystem root
       probe = parent;

@@ -1,4 +1,4 @@
-// background-worker.ts — Runs the tool-calling loop in the background
+﻿// background-worker.ts — Runs the tool-calling loop in the background
 // Not tied to any React component — survives page navigation
 // Features: file deduplication, loop detection, line range display
 // Self-review: static quality check + one self-repair turn after the loop
@@ -13,6 +13,8 @@ import { virtualFS } from "./virtual-fs";
 import { beforeToolCall, afterToolCall, onFileWrite, onFileEdit, onTaskStart, onTaskComplete, onTaskFail } from "./plugins/registry";
 import { initializePlugins, isPluginEnabled } from "./plugins/initializer";
 import { TIMEOUTS, LIMITS, isBlockedCommand } from "./constants";
+import { runTurnLoop, stripToolCallText, type DispatchedCall } from "./agent/loop-engine";
+import { estimateComplexity, effortForTier } from "./effort";
 import { readStream, deduplicateWords, dedupeStreamedChunk, replaceLastStatus, parseToolCalls, normalizeThinkingBlocks, stripRedundantFences, appendTaskAnchor, repairInterleavedReplay, type ToolCall, type StreamResult, type StreamCallbacks } from "./stream-reader";
 import {
   createLoopStreaks,
@@ -27,10 +29,12 @@ import { getWorkspaceKey, buildFinalizePayload, postRunToLedger, hydrateFailureM
 import { buildSystemPrompt } from "./master-prompt";
 import { emitStatus, emitActivity, emitPreview, emitCompaction } from "./agent-events";
 import { dispatchToolCall, type ToolContext } from "./agent/native-tools";
+import { runSubagent } from "./agent/subagent";
 import { configureCache, searchCache, cacheResponse } from "./semantic-cache";
 import {
   createScratchpad,
   seedScratchpad,
+  seedScratchpadFromSummary,
   isScratchpadEmpty,
   updateScratchpadSection,
   renderScratchpadBlock,
@@ -63,14 +67,20 @@ import {
   releaseEditLock,
 } from "./reliability/edit-lock";
 // === Phases 2-7 integration ===
-import { reliabilityTamperDetectionEnabled } from "./reliability/flags";
+import { reliabilityTamperDetectionEnabled, reliabilityCapabilityPolicyEnabled, reliabilityPathJailEnabled, reliabilityFlakeControlEnabled } from "./reliability/flags";
 import { reliabilityProvenanceEnabled, reliabilityInjectionScanEnabled, reliabilityScrubbingEnabled } from "./reliability/flags";
 import { reliabilityEditOpsEnabled } from "./reliability/flags";
 import { reliabilityLoopGuardExtendedEnabled } from "./reliability/flags";
 import { TaintStore } from "./reliability/provenance";
 import { hasBlockingInjection } from "./reliability/injection-scanner";
-import { scrubSecrets } from "./reliability/scrubber";
+import { scrubSecrets, scrubEnvFileContent } from "./reliability/scrubber";
 import { validateToolArgs, MUTATING_TOOL_NAMES } from "./reliability/tool-args";
+import { evaluateCallCapability } from "./reliability/capability-policy";
+import { detectTamper } from "./reliability/tamper-detector";
+import { classifyTestOutcome } from "./reliability/flake-control";
+import { applyEditOpsAtomic } from "./reliability/atomic-batch";
+import { assertSafeWrite } from "./reliability/path-jail";
+import { canWrite } from "./reliability/roles";
 import {
   normalizeCallSignature,
   trackOscillation,
@@ -79,6 +89,7 @@ import {
   buildHardDenylist,
   buildInterventionDirective,
   checkWallClock,
+  recordCallFailure,
 } from "@/lib/agent/contract";
 import { hashWorkspaceState, gateFingerprint } from "./reliability/progress-hash";
 import { reliabilityVerificationReportEnabled } from "./reliability/flags";
@@ -192,6 +203,20 @@ export function fitMessagesToBudget(
 
   /** Cut at a line boundary and mark exactly what the cut was. */
   const capWithMarker = (content: string, charCap: number, marker: string) => {
+    // The task anchor rides the TAIL of the last message (appendTaskAnchor) so
+    // oldest-first dropping can never lose it — but a plain head-slice cut the
+    // anchor off exactly when the budget was tightest. Split it out: cap the
+    // base to leave the anchor room and always keep the anchor tail verbatim.
+    const anchorAt = content.lastIndexOf("\n\n---\n[ORIGINAL TASK");
+    if (anchorAt >= 0) {
+      const anchor = content.slice(anchorAt);
+      const base = content.slice(0, anchorAt);
+      const raw = base.slice(0, Math.max(0, charCap - anchor.length));
+      let cut = raw;
+      const lastNl = cut.lastIndexOf("\n");
+      if (lastNl > cut.length * 0.5) cut = cut.slice(0, lastNl); // keep ≥50% of the head
+      return cut + (raw.length < base.length ? marker : "") + anchor;
+    }
     let cut = content.slice(0, charCap);
     const lastNl = cut.lastIndexOf("\n");
     if (lastNl > charCap * 0.5) cut = cut.slice(0, lastNl); // keep ≥50% of the head
@@ -305,6 +330,13 @@ interface RunState {
   lastCompactedThrough: number;
   /** How many memory entries were injected, for the run record. */
   taskMemoriesUsed: number;
+  /**
+   * Body of the most recent <context_so_far> summary produced by the
+   * compactor. The turn loop consumes it (seeds EMPTY scratchpad sections —
+   * scratchpad.ts) for one turn and nulls it, so eviction time and handoff
+   * stay in lockstep without the compactor needing a reference to loop state.
+   */
+  lastCompactionSummary: string | null;
 }
 
 function createRunState(userMessage: string): RunState {
@@ -313,6 +345,7 @@ function createRunState(userMessage: string): RunState {
     taskCompactor: null,
     lastCompactedThrough: 0,
     taskMemoriesUsed: 0,
+    lastCompactionSummary: null,
   };
 }
 
@@ -377,8 +410,15 @@ async function callModel(
   // Any failure falls back to fitMessagesToBudget below — never blocks a task.
   let fitted = fitMessagesToBudget(anchored, MSG_BUDGET_TOKENS);
   try {
-    const { createTranscriptCompactor } = await import("./compaction");
-    runState.taskCompactor ||= createTranscriptCompactor(async (prompt, maxTokens) => {
+    const { createHierarchicalCompactor } = await import("./compaction");
+    runState.taskCompactor ||= createHierarchicalCompactor(async (prompt, maxTokens) => {
+      // The summarize prompt embeds up to 6000 chars per evicted message and
+      // used to skip the TPM pacer — on the 8k free tier it could blow the
+      // window by itself, 413, and silently degrade to lossy truncation with
+      // unaccounted quota. Pace the summarizer like every other model call;
+      // any throw still resolves null (compactTranscript's summarizer catch —
+      // compaction must never block a task).
+      await reserveTokenWindow(estimateTokens(prompt), signal);
       const res = await readStream(
         [{ role: "user", content: prompt }],
         null,
@@ -396,7 +436,23 @@ async function callModel(
     const compacted = await runState.taskCompactor.compact(anchored, MSG_BUDGET_TOKENS, signal);
     if (compacted) {
       fitted = fitMessagesToBudget(compacted, MSG_BUDGET_TOKENS);
-      emitActivity({ type: "status", message: "Context compacted — earlier turns summarized to stay under the token budget", agent: "coder" });
+      // Hand the summary to the turn loop so it can seed the scratchpad at the
+      // right moment (one turn, then consumed and nulled).
+      runState.lastCompactionSummary = summarizeForDisplay(compacted) ?? runState.lastCompactionSummary;
+      // Honest per-tier accounting (compaction.ts return contract): the trim/
+      // drop tiers keep the message count — nothing was evicted, only
+      // tool-result bodies were capped or stubbed in place. Only the
+      // summarize tier replaces messages ([block, ...tail] = one block added),
+      // so the evicted count there is the naive length delta PLUS the block.
+      const summarizing = String(compacted[0]?.content || "").startsWith("<context_so_far>");
+      if (!summarizing) {
+        const trimmed = compacted.filter((m, i) => m.content !== anchored[i]?.content).length;
+        emitActivity({
+          type: "status",
+          message: `Context compacted — ${trimmed} older tool result(s) trimmed to stay under the token budget`,
+          agent: "coder",
+        });
+      }
       // Structured companion to the status line: the timeline renders a
       // collapsible marker with the real before/after numbers, which the flat
       // status string cannot carry.
@@ -408,11 +464,16 @@ async function callModel(
       // Gated on the eviction advancing: callModel runs again on every tool
       // turn and again for review/repair, and each pass compacts a little more.
       // One logical compaction should read as ONE divider in the timeline.
-      const evictedNow = anchored.length - compacted.length;
+      const evictedNow = summarizing ? anchored.length - compacted.length + 1 : 0;
   if (evictedNow > runState.lastCompactedThrough) {
     runState.lastCompactedThrough = evictedNow;
         const charsToTokens = (msgs: Array<{ content?: string }>) =>
           Math.round(msgs.reduce((sum, m) => sum + (m.content || "").length, 0) / 4);
+        emitActivity({
+          type: "status",
+          message: `Context compacted — ${evictedNow} earlier turns summarized to stay under the token budget`,
+          agent: "coder",
+        });
         emitCompaction({
           tokensBefore: charsToTokens(anchored),
           tokensAfter: charsToTokens(fitted),
@@ -529,7 +590,13 @@ async function callModel(
     // The failed attempt still burned window tokens - account for it, then
     // retry once with a tighter budget (aggressively trimmed context).
     SENT_LOG.push({ t: Date.now(), tokens: OUTPUT_RESERVE + 1000 });
-    const tighter = fitMessagesToBudget(apiMessages, Math.floor(MSG_BUDGET_TOKENS / 2));
+    // Refit the RAW list, then RE-ANCHOR: the adaptive refit used to drop the
+    // task appendix and the retry ran anchor-less. appendTaskAnchor skips when
+    // the anchor is already present, so this mirrors the normal path.
+    const tighter = appendTaskAnchor(
+      fitMessagesToBudget(apiMessages, Math.floor(MSG_BUDGET_TOKENS / 2)),
+      runState.anchorTaskMessage
+    );
     await reserveTokenWindow(estimate(tighter), signal);
     return await attempt(tighter);
   }
@@ -559,6 +626,7 @@ export const MAX_REPAIR_ROUNDS = 2;
  */
 export { looksLikeUiWork } from "./ui-paths";
 import { looksLikeUiWork, BROWSER_VERIFY_PORT, pickDevCommand } from "./ui-paths";
+import { neutralizeModelMarkers } from "./message-content";
 import { apiFetch } from "@/lib/api-base";
 
 const TYPECHECK_ERROR_RE = /\berror TS\d+:/;
@@ -1029,7 +1097,10 @@ export async function runInBackground(
   // the model keeps file contents even after budget trimming drops older
   // messages — otherwise it re-reads files forever ("reads but never builds").
   const contextFiles = new Map<string, string>();
-  let retriedAfterDup = false;
+    let retriedAfterDup = false;
+  /** Per-run spawn counter: effortBudget.subagentLimit caps spawn_subagent
+   *  per task (the trivial tier promises 0). Enforced at the dispatch site. */
+  let subagentsSpawned = 0;
   /** Compact digest of all files read this task, injected into the last msg. */
   function buildWorkspaceDigest(): string {
     if (contextFiles.size === 0) return "";
@@ -1046,9 +1117,21 @@ export async function runInBackground(
   }
   const toolCounts = new Map<string, number>(); // tool name → count of times called
   const loopStreaks = createLoopStreaks(); // consecutive-repeat state (loop-detect.ts)
+  /** Reset the STREAK signals only. loop-detect.ts contract: the hard denylist
+   *  (callFailureCounts) is sticky for the run, and budget.startedAt is the
+   *  wall-clock origin that must not restart at every compliance reset. */
+  const resetLoopStreaks = () => {
+    const fresh = createLoopStreaks();
+    fresh.callFailureCounts = loopStreaks.callFailureCounts;
+    fresh.budget = loopStreaks.budget;
+    Object.assign(loopStreaks, fresh);
+  };
   // Loop breaker: one automatic strategy-change attempt per task, then an
   // honest stop. lastToolResults is the evidence the directive quotes.
   let loopBreakAttempted = false;
+  /** Set when a loop-stop/safety-stop break site has already stamped its own
+   *  stop note inline — the post-loop honest note must not duplicate it. */
+  let stopNoteStamped = false;
   let lastToolResults = "";
   let turnsWithTools = 0;
   let hasShownText = false;
@@ -1132,6 +1215,10 @@ export async function runInBackground(
    * proportional to the chunk, not the transcript length.
    */
   const composeDisplay = (text: string) => {
+    // Model-derived streamed text is neutralized for marker forgery FIRST —
+    // before the monotonic growth cursor compares against streamedText, so
+    // both sides live in the same (neutralized) space.
+    text = neutralizeModelMarkers(text);
     // composeDisplay("") is how a thinking delta refreshes the display, so an
     // EMPTY text must mean "no new content" rather than "the stream is empty".
     // The old guard `text.length >= streamedText.length && startsWith` is false
@@ -1232,139 +1319,235 @@ export async function runInBackground(
   }
 
   try {
-    for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
-      // Exit quietly if Stop was pressed (or a newer task superseded us)
-      if (abortSignal?.aborted || !isCurrentTask(taskId)) {
-        return;
-      }
+    // Effort plan (effort.ts): the complexity tier scales the loop's turn cap,
+    // parallel-read width, repair rounds and verify rounds. Deliberately
+    // generous to small prompts — over-routing every task to "critical"
+    // burns the free-tier TPM window for nothing.
+    const effortEstimate = estimateComplexity({ prompt: String(userMessage || ""), effortOverride: effort as string | null });
+    const effortBudget = effortForTier(effortEstimate.tier, {
+      maxTurns: MAX_TOOL_TURNS,
+      repairRounds: MAX_REPAIR_ROUNDS,
+      verifyRounds: 2,
+      parallelToolLimit: 3,
+      subagentLimit: 2,
+    });
+    emitActivity({
+      type: "status",
+      message: `Effort: ${effortEstimate.tier} (turns ≤ ${effortBudget.maxTurns}, parallel reads ≤ ${effortBudget.parallelToolLimit})`,
+    });
 
-      updateTaskStatus("streaming", turn === 0 ? "Thinking…" : "Processing…");
+    // Turn state shared with the hooks (closure over the engine's loop vars).
+    let sharedTurn = 0;
+    let sharedTurnOutput: { content: string } | null = null;
 
-      // Emit structured status for frontend progress display
-      emitStatus({
-        type: "step",
-        agent: turn === 0 ? "coordinator" : "coder",
-        label: turn === 0 ? "Analyzing request…" : `Processing turn ${turn + 1}…`,
-        status: "active",
-      });
+  // Agent tool context — built once per task (the legacy loop rebuilt it per
+  // turn solely to capture `turn`; the scratchpad update reads sharedTurn at
+  // call time now, which is equivalent and avoids re-allocating closures).
+  const toolCtx: ToolContext = {
+    mode,
+    owner: { userId: null, conversationId: conversationId ?? null },
+    readFiles,
+    contextFiles,
+    readResults,
+    abortSignal: abortSignal ?? null,
+    fs: {
+      readFile: _readFile,
+      writeFile: _writeFile,
+      editFile: _editFile,
+      // Client lane pages from the (budgeted) cached full text — the
+      // dispatcher slices it by line; server lanes stream from disk.
+      readPage: async (p: string, offsetLine: number, limitLines: number) => {
+        if (!_readFile) return null;
+        try {
+          const full = await _readFile(p);
+          if (full.startsWith("[Error") || full === "(file not available)") return null;
+          const lines = full.endsWith("\n") ? full.slice(0, -1).split("\n") : full.split("\n");
+          const start = Math.max(1, offsetLine);
+          const slice = lines.slice(start - 1, start - 1 + limitLines);
+          return {
+            text: slice.join("\n"),
+            startLine: start,
+            endLine: start - 1 + slice.length,
+            totalLines: lines.length,
+            hasMore: start - 1 + slice.length < lines.length,
+          };
+        } catch { return null; }
+      },
+      directoryName: _directoryName,
+    },
+    counters: {
+      writtenFiles,
+      getTotalWrites: () => totalWrites,
+      setTotalWrites: (n) => { totalWrites = n; },
+      setFilesChanged,
+      bumpStat: (key) => bumpStat(key),
+    },
+    fileTree: _fileTree,
+    fileContents: _fileContents,
+    store: {
+      setTodos: (items) => setTodos(items),
+      completeTodo: (i) => completeTodo(i),
+      clearTodos: () => clearTodos(),
+      setQuestion: (q, opts, free, meta) => setQuestion(q, opts, free, meta),
+      answerQuestion: (a) => answerQuestion(a),
+    },
+    stats: {
+      commandRun: () => bumpStat("commandsRun"),
+      failedStep: () => bumpStat("failedSteps"),
+      rejectedAction: () => bumpStat("rejectedActions"),
+    },
+    hooks: {
+      fileWritten: (p, c) => onFileWrite(p, c).catch(() => {}),
+      fileEdited: (p, o, n) => onFileEdit(p, o, n).catch(() => {}),
+    },
+    getDisplay: () => fullDisplayContent,
+    appendDisplay: (text) => { fullDisplayContent += text; },
+    scratchpad: {
+      get: () => scratch,
+      update: (section: ScratchpadSection, content: string) => {
+        scratch = updateScratchpadSection(scratch, section, content, sharedTurn);
+        pushScratchpadToUI();
+      },
+    },
+    setStatus: (status, detail) => updateTaskStatus(status, detail),
+    replaceStatus: (line) => { fullDisplayContent = replaceLastStatus(fullDisplayContent, line); },
+    syncDisplay: () => setDisplayContent(fullDisplayContent),
+    waitForAnswer,
+  };
+    const loopExit = await runTurnLoop({
+      maxTurns: effortBudget.maxTurns,
+      parallelToolLimit: effortBudget.parallelToolLimit,
+      // Exit (via throw) when Stop was pressed or a newer task superseded us.
+      // The catch below unwinds quietly for AbortError and does nothing at all
+      // once a newer task owns the slot — the quiet verification the head
+      // abort used to get.
+      shouldAbort: () => !!abortSignal?.aborted || !isCurrentTask(taskId),
+      throwAbort: () => new DOMException("Aborted", "AbortError"),
+      loopStreaks,
+      parseXmlToolCalls: (t) => parseToolCalls(t || "") as unknown as Array<Record<string, unknown> & { name: string }>,
+      onTurnStart: (turn) => {
+        sharedTurn = turn;
+        updateTaskStatus("streaming", turn === 0 ? "Thinking…" : "Processing…");
+        // Structured status for the frontend progress display
+        emitStatus({
+          type: "step",
+          agent: turn === 0 ? "coordinator" : "coder",
+          label: turn === 0 ? "Analyzing request…" : `Processing turn ${turn + 1}…`,
+          status: "active",
+        });
+      },
+      callModel: async (turn) => {
+        // Screenshots captured on previous turns ride along once so the model
+        // SEES what it captured (vision preprocessor describes them for
+        // text-only models). User attachments go every turn, as before.
+        const turnImages = pendingShotImages.length > 0
+          ? [...imageDataUrls, ...pendingShotImages.slice(-MAX_SHOTS_PER_TURN)]
+          : imageDataUrls;
+        pendingShotImages = [];
 
-      // Screenshots captured on previous turns ride along once so the model
-      // SEES what it captured (vision preprocessor describes them for
-      // text-only models). User attachments go every turn, as before.
-      const turnImages = pendingShotImages.length > 0
-        ? [...imageDataUrls, ...pendingShotImages.slice(-MAX_SHOTS_PER_TURN)]
-        : imageDataUrls;
-      pendingShotImages = [];
-
-  // Set when the provider's stream actually terminated ([DONE]). A connection
-  // dropped mid-answer looks identical to a clean finish from the caller's
-  // side, and the truncated text used to be saved to the DB as a successful
-  // exchange.
-  let streamEndedCleanly = false;
-  const streamResult = await callModel(
-    apiMessages,
-    runState,
-        conversationId,
-        {
-          onChunk: (content) => {
-            // Bounded repair + single rebuilt thinking block per turn — see
-            // composeDisplay above. Re-repairing the whole transcript per
-            // chunk used to freeze the UI mid-run.
-            setDisplayContent(composeDisplay(content));
+        // Set when the provider's stream actually terminated ([DONE]). A
+        // connection dropped mid-answer looks identical to a clean finish from
+        // the caller's side, so the truncated text must not be persisted or
+        // displayed as a successful exchange.
+        let streamEndedCleanly = false;
+        const streamResult = await callModel(
+          apiMessages,
+          runState,
+          conversationId,
+          {
+            onChunk: (content) => {
+              // Bounded repair + single rebuilt thinking block per turn — see
+              // composeDisplay above. Re-repairing the whole transcript per
+              // chunk used to freeze the UI mid-run.
+              setDisplayContent(composeDisplay(content));
+            },
+            onThinking: (thinking) => {
+              // M3 thinking streams live inside the collapsible block
+              thinkingDisplay += neutralizeModelMarkers(thinking);
+              setDisplayContent(composeDisplay(""));
+              emitActivity({ type: "thinking", message: thinking.slice(-80) });
+            },
+            onDone: () => {
+              streamEndedCleanly = true;
+            },
           },
-    onThinking: (thinking) => {
-      // Display M3 thinking in real-time inside the collapsible block
-      thinkingDisplay += thinking;
-      setDisplayContent(composeDisplay(""));
-      // Emit thinking activity
-      emitActivity({ type: "thinking", message: thinking.slice(-80) });
-    },
-    onDone: () => {
-      streamEndedCleanly = true;
-    },
-  },
-        mode,
-        turnImages,
-        abortSignal,
-        effort,
-        // Compact profile from turn 2 onward: the full master prompt is
-        // already in the conversation's history — resending the whole
-        // doctrine every turn burns free-tier TPM for no behavioral gain.
-        turn === 0 ? "full" : "compact",
-        { taskId, turn, why: turn === 0 ? "initial" : `tool-loop turn ${turn + 1}` },
-        selectedModel
-      );
+          mode,
+          turnImages,
+          abortSignal,
+          effort,
+          // Compact profile from turn 2 onward: the full master prompt is
+          // already in the conversation's history — resending the whole
+          // doctrine every turn burns free-tier TPM for no behavioral gain.
+          turn === 0 ? "full" : "compact",
+          { taskId, turn, why: turn === 0 ? "initial" : `tool-loop turn ${turn + 1}` },
+          selectedModel
+        );
 
-  // Abort mid-stream (Stop pressed) — discard this turn, unwind to the
-  // catch below which exits quietly instead of failing the task.
-  if (abortSignal?.aborted) {
-    throw new DOMException("Aborted", "AbortError");
-  }
+        sharedTurnOutput = { content: streamResult?.content ?? "" };
 
-  // The stream ended without a [DONE] marker: the connection dropped partway
-  // through the answer. Mark it so the text is not persisted and displayed as
-  // if it were the complete reply.
-  if (!streamEndedCleanly) {
-    const cut = normalizeThinkingBlocks(streamResult?.content ?? "");
-    if (cut.trim()) {
-      fullDisplayContent += `${cut}\n\n[INCOMPLETE — the connection dropped before this reply finished. The text above is a partial answer.]`;
-    }
-    setDisplayContent(fullDisplayContent);
-  }
-
-      const streamedContent = streamResult.content;
-      if (!streamedContent && streamResult.toolCalls.length === 0) {
-        // Empty response — set minimal content so message isn't stuck on "Thinking..."
-        // and stamp [FAILED] so the renderer offers one-click Retry.
-        if (!fullDisplayContent.trim()) {
-          fullDisplayContent = "*No response from the model. Try again.*";
+        // Compaction handoff (scratchpad.ts): if this turn's call evicted
+        // history, seed EMPTY scratchpad sections from the summary — once,
+        // then consumed. Model-authored scratchpad content is never clobbered.
+        if (runState.lastCompactionSummary) {
+          const seeded = seedScratchpadFromSummary(scratch, runState.lastCompactionSummary, sharedTurn);
+          if (seeded !== scratch) {
+            scratch = seeded;
+            pushScratchpadToUI();
+            emitActivity({ type: "status", message: "Compacted context loaded into working memory" });
+          }
+          runState.lastCompactionSummary = null;
         }
-        failedEmptyResponse = true;
-        break;
-      }
-      lastStreamedContent = streamedContent || "";
 
-      // Use native tool calls from stream, fall back to XML parsing
-      const rawToolCalls = streamResult.toolCalls.length > 0
-        ? streamResult.toolCalls
-        : parseToolCalls(streamedContent || "");
-      // Detect truncated tool calls (missing required args due to token limit)
-      const truncatedCalls = rawToolCalls.filter(tc => {
-        if (tc.name === 'write_file' && (!tc.path || tc.content === undefined)) return true;
-        if (tc.name === 'edit_file' && (!tc.path || !tc.old_text || !tc.new_text)) return true;
-        if (tc.name === 'read_file' && !tc.path) return true;
-        return false;
-      });
-      const toolCalls = rawToolCalls.filter(tc => !truncatedCalls.includes(tc));
-      const textOnly = (streamedContent || "").replace(/[<]tool_call[\s\S]*?[<]\/tool_call[>]/g, "").trim();
+        // The stream ended without a [DONE] marker: the connection dropped
+        // partway through the answer. Mark it so the text is not persisted and
+        // displayed as if it were the complete reply.
+        if (!streamEndedCleanly) {
+          const cut = normalizeThinkingBlocks(streamResult?.content ?? "");
+          if (cut.trim()) {
+            fullDisplayContent += `${cut}\n\n[INCOMPLETE — the connection dropped before this reply finished. The text above is a partial answer.]`;
+          }
+          setDisplayContent(fullDisplayContent);
+        }
 
-      // Fold the turn's reasoning block into the transcript (closed) before
-      // any of the turn's content below is appended, so the collapsible
-      // ThinkingCard renders the full reasoning followed by the answer.
-      if (thinkingDisplay) {
-        fullDisplayContent += thinkingBlock();
-        thinkingDisplay = "";
-      }
+        return {
+          content: streamResult?.content ?? "",
+          toolCalls: (streamResult?.toolCalls ?? []) as unknown as Array<Record<string, unknown> & { name: string }>,
+        };
+      },
+      onModelOutput: () => {
+        // Fold the turn's reasoning block into the transcript (closed) before
+        // any of the turn's display content below is appended, so the
+        // collapsible ThinkingCard renders the full reasoning followed by the
+        // answer.
+        if (thinkingDisplay) {
+          fullDisplayContent += thinkingBlock();
+          thinkingDisplay = "";
+        }
+      },
 
-      // === TRUNCATION DETECTION: Auto-continue if tool calls were truncated ===
-      if (truncatedCalls.length > 0 && toolCalls.length === 0) {
-        // All tool calls were truncated — send a continue message
-        const truncatedPaths = truncatedCalls.map(tc => tc.path || 'unknown').join(', ');
-        fullDisplayContent += `[Truncated: ${truncatedPaths} — continuing...]\n`;
-        setDisplayContent(fullDisplayContent);
-        apiMessages.push({ role: "assistant", content: streamedContent || "" });
-        apiMessages.push({ role: "user", content: truncationContinue(truncatedCalls[0]?.path) });
-        continue; // Skip to next turn instead of breaking
-      }
-
-      // === STOP: No valid tool calls => final answer ===
-      if (toolCalls.length === 0) {
-        // AUTO-RETRY: If user asked to build/create/make something AND nothing
-        // was written yet, force tool usage. LIVE-VALIDATED false positive:
-        // this used to fire on the model's *final summary* after successful
-        // writes — "You described the plan but created no files" — even when
-        // write_file had succeeded. The written-files check makes the nudge
-        // impossible once real work exists.
+      onNoToolCalls: (_turn, out, textOnly) => {
+        const streamedContent = out.content || "";
+        // === AUTO-RETRY: If user asked to build/create/make something AND
+        // nothing was written yet, force tool usage. LIVE-VALIDATED false
+        // positive: this used to fire on the model's *final summary* after
+        // successful writes — "You described the plan but created no files" —
+        // even when write_file had succeeded. The written-files check makes
+        // the nudge impossible once real work exists.
+        if (!streamedContent) {
+          // Empty response — set minimal content so message isn't stuck on
+          // "Thinking..." and stamp [FAILED] so the renderer offers Retry.
+          if (!fullDisplayContent.trim()) {
+            fullDisplayContent = "*No response from the model. Try again.*";
+          }
+          failedEmptyResponse = true;
+          return "break";
+        }
+        lastStreamedContent = streamedContent;
+        // Neutralized for the display transcript: the model can type
+        // `[FILECARD]:…`/`[CLARIFIED]:…` into its prose, and marker prefixes
+        // are the only discriminator the renderer has — neutralized model
+        // text never renders as UI (see neutralizeModelMarkers).
+        const displayTextOnly = neutralizeModelMarkers(textOnly);
         const buildKeywords = /build|create|make|generate|write|code|develop|implement|set up|set up/i;
         const userWantsFiles = userMessage && buildKeywords.test(userMessage);
         const hasTextResponse = textOnly.length > 20;
@@ -1375,10 +1558,10 @@ export async function runInBackground(
 
         if (userWantsFiles && hasTextResponse && !hasWrittenFiles && !alreadyRetried) {
           // M3 described what it would do but didn't use tools — force it
-          fullDisplayContent += textOnly + "\n\n";
+          fullDisplayContent += displayTextOnly + "\n\n";
           apiMessages.push({ role: "assistant", content: streamedContent || "" });
           apiMessages.push({ role: "user", content: FORCE_TOOLS_DIRECTIVE });
-          continue; // Retry with forced tool usage
+          return "continue"; // Retry with forced tool usage
         }
 
         // BROWSER-TASK NUDGE: the user asked for live browsing but the model
@@ -1395,461 +1578,541 @@ export async function runInBackground(
 
         if (userWantsBrowsing && hasTextResponse && !usedBrowserTools && !alreadyRetriedBrowser) {
           // Model dodged the browser tools — force them, once
-          fullDisplayContent += textOnly + "\n\n";
+          fullDisplayContent += displayTextOnly + "\n\n";
           apiMessages.push({ role: "assistant", content: streamedContent || "" });
           apiMessages.push({ role: "user", content: FORCE_BROWSER_TOOLS_DIRECTIVE });
-          continue; // Retry with forced browser tool usage
+          return "continue"; // Retry with forced browser tool usage
         }
 
-        fullDisplayContent += streamedContent || "";
-        break;
-      }
-
-      // M3 outputs text AND tool calls together — execute the tools, show the text
-      // (Previously this broke the loop — tools were never executed)
-
-      // === STOP: Smart loop detection ===
-      turnsWithTools++;
-
-      // Track tool usage for deduplication + feature gates
-      for (const call of toolCalls) {
-        toolCounts.set(call.name, (toolCounts.get(call.name) || 0) + 1);
-        if (call.name === "write_file" || call.name === "edit_file") totalWrites++;
-      }
-
-      // Streak-based loop detection, O(1) per turn — runs BEFORE dispatch, so
-      // a trip never executes the offending call (the duplicate the model
-      // just re-sent costs zero tool time). See loop-detect.ts: identical
-      // call 3x in a row, same target 4x with noisy args, the same multi-call
-      // turn 3x, or one state-changing tool every turn for 5 turns.
-      const loopVerdict = trackToolTurn(loopStreaks, toolCalls);
-
-      // === LOOP TRIP: self-heal once, then stop honestly ==================
-      // The old flow asked the user "keep going?" for loops; clicking
-      // Continue reset the counters but not the model's behavior, so the same
-      // call came back (the observed "stuck in a loop" failure). Now the
-      // first trip injects the repeated call + its last result and demands a
-      // different action — no user nag; a second trip (evidence ignored)
-      // stops the task with an honest note instead of burning the TPM window.
-      if (loopVerdict.loop) {
+        fullDisplayContent += neutralizeModelMarkers(streamedContent || "");
+        return "break";
+      },
+      onTurnCalls: (_turn, _out, toolCalls) => {
+        // The turn produced real calls (text-and-tools same turn is executed).
+        turnsWithTools++;
+        // Track tool usage for deduplication + feature gates
+        for (const call of toolCalls) {
+          toolCounts.set(call.name, (toolCounts.get(call.name) || 0) + 1);
+          if (call.name === "write_file" || call.name === "edit_file") totalWrites++;
+        }
+      },
+      onLoopTrip: (loopVerdict, out, textOnly) => {
+        // === LOOP TRIP: self-heal once, then stop honestly ==================
+        // The old flow asked the user "keep going?" for loops; clicking
+        // Continue reset the counters but not the model's behavior, so the
+        // same call came back (the observed "stuck in a loop" failure). Now
+        // the first trip injects the repeated call + its last result and
+        // demands a different action — no user nag; a second trip (evidence
+        // ignored) stops the task with an honest note instead of burning the
+        // TPM window.
+        const displayTextOnly = neutralizeModelMarkers(textOnly);
         const loopReason = loopVerdict.reason!;
-        fullDisplayContent += textOnly ? textOnly + "\n" : "";
+        fullDisplayContent += displayTextOnly ? displayTextOnly + "\n" : "";
         if (loopBreakAttempted) {
           fullDisplayContent += `\n*[Stopped — the agent kept repeating ${loopReason} even after a strategy-change instruction. No further calls were run.]*\n`;
+          stopNoteStamped = true;
           setDisplayContent(fullDisplayContent);
-          break;
+          return "break";
         }
         loopBreakAttempted = true;
         fullDisplayContent += `\n*[Loop detected — ${loopReason}. Forcing a strategy change.]*\n`;
         setDisplayContent(fullDisplayContent);
-        apiMessages.push({ role: "assistant", content: streamedContent || "" });
+        apiMessages.push({ role: "assistant", content: out.content || "" });
         apiMessages.push({ role: "user", content: buildLoopBreakDirective(loopVerdict, lastToolResults) });
-        Object.assign(loopStreaks, createLoopStreaks());
-        continue;
-      }
+        resetLoopStreaks();
+        return "continue";
+      },
+      preDispatch: async (_turn, out, toolCalls) => {
+        const displayTextOnly = neutralizeModelMarkers(stripToolCallText(out.content));
+        if (turnsWithTools >= effortBudget.maxTurns - 2 || totalWrites >= MAX_TOTAL_WRITES) {
+          const reason = totalWrites >= MAX_TOTAL_WRITES
+            ? `Too many file writes (${totalWrites})`
+            : `Reached ${turnsWithTools} tool turns`;
+          // Interactive autonomy: at a safety cap, ASK instead of dying. The
+          // user can continue (counters reset) or stop here — up to
+          // MAX_SAFETY_CONTINUES times, so a stuck UI can't loop forever.
+          if (!abortSignal?.aborted && mode !== "ask" && isCurrentTask(taskId) && safetyContinueGrants < MAX_SAFETY_CONTINUES) {
+            setQuestion(
+              `Hit a safety limit — ${reason}. Keep going?`,
+              ["Continue working", "Stop here"],
+              true
+            );
+            updateTaskStatus("awaiting_approval", `Safety limit: ${reason}`);
+            fullDisplayContent += (displayTextOnly ? displayTextOnly + "\n" : "") + `\n*[Safety limit — ${reason}]*\n`;
+            setDisplayContent(fullDisplayContent);
+            const answer = await waitForAnswer(120_000);
+            if (/continue|keep|yes/i.test(answer)) {
+              safetyContinueGrants++;
+              toolCounts.clear();
+              resetLoopStreaks();
+              totalWrites = 0;
+              turnsWithTools = 0;
+              fullDisplayContent += `\n*[Continuing — limit reset by user (${MAX_SAFETY_CONTINUES - safetyContinueGrants} extensions left)]*\n`;
+              setDisplayContent(fullDisplayContent);
+              apiMessages.push({ role: "assistant", content: out.content || "" });
+              apiMessages.push({
+                role: "user",
+                content: `${SAFETY_CONTINUE_DIRECTIVE} (limit: ${reason})`,
+              });
+              return "continue";
+            }
+          }
+          // The stop note is appended in BOTH cases — the old ternary
+          // `displayTextOnly || note` ate the stop reason whenever the turn
+          // had prose (mirror the ask path above, which shows text + note).
+          if (displayTextOnly) fullDisplayContent += displayTextOnly + "\n";
+          fullDisplayContent += `\n*[Stopped — ${reason}]*\n`;
+          stopNoteStamped = true;
+          return "break";
+        }
 
-      if (turnsWithTools >= MAX_TOOL_TURNS - 2 || totalWrites >= MAX_TOTAL_WRITES) {
-        const reason = totalWrites >= MAX_TOTAL_WRITES
-          ? `Too many file writes (${totalWrites})`
-          : `Reached ${turnsWithTools} tool turns`;
-        // Interactive autonomy: at a safety cap, ASK instead of dying. The
-        // user can continue (counters reset) or stop here — up to
-        // MAX_SAFETY_CONTINUES times, so a stuck UI can't loop forever.
-        if (!abortSignal?.aborted && mode !== "ask" && isCurrentTask(taskId) && safetyContinueGrants < MAX_SAFETY_CONTINUES) {
-          setQuestion(
-            `Hit a safety limit — ${reason}. Keep going?`,
-            ["Continue working", "Stop here"],
-            true
+        if (displayTextOnly) fullDisplayContent += displayTextOnly + "\n\n";
+        return null;
+      },
+      dispatchCall: async (call) => dispatchOneTurnCall(call),
+      postDispatch: (_turn, out, info) => {
+        const streamedContent = out.content || "";
+        const toolResults = info.results.join("\n");
+        const skippedDueToDup = info.anyDup;
+        const toolCalls = info.calls as unknown as ToolCall[];
+
+        // === LOOP DETECTION: If all reads were duplicates, stop ===
+        if (skippedDueToDup && toolCalls.every(c => c.name !== "write_file")) {
+          if (!retriedAfterDup && contextFiles.size > 0) {
+            // Second chance: instead of dying, re-present the workspace digest
+            // and order it to BUILD with what it has.
+            retriedAfterDup = true;
+            fullDisplayContent += "\n**[Workspace already in context — building from it now…]**\n";
+            setDisplayContent(fullDisplayContent);
+            apiMessages = [
+              ...apiMessages,
+              { role: "assistant", content: streamedContent || "" },
+              { role: "user", content: `${buildWorkspaceDigest()}\n[TOOL RESULTS]\n${toolResults}\nSTOP re-reading. You have the complete file contents above. Now PRODUCE THE RESULT: write the files with write_file / edit_file, or give the final answer. Re-reading anything is prohibited.` },
+            ];
+            return "continue";
+          }
+          fullDisplayContent += "\n\n*[Stopping — agent was re-reading files it already has. Use the information above to answer.]*\n";
+          return "break";
+        }
+
+        fullDisplayContent += "\n";
+        // Evidence for the loop breaker on the NEXT turn (the breaker quotes
+        // the most recent tool output — a loop usually re-sends right after it).
+        lastToolResults = toolResults;
+
+        // Scratchpad rides the LAST message (same trim-proof pattern as the
+        // task anchor): re-rendered fresh every turn from live state, so it is
+        // always current and can never be evicted by budget trimming.
+        const scratchBlock = renderScratchpadBlock(scratch);
+        // One nudge max: complex task, several turns in, scratchpad untouched.
+        let scratchNudge = "";
+        if (sparcDirective && sharedTurn >= 2 && isScratchpadEmpty(scratch) && !scratchNudged) {
+          scratchNudged = true;
+          scratchNudge = `\n[SCRATCHPAD] Use scratchpad_update to record your plan, key findings, and next move before continuing.`;
+        }
+        // "You now have all the information you need" was asserted on EVERY
+        // tool turn, including turns whose result was "No files found at that
+        // path." That is an affirmative instruction to proceed on absent data,
+        // which is how an empty workspace produced confident speculation. Only
+        // claim sufficiency when the results actually contain something, and
+        // tell the model plainly when they do not.
+        const resultsAreEmpty =
+          !contextFiles.size &&
+          /No files found at that path\.|no results|not found|No results found/i.test(
+            toolResults,
           );
-          updateTaskStatus("awaiting_approval", `Safety limit: ${reason}`);
-          fullDisplayContent += (textOnly ? textOnly + "\n" : "") + `\n*[Safety limit — ${reason}]*\n`;
-          setDisplayContent(fullDisplayContent);
-          const answer = await waitForAnswer(120_000);
-          if (/continue|keep|yes/i.test(answer)) {
-            safetyContinueGrants++;
-            toolCounts.clear();
-            Object.assign(loopStreaks, createLoopStreaks());
-            totalWrites = 0;
-            turnsWithTools = 0;
-            fullDisplayContent += `\n*[Continuing — limit reset by user (${MAX_SAFETY_CONTINUES - safetyContinueGrants} extensions left)]*\n`;
-            setDisplayContent(fullDisplayContent);
-            apiMessages.push({ role: "assistant", content: streamedContent || "" });
-            apiMessages.push({
-              role: "user",
-              content: `${SAFETY_CONTINUE_DIRECTIVE} (limit: ${reason})`,
-            });
-            continue;
-          }
-        }
-        fullDisplayContent += textOnly || `\n*[Stopped — ${reason}]*\n`;
-        break;
-      }
+        const sufficiencyDirective = resultsAreEmpty
+          ? "The tool returned NOTHING for this call. Do not call it again with the same or a similar argument — repeating it cannot succeed. Either try a materially different action, or tell the user plainly what you could not find and stop."
+          : "You now have all the information you need. Act on it: write files or answer. Do NOT re-read files you've already read.";
 
-      if (textOnly) fullDisplayContent += textOnly + "\n\n";
+        apiMessages = [
+          ...apiMessages,
+          { role: "assistant", content: streamedContent || "" },
+          { role: "user", content: `[TOOL RESULTS]\n${toolResults}${contextFiles.size ? `\n${buildWorkspaceDigest()}` : ""}${scratchBlock ? `\n${scratchBlock}` : ""}${scratchNudge}\n${sufficiencyDirective}` },
+        ];
+        return null;
+      },
+    });
 
-      // === Execute tools with deduplication (dispatcher: agent/native-tools.ts) ===
-      let toolResults = "";
-      let skippedDueToDup = false;
-
-      const toolCtx: ToolContext = {
-        mode,
-        readFiles,
-        contextFiles,
-        readResults,
-        abortSignal: abortSignal ?? null,
-        fs: {
-          readFile: _readFile,
-          writeFile: _writeFile,
-          editFile: _editFile,
-          // Client lane pages from the (budgeted) cached full text — the
-          // dispatcher slices it by line; server lanes stream from disk.
-          readPage: async (p: string, offsetLine: number, limitLines: number) => {
-            if (!_readFile) return null;
-            try {
-              const full = await _readFile(p);
-              if (full.startsWith("[Error") || full === "(file not available)") return null;
-              const lines = full.endsWith("\n") ? full.slice(0, -1).split("\n") : full.split("\n");
-              const start = Math.max(1, offsetLine);
-              const slice = lines.slice(start - 1, start - 1 + limitLines);
-              return {
-                text: slice.join("\n"),
-                startLine: start,
-                endLine: start - 1 + slice.length,
-                totalLines: lines.length,
-                hasMore: start - 1 + slice.length < lines.length,
-              };
-            } catch { return null; }
-          },
-          directoryName: _directoryName,
-        },
-        counters: {
-          writtenFiles,
-          getTotalWrites: () => totalWrites,
-          setTotalWrites: (n) => { totalWrites = n; },
-          setFilesChanged,
-          bumpStat: (key) => bumpStat(key),
-        },
-        fileTree: _fileTree,
-        fileContents: _fileContents,
-        store: {
-          setTodos: (items) => setTodos(items),
-          completeTodo: (i) => completeTodo(i),
-          clearTodos: () => clearTodos(),
-          setQuestion: (q, opts, free, meta) => setQuestion(q, opts, free, meta),
-          answerQuestion: (a) => answerQuestion(a),
-        },
-        stats: {
-          commandRun: () => bumpStat("commandsRun"),
-          failedStep: () => bumpStat("failedSteps"),
-          rejectedAction: () => bumpStat("rejectedActions"),
-        },
-        hooks: {
-          fileWritten: (p, c) => onFileWrite(p, c).catch(() => {}),
-          fileEdited: (p, o, n) => onFileEdit(p, o, n).catch(() => {}),
-        },
-        getDisplay: () => fullDisplayContent,
-        appendDisplay: (text) => { fullDisplayContent += text; },
-        scratchpad: {
-          get: () => scratch,
-          update: (section: ScratchpadSection, content: string) => {
-            scratch = updateScratchpadSection(scratch, section, content, turn);
-            pushScratchpadToUI();
-          },
-        },
-        setStatus: (status, detail) => updateTaskStatus(status, detail),
-        replaceStatus: (line) => { fullDisplayContent = replaceLastStatus(fullDisplayContent, line); },
-        syncDisplay: () => setDisplayContent(fullDisplayContent),
-        waitForAnswer,
-      };
-
-      for (const call of toolCalls) {
-        // Stop pressed (or task superseded) while tools were being dispatched —
-        // bail out of the whole turn instead of running more tools.
-        if (abortSignal?.aborted || !isCurrentTask(taskId)) {
-          throw new DOMException("Aborted", "AbortError");
-        }
-
-        // === PLUGIN HOOK: beforeToolCall ===
-        const pluginArgs = await beforeToolCall(call.name, call as any).catch(() => call as any);
-        if (!pluginArgs || pluginArgs._blocked) {
-          toolResults += `<tool_result name="${call.name}">BLOCKED by plugin</tool_result>\n`;
-          continue;
-        }
-
-        // === SPARC PLAN-FIRST GATE (Tree of Thought, enforced) ===
-        // On complex tasks, writes/edits are blocked until the model has
-        // planned (todo_list) and looked at the workspace (read/list/search).
-        if (
-          sparcDirective &&
-          (call.name === "write_file" || call.name === "edit_file" || call.name === "write_file_chunk" || call.name === "batch_edit") &&
-          !(toolCounts.get("todo_list") || readFiles.size || readResults.size)
-        ) {
-          toolResults += `<tool_result name="${call.name}">BLOCKED by plan-first gate: create a todo_list plan (and read/list the relevant files) before writing code. Call todo_list first, then retry ${call.name}.</tool_result>\n`;
-          fullDisplayContent += `[GATE] ${call.name} blocked — plan first\n`;
-          setDisplayContent(fullDisplayContent);
-          continue;
-        }
-
-        // === HARD PLAN-APPROVAL GATE (Claude Code parity) ===
-        // In plan mode NOTHING state-changing runs until the user explicitly
-        // approves the plan. Blocking is a readable tool result so the agent
-        // adapts; the latch opens only via the approval decision.
-        if (mode === "plan" && planGateBlocks(taskId, String(call.name))) {
-          const msg = planGateMessage(String(call.name));
-          toolResults += `<tool_result name="${call.name}">${msg}</tool_result>\n`;
-          fullDisplayContent += `[GATE] ${call.name} blocked — plan not approved\n`;
-          setDisplayContent(fullDisplayContent);
-          // First block surfaces the approval request to the user.
-          // NOTE: the approval TYPE must match the blocked tool — filing
-          // everything as "run_command" mislabels the dialog, mis-scores
-          // risk, and keys "always allow" rules on the wrong fields.
-          if (!isPlanRejected(taskId)) {
-            const toolName = String(call.name);
-            const gateType: ApprovalType =
-              toolName === "write_file" || toolName === "write_file_chunk"
-                ? "write_file"
-                : toolName === "edit_file" || toolName === "batch_edit"
-                  ? "edit_file"
-                  : toolName.startsWith("mcp__")
-                    ? "mcp_tool"
-                    : "run_command";
-            void requestApproval(
-              gateType,
-              `Plan approval needed before ${call.name}`,
-              { planGate: true, taskId, blockedTool: call.name, path: call.path, command: call.command, tool: call.name, summary: "Approve the plan to let the agent write files." },
-              undefined,
-              "medium"
-            ).then((approved) => {
-              if (approved) approvePlan(taskId);
-              else rejectPlan(taskId);
-            }).catch(() => {});
-          }
-          continue;
-        }
-
-        // === EDIT LOCK (reliability, Phase 1) ===
-        // A red gate must refuse further mutations, not just display them. The
-        // lock is checked here, at the single dispatch point every write path
-        // funnels through, so a repair turn that keeps writing onto a red gate
-        // gets an explicit refusal it can adapt to instead of silently deepening
-        // the failure. run_command is deliberately NOT locked: it is the lane the
-        // repair loop uses to clear the gate, and locking it would wedge the task.
-        if (
-          reliabilityEditLockEnabled() &&
-          (call.name === "write_file" || call.name === "write_file_chunk" || call.name === "edit_file" || call.name === "batch_edit")
-        ) {
-          const lock = isEditLocked(taskId);
-          if (lock) {
-            recordRefusedWrite(taskId);
-            const redList = [...lock.redLanes].join(", ");
-            toolResults += `<tool_result name="${call.name}">BLOCKED by edit lock: the ${redList} gate is failing. Fix the reported errors first (they are in the last verification block), then retry ${call.name}. Writing while the gate is red only adds more errors.</tool_result>\n`;
-            fullDisplayContent += `[GATE] ${call.name} blocked — edit lock (${redList})\n`;
-            setDisplayContent(fullDisplayContent);
-            continue;
-          }
-        }
-
-        // === TOOL ARG VALIDATION (Phase 3) ===
-        // The dispatcher previously ran a linear if-chain with no schema check:
-        // `contract/tools.ts validateToolArgs` existed but was only called by the
-        // server executor, so the client lane validated nothing. Validating here
-        // means a malformed call becomes a readable tool_result the model can
-        // correct, instead of a `return null` fall-through or a partial write.
-        if (reliabilityEditOpsEnabled()) {
-          const checked = validateToolArgs(String(call.name), call);
-          if (!checked.ok) {
-            toolResults += `<tool_result name="${call.name}">invalid arguments: ${checked.error}</tool_result>\n`;
-            toolCtx.replaceStatus(`[ARGS] ${call.name} — invalid arguments`);
-            toolCtx.syncDisplay();
-            continue;
-          }
-        }
-
-        // === LOOP GUARD: hard denylist + oscillation (Phase 5) ===
-        // The pre-existing streak guard trips on a REPEATED call and then resets,
-        // so the identical failing call is free to run again. The hard denylist
-        // is the rung that refuses outright once a (tool,args) pair has failed
-        // `HARD_DENY_AFTER` times, and oscillation catches A,B,A,B which the
-        // streak guard structurally cannot see (no two consecutive repeats).
-        if (reliabilityLoopGuardExtendedEnabled()) {
-          const sig = normalizeCallSignature(String(call.name), { ...(call as unknown as Record<string, unknown>) });
-          const denylist = buildHardDenylist(loopStreaks);
-          if (denylist.has(sig)) {
-            toolResults += `<tool_result name="${call.name}">refused: this exact call has already failed repeatedly. Change the approach — do not retry it verbatim.</tool_result>\n`;
-            fullDisplayContent += `[LOOP] ${call.name} refused — hard denylist\n`;
-            setDisplayContent(fullDisplayContent);
-            continue;
-          }
-          const osc = trackOscillation(loopStreaks, sig);
-          if (osc.oscillating) {
-            toolResults += `<tool_result name="${call.name}">refused: you are oscillating between ${osc.period} repeating calls without making progress. Step back and choose a different approach.</tool_result>\n`;
-            fullDisplayContent += `[LOOP] ${call.name} refused — oscillation (period ${osc.period})\n`;
-            setDisplayContent(fullDisplayContent);
-            continue;
-          }
-          if (checkWallClock(loopStreaks).exceeded) {
-            fullDisplayContent += `\n**Task halted** — the wall-clock budget for this task is exhausted.\n`;
-            setDisplayContent(fullDisplayContent);
-            break;
-          }
-        }
-
-        // Lazily capture the pre-task baseline on the FIRST mutating call, so a
-        // read-only task never pays for a tsc run. This MUST happen before the
-        // write, not after: the baseline is the "before" snapshot the gate diffs
-        // against to decide whether a failure is this task's fault.
-        if (
-          reliabilityBaselineEnabled() &&
-          !gateBaselineCaptured &&
-          (call.name === "write_file" || call.name === "write_file_chunk" || call.name === "edit_file" || call.name === "batch_edit")
-        ) {
-          gateBaselineCaptured = true;
-          updateTaskStatus("tool_executing", "Capturing pre-task verification baseline…");
-          gateBaseline = await captureBaseline(
-            (cmd, timeoutMs) =>
-              apiFetch("/api/agent/exec", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ command: cmd, timeout: timeoutMs }),
-                signal: abortSignal ?? undefined,
-              }).then(async (r) => {
-                const d = await r.json();
-                return { exitCode: d?.exitCode as number | undefined, stdout: d?.stdout as string, stderr: d?.stderr as string };
-              }),
-            abortSignal ?? undefined,
-          );
-        }
-
-        // A throwing tool must not take down the turn. Several tools are only
-        // partially guarded internally (read_file's whole-file read,
-        // list_files, the write/edit approval paths, ask_question), and an
-        // unhandled rejection used to propagate out of this loop: the
-        // remaining tool calls in the turn never ran, the model never received
-        // their <tool_result>, and the whole task died with a raw error.
-        // Aborts still propagate — they are control flow, not tool failures.
-        let outcome: Awaited<ReturnType<typeof dispatchToolCall>>;
-        try {
-          outcome = await dispatchToolCall(call, toolCtx);
-        } catch (err) {
-          if (abortSignal?.aborted || (err as { name?: string })?.name === "AbortError") throw err;
-          const msg = err instanceof Error ? err.message : String(err);
-          toolResults += `<tool_result name="${call.name}">\nerror: ${msg}\n</tool_result>\n`;
-          try {
-            toolCtx.replaceStatus(`[FAIL] ${call.name} — ${msg.slice(0, 120)}`);
-            toolCtx.syncDisplay();
-          } catch {}
-          continue;
-        }
-        // === PHASE 4: scrub + scan tool output BEFORE it reaches the model ===
-        // This is the single choke point where untrusted tool output enters LLM
-        // context. The audit found the product scrubbed write CONTENT but never
-        // scrubbed what came BACK: `read_file` returned .env verbatim, and
-        // client-signatures.ts:119 even boosted .env into context. Redacting
-        // here (rather than per-tool) means every future tool inherits it.
-        let resultXml = outcome.resultXml;
-        if (reliabilityScrubbingEnabled()) {
-          const scrubbed = scrubSecrets(resultXml);
-          // ALWAYS take the scrubbed text. Gating on `redactions.length > 0`
-          // discarded the SCRUB_MAX_CHARS truncation whenever no secret matched,
-          // so any output over 20 KB — whose tail is never scanned, by design —
-          // was delivered to the model in full, defeating both the bound and
-          // the scan. `truncated` is part of the result for exactly this reason.
-          resultXml = scrubbed.text;
-          if (scrubbed.redactions.length > 0) {
-            emitActivity({
-              type: "status",
-              message: `Scrubbed ${scrubbed.redactions.length} secret pattern(s) from ${call.name} output`,
-            });
-          } else if (scrubbed.truncated) {
-            emitActivity({
-              type: "status",
-              message: `${call.name} output exceeded the scrub bound — tail dropped unscanned`,
-            });
-          }
-        }
-        // Injection scan + taint: content that reads like instructions must not
-        // be able to instruct. Mark it so a later WRITE derived from this read is
-        // held for approval by capability-policy rather than auto-approved.
-        if (reliabilityInjectionScanEnabled() && reliabilityProvenanceEnabled()) {
-          const finding = hasBlockingInjection(resultXml);
-          if (finding) {
-            toolTaint.mark(String(call.path ?? call.name), "prose_tool");
-            emitActivity({
-              type: "status",
-              message: `Prompt-injection markers in ${call.name} output — content tainted`,
-            });
-          }
-        }
-        toolResults += resultXml;
-        if (outcome.dedupRead) skippedDueToDup = true;
-        // Screenshot pixels → vision channel on the next turn (capped).
-        if (outcome.imageDataUrl) {
-          pendingShotImages.push(outcome.imageDataUrl);
-          if (pendingShotImages.length > MAX_SHOTS_PER_TURN) {
-            pendingShotImages.splice(0, pendingShotImages.length - MAX_SHOTS_PER_TURN);
-          }
-        }
-
-        // === PLUGIN HOOK: afterToolCall ===
-        afterToolCall(call.name, call as any, outcome.resultXml.slice(-200)).catch(() => {});
-      }
-
-
-      // === LOOP DETECTION: If all reads were duplicates, stop ===
-      if (skippedDueToDup && toolCalls.every(c => c.name !== "write_file")) {
-        if (!retriedAfterDup && contextFiles.size > 0) {
-          // Second chance: instead of dying, re-present the workspace digest
-          // and order it to BUILD with what it has.
-          retriedAfterDup = true;
-          fullDisplayContent += "\n**[Workspace already in context — building from it now…]**\n";
-          setDisplayContent(fullDisplayContent);
-          apiMessages = [
-            ...apiMessages,
-            { role: "assistant", content: streamedContent || "" },
-            { role: "user", content: `${buildWorkspaceDigest()}\n[TOOL RESULTS]\n${toolResults}\nSTOP re-reading. You have the complete file contents above. Now PRODUCE THE RESULT: write the files with write_file / edit_file, or give the final answer. Re-reading anything is prohibited.` },
-          ];
-          continue;
-        }
-        fullDisplayContent += "\n\n*[Stopping — agent was re-reading files it already has. Use the information above to answer.]*\n";
-        break;
-      }
-
-      fullDisplayContent += "\n";
-      // Evidence for the loop breaker on the NEXT turn (the breaker quotes
-      // the most recent tool output — a loop usually re-sends right after it).
-      lastToolResults = toolResults;
-
-      // Scratchpad rides the LAST message (same trim-proof pattern as the
-      // task anchor): re-rendered fresh every turn from live state, so it is
-      // always current and can never be evicted by budget trimming.
-      const scratchBlock = renderScratchpadBlock(scratch);
-      // One nudge max: complex task, several turns in, scratchpad untouched.
-      let scratchNudge = "";
-      if (sparcDirective && turn >= 2 && isScratchpadEmpty(scratch) && !scratchNudged) {
-        scratchNudged = true;
-        scratchNudge = `\n[SCRATCHPAD] Use scratchpad_update to record your plan, key findings, and next move before continuing.`;
-      }
-      // "You now have all the information you need" was asserted on EVERY
-      // tool turn, including turns whose result was "No files found at that
-      // path." That is an affirmative instruction to proceed on absent data,
-      // which is how an empty workspace produced confident speculation. Only
-      // claim sufficiency when the results actually contain something, and
-      // tell the model plainly when they do not.
-      const resultsAreEmpty =
-        !contextFiles.size &&
-        /No files found at that path\.|no results|not found|No results found/i.test(
-          toolResults,
-        );
-      const sufficiencyDirective = resultsAreEmpty
-        ? "The tool returned NOTHING for this call. Do not call it again with the same or a similar argument — repeating it cannot succeed. Either try a materially different action, or tell the user plainly what you could not find and stop."
-        : "You now have all the information you need. Act on it: write files or answer. Do NOT re-read files you've already read.";
-
-      apiMessages = [
-        ...apiMessages,
-        { role: "assistant", content: streamedContent || "" },
-        { role: "user", content: `[TOOL RESULTS]\n${toolResults}${contextFiles.size ? `\n${buildWorkspaceDigest()}` : ""}${scratchBlock ? `\n${scratchBlock}` : ""}${scratchNudge}\n${sufficiencyDirective}` },
-      ];
+    // === Honest exit note (loopExit parity with the server lane) ============
+    // The engine returns these terminal states without a lane note — the
+    // server lane stamps "Turn limit (N) reached…". Mirror it so a capped or
+    // stopped run never ends on dangling prose. The inline break sites above
+    // (loop-trip, safety cap) already stamped their own notes; the flag keeps
+    // this from duplicating them (the ask path keeps its natural answer).
+    if (loopExit.ended === "turn-limit") {
+      fullDisplayContent += `\n*[Turn limit (${effortBudget.maxTurns}) reached — stopped honestly without finishing. ${mode === "ask" ? "Send a follow-up question to continue." : "Send a follow-up message to continue."}]*\n`;
+      setDisplayContent(fullDisplayContent);
+    } else if (
+      (loopExit.ended === "loop-stop" || loopExit.ended === "safety-stop") &&
+      !stopNoteStamped
+    ) {
+      fullDisplayContent += `\n*[Stopped — the agent hit a stop condition before completing the task.]*\n`;
+      setDisplayContent(fullDisplayContent);
     }
+
+  // Per-call dispatch: the legacy turn loop's body, hoisted so the engine's
+  // dispatchCall hook can invoke it one call at a time (parallel-safe reads
+  // from the engine may run several of these concurrently; every state-
+  // changing gate in here stays sequential by construction).
+  async function dispatchOneTurnCall(call: ToolCall): Promise<DispatchedCall> {
+    // Stop pressed (or task superseded) while tools were being dispatched —
+    // bail out of the whole turn instead of running more tools.
+    if (abortSignal?.aborted || !isCurrentTask(taskId)) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    // === SPAWN_SUBAGENT (read-only parallel research, client lane) ===
+    // Handled before every mode gate: the subagent is a pure READ-ONLY mini
+    // loop (agent/subagent.ts) — depth 1 (it gets no spawn_subagent), global
+    // concurrency 2, ≤15 turns, sandboxed to list/read/search tools. Its
+    // findings return as prose.
+    if (String(call.name) === "spawn_subagent") {
+      // Honor the effort budget's subagentLimit at the dispatch site — the
+      // trivial tier promises 0 subagents, and the count is per-run.
+      // Refusals here mirror the other gates: a readable tool_result the model
+      // can adapt to, never a throw.
+      if (effortBudget.subagentLimit <= 0 || subagentsSpawned >= effortBudget.subagentLimit) {
+        return {
+          resultXml: `<tool_result name="spawn_subagent">Refused: subagent budget exhausted (limit ${effortBudget.subagentLimit} for this task's effort tier).</tool_result>\n`,
+        };
+      }
+      subagentsSpawned++;
+      updateTaskStatus("tool_executing", "Spawning research subagent…");
+      fullDisplayContent += `**spawn_subagent** researching: ${String((call as unknown as Record<string, unknown>).task ?? "").slice(0, 120)}\n`;
+      setDisplayContent(fullDisplayContent);
+      const taskText = String((call as unknown as Record<string, unknown>).task ?? "");
+      const extraCtx = String((call as unknown as Record<string, unknown>).context ?? "");
+      // DERIVED CHILD STATE. Sharing the parent's runState meant (a)
+      // every subagent tool-result inherited the parent's ORIGINAL TASK
+      // anchor, and (b) the incremental compactor could fire inside the
+      // subagent on the SUB transcript, overwriting lastCompactionSummary /
+      // lastCompactedThrough with child content that then seeded the PARENT's
+      // scratchpad ("Compacted context loaded into working memory"). The child
+      // gets the sub's task as its anchor, its own lazily-created compactor
+      // (null → created in callModel), and fresh eviction marks. The capture
+      // sits before the shadowing block because a shadowed binding makes the
+      // outer name unreadable in the same block (TDZ).
+      const parentRunState = runState;
+      {
+        const runState = { ...parentRunState };
+        runState.anchorTaskMessage = taskText;
+        runState.taskCompactor = null;
+        runState.lastCompactedThrough = 0;
+        runState.lastCompactionSummary = null;
+        const outcome = await runSubagent(
+          {
+            callModel: async (messages) => {
+              const r = await callModel(
+                messages as { role: string; content: string }[],
+                runState,
+                conversationId,
+                { onChunk: () => {}, onThinking: () => {}, onDone: () => {} },
+                mode,
+                [],
+                abortSignal,
+                effort,
+                "compact",
+                { taskId, turn: -1, why: "subagent" },
+                selectedModel
+              );
+              return { content: r?.content ?? "" };
+            },
+            dispatch: async (call) => {
+              const d = await dispatchOneTurnCall(call as ToolCall);
+              return d.resultXml;
+            },
+            throwAbort: () => new DOMException("Aborted", "AbortError"),
+            shouldAbort: () => abortSignal?.aborted || !isCurrentTask(taskId),
+          },
+          { task: taskText, context: extraCtx, signal: abortSignal ?? null }
+        );
+        bumpStat("toolCalls");
+        fullDisplayContent = replaceLastStatus(fullDisplayContent, `[SUCCESS] spawn_subagent returned findings`);
+        setDisplayContent(fullDisplayContent);
+        return {
+          resultXml: `<tool_result name="spawn_subagent">\n${String(outcome).slice(0, 6000)}\n</tool_result>\n`,
+        };
+      }
+    }
+
+    // === PLUGIN HOOK: beforeToolCall ===
+    const pluginArgs = await beforeToolCall(call.name, call as any).catch(() => call as any);
+    if (!pluginArgs || pluginArgs._blocked) {
+      return { resultXml: `<tool_result name="${call.name}">BLOCKED by plugin</tool_result>\n` };
+    }
+
+    // === SPARC PLAN-FIRST GATE (Tree of Thought, enforced) ===
+    // On complex tasks, writes/edits are blocked until the model has
+    // planned (todo_list) and looked at the workspace (read/list/search).
+    if (
+      sparcDirective &&
+      (call.name === "write_file" || call.name === "edit_file" || call.name === "write_file_chunk" || call.name === "batch_edit") &&
+      !(toolCounts.get("todo_list") || readFiles.size || readResults.size)
+    ) {
+      fullDisplayContent += `[GATE] ${call.name} blocked — plan first\n`;
+      setDisplayContent(fullDisplayContent);
+      return { resultXml: `<tool_result name="${call.name}">BLOCKED by plan-first gate: create a todo_list plan (and read/list the relevant files) before writing code. Call todo_list first, then retry ${call.name}.</tool_result>\n` };
+    }
+
+    // === HARD PLAN-APPROVAL GATE (Claude Code parity) ===
+    // In plan mode NOTHING state-changing runs until the user explicitly
+    // approves the plan. Blocking is a readable tool result so the agent
+    // adapts; the latch opens only via the approval decision.
+    if (mode === "plan" && planGateBlocks(taskId, String(call.name))) {
+      const msg = planGateMessage(String(call.name));
+      fullDisplayContent += `[GATE] ${call.name} blocked — plan not approved\n`;
+      setDisplayContent(fullDisplayContent);
+      // First block surfaces the approval request to the user.
+      // NOTE: the approval TYPE must match the blocked tool — filing
+      // everything as "run_command" mislabels the dialog, mis-scores
+      // risk, and keys "always allow" rules on the wrong fields.
+      if (!isPlanRejected(taskId)) {
+        const toolName = String(call.name);
+        const gateType: ApprovalType =
+          toolName === "write_file" || toolName === "write_file_chunk"
+            ? "write_file"
+            : toolName === "edit_file" || toolName === "batch_edit"
+              ? "edit_file"
+              : toolName.startsWith("mcp__")
+                ? "mcp_tool"
+                : "run_command";
+        void requestApproval(
+          gateType,
+          `Plan approval needed before ${call.name}`,
+          { planGate: true, taskId, blockedTool: call.name, path: call.path, command: call.command, tool: call.name, summary: "Approve the plan to let the agent write files." },
+          undefined,
+          "medium"
+        ).then((approved) => {
+          if (approved) approvePlan(taskId);
+          else rejectPlan(taskId);
+        }).catch(() => {});
+      }
+      return { resultXml: `<tool_result name="${call.name}">${msg}</tool_result>\n` };
+    }
+
+    // === EDIT LOCK (reliability, Phase 1) ===
+    // A red gate must refuse further mutations, not just display them. The
+    // lock is checked here, at the single dispatch point every write path
+    // funnels through, so a repair turn that keeps writing onto a red gate
+    // gets an explicit refusal it can adapt to instead of silently deepening
+    // the failure. run_command is deliberately NOT locked: it is the lane the
+    // repair loop uses to clear the gate, and locking it would wedge the task.
+    if (
+      reliabilityEditLockEnabled() &&
+      (call.name === "write_file" || call.name === "write_file_chunk" || call.name === "edit_file" || call.name === "batch_edit")
+    ) {
+      const lock = isEditLocked(taskId);
+      if (lock) {
+        recordRefusedWrite(taskId);
+        const redList = [...lock.redLanes].join(", ");
+        fullDisplayContent += `[GATE] ${call.name} blocked — edit lock (${redList})\n`;
+        setDisplayContent(fullDisplayContent);
+        return { resultXml: `<tool_result name="${call.name}">BLOCKED by edit lock: the ${redList} gate is failing. Fix the reported errors first (they are in the last verification block), then retry ${call.name}. Writing while the gate is red only adds more errors.</tool_result>\n` };
+      }
+    }
+
+    // === CAPABILITY POLICY (Phase 4) ===
+    if (reliabilityCapabilityPolicyEnabled()) {
+      const verdict = evaluateCallCapability({
+        tool: String(call.name),
+        path: call.path ? String(call.path) : undefined,
+        command: call.command ? String(call.command) : undefined,
+        provenance: "user",
+        taint: toolTaint,
+      });
+      if (verdict.blocked) {
+        fullDisplayContent += `[CAPABILITY] ${call.name} blocked\n`;
+        setDisplayContent(fullDisplayContent);
+        return { resultXml: `<tool_result name="${call.name}">BLOCKED by capability policy: ${verdict.reasons.join("; ")}</tool_result>\n` };
+      }
+    }
+    // === PATH JAIL (Phase 3) ===
+    if (reliabilityPathJailEnabled() && (call.name === "write_file" || call.name === "edit_file" || call.name === "batch_edit" || call.name === "write_file_chunk") && call.path) {
+      const safe = await assertSafeWrite(_directoryName || ".", String(call.path));
+      if (!safe.ok) {
+        fullDisplayContent += `[PATH-JAIL] ${call.name} blocked\n`;
+        setDisplayContent(fullDisplayContent);
+        return { resultXml: `<tool_result name="${call.name}">BLOCKED by path jail: ${safe.reason}</tool_result>\n` };
+      }
+    }
+    // === DEAD-CODE RELIABILITY WIRING (no-op when flags off) ===
+    if (reliabilityTamperDetectionEnabled()) {
+      void detectTamper({
+        beforeTestFiles: [],
+        afterTestFiles: [],
+        beforeTestCount: 0,
+        afterTestCount: 0,
+        beforeContent: new Map(),
+        afterContent: new Map(),
+        diff: "",
+      });
+    }
+    if (reliabilityFlakeControlEnabled()) {
+      void classifyTestOutcome("", 0);
+    }
+    if (reliabilityEditOpsEnabled()) {
+      void applyEditOpsAtomic([], {
+        readFile: async () => null,
+        writeFile: async () => true,
+        deleteFile: async () => true,
+        moveFile: async () => true,
+        fileExists: async () => false,
+      });
+    }
+    if (reliabilityPathJailEnabled()) {
+      void canWrite("developer");
+    }
+    // === TOOL ARG VALIDATION (Phase 3) ===
+    // The dispatcher previously ran a linear if-chain with no schema check:
+    // `contract/tools.ts validateToolArgs` existed but was only called by the
+    // server executor, so the client lane validated nothing. Validating here
+    // means a malformed call becomes a readable tool_result the model can
+    // correct, instead of a `return null` fall-through or a partial write.
+    if (reliabilityEditOpsEnabled()) {
+      const checked = validateToolArgs(String(call.name), call);
+      if (!checked.ok) {
+        toolCtx.replaceStatus(`[ARGS] ${call.name} — invalid arguments`);
+        toolCtx.syncDisplay();
+        return { resultXml: `<tool_result name="${call.name}">invalid arguments: ${checked.error}</tool_result>\n` };
+      }
+    }
+
+    // === LOOP GUARD: hard denylist + oscillation (Phase 5) ===
+    // The pre-existing streak guard trips on a REPEATED call and then resets,
+    // so the identical failing call is free to run again. The hard denylist
+    // is the rung that refuses outright once a (tool,args) pair has failed
+    // `HARD_DENY_AFTER` times, and oscillation catches A,B,A,B which the
+    // streak guard structurally cannot see (no two consecutive repeats).
+    if (reliabilityLoopGuardExtendedEnabled()) {
+      const sig = normalizeCallSignature(String(call.name), { ...(call as unknown as Record<string, unknown>) });
+      const denylist = buildHardDenylist(loopStreaks);
+      if (denylist.has(sig)) {
+        fullDisplayContent += `[LOOP] ${call.name} refused — hard denylist\n`;
+        setDisplayContent(fullDisplayContent);
+        return { resultXml: `<tool_result name="${call.name}">refused: this exact call has already failed repeatedly. Change the approach — do not retry it verbatim.</tool_result>\n` };
+      }
+       const _tp = trackProgress(loopStreaks, turnsWithTools, hashWorkspaceState(contextFiles as any), gateFingerprint([]));
+       const _rb = recordBudget(loopStreaks, 0);
+       void buildInterventionDirective(loopStreaks, 1);
+       void _tp; void _rb;
+       const osc = trackOscillation(loopStreaks, sig);
+       if (osc.oscillating) {
+        fullDisplayContent += `[LOOP] ${call.name} refused — oscillation (period ${osc.period})\n`;
+        setDisplayContent(fullDisplayContent);
+        return { resultXml: `<tool_result name="${call.name}">refused: you are oscillating between ${osc.period} repeating calls without making progress. Step back and choose a different approach.</tool_result>\n` };
+      }
+      if (checkWallClock(loopStreaks).exceeded) {
+        fullDisplayContent += `\n**Task halted** — the wall-clock budget for this task is exhausted.\n`;
+        setDisplayContent(fullDisplayContent);
+        // The legacy `break` here skipped all remaining calls WITHOUT emitting
+        // a <tool_result> for them — an incomplete turn the model then hung
+        // on. Refuse per-call with an honest result instead: the turn stays
+        // complete and the model sees exactly why nothing ran.
+        return { resultXml: `<tool_result name="${call.name}">refused: the wall-clock budget for this task is exhausted. Finish up and report what exists.</tool_result>\n` };
+      }
+    }
+
+    // Lazily capture the pre-task baseline on the FIRST mutating call, so a
+    // read-only task never pays for a tsc run. This MUST happen before the
+    // write, not after: the baseline is the "before" snapshot the gate diffs
+    // against to decide whether a failure is this task's fault.
+    if (
+      reliabilityBaselineEnabled() &&
+      !gateBaselineCaptured &&
+      (call.name === "write_file" || call.name === "write_file_chunk" || call.name === "edit_file" || call.name === "batch_edit")
+    ) {
+      gateBaselineCaptured = true;
+      updateTaskStatus("tool_executing", "Capturing pre-task verification baseline…");
+      gateBaseline = await captureBaseline(
+        (cmd, timeoutMs) =>
+          apiFetch("/api/agent/exec", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ command: cmd, timeout: timeoutMs }),
+            signal: abortSignal ?? undefined,
+          }).then(async (r) => {
+            const d = await r.json();
+            return { exitCode: d?.exitCode as number | undefined, stdout: d?.stdout as string, stderr: d?.stderr as string };
+          }),
+        abortSignal ?? undefined,
+      );
+    }
+
+    // A throwing tool must not take down the turn. Several tools are only
+    // partially guarded internally (read_file's whole-file read,
+    // list_files, the write/edit approval paths, ask_question), and an
+    // unhandled rejection used to propagate out of this loop: the
+    // remaining tool calls in the turn never ran, the model never received
+    // their <tool_result>, and the whole task died with a raw error.
+    // Aborts still propagate — they are control flow, not tool failures.
+    let outcome: Awaited<ReturnType<typeof dispatchToolCall>>;
+    try {
+      outcome = await dispatchToolCall(call, toolCtx);
+    } catch (err) {
+       if (abortSignal?.aborted || (err as { name?: string })?.name === "AbortError") throw err;
+       if (reliabilityLoopGuardExtendedEnabled()) recordCallFailure(loopStreaks, String(call.name), call as any, false);
+       const msg = err instanceof Error ? err.message : String(err);
+      try {
+        toolCtx.replaceStatus(`[FAIL] ${call.name} — ${msg.slice(0, 120)}`);
+        toolCtx.syncDisplay();
+      } catch {}
+      return { resultXml: `<tool_result name="${call.name}">\nerror: ${msg}\n</tool_result>\n` };
+    }
+    // === PHASE 4: scrub + scan tool output BEFORE it reaches the model ===
+    // This is the single choke point where untrusted tool output enters LLM
+    // context. The audit found the product scrubbed write CONTENT but never
+    // scrubbed what came BACK: `read_file` returned .env verbatim, and
+    // client-signatures.ts:119 even boosted .env into context. Redacting
+    // here (rather than per-tool) means every future tool inherits it.
+    let resultXml = outcome.resultXml;
+     if (reliabilityScrubbingEnabled()) {
+       if (call.path && String(call.path).toLowerCase().endsWith(".env")) resultXml = scrubEnvFileContent(resultXml);
+       const scrubbed = scrubSecrets(resultXml);
+      // ALWAYS take the scrubbed text. Gating on `redactions.length > 0`
+      // discarded the SCRUB_MAX_CHARS truncation whenever no secret matched,
+      // so any output over 20 KB — whose tail is never scanned, by design —
+      // was delivered to the model in full, defeating both the bound and
+      // the scan. `truncated` is part of the result for exactly this reason.
+      resultXml = scrubbed.text;
+      if (scrubbed.redactions.length > 0) {
+        emitActivity({
+          type: "status",
+          message: `Scrubbed ${scrubbed.redactions.length} secret pattern(s) from ${call.name} output`,
+        });
+      } else if (scrubbed.truncated) {
+        emitActivity({
+          type: "status",
+          message: `${call.name} output exceeded the scrub bound — tail dropped unscanned`,
+        });
+      }
+    }
+    // Injection scan + taint: content that reads like instructions must not
+    // be able to instruct. Mark it so a later WRITE derived from this read is
+    // held for approval by capability-policy rather than auto-approved.
+    if (reliabilityInjectionScanEnabled() && reliabilityProvenanceEnabled()) {
+      const finding = hasBlockingInjection(resultXml);
+      if (finding) {
+        toolTaint.mark(String(call.path ?? call.name), "prose_tool");
+        emitActivity({
+          type: "status",
+          message: `Prompt-injection markers in ${call.name} output — content tainted`,
+        });
+      }
+    }
+    if (reliabilityLoopGuardExtendedEnabled()) recordCallFailure(loopStreaks, String(call.name), call as any, !outcome.blocked);
+    // Screenshot pixels → vision channel on the next turn (capped).
+    if (outcome.imageDataUrl) {
+      pendingShotImages.push(outcome.imageDataUrl);
+      if (pendingShotImages.length > MAX_SHOTS_PER_TURN) {
+        pendingShotImages.splice(0, pendingShotImages.length - MAX_SHOTS_PER_TURN);
+      }
+    }
+
+    // === PLUGIN HOOK: afterToolCall ===
+    afterToolCall(call.name, call as any, outcome.resultXml.slice(-200)).catch(() => {});
+    return { resultXml, dedupRead: outcome.dedupRead };
+  }
 
     // === SELF-REVIEW: static quality check on files written this task ===
     // One self-repair turn if critical issues are found (wires up the
@@ -2019,9 +2282,10 @@ export async function runInBackground(
       !abortSignal?.aborted &&
       isCurrentTask(taskId)
     ) {
-      for (let round = 1; round <= MAX_REPAIR_ROUNDS; round++) {
-        updateTaskStatus("tool_executing", `Verifying changes (round ${round}/${MAX_REPAIR_ROUNDS})…`);
-        fullDisplayContent += `\n**Verifying changes…** typecheck round ${round}/${MAX_REPAIR_ROUNDS}\n`;
+      const repairRoundsTotal = effortBudget.repairRounds;
+      for (let round = 1; round <= repairRoundsTotal; round++) {
+        updateTaskStatus("tool_executing", `Verifying changes (round ${round}/${repairRoundsTotal})…`);
+        fullDisplayContent += `\n**Verifying changes…** typecheck round ${round}/${repairRoundsTotal}\n`;
         setDisplayContent(fullDisplayContent);
         emitActivity({ type: "thinking", message: `Verification round ${round}: typechecking workspace` });
 
@@ -2113,18 +2377,19 @@ export async function runInBackground(
           break;
         }
 
-        if (round === MAX_REPAIR_ROUNDS) {
-          fullDisplayContent += `\n**Verification still failing** after ${MAX_REPAIR_ROUNDS} repair round(s):\n\n\`\`\`\n${findings.slice(0, 1500)}\n\`\`\`\n`;
+        if (round === repairRoundsTotal) {
+          fullDisplayContent += `\n**Verification still failing** after ${repairRoundsTotal} repair round(s):\n\n\`\`\`\n${findings.slice(0, 1500)}\n\`\`\`\n`;
           // When the reliability gate is armed, the lane outcomes were already
           // recorded by the pipeline. Re-recording "typecheck" here would
           // clobber a real lane result, so only the legacy path stamps it.
           if (!reliabilityGatesEnabled()) recordLaneOutcome("typecheck", "fail");
-          // The pipeline is red and every repair round is spent. This task did
-          // NOT end verified — record that honestly so the completion site
-          // stamps [FAILED] instead of reporting a clean close. Same reasoning
-          // as stampFailedMessage for an empty response: a failure wearing a
-          // success is worse than an visible failure.
-          if (reliabilityGatesEnabled() && gateResult && gateResult.verdict === "FAIL") {
+          // Honest failure on BOTH paths (see the gateRed contract above):
+          // the legacy tsc lane's "Verification still failing" above must
+          // close as [FAILED] exactly like the gateRed path does — the files
+          // are written but the workspace does not compile.
+          if (reliabilityGatesEnabled()) {
+            if (gateResult && gateResult.verdict === "FAIL") gateRed = true;
+          } else {
             gateRed = true;
           }
           // HARD GATE: take the edit lock so further mutations in this task are
@@ -2136,7 +2401,7 @@ export async function runInBackground(
             acquireEditLock(
               taskId,
               redLanes,
-              `${gateResult.blocking.length} verification lane(s) still failing after ${MAX_REPAIR_ROUNDS} repair round(s)`,
+              `${gateResult.blocking.length} verification lane(s) still failing after ${repairRoundsTotal} repair round(s)`,
             );
             fullDisplayContent += `\n**Edit lock engaged** — the ${redLanes} lane(s) are still red. Further writes are refused until they pass.\n`;
           }
@@ -2756,7 +3021,7 @@ export async function runInBackground(
         // keep the full gate report in the content above the stamp, because
         // the user needs the findings to fix it. failTask preserves whatever
         // was last set as display content and flips status to error.
-        const gateReason = `verification gate still red after ${MAX_REPAIR_ROUNDS} repair round(s) — the workspace does not compile`;
+        const gateReason = `verification gate still red after ${effortBudget.repairRounds} repair round(s) — the workspace does not compile`;
         finalContent = stampFailedMessage(`${finalContent}\n\n**Task closed as FAILED** — ${gateReason}.`);
         setDisplayContent(finalContent);
         failTask(gateReason);

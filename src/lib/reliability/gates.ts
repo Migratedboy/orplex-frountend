@@ -49,14 +49,13 @@ const TSC_ERROR_RE = /\berror TS\d+:/;
  * a new one. Counting it as new would report a false regression.
  */
 export function tscErrorSignature(line: string): string | null {
-  const m = line.match(/^\s*(.+?)\(\d+,\d+\):\s*error (TS\d+):/);
+  const m = line.match(/^\s*(.+?)\((\d+),(\d+)\):\s*error (TS\d+):/);
   if (!m) {
-    // Some tsc output (e.g. project-level) omits the (line,col) form.
     const alt = line.match(/^\s*(.+?):\s*error (TS\d+):/);
     if (!alt) return null;
     return `${alt[1]}:${alt[2]}`;
   }
-  return `${m[1]}:${m[2]}`;
+  return `${m[1]}:${m[4]}`;
 }
 
 /** Extract deduped, sorted error signatures from raw tsc output. */

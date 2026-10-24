@@ -197,4 +197,45 @@ describe("closed-loop auto-verification (code mode)", () => {
     await promise;
     expect(execCount).toBe(0);
   });
+
+  it("stamps [FAILED] when the typecheck still fails after the repair budget (legacy path)", async () => {
+    // Honesty contract (the in-file gateRed note): with the reliability gate
+    // off, a typecheck that still fails after the repair budget must close as
+    // [FAILED] exactly like gateRed does — the files are written but the
+    // workspace does not compile. (This test used to pass because the legacy
+    // path printed "Verification still failing" and then closed the task
+    // done, with no stamp — update pinned that lie.)
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/chat")) {
+        chatFetchCount++;
+        if (chatFetchCount === 1) {
+          return streamOnce([toolCallChunk({ name: "write_file", path: "calc.ts", content: CLEAN }), doneChunk()]);
+        }
+        if (chatFetchCount === 2) return streamOnce([textChunk("Done."), doneChunk()]);
+        return streamOnce([textChunk("ok"), doneChunk()]);
+      }
+      if (url.includes("/api/agent/exec")) {
+        execCount++;
+        return new Response(
+          JSON.stringify({ stdout: "calc.ts(2,10): error TS2345: boom", stderr: "", exitCode: 1 }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const promise = runInBackground("write a calc file", null, [], "code", []);
+    await waitFor(() => getCurrentTask() !== null);
+    await promise;
+
+    const task = getCurrentTask();
+    expect(task?.status).toBe("error");
+    // Both cycles ran; the final (second) one is check-only.
+    expect(execCount).toBe(2);
+    expect(chatFetchCount).toBe(4); // write, loop end, self-reflection, repair r1
+    expect(task?.displayContent).toContain("Verification still failing");
+    expect(task?.displayContent).toContain("[FAILED]");
+    expect(task?.displayContent).not.toContain("Task closed as done");
+  });
 });

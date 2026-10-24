@@ -1,7 +1,9 @@
-// proxy-mcp-local.test.ts — conflict C2: ALL MCP routes must stay on THIS
-// process (prefix match), because the OAuth token store, one-time pending
-// states, and Prisma connection rows live here. The backend must never see
-// them (split-brain) and non-MCP /api/agent/* must keep rewriting.
+// proxy-mcp-local.test.ts — the MCP split contract, UPDATED for the cloud
+// Postgres: ALL MCP routes (prefix match) now REWRITE to the backend, which
+// owns the same handlers verbatim and keeps tokens, one-time pending states,
+// and connection rows in ONE place (the old local Postgres is gone). The
+// desktop stdio bridge keeps its runtime callbacks out of band
+// (electron/mcp-bridge.ts) — the proxy does not see those connections.
 
 export {};
 
@@ -54,10 +56,9 @@ it.each([
   "/api/mcp/connections/supabase/connect",
   "/api/mcp/connections/supabase/disconnect",
   "/api/agent/mcp/tools?runId=r1",
-])("keeps %s local (no backend rewrite)", async (path) => {
+])("rewrites %s to the backend (cloud MCP)", async (path) => {
   const res = await handler(req(path));
-  expect(res.headers.get("x-middleware-rewrite")).toBeNull();
-  expect(res.status).toBe(200);
+  expect(res.headers.get("x-middleware-rewrite")).toContain(`http://localhost:5010${path.split("?")[0]}`);
 });
 
 it.each(["/api/agent/runs/r1", "/api/agent/mcp-tools-backup", "/api/mcpx"])(
@@ -65,5 +66,13 @@ it.each(["/api/agent/runs/r1", "/api/agent/mcp-tools-backup", "/api/mcpx"])(
   async (path) => {
     const res = await handler(req(path));
     expect(res.headers.get("x-middleware-rewrite")).toContain(`http://localhost:5010${path.split("?")[0]}`);
+  }
+);
+
+it.each(["/api/system/memory", "/api/agent/workspace-cwd", "/api/conversations"])(
+  "keeps the genuinely local route %s un-rewritten",
+  async (path) => {
+    const res = await handler(req(path));
+    expect(res.headers.get("x-middleware-rewrite")).toBeNull();
   }
 );

@@ -8,6 +8,15 @@ import SessionInsightsPopup from "../SessionInsightsPopup";
 
 const mockApiFetch = jest.fn();
 jest.mock("@/lib/api-base", () => ({ apiFetch: (...a: unknown[]) => mockApiFetch(...a) }));
+// The popup now carries the fork action, which pulls in router/toast/transport.
+// Fork is exercised elsewhere; these tests only care about the insights data.
+jest.mock("next/navigation", () => ({ useRouter: () => ({ push: jest.fn() }) }));
+jest.mock("../Toast", () => ({ useToast: () => ({ toast: jest.fn() }) }));
+jest.mock("@/lib/conversations-transport", () => ({
+  forkConversation: jest.fn(),
+  isLocalConversationMode: () => false,
+}));
+jest.mock("@/lib/navigation-events", () => ({ announceConversationOpen: jest.fn() }));
 
 const SUMMARY = {
   tasks: { total: 3, completed: 2, failed: 1, running: 0 },

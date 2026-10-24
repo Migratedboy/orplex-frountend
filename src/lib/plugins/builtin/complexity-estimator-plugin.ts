@@ -3,6 +3,7 @@
  */
 import type { PluginManifest, PluginHook, HookContext, HookResult } from "../types";
 import { pluginRegistry } from "../registry";
+import { estimateComplexity } from "../../effort";
 
 const manifest: PluginManifest = {
   name: "complexity-estimator",
@@ -15,6 +16,12 @@ const manifest: PluginManifest = {
 const hooks: PluginHook[] = [{
   name: "onTaskStart",
   handler: async (ctx: HookContext): Promise<HookResult> => {
+    // Score the incoming task once and expose the estimate on the hook
+    // context — anything downstream (model tier routing, budget logging)
+    // reads ctx.estimate instead of rescoring the prompt itself.
+    if (typeof ctx.task === "string" && ctx.task.trim()) {
+      ctx.estimate = estimateComplexity({ prompt: ctx.task });
+    }
     return { continue: true };
   },
 }];

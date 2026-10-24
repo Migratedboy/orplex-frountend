@@ -63,15 +63,20 @@ export async function register(): Promise<void> {
     console.error("[cron-reset] failed to start:", (err as Error).message);
   }
 
-  // Daily backup cron
-  try {
-    const { startBackupCron } = await import("@/lib/backup");
-    startBackupCron();
-  } catch (err) {
-    console.error("[backup] failed to start cron:", (err as Error).message);
+  const cloudMode = process.env.ORPLEX_API_URL || process.env.NEXT_PUBLIC_API_URL;
+
+  // Daily backup cron. Only meaningful when THIS process owns a real database:
+  // in cloud mode the data lives on the backend, DATABASE_URL is either unset
+  // or a leftover localhost value, and pg_dump just fails on every tick.
+  if (!cloudMode) {
+    try {
+      const { startBackupCron } = await import("@/lib/backup");
+      startBackupCron();
+    } catch (err) {
+      console.error("[backup] failed to start cron:", (err as Error).message);
+    }
   }
 
-  const cloudMode = process.env.ORPLEX_API_URL || process.env.NEXT_PUBLIC_API_URL;
   if (cloudMode) {
     console.log("[executor] disabled in cloud mode — backend handles all runs");
     return;

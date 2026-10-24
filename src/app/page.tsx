@@ -7,16 +7,18 @@ import { useToast } from "@/components/Toast";
 import SessionInsightsPopup from "@/components/SessionInsightsPopup";
 import { useChatSession } from "@/hooks/useChatSession";
 import { AgentMode } from "@/components/ModeSelector";
-import { MessageSkeleton } from "@/components/Skeleton";
+import { MessageSkeleton, ChatAreaSkeleton, WelcomeSkeleton } from "@/components/Skeleton";
 
-// Lazy-load heavy components — only needed on the chat page
-const MessageList = dynamic(() => import("@/components/MessageList"), { ssr: false });
-const ChatInput = dynamic(() => import("@/components/ChatInput"), { ssr: false });
-const DragDropZone = dynamic(() => import("@/components/DragDropZone"), { ssr: false });
+// Lazy-load heavy components — only needed on the chat page. `loading`
+// fallbacks fill the main pane while each chunk resolves; without them a cold
+// start painted an empty black main pane (the whole page is ssr:false chunks).
+const DragDropZone = dynamic(() => import("@/components/DragDropZone"), { ssr: false, loading: () => <ChatAreaSkeleton /> });
+const MessageList = dynamic(() => import("@/components/MessageList"), { ssr: false, loading: () => <ChatAreaSkeleton /> });
+const ChatInput = dynamic(() => import("@/components/ChatInput"), { ssr: false, loading: () => <ChatAreaSkeleton /> });
 const FilePreviewModal = dynamic(() => import("@/components/FilePreviewModal"), { ssr: false });
 const TodoBar = dynamic(() => import("@/components/TodoBar"), { ssr: false });
 const QuestionCard = dynamic(() => import("@/components/QuestionCard"), { ssr: false });
-const FirstRunExperience = dynamic(() => import("@/components/FirstRunExperience"), { ssr: false });
+const FirstRunExperience = dynamic(() => import("@/components/FirstRunExperience"), { ssr: false, loading: () => <WelcomeSkeleton /> });
 
 function LoadingMessages() {
   return (

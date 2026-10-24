@@ -402,6 +402,8 @@ export interface ToolCall {
   name: string;
   path?: string;
   content?: string;
+  // create_file — in-memory staged deliverable (basename + full text)
+  filename?: string;
   old_text?: string;
   new_text?: string;
   // read_file pagination — 1-based line offset + line-count limit
@@ -629,6 +631,10 @@ export async function readStream(
     throw new Error(err.error?.message || `HTTP ${res?.status || "unknown"}`);
   }
 
+  // The backend counts this request (daily quota meter) before the first
+  // token streams back — tell the UI needle so it moves without a page load.
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("orplex:chat-sent"));
+
   if (!res.body) throw new Error("Response has no body");
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -752,6 +758,15 @@ export async function readStream(
     "text", "key", "amount", "code", "role", "value", "time", "timeoutMs",
     "index", "fullPage", "viewpoint", "section", "serverId", "tool",
     "arguments", "skill_name", "skill_content", "name_of_skill",
+    // create_file — staged-memory file arg (kept apart from write_file's
+    // "path" so the two lanes never blur, but both are accepted at dispatch)
+    // create_file — staged-memory file arg (kept apart from write_file's
+    // "path" so the two lanes never blur, but both are accepted at dispatch)
+    "filename",
+    // extract_archive — optional output directory; schema advertises it but
+    // an absent allowlist entry silently dropped it (same class of bug as
+    // the missing "filename" that broke create_file)
+    "dest",
   ] as const;
   const nativeToolCalls: ToolCall[] = [];
   for (const [, acc] of accumulatorMap) {

@@ -9,6 +9,7 @@ import {
   rememberProject,
   touchProject,
   setProjectAlias,
+  setProjectPath,
   forgetProject,
   mergeRosters,
   saveProjectHandle,
@@ -130,6 +131,32 @@ describe("roster CRUD", () => {
     expect(list).toHaveLength(50);
     expect(list[0].name).toBe("p54"); // newest kept
     expect(list.find((p) => p.name === "p0")).toBeUndefined(); // oldest dropped
+  });
+
+  it("rememberProject preserves lastPath across re-materialization", () => {
+    // Live regression 2026-10-19: a materialize/remember rebuilt the row
+    // without lastPath and the desktop terminal lost its cwd source.
+    const store = fakeStorage();
+    rememberProject(store, "a", { openedAt: 1 });
+    setProjectPath(store, "a", "C:\\psd10");
+    rememberProject(store, "a", { openedAt: 99 }); // re-open / materialize
+    expect(getProject(store, "a")!.lastPath).toBe("C:\\psd10");
+  });
+
+  it("setProjectPath creates the row when the project is unknown (first open)", () => {
+    // setProjectPath used to be a silent no-op for unknown names, so the
+    // very first picker-open dropped the resolved path entirely.
+    const store = fakeStorage();
+    setProjectPath(store, "psd10", "C:\\psd10");
+    expect(getProject(store, "psd10")).toMatchObject({ name: "psd10", lastPath: "C:\\psd10" });
+  });
+
+  it("setProjectPath ignores blank names and paths", () => {
+    const store = fakeStorage();
+    rememberProject(store, "a", { openedAt: 1 });
+    expect(setProjectPath(store, "a", "")).toEqual(listProjects(store));
+    expect(setProjectPath(store, "  ", "C:\\x")).toEqual(listProjects(store));
+    expect(getProject(store, "a")!.lastPath).toBeUndefined();
   });
 });
 

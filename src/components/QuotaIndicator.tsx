@@ -1,17 +1,40 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api-base";
+import { OPEN_CONVERSATION_EVENT } from "@/lib/navigation-events";
+
+export const CHAT_SENT_EVENT = "orplex:chat-sent";
 
 export default function QuotaIndicator() {
   const [quota, setQuota] = useState<{ remaining: number; limit: number } | null>(null);
 
-  useEffect(() => {
-    apiFetch("/api/user/quota")
-      .then(r => r.json())
-      .then(data => setQuota(data))
-      .catch(() => {});
+  const refresh = useCallback(async () => {
+    try {
+      const r = await apiFetch("/api/user/quota");
+      const data = await r.json();
+      if (data && typeof data.remaining === "number" && typeof data.limit === "number") setQuota(data);
+    } catch {}
   }, []);
+
+  useEffect(() => {
+    void refresh();
+    // The backend counts the request before the first token streams back, so
+    // a short delay lands this refresh after the increment is committed.
+    const onSent = () => {
+      setTimeout(() => { void refresh(); }, 1500);
+    };
+    window.addEventListener(CHAT_SENT_EVENT, onSent);
+    window.addEventListener(OPEN_CONVERSATION_EVENT, onSent);
+    // A slow poll papers over any path that skips the events (panel actions,
+    // background workers) — 60s keeps the needle honest without spamming.
+    const poll = setInterval(() => { void refresh(); }, 60_000);
+    return () => {
+      window.removeEventListener(CHAT_SENT_EVENT, onSent);
+      window.removeEventListener(OPEN_CONVERSATION_EVENT, onSent);
+      window.clearInterval(poll);
+    };
+  }, [refresh]);
 
   if (!quota) return null;
 

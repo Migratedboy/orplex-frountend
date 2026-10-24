@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
+import { withVerifySlot } from "@/lib/server-executor/verify-gate";
+import { publicErrorMessage } from "@/lib/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -70,18 +72,24 @@ export async function POST(request: NextRequest) {
     // bundled Chromium. Detection is cached in the verification module.
     const { isInstalledChromeAvailable } = await import("@/lib/browser-verification");
     const effectiveBrowser = browser || ((await isInstalledChromeAvailable().catch(() => false)) ? "chrome" : undefined);
-    const result = await verifyUI({
-      workDir,
-      devCommand,
-      port,
-      path: pagePath,
-      width,
-      height,
-      recordVideo,
-      interactions,
-      urlPolicy,
-      browser: effectiveBrowser,
-    });
+    // Machine-wide verify slot: the executor serializes its verify lanes
+    // through withVerifySlot (each slot is a dev-server boot, +0.5–1 GB RSS on
+    // the 8GB budget machine, and two boots on one port collide). UI verifies
+    // must contend for the SAME slot, not route around it.
+    const result = await withVerifySlot(() =>
+      verifyUI({
+        workDir,
+        devCommand,
+        port,
+        path: pagePath,
+        width,
+        height,
+        recordVideo,
+        interactions,
+        urlPolicy,
+        browser: effectiveBrowser,
+      })
+    );
 
     // No runId supplied (e.g. the client-side worker's auto lane)? Persist
     // under an "ad-hoc" run + browser task so screenshots/timelines land in
@@ -185,11 +193,12 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     // A thrown verify = the harness itself broke (Playwright missing, spawn
     // crash…). Mark it so the agent never reads this as "my app failed".
+    // Raw err.message would leak git/Prisma internals — keep the marker,
+    // redact the cause.
     return NextResponse.json(
-      { success: false, error: `infrastructure-failure: ${msg}` },
+      { success: false, error: `infrastructure-failure: ${publicErrorMessage(err, "verification harness failed")}` },
       { status: 500 }
     );
   }

@@ -96,6 +96,28 @@ describe("readStream partial-line buffering", () => {
     expect(result.toolCalls[0].content).toBe("x");
   });
 
+  it("passes create_file's filename argument through the native arg allowlist", async () => {
+    // create_file is a NEW tool whose args ride the same allowlist — before
+    // the fix, `filename` was missing from TOOL_ARG_FIELDS and the parser
+    // silently dropped it, so dispatch fell through to "not available here".
+    const raw =
+      `data: ${JSON.stringify({ tool_calls: [{ index: 0, function: { name: "create_file", arguments: '{"filename": "summary.md", "content": "# hi"}' } }] })}\n\n` +
+      "data: [DONE]\n\n";
+    mockChatApi(streamFromChunks([encoder.encode(raw)]));
+
+    const result = await readStream(
+      [{ role: "user", content: "hi" }],
+      null,
+      { onChunk: () => {} },
+      "code"
+    );
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0].name).toBe("create_file");
+    expect(result.toolCalls[0].filename).toBe("summary.md");
+    expect(result.toolCalls[0].content).toBe("# hi");
+  });
+
   it("processes a final event that lacks its trailing newline", async () => {
     const raw = `data: ${JSON.stringify({ content: "tail" })}\n\ndata: ${JSON.stringify({ content: " end" })}`;
     mockChatApi(streamFromChunks([encoder.encode(raw)]));

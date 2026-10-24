@@ -16,8 +16,12 @@
 // most sessions never look at.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api-base";
-import { IconInsights, IconClose, IconChevronDown, IconChevronRight, IconFile, IconTerminal, IconBrain } from "./Icons";
+import { useToast } from "./Toast";
+import { forkConversation, isLocalConversationMode } from "@/lib/conversations-transport";
+import { announceConversationOpen } from "@/lib/navigation-events";
+import { IconInsights, IconClose, IconChevronDown, IconChevronRight, IconFile, IconTerminal, IconBrain, IconFork } from "./Icons";
 
 interface ToolUsage {
   tool: string;
@@ -93,8 +97,36 @@ export default function SessionInsightsPopup() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pinned, setPinned] = useState(false);
+  const [forking, setForking] = useState(false);
   const loadedRef = useRef(false);
   const popRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+  const { toast } = useToast();
+
+  // Fork the session's thread straight from the Progress header (desktop,
+  // local store). The thread id is read fresh at click time — the panel can
+  // outlive a couple of navigations while pinned, so trusting a stale read
+  // would fork the wrong chat.
+  const forkThread = useCallback(async () => {
+    const id = new URLSearchParams(window.location.search).get("c");
+    if (!id || forking) return;
+    setForking(true);
+    try {
+      const result = await forkConversation(id);
+      if (!result) {
+        toast("Fork failed — the thread may have been deleted.", "error");
+        return;
+      }
+      toast(`Forked — ${result.copied} message${result.copied === 1 ? "" : "s"} copied.`, "success");
+      router.push(`/?c=${result.conversationId}`);
+      announceConversationOpen(result.conversationId);
+    } catch {
+      toast("Fork failed — please try again.", "error");
+    } finally {
+      setForking(false);
+    }
+  }, [forking, router, toast]);
+  const canFork = isLocalConversationMode();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -104,7 +136,19 @@ export default function SessionInsightsPopup() {
         apiFetch("/api/agent/insights?summary=1"),
         apiFetch("/api/agent/insights?patterns=1"),
       ]);
-      if (!s.ok) throw new Error(`HTTP ${s.status}`);
+      if (!s.ok) {
+        // A bare "HTTP 404" made the panel look broken; say what it means.
+        // The server's own error (if any) wins — it is the most specific.
+        const sjErr = (await s.json().then((b: { error?: unknown }) => (typeof b?.error === "string" ? b.error : null)).catch(() => null));
+        throw new Error(
+          sjErr ||
+            (s.status === 404
+              ? "Insights are not available on this server yet — update Orplex and the panel will fill in."
+              : s.status === 401
+              ? "Sign in to see session insights."
+              : `Insights request failed (HTTP ${s.status}).`),
+        );
+      }
       const sj = (await s.json()) as { success?: boolean; summary?: Summary; error?: string };
       if (!sj.success || !sj.summary) throw new Error(sj.error || "Could not load insights.");
       setSummary(sj.summary);
@@ -170,6 +214,17 @@ export default function SessionInsightsPopup() {
           <div className="sip-head">
             <span className="sip-title">Progress</span>
             <span className="sip-head-actions">
+              {canFork && (
+                <button
+                  className="sip-pin"
+                  onClick={forkThread}
+                  title="Fork this session's chat into a new conversation"
+                  aria-label="Fork this session's chat into a new conversation"
+                  disabled={forking}
+                >
+                  <span className="sip-head-inline-icon"><IconFork size={13} /></span>
+                </button>
+              )}
               <button
                 className={`sip-pin${pinned ? " sip-pin-on" : ""}`}
                 onClick={() => setPinned((p) => !p)}

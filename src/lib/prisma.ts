@@ -20,9 +20,13 @@ function buildPrismaClient() {
   // Fail fast: a localhost DB URL can never work on a cloud host — it means
   // laptop dev values leaked into production env (Vercel dashboard). Crash
   // the boot loudly instead of serving 500s on every DB call.
+  // Scoped to Vercel: the Electron shell spawns its own local API with
+  // NODE_ENV=production too, and the database may legitimately live behind
+  // whatever ORPLEX_API_URL points at, so this must never fire locally.
   // Skipped during `next build` (NEXT_PHASE): static collection evaluates
   // modules with build-time env; the running server enforces on boot.
   if (
+    process.env.VERCEL &&
     process.env.NODE_ENV === "production" &&
     !String(process.env.NEXT_PHASE || "").includes("build") &&
     DATABASE_URL &&

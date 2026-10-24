@@ -43,7 +43,9 @@ describe("per-run state isolation", () => {
     const withRunState = (SRC.match(/runState,/g) || []).length;
     // `callModel(` also matches the declaration, so calls = 1 + invocations.
     // Each invocation passes runState as its second argument.
-    expect(calls).toBe(7); // declaration + 6 invocations
+    // Transform 2a: the subagent mini-loop's call is an 7th invocation, and it
+    // threads runState too (per-run state isolation applies to subagents).
+    expect(calls).toBe(8); // declaration + 7 invocations
     expect(withRunState).toBe(calls - 1);
   });
 
@@ -55,8 +57,40 @@ describe("per-run state isolation", () => {
 
   it("reads and writes compaction state through runState", () => {
     expect(SRC).toMatch(/appendTaskAnchor\(apiMessages, runState\.anchorTaskMessage\)/);
-    expect(SRC).toMatch(/runState\.taskCompactor \|\|= createTranscriptCompactor\(/);
+    // 4c: the compactor is now hierarchical (trim/drop tiers first, summarize
+    // last) — the per-run instance lives on runState exactly as before.
+    expect(SRC).toMatch(/runState\.taskCompactor \|\|= createHierarchicalCompactor\(/);
     expect(SRC).toMatch(/await runState\.taskCompactor\.compact\(/);
     expect(SRC).toMatch(/evictedNow > runState\.lastCompactedThrough/);
+  });
+
+  it("runs the subagent mini-loop on a DERIVED child state, not the parent's", () => {
+    // Sharing the parent's runState put the parent's ORIGINAL TASK anchor on
+    // every subagent tool-result, and let the sub's incremental compactor
+    // overwrite lastCompactionSummary/lastCompactedThrough with sub content
+    // that then seeded the PARENT's scratchpad. The dispatch site must
+    // capture the parent state and shadow it with a child: the sub's task as
+    // anchor, a lazily-created compactor of its own, and fresh eviction marks.
+    expect(SRC).toMatch(/const parentRunState = runState;/);
+    expect(SRC).toMatch(/const runState = \{ \.\.\.parentRunState \};/);
+    expect(SRC).toMatch(/runState\.taskCompactor = null;/);
+    expect(SRC).toMatch(/runState\.lastCompactedThrough = 0;/);
+    expect(SRC).toMatch(/runState\.lastCompactionSummary = null;/);
+  });
+
+  it("enforces the effort budget's subagentLimit at the spawn dispatch site", () => {
+    // The trivial tier promises 0 subagents — limit was never checked.
+    expect(SRC).toMatch(/subagentsSpawned >= effortBudget\.subagentLimit/);
+    expect(SRC).toContain("Refused: subagent budget exhausted");
+  });
+
+  it("keeps the loop-guard denylist and wall-clock budget sticky across streak resets", () => {
+    // Resetting with a bare Object.assign(loopStreaks, createLoopStreaks())
+    // wiped callFailureCounts (loop-detect: the denylist is sticky for the
+    // run) and restarted budget.startedAt (the wall-clock origin).
+    expect(SRC).not.toMatch(/Object\.assign\(loopStreaks, createLoopStreaks\(\)\)/);
+    expect(SRC).toMatch(/fresh\.callFailureCounts = loopStreaks\.callFailureCounts;/);
+    expect(SRC).toMatch(/fresh\.budget = loopStreaks\.budget;/);
+    expect(SRC).toMatch(/const resetLoopStreaks = \(\) => \{/);
   });
 });

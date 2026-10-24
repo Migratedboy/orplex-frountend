@@ -49,7 +49,7 @@ const SCP_STYLE_RE = /(?:^|[\s"'=])([A-Za-z0-9._-]+@[A-Za-z0-9.-]+):[^\s]/g;
 const BARE_HOST_RE = /(?:^|\s)((?:[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,})\/[^\s]*)/g;
 
 /** scheme'd URLs anywhere — includes http (denied unless allowlisted). */
-const URL_HOST_RE = /(?:^|[\s'"|=(])(https?:\/\/[^\s"'<>\\]+)/g;
+const URL_HOST_RE = /(?:^|[\s'"|=(])(https?:\/\/[^\s"'<>\\]+)/gi;
 
 /** git subcommand spans, for the remote-name fallback below. */
 const GIT_SUB_RE = /\bgit\s+(?:clone|fetch|push|pull)\b[^\n;&|]*/g;
@@ -148,7 +148,7 @@ function gitFirstRemoteHost(span: string): string | null {
  * from (the carrier is not the attacker).
  */
 export function networkPipedToShell(command: string): boolean {
-  return /(?:curl|wget|fetch|iwr|invoke-[^|;&]*|https?:\/\/\S*|git\s+clone\s+\S*scp)[^|;&]*\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b/i.test(command);
+  return /(?:curl|wget|fetch|iwr|invoke-[^|;&]*|https?:\/\/\S*|git\s+clone\s+\S*scp)[^|;&]*\|\s*(?:sudo\s+)?(?:\/(?:usr\/)?bin\/)?(?:ba|z|da|k)?sh\b/i.test(command);
 }
 
 /**

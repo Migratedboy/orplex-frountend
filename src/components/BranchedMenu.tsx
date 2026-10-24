@@ -270,7 +270,22 @@ export default function BranchedMenu({
               aria-current={leafActive ? "true" : undefined}
               data-active={leafActive ? "" : undefined}
               title={item.title}
-              onClick={() => (kids ? toggle(i) : select(leafValue, item))}
+              onClick={() => {
+                if (!kids) {
+                  select(leafValue, item);
+                  return;
+                }
+                // A header with children toggles the branch AND, when it
+                // carries a value, selects it. Toggling alone meant a project
+                // row (which ALWAYS has children — the "No threads yet"
+                // placeholder at minimum) could never fire onSelect, so
+                // clicking a project never reopened its workspace.
+                // `item.value` is undefined for pure GROUP headers (Agents,
+                // Settings) — those must keep toggling only, or the consumer
+                // would navigate to a route named after the label.
+                toggle(i);
+                if (item.value !== undefined) select(leafValue, item);
+              }}
               onContextMenu={
                 onHeadContextMenu
                   ? (e) => {

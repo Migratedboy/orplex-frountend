@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
 import { getWorkspaceCwd } from "@/lib/workspace-cwd";
 import { prisma } from "@/lib/prisma";
+import { publicErrorMessage } from "@/lib/errors";
 import {
   createCheckpoint,
   isGitRepo,
@@ -15,6 +16,13 @@ import { recordRuntimeLog } from "@/lib/runtime-log";
 
 export const dynamic = "force-dynamic";
 
+/** Ownership gate (pattern from runtime/service.ts assertRunOwner): true only
+ * when the run exists AND belongs to the caller. Foreign/unknown runs → 404. */
+async function ownsRun(runId: string, userId: string): Promise<boolean> {
+  const run = await prisma.agentRun.findFirst({ where: { id: runId, userId }, select: { id: true } }).catch(() => null);
+  return !!run;
+}
+
 /** GET /api/agent/checkpoints?runId=… — the run's checkpoint timeline. */
 export async function GET(request: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -23,6 +31,9 @@ export async function GET(request: NextRequest) {
   }
   const runId = request.nextUrl.searchParams.get("runId");
   if (!runId) return NextResponse.json({ success: false, error: "runId required" }, { status: 400 });
+  if (!(await ownsRun(runId, session.user.id))) {
+    return NextResponse.json({ success: false, error: "Run not found" }, { status: 404 });
+  }
   const rows = await prisma.runCheckpoint.findMany({
     where: { runId },
     orderBy: { sequence: "asc" },
@@ -45,6 +56,9 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   const runId = typeof body?.runId === "string" ? body.runId : "";
   if (!runId) return NextResponse.json({ success: false, error: "runId required" }, { status: 400 });
+  if (!(await ownsRun(runId, session.user.id))) {
+    return NextResponse.json({ success: false, error: "Run not found" }, { status: 404 });
+  }
   const label = typeof body?.label === "string" ? body.label.slice(0, 120) : "manual";
   const changed = Array.isArray(body?.changed)
     ? body.changed
@@ -77,7 +91,7 @@ export async function POST(request: NextRequest) {
     recordRuntimeLog("workspace", "info", `checkpoint ${result.id} (${result.kind}) — ${result.files.length} file(s)`);
     return NextResponse.json({ success: true, checkpoint: { id: result.id, kind: result.kind, ref: result.ref, label: result.label, files: result.files.length } });
   } catch (err) {
-    return NextResponse.json({ success: false, error: (err as Error).message }, { status: 400 });
+    return NextResponse.json({ success: false, error: publicErrorMessage(err, "Checkpoint failed") }, { status: 400 });
   }
 }
 
@@ -98,6 +112,9 @@ export async function PUT(request: NextRequest) {
   const sequence = typeof body?.sequence === "number" ? body.sequence : null;
   if (!runId || sequence === null) {
     return NextResponse.json({ success: false, error: "runId and sequence required" }, { status: 400 });
+  }
+  if (!(await ownsRun(runId, session.user.id))) {
+    return NextResponse.json({ success: false, error: "Run not found" }, { status: 404 });
   }
   const cp = await prisma.runCheckpoint.findUnique({
     where: { runId_sequence: { runId, sequence } },
@@ -136,6 +153,6 @@ export async function PUT(request: NextRequest) {
     recordRuntimeLog("workspace", "info", `checkpoint restore ${runId}/${sequence} — ${evts.length} event(s) archived`);
     return NextResponse.json({ success: true, restored: { sequence, ref: cp.ref }, archivedEvents: evts.length, restoredAt: cutoff.toISOString() });
   } catch (err) {
-    return NextResponse.json({ success: false, error: (err as Error).message }, { status: 400 });
+    return NextResponse.json({ success: false, error: publicErrorMessage(err, "Checkpoint restore failed") }, { status: 400 });
   }
 }

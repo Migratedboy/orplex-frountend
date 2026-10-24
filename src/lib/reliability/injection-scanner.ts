@@ -28,6 +28,11 @@ export interface InjectionFinding {
 
 const EXCERPT_RADIUS = 80;
 
+const HOMOGLYPHS: Record<string, string> = {
+  "\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0440": "p", "\u0441": "c", "\u0445": "x",
+  "\u03b1": "a", "\u03b5": "e", "\u03bf": "o",
+};
+
 function excerptOf(text: string, index: number, length: number): string {
   const start = Math.max(0, index - EXCERPT_RADIUS);
   const end = Math.min(text.length, index + length + EXCERPT_RADIUS);
@@ -69,7 +74,7 @@ const RULES: InjectionRule[] = [
   // `ign<ZWSP>ore` became "ign ore" or "ignore", both match. Writing these as
   // literals is what let `ign\u200bore previous instructions` — the prose twin
   // of the tag evasion — pass unflagged.
-  { pattern: "ignore-all-previous-instructions", severity: "block", re: () => new RegExp(`\\b${spaced("ignore")}\\s+(?:${spaced("all")}\\s+)?(?:${spaced("previous")}|${spaced("prior")}|${spaced("above")}|${spaced("earlier")})\\s+${spaced("instruction")}s?\\b`, "gi") },
+  { pattern: "ignore-all-previous-instructions", severity: "block", re: () => new RegExp(`\\b(?:${spaced("ignore")}|${spaced("forget")}|${spaced("disregard")})\\s+(?:${spaced("all")}\\s+)?(?:${spaced("previous")}|${spaced("prior")}|${spaced("above")}|${spaced("earlier")})\\s+${spaced("instruction")}s?\\b`, "gi") },
   { pattern: "disregard-system-or-prompt", severity: "block", re: () => new RegExp(`\\b${spaced("disregard")}\\b[^.;\\n]{0,60}?\\b(?:${spaced("system")}|${spaced("developer")}|${spaced("prompt")})\\b`, "gi") },
   // Requires an indefinite article. Bare `you are now` fired on ordinary UI
   // text — "You are now signed in as admin", "You are now ready to continue" —
@@ -182,6 +187,13 @@ function foldEvasion(text: string): { text: string; map: number[] } {
     }
     if (cp >= 0xff01 && cp <= 0xff5e) {
       out += String.fromCharCode(cp - 0xfee0);
+      map.push(i);
+      i += ch.length;
+      continue;
+    }
+    const homo = HOMOGLYPHS[ch];
+    if (homo) {
+      out += homo;
       map.push(i);
       i += ch.length;
       continue;

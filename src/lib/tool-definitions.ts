@@ -74,6 +74,21 @@ export const M3_TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "create_file",
+      description: "Stage a small text file IN APP MEMORY for the user to download — the deliverable lane for when NO project folder is open (a summary, a checklist, a snippet the user asked to 'save'). Nothing is written to disk; the user gets a download card in the chat. It refuses when a project IS open — use write_file for anything that belongs in the workspace. Files live 4 hours and the store holds at most 2 (creating the 3rd evicts the oldest).",
+      parameters: {
+        type: "object",
+        properties: {
+          filename: { type: "string", description: "Plain file name with a short extension (e.g. summary.md, snippet.py) — no folders, no path separators" },
+          content: { type: "string", description: "Full text content to stage (max 2MB)" },
+        },
+        required: ["filename", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "write_file_chunk",
       description: "Append content to an existing file. Use for large files — write in chunks of 200-300 lines each. First call write_file with the initial content, then use write_file_chunk to append subsequent sections.",
       parameters: {
@@ -597,6 +612,26 @@ export const M3_TOOL_DEFINITIONS = [
       },
     },
   },
+  // Read-only parallel research: spawn a sandboxed discovery helper
+  // (list_files/read_file/search_code/code_search ONLY — no writes, no
+  // commands, no browser, cannot spawn further subagents). Use for focused
+  // side-questions ("find every call site of X") while your own loop keeps
+  // working. Returns prose findings for your transcript.
+  {
+    type: "function",
+    function: {
+      name: "spawn_subagent",
+      description: "Run a read-only research helper that answers ONE focused discovery question and returns prose. The helper can only list_files, read_file, search_code, and code_search — it CANNOT write files, run commands, or spawn further helpers. Use it to gather background (find all usages, summarize a module, locate a pattern) while you continue your own work. Keep the task specific and self-contained.",
+      parameters: {
+        type: "object",
+        properties: {
+          task: { type: "string", description: "The focused question to research, self-contained (include relevant paths/context)" },
+          context: { type: "string", description: "Optional extra context for the helper (what you're building, constraints)" },
+        },
+        required: ["task"],
+      },
+    },
+  },
 ];
 
 // Updated system prompt — no XML tool instructions needed
@@ -665,6 +700,9 @@ export const GROQ_TOOL_NAMES = [
   "extract_archive",
   "list_files",
   "write_file",
+  // In-memory staging: text-light (path + short result out), keeps the
+  // lean lanes able to hand the user a deliverable when NO project is open.
+  "create_file",
   "edit_file",
   "run_command",
   "todo_list",
@@ -696,6 +734,10 @@ export const GROQ_TOOL_NAMES = [
   "playbook_search",
   "skill_create",
   "session_search",
+  // spawn_subagent is TEXT-light in BOTH directions (task in, ~300-word
+  // findings out) — the concurrency cap keeps serial calls, and lean lanes
+  // benefit most from offloading research out of their tight context.
+  "spawn_subagent",
 ] as const;
 
 export const GROQ_TOOL_DEFINITIONS = M3_TOOL_DEFINITIONS.filter((t: any) =>

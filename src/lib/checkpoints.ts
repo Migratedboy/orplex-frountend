@@ -26,7 +26,8 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import { appendHistory, readHistory } from "./workspace-history";
+import { AppError } from "./errors";
+import { appendHistory, safeJoinWorkspace, readHistory } from "./workspace-history";
 
 export interface CheckpointFile {
   path: string;
@@ -57,6 +58,20 @@ export async function layer2Offset(root: string): Promise<number> {
 const MAX_PER_RUN = 20;
 const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 15_000;
+
+const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+
+/**
+ * runId lands inside filesystem paths (checkpoint refs, snapshot dirs, temp
+ * index files), so it must be a single safe path component — "./.."/"..\\.."
+ * escapes the workspace. Operational message: routes surface it via
+ * publicErrorMessage.
+ */
+export function assertSafeRunId(runId: string): void {
+  if (!RUN_ID_PATTERN.test(runId) || runId.includes("/") || runId.includes("\\")) {
+    throw new AppError("Invalid run id", 400);
+  }
+}
 
 function git(root: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -128,8 +143,9 @@ export async function createCheckpointGit(
   label: string,
   files: CheckpointFile[]
 ): Promise<CheckpointResult> {
+  assertSafeRunId(runId);
   const n = await nextSequence(root, runId);
-  if (n >= MAX_PER_RUN) throw new Error(`checkpoint budget reached (${MAX_PER_RUN}/run)`);
+  if (n >= MAX_PER_RUN) throw new AppError(`checkpoint budget reached (${MAX_PER_RUN}/run)`, 400);
   const tmpIdx = join(root, ".orplex", `checkpoint-index-${runId}`);
   await mkdir(dirname(tmpIdx), { recursive: true });
   const env = { ...process.env, GIT_INDEX_FILE: tmpIdx };
@@ -167,6 +183,7 @@ export async function createCheckpointSnapshot(
   changed: Array<{ path: string; abs: string; created: boolean }>,
   files: CheckpointFile[]
 ): Promise<CheckpointResult> {
+  assertSafeRunId(runId);
   let n = 0;
   const base = join(root, ".orplex", "checkpoints");
   try {
@@ -174,13 +191,15 @@ export async function createCheckpointSnapshot(
   } catch {
     n = 0;
   }
-  if (n >= MAX_PER_RUN) throw new Error(`checkpoint budget reached (${MAX_PER_RUN}/run)`);
+  if (n >= MAX_PER_RUN) throw new AppError(`checkpoint budget reached (${MAX_PER_RUN}/run)`, 400);
   const dir = join(base, `${runId}-${n}`);
   await mkdir(dir, { recursive: true });
   let bytes = 0;
   const manifest: Array<{ path: string; sha256: string | null }> = [];
   for (const f of changed) {
-    if (f.created) continue; // nothing to copy for pre-existing files? (created=true means NEW file)
+    // Every changed file is copied — created=true (pre-existing NEW file,
+    // before=null) is exactly what a snapshot must capture: restore cannot
+    // reconstruct a file that never had a `before` source anywhere else.
     const s = await stat(f.abs).catch(() => null);
     if (!s || !s.isFile()) continue;
     if (bytes + s.size > MAX_TOTAL_BYTES) break; // budget guard
@@ -264,6 +283,27 @@ export async function restoreCheckpointGit(root: string, ref: string, runId: str
   }
   const inverse = await createCheckpointGit(root, `${runId}-restore-inverse`, `inverse of restore ${ref}`, files);
   await git(root, ["checkout", ref, "--", "."]);
+  // `checkout ref -- .` overlays but never deletes: files CREATED after the
+  // checkpoint would survive restore while callers report "restored". Compute
+  // the set difference against the ref's tree and remove present-now /
+  // absent-in-ref paths (SKIP_DIRS excluded, containment enforced, per-file
+  // best-effort — the restore must not fail on one stubborn file).
+  const [refTree, trackedNow, untrackedNow] = await Promise.all([
+    git(root, ["ls-tree", "-r", "--name-only", ref]).catch(() => ""),
+    git(root, ["ls-files"]).catch(() => ""),
+    git(root, ["ls-files", "-o", "--exclude-standard"]).catch(() => ""),
+  ]);
+  const inRef = new Set(refTree.split("\n").map((s) => s.trim()).filter(Boolean));
+  const now = new Set(
+    [...trackedNow.split("\n"), ...untrackedNow.split("\n")].map((s) => s.trim()).filter(Boolean)
+  );
+  for (const p of now) {
+    if (inRef.has(p)) continue;
+    if (p.split("/").some((seg) => SKIP_DIRS.has(seg))) continue;
+    const abs = safeJoinWorkspace(root, p); // never touch anything outside root
+    if (!abs) continue;
+    await rm(abs, { force: true }).catch(() => {});
+  }
   // Through the durable layer: prev from the inverse commit, next from disk.
   const restored = await git(root, ["ls-tree", "-r", "--name-only", ref]).catch(() => "");
   const touched = new Set([...files.map((f) => f.path), ...restored.split("\n").map((s) => s.trim()).filter(Boolean)]);
@@ -293,7 +333,9 @@ export async function createCheckpoint(
   runId: string,
   label: string,
   changed: Array<{ path: string; abs: string; created: boolean }>
-): Promise<CheckpointResult> {  if (await isGitRepo(root)) {
+): Promise<CheckpointResult> {
+  assertSafeRunId(runId);
+  if (await isGitRepo(root)) {
     const wt = await workingTreeFiles(root);
     const files: CheckpointFile[] = [];
     for (const f of wt) {

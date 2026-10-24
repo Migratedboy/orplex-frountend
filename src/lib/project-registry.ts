@@ -93,6 +93,11 @@ export function rememberProject(
       displayName: opts.displayName ?? existing?.displayName,
       lastOpenedAt: opts.openedAt ?? Date.now(),
       ghost: opts.ghost ?? existing?.ghost ?? false,
+      // lastPath survives re-materialization: a sync-triggered remember used
+      // to rebuild the row without it, and the desktop terminal lane reads
+      // cwd from exactly this field — dropping it made every agent command
+      // fail with "no workspace folder path is registered".
+      lastPath: existing?.lastPath,
     },
     ...rest.filter((p) => p.name !== trimmed),
   ].slice(0, MAX_PROJECTS);
@@ -120,11 +125,23 @@ export function setProjectAlias(storage: StorageLike, name: string, displayName:
   return next;
 }
 
-/** Record the absolute folder path for a project (Electron only). */
+/**
+ * Record the absolute folder path for a project.
+ *
+ * UPSERT: a missing row is created on the spot. It used to be a silent no-op
+ * for unknown names — and on the FIRST picker open no other writer created
+ * the row, so a freshly-resolved absolute path was dropped and every later
+ * agent command failed with "no workspace folder path is registered" even
+ * though the folder was plainly open (live-observed 2026-10-19, psd10).
+ */
 export function setProjectPath(storage: StorageLike, name: string, path: string): ProjectEntry[] {
+  const trimmed = name.trim();
+  if (!trimmed || !path) return listProjects(storage);
   const rest = parseRoster(storage.getItem(REGISTRY_KEY));
-  if (!rest.some((p) => p.name === name)) return listProjects(storage);
-  const next = rest.map((p) => (p.name === name ? { ...p, lastPath: path || undefined } : p));
+  const existing = rest.find((p) => p.name === trimmed);
+  const next = existing
+    ? rest.map((p) => (p.name === trimmed ? { ...p, lastPath: path } : p))
+    : [{ name: trimmed, lastOpenedAt: Date.now(), lastPath: path }, ...rest].slice(0, MAX_PROJECTS);
   storage.setItem(REGISTRY_KEY, serializeRoster(next));
   return next;
 }

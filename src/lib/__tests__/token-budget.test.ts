@@ -1,4 +1,5 @@
 import { estimateTokens, fitMessagesToBudget } from "../background-worker";
+import { appendTaskAnchor } from "../stream-reader";
 
 describe("token budget", () => {
   it("estimates tokens at 4 chars/token", () => {
@@ -57,6 +58,19 @@ describe("token budget", () => {
     const snapshot = JSON.stringify(msgs);
     fitMessagesToBudget(msgs, 500);
     expect(JSON.stringify(msgs)).toBe(snapshot);
+  });
+
+  // The task anchor is appended to the TAIL of the last message, and the cap
+  // keeps the HEAD slice — on a tight budget the anchor used to be sliced
+  // away, so the repaired context lost the original task entirely. The cap
+  // must split base vs anchor and always keep the anchor tail verbatim.
+  it("never caps away the task anchor on the last message", () => {
+    const anchored = appendTaskAnchor([{ role: "user", content: "q".repeat(2000) }], "the original task text that must never vanish");
+    const out = fitMessagesToBudget(anchored, 300);
+    expect(out[0].content).toContain("[ORIGINAL TASK");
+    expect(out[0].content).toContain("the original task text that must never vanish");
+    // The base was still capped (the marker proves the cut happened).
+    expect(out[0].content).toContain("TOOL OUTPUT SHORTENED");
   });
 
   // The ordering bug this pins: callModel used to run

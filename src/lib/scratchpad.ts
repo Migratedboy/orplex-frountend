@@ -112,3 +112,45 @@ export function renderScratchpadBlock(s: ScratchpadState): string {
     `\n</scratchpad>`
   );
 }
+
+/**
+ * Compaction handoff: when the transcript has been summarized away, seed any
+ * EMPTY scratchpad sections from the summary so the working memory never
+ * regresses below what the model knew before the eviction. Model-authored
+ * content is NEVER clobbered — the summary only fills gaps. Returns a new
+ * state (pure). Empty summary → unchanged input.
+ */
+export function seedScratchpadFromSummary(
+  s: ScratchpadState,
+  summary: string,
+  turn: number
+): ScratchpadState {
+  const text = (summary || "").trim();
+  if (!text) return s;
+  // Cheap extraction: file-ish paths become findings, the first lines tend to
+  // carry the task/plan, and "next" is the model's own business — only marked
+  // when entirely unknown.
+  const fileLines = text
+    .split("\n")
+    .filter((l) => /[\w./\\-]+\.(ts|tsx|js|jsx|json|md|py|css|html|prisma)/.test(l))
+    .slice(0, 6)
+    .join("; ");
+  const next: ScratchpadState = {
+    ...s,
+    updatedAtTurn: Math.max(s.updatedAtTurn, turn),
+  };
+  let changed = false;
+  if (!next.plan) {
+    next.plan = text.slice(0, 200);
+    changed = true;
+  }
+  if (!next.findings && fileLines) {
+    next.findings = `from compacted context: ${fileLines}`.slice(0, 400);
+    changed = true;
+  }
+  if (!next.next) {
+    next.next = `context was compacted at turn ${turn}; orient from the summary block`;
+    changed = true;
+  }
+  return changed ? next : s;
+}

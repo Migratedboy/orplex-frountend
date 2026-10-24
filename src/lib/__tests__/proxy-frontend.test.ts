@@ -143,8 +143,19 @@ describe("cloud unreachable (offline)", () => {
   });
 
   it("still rewrites non-heartbeat API routes (app code handles its own offline UX)", async () => {
+    const res = await handler(req("/api/models"));
+    expect(res.headers.get("x-middleware-rewrite")).toContain("http://localhost:5010/api/models");
+  });
+
+  it("keeps conversations LOCAL-FIRST (desktop: on-device store, no cloud rewrite)", async () => {
+    // Local-first cut-over: the list/create route is served in THIS app (the
+    // Electron bridge / the migration route own it). It must never be
+    // rewritten to the backend again — a rewrite here would resurrect cloud
+    // writes the desktop no longer owns and split threads across stores.
     const res = await handler(req("/api/conversations"));
-    expect(res.headers.get("x-middleware-rewrite")).toContain("http://localhost:5010/api/conversations");
+    expect(res.headers.get("x-middleware-rewrite")).toBeNull();
+    // ...and so are the dynamic children (rename/delete/fork/migrate).
+    expect((await handler(req("/api/conversations/abc"))).headers.get("x-middleware-rewrite")).toBeNull();
   });
 
   it("keeps guarding pages by auth while offline (redirect to signin)", async () => {

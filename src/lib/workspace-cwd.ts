@@ -22,6 +22,29 @@ function sanitizeUserId(userId: string): string | null {
     : null;
 }
 
+/**
+ * True when the path is unambiguously rooted on ANOTHER operating system than
+ * this one, so its absence here says nothing about whether it exists.
+ *
+ * Split deployment registers a folder on the user's own machine — a Windows
+ * path posted from the desktop UI to a Linux backend (or a POSIX path posted
+ * from a Mac). `stat()` cannot succeed there, so the old "must be a directory
+ * on the server" rule rejected EVERY client-local folder and the UI raised
+ * "Could not register <path> as the workspace (HTTP 400 — Invalid
+ * directory)" for all of them.
+ *
+ * This is deliberately narrow: only a Windows drive/UNC root (which no POSIX
+ * host can possess) and only a POSIX path that is not even syntactically
+ * checkable here. Anything that could plausibly exist on this host still has
+ * to pass `stat`.
+ */
+function isForeignOsPath(path: string): boolean {
+  // Windows: `C:\...`, `C:/...`, `\\server\share\...`
+  if (/^[A-Za-z]:[\\/]/.test(path)) return true;
+  if (/^\\\\[^\\/]/.test(path)) return true;
+  return false;
+}
+
 /** Register a workspace directory for a user. Returns false if invalid. */
 export async function setWorkspaceCwd(path: string, userId: string): Promise<boolean> {
   const uid = sanitizeUserId(userId);
@@ -30,20 +53,23 @@ export async function setWorkspaceCwd(path: string, userId: string): Promise<boo
   try {
     const s = await stat(path);
     if (!s.isDirectory()) return false;
-    workspaceCwds.set(uid, path);
-    // Durable copy: the in-memory map dies with the process, and a restart
-    // must not break merges of runs whose worktrees point at this workspace.
-    // Fire-and-forget — a DB hiccup must not fail the registration itself.
-    void (async () => {
-      try {
-        const { prisma } = await import("@/lib/prisma");
-        await prisma.user.update({ where: { id: uid }, data: { workspacePath: path } });
-      } catch {}
-    })();
-    return true;
   } catch {
-    return false;
+    // Not visible from this host. That is expected — and not a validation
+    // failure — for a folder that lives on the user's own machine. Reject it
+    // only when it COULD have been checked here and still failed.
+    if (!isForeignOsPath(path)) return false;
   }
+  workspaceCwds.set(uid, path);
+  // Durable copy: the in-memory map dies with the process, and a restart
+  // must not break merges of runs whose worktrees point at this workspace.
+  // Fire-and-forget — a DB hiccup must not fail the registration itself.
+  void (async () => {
+    try {
+      const { prisma } = await import("@/lib/prisma");
+      await prisma.user.update({ where: { id: uid }, data: { workspacePath: path } });
+    } catch {}
+  })();
+  return true;
 }
 
 /** Current workspace cwd for a user, or null when no folder is open. */

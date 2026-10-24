@@ -138,3 +138,5 @@ export const IconCircle = (p: IconProps) => <Ms name="radio_button_unchecked" {.
 export const IconLoader = (p: IconProps) => <Ms name="progress_activity" {...p} />;
 export const IconMinus = (p: IconProps) => <Ms name="remove" {...p} />;
 export const IconRefresh = (p: IconProps) => <Ms name="refresh" {...p} />;
+/** Fork a conversation into a new on-device copy (History rows / TopBar). */
+export const IconFork = (p: IconProps) => <Ms name="call_split" {...p} />;

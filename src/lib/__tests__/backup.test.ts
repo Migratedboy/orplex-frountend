@@ -29,15 +29,6 @@ const OLD_ENV = { ...process.env };
 // so the expected binary name must match the same check (CI runs on Linux).
 const PG_DUMP_BIN = `pg_dump${process.platform === "win32" ? ".exe" : ""}`;
 const VENDORED = join(process.cwd(), ".localpg", "pgbin", PG_DUMP_BIN);
-const EMBEDDED = join(
-  process.cwd(),
-  "node_modules",
-  "@embedded-postgres",
-  `${process.platform}-x64`,
-  "native",
-  "bin",
-  PG_DUMP_BIN,
-);
 
 interface BackupMocks {
   backup: typeof import("../backup");
@@ -125,17 +116,7 @@ describe("pg_dump resolution precedence", () => {
     expect(m.spawnMock.mock.calls[0][0]).toBe(VENDORED);
   });
 
-  it("falls back to the embedded-postgres bundle when nothing is vendored", async () => {
-    const m = await freshBackup();
-    m.existsSyncMock.mockImplementation((p) => String(p) === EMBEDDED);
-    fakeSpawnOn(m.spawnMock, (child) => child.emit("close", 0));
-
-    await m.backup.runBackup();
-
-    expect(m.spawnMock.mock.calls[0][0]).toBe(EMBEDDED);
-  });
-
-  it("honors the PG_BIN override when the bundles are missing", async () => {
+  it("honors the PG_BIN override when the bundle is missing", async () => {
     const m = await freshBackup();
     process.env.PG_BIN = "C:\\Program Files\\PostgreSQL\\16\\bin";
     m.existsSyncMock.mockImplementation((p) => String(p).startsWith(process.env.PG_BIN!));

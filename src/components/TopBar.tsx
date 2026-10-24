@@ -3,9 +3,11 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useTheme } from "@/components/ThemeProvider";
 import { useRouter } from "next/navigation";
 import { announceConversationOpen } from "@/lib/navigation-events";
-import { IconSearch, IconBug, IconSun, IconMoon, IconBell, IconPanel } from "./Icons";
+import { IconSearch, IconBug, IconSun, IconMoon, IconBell, IconPanel, IconFork } from "./Icons";
 import { useConversations } from "./ConversationProvider";
+import { useToast } from "./Toast";
 import { apiFetch } from "@/lib/api-base";
+import { forkConversation, isLocalConversationMode } from "@/lib/conversations-transport";
 
 interface SearchResult { id: string; title: string; messages: { content: string }[]; }
 export interface NotifItem {
@@ -118,7 +120,55 @@ export default function TopBar({ title = "Orplex Code", onBugReport, onShowShort
   // it) — search it directly. The backend /api/search is the AGENT'S web
   // search tool (POST {query}); a GET conversation search never existed
   // there, so the old call always 405'd and the topbar search stayed dead.
-  const { conversations } = useConversations();
+  const { conversations, refresh } = useConversations();
+  const { toast } = useToast();
+  // Fork the OPEN thread (desktop, local store). TopBar never remounts across
+  // client-side navigations, and several thread-opening paths (restore flows,
+  // in-session transitions) don't announce anything — so a cheap interval
+  // watches location.search in addition to the explicit events. New Chat
+  // keeps a stale ?c= in the URL on "/" so it must clear the state itself.
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [forkingOpen, setForkingOpen] = useState(false);
+  useEffect(() => {
+    const read = () => new URLSearchParams(window.location.search).get("c");
+    const sync = () => setOpenId(read());
+    sync();
+    window.addEventListener("popstate", sync);
+    window.addEventListener("orplex:open-conversation", sync);
+    window.addEventListener("orplex:new-chat", () => setOpenId(null));
+    const last = { value: read() };
+    const interval = setInterval(() => {
+      const current = read();
+      if (current !== last.value) {
+        last.value = current;
+        setOpenId(current);
+      }
+    }, 400);
+    return () => {
+      window.removeEventListener("popstate", sync);
+      window.removeEventListener("orplex:open-conversation", sync);
+      window.clearInterval(interval);
+    };
+  }, []);
+  const forkOpenThread = useCallback(async () => {
+    if (!openId || forkingOpen) return;
+    setForkingOpen(true);
+    try {
+      const result = await forkConversation(openId);
+      if (!result) {
+        toast("Fork failed — the thread may have been deleted.", "error");
+        return;
+      }
+      toast(`Forked — ${result.copied} message${result.copied === 1 ? "" : "s"} copied.`, "success");
+      refresh();
+      router.push(`/?c=${result.conversationId}`);
+      announceConversationOpen(result.conversationId);
+    } catch {
+      toast("Fork failed — please try again.", "error");
+    } finally {
+      setForkingOpen(false);
+    }
+  }, [openId, forkingOpen, router, toast, refresh]);
 
   useEffect(() => {
     if (!search.trim()) { setResults([]); return; }
@@ -168,6 +218,19 @@ export default function TopBar({ title = "Orplex Code", onBugReport, onShowShort
         <h1 className="topbar-title">{title}</h1>
       </div>
       <div className="topbar-actions">
+        {/* Fork the currently open thread into a new on-device copy. Only in
+            the desktop build (bridge) with an actual thread open. */}
+        {isLocalConversationMode() && openId && (
+          <button
+            onClick={forkOpenThread}
+            className="topbar-icon-btn"
+            title="Fork this chat into a new conversation"
+            aria-label="Fork this chat into a new conversation"
+            disabled={forkingOpen}
+          >
+            <IconFork size={17} />
+          </button>
+        )}
         <div className="topbar-search" ref={searchRef}>
           <IconSearch size={15} className="topbar-search-icon" />
           <input

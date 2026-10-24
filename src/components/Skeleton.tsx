@@ -41,3 +41,38 @@ export function PanelSkeleton({ rows = 4 }: { rows?: number }) {
     </div>
   );
 }
+
+/**
+ * Boot skeleton for the chat page. The page is assembled entirely from
+ * ssr:false dynamic imports, so a cold start used to paint an empty black
+ * main pane until every chunk resolved. This fills the same geometry as
+ * DragDropZone (messages area + bottom composer) while they load.
+ */
+export function ChatAreaSkeleton() {
+  return (
+    <div className="chat-skel" aria-hidden="true">
+      <div className="messages-scroll">
+        <MessageSkeleton count={4} />
+      </div>
+      <div className="chat-input-bar">
+        <div className="composer-skel">
+          <div className="skeleton composer-skel-btn" />
+          <div className="skeleton composer-skel-field" />
+          <div className="skeleton composer-skel-btn" />
+        </div>
+        <div className="skeleton composer-skel-hint" />
+      </div>
+    </div>
+  );
+}
+
+/** Boot skeleton for the first-run welcome screen (no conversation open). */
+export function WelcomeSkeleton() {
+  return (
+    <div className="chat-skel welcome-skel" aria-hidden="true">
+      <div className="skeleton welcome-skel-mark" />
+      <div className="skeleton welcome-skel-title" />
+      <div className="skeleton welcome-skel-pill" />
+    </div>
+  );
+}

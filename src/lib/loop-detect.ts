@@ -72,6 +72,11 @@ export const READ_ONLY_TOOLS = new Set([
   "browser_screenshot",
   "take_screenshot",
 ]);
+// spawn_subagent used to live in READ_ONLY_TOOLS, which exempted it from the
+// same-tool streak: a model changing only the task string each turn had NO
+// loop-detect signal at all (target null + no signal 4) while each spawn costs
+// up to 15 parent-independent model turns. It is still dispatchable; it now
+// just counts toward signal 4 like every other single-tool turn.
 
 export interface LoopStreaks {
   lastToolName: string | null;
@@ -255,6 +260,22 @@ export function callTarget<T extends { name?: string }>(call: T): CallTarget | n
       const t = norm(a.tool);
       return s || t ? { key: `mcp|${s}|${t}`, label: `tool "${s}${t ? "." + t : ""}"` } : null;
     }
+    case "batch_execute": {
+      // One batch = one counted call, but its object is the first sub-variant:
+      // repeated batches against the same file are the loop signal 2 exists
+      // for (target used to be null → blind). Varying only the prompt text
+      // away from a file target falls back to the prompt as the identity.
+      const items = Array.isArray(a.variants) ? (a.variants as Array<Record<string, unknown>>) : [];
+      const first = items[0] as Record<string, unknown> | undefined;
+      const firstPath = first ? str(first.path ?? first.file) : "";
+      if (firstPath) {
+        return { key: `batch|${firstPath}`, label: `variant path "${firstPath}"` };
+      }
+      const firstPrompt = first ? norm(first.prompt ?? first.task ?? first.label ?? "") : "";
+      return firstPrompt
+        ? { key: `batchprompt|${firstPrompt.slice(0, 80)}`, label: `"${firstPrompt.slice(0, 60)}"` }
+        : null;
+    }
     default: {
       // Direct mcp__<server>__<tool> calls: the tool itself is the target —
       // varying arguments on the same tool 4x in a row is a stuck retry.
@@ -405,8 +426,6 @@ export function buildLoopBreakDirective(verdict: LoopVerdict, lastToolResults?: 
 
 /** Arg keys that never change call identity (paging, clocks, request ids). */
 const VOLATILE_ARG_KEYS = new Set([
-  "offset",
-  "limit",
   "line",
   "lines",
   "page",
@@ -419,6 +438,8 @@ const VOLATILE_ARG_KEYS = new Set([
   "nonce",
   "uuid",
   "startedAt",
+  // `offset`/`limit` are deliberately NOT here: reading at offset 10 vs 5000
+  // is a different call (progress), so a different signature must result.
 ]);
 
 /** Strip volatile VALUE patterns: uuids, timestamps, line/position numbers. */
@@ -447,9 +468,11 @@ function stripVolatileDeep(value: unknown): unknown {
 }
 
 /**
- * Stable call signature with volatile parts (line numbers, offsets, limit,
- * timestamps, uuids) stripped, so two calls that differ ONLY in noise share a
- * signature. Format is `tool|normalizedArgs` — the same key shape the hard
+ * Stable call signature: volatile parts (line numbers, paging keys like
+ * page/cursor, timestamps, uuids) are stripped so two calls that differ ONLY
+ * in noise share a signature, while `offset`/`limit` are kept so retries at
+ * the same spot count and page-throttled reads do not look like one call.
+ * Format is `tool|normalizedArgs` - the same key shape the hard
  * denylist uses. Sorted keys keep it order-independent (like stableCallKey).
  */
 export function normalizeCallSignature(name: string, args: Record<string, unknown>): string {

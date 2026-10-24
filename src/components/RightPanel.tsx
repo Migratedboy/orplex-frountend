@@ -647,15 +647,21 @@ const BrowserPreviewInner = ({ panelActive }: { panelActive: boolean }) => {
         nativeMapRef.current.delete(id);
       }
     }
-    setTabs(prev => {
-      const rest = prev.filter(t => t.id !== id);
-      if (rest.length === 0) return [{ id: nextTabId, history: [], index: -1, title: "New Tab" }];
-      return rest;
-    });
+    const rest = tabs.filter(t => t.id !== id);
+    if (rest.length === 0) {
+      // Fresh replacement tab, and CONSUME its id. The old code minted the
+      // replacement from nextTabId without bumping it, so the next "+"
+      // minted a SECOND tab with the same id ("Encountered two children
+      // with the same key: 2") and the two tabs then fought over one
+      // navigation history.
+      setTabs([{ id: nextTabId, history: [], index: -1, title: "New Tab" }]);
+      setNextTabId(nextTabId + 1);
+      if (activeId === id) setActiveId(nextTabId);
+      return;
+    }
+    setTabs(rest);
     if (activeId === id) {
-      const rest = tabs.filter(t => t.id !== id);
-      const nextId = rest[rest.length - 1]?.id ?? nextTabId;
-      setActiveId(nextId);
+      setActiveId(rest[rest.length - 1]!.id);
     }
   };
 

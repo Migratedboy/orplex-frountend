@@ -13,7 +13,9 @@ module.exports = {
       displayName: "server",
       preset: "ts-jest",
       testEnvironment: "node",
-      roots: ["<rootDir>/src"],
+      // electron/ too: the conversations store is plain Node on purpose so the
+      // exact module the main process runs gets unit-tested here.
+      roots: ["<rootDir>/src", "<rootDir>/electron"],
       testMatch: ["**/__tests__/**/*.test.ts"],
       moduleNameMapper: { "^@/(.*)$": "<rootDir>/src/$1" },
       transform: {

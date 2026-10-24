@@ -227,3 +227,130 @@ export function createTranscriptCompactor(summarizeFn: SummarizeFn, opts: Compac
     },
   };
 }
+
+// ── Hierarchical compaction ────────────────────────────────────────────────
+//
+// Full summarization is expensive (one model call per eviction wave) and on
+// an 8k free tier it can hog the TPM budget exactly when the transcript is
+// biggest. Most bulk is TOOL RESULTS — repetitive output that does not need
+// a model to compress. Hierarchy: (1) trim the oldest tool-result bodies to
+// head+tail, model-free; (2) collapse whole tool-result messages to stubs;
+// (3) only then, full transcript summarization. Every tier is honest: markers
+// say what was removed.
+
+/** Detect a bulk tool-result message in either lane's shape. */
+export function isToolResultMessage(m: CompactMessage): boolean {
+  if (!m || typeof m.content !== "string") return false;
+  return m.content.startsWith("[TOOL RESULTS]") || m.content.startsWith("<tool_result ");
+}
+
+function fitsBudget(messages: CompactMessage[], budget: number): boolean {
+  return totalTokens(messages) <= budget;
+}
+
+/**
+ * Tier 1 — truncate each tool-result body to head+tail, oldest first, until
+ * the transcript fits. Mutates nothing (returns a new array). Marker text
+ * records the truncation so the model never mistakes it for the full output.
+ */
+export function trimOldestToolResults(
+  messages: CompactMessage[],
+  budgetTokens: number
+): CompactMessage[] | null {
+  let changed = false;
+  const out = [...messages];
+  for (let i = 0; i < out.length && !fitsBudget(out, budgetTokens); i++) {
+    const m = out[i];
+    if (!isToolResultMessage(m) || m.content.length <= 2000) continue;
+    // Keep the first result (often the direct answer to the request) and the
+    // last chunk (often the error or summary the model needs most).
+    const head = m.content.slice(0, 900);
+    const tail = m.content.slice(-700);
+    out[i] = { ...m, content: `${head}\n…[older tool output trimmed]…\n${tail}` };
+    changed = true;
+  }
+  return changed && fitsBudget(out, budgetTokens) ? out : null;
+}
+
+/**
+ * Tier 2 — collapse the oldest tool-result messages to stub lines entirely,
+ * oldest first, until the transcript fits. The stub keeps the message count
+ * and role structure intact (transcripts are append-only; shape matters).
+ */
+export function dropOldestToolResults(
+  messages: CompactMessage[],
+  budgetTokens: number
+): CompactMessage[] | null {
+  let changed = false;
+  const out = [...messages];
+  for (let i = 0; i < out.length && !fitsBudget(out, budgetTokens); i++) {
+    if (!isToolResultMessage(out[i])) continue;
+    out[i] = {
+      role: out[i].role,
+      content: "[TOOL RESULTS]\n(earlier verbose tool output was dropped to fit the context budget — re-read files via tools if precision matters)",
+    };
+    changed = true;
+  }
+  return changed && fitsBudget(out, budgetTokens) ? out : null;
+}
+
+export interface HierarchicalResult {
+  messages: CompactMessage[];
+  tier: "trim" | "drop" | "summarize";
+  /** Present only when tier === "summarize" — adopt into callers' state. */
+  newState?: CompactionState;
+}
+
+/**
+ * Full pipeline. Runs the model-free tiers first; only if the transcript is
+ * still over budget does it pay for the summarizer. Returns null when the
+ * input already fits (caller keeps its transcript unchanged).
+ */
+export async function hierarchicalCompact(
+  messages: CompactMessage[],
+  budgetTokens: number,
+  summarizeFn: SummarizeFn,
+  opts: CompactOptions = {},
+  state?: CompactionState
+): Promise<HierarchicalResult | null> {
+  if (messages.length === 0 || budgetTokens <= 0) return null;
+  const trigger = Math.floor(budgetTokens * (opts.triggerFraction ?? DEFAULT_TRIGGER_FRACTION));
+  if (totalTokens(messages) <= trigger) return null;
+
+  const trimmed = trimOldestToolResults(messages, budgetTokens);
+  if (trimmed) return { messages: trimmed, tier: "trim" };
+
+  const dropped = dropOldestToolResults(messages, budgetTokens);
+  if (dropped) return { messages: dropped, tier: "drop" };
+
+  const summarized = await compactTranscript(messages, budgetTokens, summarizeFn, opts, state);
+  if (summarized) {
+    return {
+      messages: summarized.messages,
+      tier: "summarize",
+      newState: summarized.newState,
+    };
+  }
+  return null;
+}
+
+/**
+ * Stateful hierarchical compactor: same reset() contract as
+ * createTranscriptCompactor, holding the summarizer's CompactionState so the
+ * summarize tier stays incremental when it does run.
+ */
+export function createHierarchicalCompactor(summarizeFn: SummarizeFn, opts: CompactOptions = {}) {
+  let state: CompactionState = { coveredCount: 0, summary: "", fingerprint: [] };
+  return {
+    reset: () => {
+      state = { coveredCount: 0, summary: "", fingerprint: [] };
+    },
+    compact: (messages: CompactMessage[], budgetTokens: number, signal?: AbortSignal | null) =>
+      signal?.aborted
+        ? Promise.resolve(null)
+        : hierarchicalCompact(messages, budgetTokens, summarizeFn, opts, state).then((r) => {
+            if (r?.newState) state = r.newState;
+            return r ? r.messages : null;
+          }),
+  };
+}

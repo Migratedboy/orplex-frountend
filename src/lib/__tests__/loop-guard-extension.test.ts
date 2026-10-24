@@ -32,7 +32,7 @@ describe("loop-guard extension", () => {
       expect(normalizeCallSignature("x", { a: 1, b: "z" })).toBe(normalizeCallSignature("x", { b: "z", a: 1 }));
     });
 
-    it("strips volatile parts: line numbers, timestamps, uuids, offsets", () => {
+    it("strips volatile parts: line numbers, timestamps, uuids — but keeps offsets", () => {
       const a = normalizeCallSignature("read_file", {
         path: "src/app.ts",
         note: "failed at line 42:7 in uuid 550e8400-e29b-41d4-a716-446655440000 at 2026-10-17T12:00:00Z",
@@ -41,11 +41,21 @@ describe("loop-guard extension", () => {
       const b = normalizeCallSignature("read_file", {
         path: "src/app.ts",
         note: "failed at line 99:1 in uuid 11111111-2222-3333-4444-555555555555 at 2020-01-01T00:00:00Z",
-        offset: 5000,
+        offset: 10,
       });
+      // Note text (line/ts/uuid noise) normalizes away…
       expect(a).toBe(b);
       expect(a).not.toContain("42");
       expect(a).not.toContain("550e8400");
+      // …but offsets are KEPT: reading at offset 10 vs offset 5000 is a
+      // different call (progress), not the same call retried.
+      expect(normalizeCallSignature("read_file", { path: "src/app.ts", offset: 10 })).not.toBe(
+        normalizeCallSignature("read_file", { path: "src/app.ts", offset: 5000 })
+      );
+      // Paging-style keys stay volatile.
+      expect(normalizeCallSignature("list_dir", { path: "x", page: 1 })).toBe(
+        normalizeCallSignature("list_dir", { path: "x", page: 9 })
+      );
     });
 
     it("keeps meaningful argument differences", () => {

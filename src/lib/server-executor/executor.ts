@@ -1,4 +1,4 @@
-// executor.ts — The server-side run executor.
+﻿// executor.ts — The server-side run executor.
 //
 // Manager-spawned runs no longer depend on an open browser tab: a persistent
 // Node process (Next.js instrumentation hook, see instrumentation.ts) leases
@@ -21,6 +21,8 @@ import {
   trackToolTurn,
   buildLoopBreakDirective,
 } from "@/lib/agent/contract";
+import { runTurnLoop, type TurnLoopExit } from "@/lib/agent/loop-engine";
+import { estimateComplexity, effortForTier, type EffortBudget } from "@/lib/effort";
 import { validateToolArgs } from "@/lib/agent/contract/tools";
 import { isCommandAllowed } from "@/lib/exec-guard";
 import { createProviderAdapter, createAdapterForProvider, adapterModelId, type AIProviderAdapter, type NativeToolDef, type NativeToolCall } from "@/lib/ai-providers";
@@ -120,6 +122,12 @@ const TOOL_WHITELIST = new Set([
   "mcp_call",
   "mcp_search_tools",
   "mcp_describe_tool",
+  // Read-only parallel research helper (agent/subagent.ts): sandboxed to
+  // list/read/search, depth 1, global concurrency cap.
+  "spawn_subagent",
+  // Speculative multi-worker execution (server-executor/batch.ts): 2-3 real
+  // worktree variants in parallel, merged ONLY on consensus.
+  "batch_execute",
 ]);
 
 interface QueuedRun {
@@ -215,6 +223,12 @@ export function buildNativeToolDefs(mcpTools: McpToolDef[], remoteTools: Builder
     // The model learns the server id + tool name from the system-prompt MCP
     // section and from mcp_search_tools / mcp_describe_tool (added below).
     { name: "mcp_call", description: "Call a tool on a connected MCP server by name. Use mcp_search_tools to list connected servers and their tools, and mcp_describe_tool to get an exact parameter schema. serverId is the MCP server id (e.g. \"supabase\", \"linear\"); tool is the server's tool name (e.g. \"list_tables\", \"create_issue\"); arguments is the tool's parameter object. Results arrive as text. Never invent server ids or tool names.", parameters: obj({ serverId: { type: "string", description: "MCP server id from MCP connectors" }, tool: { type: "string", description: "Tool name on that server" }, arguments: { type: "object", description: "Tool parameter object ({} if none)" } }, ["serverId", "tool"]) },
+    // Read-only parallel research: a sandboxed helper whose findings return
+    // as prose. It cannot write, run commands, browse, or nest.
+    { name: "spawn_subagent", description: "Run a read-only research helper that answers ONE focused discovery question and returns prose. The helper can only list_files, read_file, search_code, and code_search — it CANNOT write files, run commands, or spawn further helpers. Use it to gather background (find all usages, summarize a module, locate a pattern) while you continue your own work. Keep the task specific and self-contained.", parameters: obj({ task: { type: "string", description: "The focused question to research, self-contained (include relevant paths/context)" }, context: { type: "string", description: "Optional extra context (what you are building, constraints)" } }, ["task"]) },
+    // Speculative execution: each variant runs in its OWN git worktree; the
+    // merge happens ONLY when a majority of variants agree on the diff.
+    { name: "batch_execute", description: "Run 2-3 competing approaches to the SAME task in parallel isolated worktrees. Each variant executes independently; if a majority agrees on the diff it is merged into the workspace, otherwise NOTHING is merged and you get every variant's report. Use variants only when the change is small enough to redo directly if the batch is inconclusive. Each variant is an object { label, prompt: \"Self-contained worktree-lane task\" }.", parameters: obj({ variants: { type: "array", description: "2-3 variant objects { label, prompt } — different approaches to the same task" } }, ["variants"]) },
   ];
   // Shared builder (C5): full schemas under the cap; over it, names-only for
   // every tool plus the search/describe meta tools — never a silent drop (C10).
@@ -251,6 +265,8 @@ function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBl
     `- skill_create { "name": "skill_create", "title": "...", "text": "..." } (save a reusable procedure for future runs)`,
     `- session_search { "name": "session_search", "query": "..." } (search past conversation messages)`,
     `- scratchpad_update { "name": "scratchpad_update", "section": "plan|hypotheses|findings|next", "content": "..." } (private working memory, re-shown every turn — record plan, findings, next move; never store secrets)`,
+    `- spawn_subagent { "name": "spawn_subagent", "task": "...", "context": "..." } (read-only research helper for ONE focused question; it can only list/read/search — findings return as prose)`,
+    `- batch_execute { "name": "batch_execute", "variants": [{ "label": "...", "prompt": "..." }] } (2-3 competing approaches run in parallel worktrees; merged ONLY on majority agreement — otherwise every variant's report comes back and nothing is merged)`,
     `Keep a private scratchpad via scratchpad_update as you learn — todo discipline still applies; the scratchpad holds reasoning, not checkmarks.`,
   ];
   if (skillRoster) {
@@ -310,16 +326,28 @@ async function leaseOneRun(): Promise<QueuedRun | null> {
 }
 
 async function emit(runId: string, type: string, payload: Record<string, unknown>): Promise<void> {
-  try {
-    const latest = await prisma.runEvent.findFirst({
-      where: { runId },
-      orderBy: { sequence: "desc" },
-      select: { sequence: true },
-    });
-    await prisma.runEvent.create({
-      data: { runId, sequence: (latest?.sequence ?? -1) + 1, type, payload: payload as Prisma.InputJsonValue },
-    });
-  } catch {}
+  // Same P2002 (sequence-collision) retry as appendRuntimeEvent in
+  // runtime/service.ts. emit() shares the (runId, sequence) authority with
+  // route-written events; a bare catch here silently dropped the event when
+  // the other writer won the slot. Still best-effort: never throw into a run.
+  const P2002 = "P2002";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const latest = await prisma.runEvent.findFirst({
+        where: { runId },
+        orderBy: { sequence: "desc" },
+        select: { sequence: true },
+      });
+      await prisma.runEvent.create({
+        data: { runId, sequence: (latest?.sequence ?? -1) + 1, type, payload: payload as Prisma.InputJsonValue },
+      });
+      return;
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code !== P2002 || attempt === 2) return;
+      await sleep(50); // lost the slot race — recompute and retry
+    }
+  }
 }
 
 /**
@@ -887,7 +915,7 @@ const kept = content.slice(0, 2000);
   ) {
     try {
       const { writeFile } = await import("fs/promises");
-      const { resolve, sep, isAbsolute } = await import("path");
+      const { resolve, sep, isAbsolute, relative } = await import("path");
       const p = isAbsolute(call.path) ? resolve(call.path) : resolve(ctx.worktreeDir, call.path);
       const rootR = resolve(ctx.worktreeDir);
       if (p !== rootR && !p.startsWith(rootR + sep)) return "error: path escapes workspace";
@@ -895,6 +923,7 @@ const kept = content.slice(0, 2000);
       const current = await rf(p, "utf8");
       if (!current.includes(call.old_text)) return "error: old_text not found";
       await writeFile(p, current.replace(call.old_text, call.new_text), "utf8");
+      writtenFiles?.add(relative(rootR, p).replace(/\\/g, "/"));
       return "ok";
     } catch (err) {
       return `error: ${(err as Error).message}`;
@@ -1034,6 +1063,9 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
   let scratch: ScratchpadState = seedScratchpad(run.prompt);
   // Paths written this run (for the verification lane + artifacts).
   const writtenFiles = new Set<string>();
+  // Subagent budget (effortForTier subagentLimit): successful spawn_subagent
+  // dispatches count here; the limit is enforced at dispatch below.
+  let subagentsSpawned = 0;
   // Ordered tool names this run invoked — the raw material for the trajectory
   // and for pattern mining (see agent-insights.ts).
   const toolsUsed: string[] = [];
@@ -1156,12 +1188,25 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
     // Summarizing compaction for server runs (see compaction.ts): evicted
     // turns become a <context_so_far> block instead of being truncated away.
     // Evicted context is ALSO distilled into workspace memory (compaction-
-    // memory.ts) so the next run in this workspace remembers durable facts.
-    const { createTranscriptCompactor } = await import("../compaction");
+    // memory.ts) so the next run in this workspace remembers durable facts,
+    // and seeded into an empty scratchpad (scratchpad.ts) so working memory
+    // never regresses below pre-compaction knowledge.
+    const { createHierarchicalCompactor } = await import("../compaction");
     const { captureFromCompaction } = await import("../compaction-memory");
-    const compactor = createTranscriptCompactor(async (prompt) => {
+    const compactor = createHierarchicalCompactor(async (prompt) => {
       const adapterText = await currentAdapter.complete([{ role: "user", content: prompt }]);
       void captureFromCompaction({ directoryName: run.workspace, summary: adapterText }).catch(() => 0);
+      // Only the summarize tier invokes this closure — the precise moment the
+      // prefix was evicted. Seed EMPTY scratchpad sections from it (never
+      // clobbers model-authored content).
+      if (adapterText) {
+        const { seedScratchpadFromSummary } = await import("../scratchpad");
+        const seeded = seedScratchpadFromSummary(scratch, adapterText, turns);
+        if (seeded !== scratch) {
+          scratch = seeded;
+          await emit(run.id, "scratchpad-seeded", { turn: turns });
+        }
+      }
       return adapterText;
     });
 
@@ -1221,53 +1266,249 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       }
     }
 
-    for (turns = 1; turns <= TURN_LIMIT; turns++) {
-      await prisma.agentRun.update({ where: { id: run.id }, data: { status: "executing" } }).catch(() => {});
+    // Effort budgeting (effort.ts): complexity tier scales the loop constants
+    // so trivial prompts don't burn the TPM window and fullstack builds get
+    // proportional headroom. The plan is emitted as an event so the runs board
+    // can show WHY a run's budget is what it is.
+    const complexity = estimateComplexity({ prompt: run.prompt });
+    const effortBudget = effortForTier(complexity.tier, {
+      maxTurns: TURN_LIMIT,
+      repairRounds: 1,
+      verifyRounds: 2,
+      parallelToolLimit: 3,
+      subagentLimit: 1,
+    });
+    await emit(run.id, "effort-planned", {
+      tier: complexity.tier,
+      score: complexity.score,
+      maxTurns: effortBudget.maxTurns,
+      parallelTools: effortBudget.parallelToolLimit,
+    }).catch(() => {});
 
-      // Compact before the call when the transcript is over budget.
-      const transcriptTokens = transcript.reduce((s, m) => s + Math.ceil(m.content.length / 4), 0);
-      const budget = resolveTranscriptBudget(currentAdapter);
-      if (transcriptTokens > budget) {
-        const compacted = await compactor.compact(transcript, budget).catch(() => null);
-        if (compacted) {
-          transcript.length = 0;
-          transcript.push(...(compacted as Array<{ role: "user" | "assistant"; content: string }>));
-          await emit(run.id, "compacted", { turns, tokensBefore: transcriptTokens });
+    const nativeModeNow = () =>
+      typeof currentAdapter.completeWithTools === "function" && !nativeBroken;
+
+    // === DAG mode (runtime scheduler) ===
+    // When the run carries a task graph (missions route writes architect →
+    // developer → verifier with real dependency edges), the persistent
+    // scheduler leases tasks in dependency order and THIS executor executes
+    // each task as a bounded mini loop over the parent's worktree, recording
+    // role artifacts. The plain turn loop is skipped when the DAG completes;
+    // a thrown DAG falls back honestly to the plain loop.
+    let taskGraphRan = false;
+    try {
+      const graphTasks = await prisma.agentTask.count({ where: { runId: run.id } });
+      if (graphTasks > 0) {
+        await emit(run.id, "dag-started", { tasks: graphTasks }).catch(() => {});
+        const { runRuntimeScheduler } = await import("@/lib/agent/runtime");
+        const { recordRuntimeArtifact } = await import("@/lib/agent/runtime/service");
+        const dagWorker = async (task: { id: string; runId: string; role: string; title: string; input: unknown }) => {
+          // Thread upstream outputs in: dependency edges exist for a reason.
+          const depRows = await prisma.agentTaskDependency.findMany({
+            where: { taskId: task.id },
+            include: { dependsOn: { select: { role: true, title: true, output: true } } },
+          }).catch(() => []);
+          const upstream = depRows
+            .map((d) => `## upstream ${d.dependsOn.role} — ${d.dependsOn.title}\n${JSON.stringify(d.dependsOn.output ?? {}).slice(0, 4000)}`)
+            .join("\n\n");
+          const brief = String((task.input as { prompt?: unknown } | null)?.prompt ?? "");
+          const roleDirectives: Record<string, string> = {
+            architect: "You are the ARCHITECT of an agent pipeline. Research the workspace (read/list/search ONLY) and produce the blueprint as your final message. Do NOT modify code.",
+            developer: "You are the DEVELOPER of an agent pipeline. Implement the task with write_file/edit_file based on the blueprint. Finish with a summary of exactly what you changed.",
+            verifier: "You are the VERIFIER of an agent pipeline. Verify the current changes cheaply (read files back). Report PASS or FAIL with exact reasons; do NOT rewrite the work.",
+          };
+          const roleDirective = roleDirectives[task.role] ?? `You own the "${task.role}" step of an agent pipeline. Execute it directly and finish with your findings.`;
+          let out = "";
+          try {
+            out = await runRuntimeTaskLoop({
+              role: task.role,
+              system: roleDirective,
+              prompt: `${task.title}\n\nTask brief:\n${brief.slice(0, 4000)}${upstream ? `\n\n${upstream}` : ""}`,
+            });
+          } catch (err) {
+            throw new Error(`task "${task.title}" failed: ${String((err as Error).message).slice(0, 300)}`);
+          }
+          await recordRuntimeArtifact(run.userId, run.id, {
+            kind: task.role === "architect" ? "blueprint" : task.role === "developer" ? "patch" : "report",
+            name: task.title.slice(0, 120),
+            mediaType: "text/markdown",
+            content: out,
+          }, task.id).catch(() => {});
+          return { output: out };
+        };
+        const dag = await runRuntimeScheduler(run.userId, run.id, dagWorker, { concurrency: 2 });
+        await emit(run.id, "dag-finished", { ...dag }).catch(() => {});
+        if (dag.failed === 0 && dag.completed > 0) {
+          taskGraphRan = true;
+          summary = `Task-graph pipeline complete: ${dag.completed} task(s) executed.`;
+        } else if (dag.failed === 0) {
+          // {completed: 0, failed: 0} = nothing was ever leased (tasks stuck
+          // status:"running" after a crash, or deps that can never complete).
+          // Claiming "Task-graph pipeline complete" here skipped the plain
+          // agent loop on a run that did NO work (fake success). Fall through
+          // honestly to the direct loop instead.
+          summary = `Task graph made no progress (0 completed, 0 failed — tasks stuck/unleasable) — falling back to the direct agent loop.`;
+          transcript.push({ role: "user", content: `${summary}\nComplete the ORIGINAL task end-to-end yourself now.` });
+        } else {
+          // A failed task gates its dependents — the plain loop is the honest
+          // fallback instead of reporting a half-pipeline as done.
+          summary = `Task-graph pipeline incomplete (${dag.completed} completed, ${dag.failed} failed) — falling back to the direct agent loop.`;
+          transcript.push({ role: "user", content: `${summary}\nComplete the ORIGINAL task end-to-end yourself now.` });
         }
       }
+    } catch (err) {
+      await emit(run.id, "dag-error", { error: String((err as Error).message).slice(0, 300) }).catch(() => {});
+    }
 
-      // Native function-calling when the adapter supports it (kills the whole
-      // bare-JSON bug class); text protocol otherwise, with XML parsing and
-      // bare-JSON recovery as the fallbacks. A provider that rejects the
-      // tools param (400/404 on the request shape) degrades to text mode for
-      // the rest of the run instead of failing the run.
-      const nativeMode = typeof currentAdapter.completeWithTools === "function" && !nativeBroken;
-      const messages = [
-        { role: "system", content: buildSystemPrompt(
-          mcpTools,
-          nativeMode,
-          memoryBlock,
-          skillRoster,
-          playbookBlock,
-          [
-            ...Object.keys(mcpRunConfigs).map((serverId) => ({
-              name: getMcpCatalogEntry(serverId)?.name ?? serverId,
-              description: getMcpCatalogEntry(serverId)?.description ?? "user-connected MCP server",
-              toolCount: mcpTools.filter((t) => t.server === serverId).length,
-            })),
-            // SDK-lane OAuth connectors (Phase 8): summarized alongside stdio.
-            ...mcpServerSummaries,
-          ],
-          remoteTools
-        ) },
-        ...(transcript as Array<{ role: "user" | "assistant"; content: string }>),
-      ] as never;
-      // Global TPM pacing: one account-wide bucket across ALL runs so two
-      // concurrent runs share the 8k/min budget instead of 429-cascading.
-      await acquireTokens(estimateTokensOfMessages(messages as never)).catch(() => {});
-      let text = "";
-      let nativeCalls: NativeToolCall[] = [];
-      try {
+    // Mini turn-loop for ONE runtime task over THIS run's worktree and tool
+    // policy. Same text-protocol parsing family as the parent loop, priced
+    // small: tasks are roles, not second runs.
+    async function runRuntimeTaskLoop(cfg: { role: string; system: string; prompt: string }): Promise<string> {
+      const dagTranscript: Array<{ role: string; content: string }> = [{ role: "user", content: cfg.prompt }];
+      const dagWritten = new Set<string>();
+      const exit = await runTurnLoop({
+        maxTurns: Math.min(10, effortBudget.maxTurns),
+        parallelToolLimit: 2,
+        loopStreaks: createLoopStreaks(),
+        shouldAbort: () => false,
+        throwAbort: () => new Error("DAG task aborted"),
+        parseXmlToolCalls: (text) =>
+          parseToolCalls(text) as unknown as Array<Record<string, unknown> & { name: string }>,
+        callModel: async () => {
+          const text = await callModel((a) => a.complete([
+            { role: "system", content: `You are executing one pipeline role inside an Orplex server run.\n${cfg.system}` },
+            ...dagTranscript,
+          ] as never));
+          return { content: text, toolCalls: [] };
+        },
+        onModelOutput: (_t, out) => {
+          dagTranscript.push({ role: "assistant", content: out.content || "" });
+        },
+        onNoToolCalls: () => null,
+        onLoopTrip: () => "break",
+        dispatchCall: async (c): Promise<{ resultXml: string }> => {
+          const name = String(c.name);
+          let resultXml: string;
+          try {
+            const toolOut = await executeTool(c as never, ctx!, run.autonomyPolicy !== "auto", run.id, dagWritten, hooks, undefined, undefined, undefined, undefined, { userId: run.userId, remoteTools });
+            resultXml = `<tool_result name="${name}">${toolOut}</tool_result>`;
+          } catch (err) {
+            resultXml = `<tool_result name="${name}">error: ${String((err as Error).message).slice(0, 300)}</tool_result>`;
+          }
+          dagTranscript.push({ role: "user", content: resultXml.slice(0, 6000) });
+          return { resultXml };
+        },
+      });
+      return (exit.output?.content ?? "").slice(0, 8000);
+    }
+
+    // Mid-run user steering (cross-run messaging): "agent-message" events
+    // queued by POST /api/agent/messages are consumed on the next turn start
+    // and injected verbatim as a user transcript entry. The cursor adopts the
+    // latest queued message on the FIRST turn start: brief-part messages that
+    // arrived while the run was queued belong to the run's prompt, not to
+    // mid-run steering, and stay timeline-only.
+    let lastMessageCursor = -1;
+    let messagesCursorReady = false;
+
+    const loopExit: TurnLoopExit = taskGraphRan
+      ? { turn: -1, ended: "lane-stop", output: null }
+      : await runTurnLoop({
+      maxTurns: effortBudget.maxTurns,
+      parallelToolLimit: effortBudget.parallelToolLimit,
+      loopStreaks,
+      parseXmlToolCalls: (text) =>
+        parseToolCalls(text) as unknown as Array<Record<string, unknown> & { name: string }>,
+      parseBareJsonToolCalls: (text) =>
+        parseBareJsonToolCalls(text) as unknown as Array<Record<string, unknown> & { name: string }>,
+      filterToolCalls: (n) => TOOL_WHITELIST.has(String(n)) || String(n).startsWith("mcp__"),
+      shouldAbort: () => false,
+      throwAbort: () => new Error("Aborted"),
+      onTurnStart: async (turn) => {
+        turns = turn + 1;
+        await prisma.agentRun.update({ where: { id: run.id }, data: { status: "executing" } }).catch(() => {});
+        try {
+          if (!messagesCursorReady) {
+            const newest = await prisma.runEvent.findFirst({
+              where: { runId: run.id, type: "agent-message" },
+              orderBy: { sequence: "desc" },
+              select: { sequence: true },
+            });
+            lastMessageCursor = newest?.sequence ?? -1;
+            messagesCursorReady = true;
+          }
+          const incoming = await prisma.runEvent.findMany({
+            where: { runId: run.id, type: "agent-message", sequence: { gt: lastMessageCursor } },
+            orderBy: { sequence: "asc" },
+            select: { sequence: true, payload: true, createdAt: true },
+          });
+          for (const m of incoming) {
+            lastMessageCursor = m.sequence;
+            // Two payload shapes land in the Json column: executor emit()s are
+            // flat ({body}), route-written events serialize the whole RuntimeEvent
+            // ({version, type, payload: {body, from}, createdAt}) — unwrap the
+            // nested form or route steering is silently dropped.
+            const raw = m.payload as unknown;
+            const inner = raw && typeof raw === "object" && "payload" in raw
+              ? (raw as { payload: unknown }).payload
+              : raw;
+            const body = String((inner as { body?: unknown } | null)?.body ?? "").trim();
+            if (!body) continue;
+            transcript.push({
+              role: "user",
+              content: `[USER MESSAGE mid-run] ${body}\n(Continue the task honoring this message — adjust only what it changes.)`,
+            });
+          }
+          if (incoming.length > 0) {
+            await emit(run.id, "user-steered", { count: incoming.length }).catch(() => {});
+          }
+        } catch {
+          // The steering lane must never break the turn loop.
+        }
+
+        // Metered, hierarchical compaction before the call: warn/critical
+        // pressure levels trigger the model-free trim/drop tiers first; full
+        // summarization only pays when those cannot free enough.
+        const { readContextMeter } = await import("../context-meter");
+        const reading = readContextMeter(transcript, resolveTranscriptBudget(currentAdapter));
+        if (reading.level !== "ok") {
+          const tokensBefore = reading.tokens;
+          const budget = reading.budgetTokens;
+          const compacted = await compactor.compact(transcript, budget).catch(() => null);
+          if (compacted) {
+            transcript.length = 0;
+            transcript.push(...(compacted as Array<{ role: "user" | "assistant"; content: string }>));
+            await emit(run.id, "compacted", { turns, tokensBefore });
+          }
+        }
+      },
+      callModel: async () => {
+        const nativeMode = nativeModeNow();
+        const messages = [
+          { role: "system", content: buildSystemPrompt(
+            mcpTools,
+            nativeMode,
+            memoryBlock,
+            skillRoster,
+            playbookBlock,
+            [
+              ...Object.keys(mcpRunConfigs).map((serverId) => ({
+                name: getMcpCatalogEntry(serverId)?.name ?? serverId,
+                description: getMcpCatalogEntry(serverId)?.description ?? "user-connected MCP server",
+                toolCount: mcpTools.filter((t) => t.server === serverId).length,
+              })),
+              // SDK-lane OAuth connectors (Phase 8): summarized alongside stdio.
+              ...mcpServerSummaries,
+            ],
+            remoteTools
+          ) },
+          ...(transcript as Array<{ role: "user" | "assistant"; content: string }>),
+        ] as never;
+        // Global TPM pacing: one account-wide bucket across ALL runs so two
+        // concurrent runs share the 8k/min budget instead of 429-cascading.
+        await acquireTokens(estimateTokensOfMessages(messages as never)).catch(() => {});
+        let text = "";
+        let nativeCalls: NativeToolCall[] = [];
         if (nativeMode) {
           const r = await callModel((a) => a.completeWithTools!(messages, nativeDefs));
           text = r.text;
@@ -1285,78 +1526,158 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
           text = await callModel((a) => a.complete(messages));
           usageKnown = false; // text protocol carries no token counts
         }
-      } catch (err) {
-        if (nativeMode && /\b(400|404|422)\b/.test(String((err as Error).message))) {
+        return { content: text, toolCalls: nativeCalls.map((c) => ({ ...c.args, name: c.name })) };
+      },
+      onModelError: async (_turn, err) => {
+        // A provider that rejects the function-calling request shape (400/404
+        // on the request shape) degrades to text mode for the rest of the run
+        // instead of failing the run — the SAME turn is retried in text mode.
+        if (nativeModeNow() && /\b(400|404|422)\b/.test(String((err as Error).message))) {
           nativeBroken = true;
           await emit(run.id, "native-tools-unsupported", { error: String((err as Error).message).slice(0, 200) }).catch(() => {});
-          turns--; // retry this turn in text mode (loop's for-increment re-applies it)
-          continue;
+          return "retry-turn";
         }
-        throw new Error(`model call failed: ${(err as Error).message}`);
-      }
-      transcript.push({
-        role: "assistant",
-        content: text || (nativeCalls.length > 0 ? `[tool calls: ${nativeCalls.map((c) => c.name).join(", ")}]` : ""),
-      });
-
-      const calls = nativeCalls.length > 0
-        // Target wins: a model argument literally named "name" must never
-        // overwrite the dispatch target (the sibling lanes strip it the
-        // same way; a legit `name` parameter stays undeliverable via flat
-        // calls — known limitation, documented at the dispatch sites).
-        ? nativeCalls.map((c) => ({ ...c.args, name: c.name }))
-        : parseToolCalls(text)
-            // Bare-JSON recovery: weak OpenAI-compatible models sometimes drop the
-            // XML wrapper and emit a tool-call JSON object instead (live-observed:
-            // `{"name":"read_file",...}` became the run "summary"). Only tried
-            // when XML found nothing, and gated to tool-call-shaped JSON.
-            .concat(parseToolCalls(text).length === 0 ? parseBareJsonToolCalls(text) : [])
-            .filter((c) => TOOL_WHITELIST.has(String(c.name)) || String(c.name).startsWith("mcp__"));
-      if (calls.length === 0) {
-        summary = truncateWithNotice(text, 20_000, "final report");
-        break; // plain-text answer = done
-      }
-
-      // Streak-based loop detection — BEFORE dispatch, so a tripped call never
-      // executes. First trip = one evidence-laden strategy change; a second
-      // trip (the model ignored the evidence) = honest early stop with the
-      // work that exists committed on the branch.
-      const loopVerdict = trackToolTurn(loopStreaks, calls as Array<{ name?: string }>);
-      if (loopVerdict.loop) {
+        return "throw";
+      },
+      onModelOutput: (_turn, out) => {
+        transcript.push({
+          role: "assistant",
+          content: out.content || (out.toolCalls.length > 0 ? `[tool calls: ${out.toolCalls.map((c) => c.name).join(", ")}]` : ""),
+        });
+      },
+      onNoToolCalls: (_turn, out) => {
+        // Plain-text answer = done (no valid calls, dispatchable or otherwise)
+        summary = truncateWithNotice(out.content, 20_000, "final report");
+        return "break";
+      },
+      onLoopTrip: async (verdict) => {
         if (loopBreakAttempted) {
-          await emit(run.id, "loop-stopped", { reason: loopVerdict.reason }).catch(() => {});
-          summary = `Stopped early: the agent kept repeating ${loopVerdict.reason} after a strategy-change instruction. Work so far is committed on branch ${ctx.branch} for review.`;
-          break;
+          await emit(run.id, "loop-stopped", { reason: verdict.reason }).catch(() => {});
+          summary = `Stopped early: the agent kept repeating ${verdict.reason} after a strategy-change instruction. Work so far is committed on branch ${ctx!.branch} for review.`;
+          return "break";
         }
         loopBreakAttempted = true;
-        await emit(run.id, "loop-break", { reason: loopVerdict.reason }).catch(() => {});
-        transcript.push({ role: "user", content: buildLoopBreakDirective(loopVerdict, lastToolResults) });
-        continue;
-      }
-
-      const results: string[] = [];
-      for (const call of calls) {
+        await emit(run.id, "loop-break", { reason: verdict.reason }).catch(() => {});
+        transcript.push({ role: "user", content: buildLoopBreakDirective(verdict, lastToolResults) });
+        return "continue";
+      },
+      dispatchCall: async (call) => {
         const toolName = String(call.name);
         // Feed the insight store's ordered tool sequence. Bounded so a runaway
         // loop cannot grow this array without limit (the trajectory writer
         // truncates too, but bounding here keeps memory flat).
         if (toolName && toolsUsed.length < 400) toolsUsed.push(toolName);
+        // === BATCH_EXECUTE (speculative multi-worker, server lane) ===
+        // Before the generic path: 2-3 real worktrees run focused variants of
+        // the task in parallel (bounded pairs), and ONLY an agreed diff gets
+        // merged back into the repo. No consensus → nothing merged, every
+        // variant reported honestly. Workers cannot nest batch_execute or
+        // spawn_subagent; the memory guard skips batches under pressure.
+        if (toolName === "batch_execute") {
+          const rec = call as unknown as Record<string, unknown>;
+          const { planBatchVariants, runBatchExecute } = await import("./batch");
+          const variants = planBatchVariants(rec.variants ?? rec.batch ?? rec.subtasks);
+          if (!variants) {
+            return { resultXml: `<tool_result name="batch_execute">error: batch_execute requires "variants" — an array of 2-3 objects { label, prompt }. The prompt must be self-contained (the worker starts from an empty context).</tool_result>` };
+          }
+          await emit(run.id, "batch-started", { workers: variants.length }).catch(() => {});
+          const autonomy = run.autonomyPolicy !== "auto";
+          const outcome = await runBatchExecute(
+            {
+              rootDir: workDir,
+              runId: run.id,
+              memoryPressureHigh: isMemoryPressureHigh,
+              callModel: async (messages) => await callModel((a) => a.complete(messages as never)),
+              executeTool: (workerCall, workerCtx, workerId, written) =>
+                executeTool(workerCall as never, workerCtx, autonomy, workerId, written, hooks, undefined, undefined, undefined, undefined, undefined),
+            },
+            variants
+          );
+          const cleanupAll = async () => {
+            for (const c of outcome.contexts) {
+              if (c) await c.cleanup().catch(() => {});
+            }
+          };
+          if (outcome.winnerContext) {
+            const merge = await outcome.winnerContext.mergeBack().catch((err) => ({ merged: false, conflict: String((err as Error).message) }));
+            await cleanupAll();
+            const winnerResult = outcome.results[outcome.consensus.winner ?? 0];
+            if (merge.merged) {
+              // Merged winner files ARE run-level writes: verify-lane gating,
+              // checkpoints, and the filesWritten report must see them.
+              for (const f of winnerResult?.files ?? []) writtenFiles.add(String(f).replace(/\\/g, "/"));
+              await emit(run.id, "batch-consensus", { winner: outcome.consensus.winner, files: winnerResult?.files ?? [] }).catch(() => {});
+              return {
+                resultXml: `<tool_result name="batch_execute">\n${outcome.consensus.verdict}\nMerged files: ${(winnerResult?.files ?? []).join(", ") || "(none)"}\n</tool_result>`,
+              };
+            }
+            return {
+              resultXml: `<tool_result name="batch_execute">consensus found, but the merge FAILED${merge.conflict ? `: ${String(merge.conflict).slice(0, 300)}` : ""}. Nothing was merged. Either resolve the conflict manually or write the change yourself with write_file/edit_file.</tool_result>`,
+            };
+          }
+          await cleanupAll();
+          await emit(run.id, "batch-inconclusive", { workers: outcome.results.length }).catch(() => {});
+          const report = outcome.consensus.verdict +
+            "\n" +
+            outcome.results.map((r) => `- variant "${r.label}": ${r.ok ? `wrote ${r.files.join(", ") || "(no files)"}` : r.error ?? "failed"}`).join("\n");
+          return { resultXml: `<tool_result name="batch_execute">\n${report.slice(0, 4000)}\n</tool_result>` };
+        }
+        // === SPAWN_SUBAGENT (read-only parallel research, server lane) ===
+        // Run BEFORE the generic executeTool path: the subagent mini loop
+        // (agent/subagent.ts) reuses THIS run's adapter for its model calls
+        // and routes its ≤4 discovery verbs through executeTool. Depth is
+        // structurally 1 — the subagent's own dispatch handles only discovery
+        // tools, so it cannot spawn. Slot caps (2 concurrent) live in the
+        // module; failures resolve as honest prose, never a throw.
+        if (toolName === "spawn_subagent") {
+          // Budget gate FIRST — a refused spawn doesn't consume the turn.
+          if (subagentsSpawned >= effortBudget.subagentLimit) {
+            return { resultXml: `<tool_result name="spawn_subagent">Refused: subagent budget exhausted (limit ${effortBudget.subagentLimit} for this task's effort tier).</tool_result>` };
+          }
+          const { runSubagent, SUBAGENT_ALLOWED_TOOLS } = await import("@/lib/agent/subagent");
+          const rec = call as unknown as Record<string, unknown>;
+          const autonomy = run.autonomyPolicy !== "auto";
+          const runId = run.id;
+          const subDeps = {
+            callModel: async (messages: Array<{ role: string; content: string }>) => ({
+              content: await callModel((a) => a.complete(messages as never)),
+            }),
+            dispatch: async (sub: { name: string }) => {
+              if (!SUBAGENT_ALLOWED_TOOLS.has(String(sub.name))) {
+                return `<tool_result name="${sub.name}">refused: subagents may only use discovery tools</tool_result>`;
+              }
+              const out = await executeTool(sub as never, ctx!, autonomy, runId, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, undefined, { userId: run.userId, remoteTools });
+              return `<tool_result name="${sub.name}">${out}</tool_result>`;
+            },
+          };
+          const outcome = await runSubagent(subDeps, {
+            task: String(rec.task ?? ""),
+            context: String(rec.context ?? ""),
+            maxTurns: 15,
+          });
+          subagentsSpawned++;
+          return { resultXml: `<tool_result name="${toolName}">\n${String(outcome).slice(0, 6000)}\n</tool_result>` };
+        }
         // use_skill resolves against the discovered skill list before dispatch.
         if (toolName === "use_skill") {
           (call as Record<string, unknown>).__skillBody = skillBody(skills, String((call as Record<string, unknown>).name_of_skill ?? "")) ?? "";
         }
-        const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, {
+        const out = await executeTool(call as never, ctx!, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, {
           get: () => scratch,
           update: (section, content) => {
             scratch = updateScratchpadSection(scratch, section, content, turns);
           },
         }, { userId: run.userId, remoteTools });
-        results.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
-      }
-      const scratchBlock = renderScratchpadBlock(scratch);
-      lastToolResults = results.join("\n");
-      transcript.push({ role: "user", content: results.join("\n") + (scratchBlock ? `\n${scratchBlock}` : "") });
-    }
+        return { resultXml: `<tool_result name="${toolName}">${out}</tool_result>` };
+      },
+      postDispatch: (_turn, _out, info) => {
+        const scratchBlock = renderScratchpadBlock(scratch);
+        lastToolResults = info.results.join("\n");
+        transcript.push({ role: "user", content: info.results.join("\n") + (scratchBlock ? `\n${scratchBlock}` : "") });
+        return null;
+      },
+    });
+    turns = loopExit.turn + 1;
 
     if (usageKnown) {
       await emit(run.id, "usage-total", { ...usageTotal }).catch(() => {});
@@ -1365,8 +1686,12 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
     // post-run user hooks (opt-in) — fire after the loop, before verify.
     await runUserHooks(workDir, "post-run", {}).catch(() => {});
 
+    if (!summary && loopExit.ended === "turn-limit") {
+      summary = `Turn limit (${effortBudget.maxTurns}) reached; work is committed on branch ${ctx!.branch} for review.`;
+    }
     if (!summary) {
-      summary = `Turn limit (${TURN_LIMIT}) reached; work is committed on branch ${ctx.branch} for review.`;
+      // A lane-stop without a summary should not read as "done" — say what happened.
+      summary = `Run ended (${loopExit.ended}) after ${loopExit.turn + 1} turns; work is committed on branch ${ctx!.branch} for review.`;
     }
 
     // === Browser verification lane (parity with the client worker) ===
@@ -1420,7 +1745,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       // with a per-run port as defense-in-depth for any stray second slot.
       const verifyPort = verifyPortForRun(run.id);
       const wtDir: string = ctx.worktreeDir; // narrowed here; closures lose it
-      const verifyResult = (await withVerifySlot(() =>
+      let verifyResult = (await withVerifySlot(() =>
         verifyUI({
           workDir: wtDir,
           devCommand: pickDevCommand(pkgRaw, hasIndex, verifyPort),
@@ -1430,7 +1755,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         }).catch(() => null),
       )) as VerifyResult | null;
 
-      const consoleErrors: string[] = Array.isArray(verifyResult?.consoleErrors)
+      let consoleErrors: string[] = Array.isArray(verifyResult?.consoleErrors)
         ? verifyResult.consoleErrors
         : [];
 
@@ -1505,30 +1830,135 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       );
 
       if (!verifyResult?.success && consoleErrors.length > 0) {
-        // One repair turn: hand the errors back to the model with the same
-        // directive shape the client worker uses.
+        // Iterative repair: up to effortBudget.verifyRounds rounds, re-verifying
+        // after each — a green re-render ends the lane early; a persistently
+        // red one reports honestly once the budget is spent. Round 1 keeps the
+        // same directive shape the client worker uses.
         const { browserRepairDirective } = await import("@/lib/master-prompt");
-        const reasons = consoleErrors.slice(0, 8).join("\n").slice(0, 1200);
-        transcript.push({
-          role: "user",
-          content: `${browserRepairDirective(reasons)}\n
+        for (
+          let repairRound = 1;
+          repairRound <= effortBudget.verifyRounds &&
+          !verifyResult?.success &&
+          consoleErrors.length > 0;
+          repairRound++
+        ) {
+          const reasons = consoleErrors.slice(0, 8).join("\n").slice(0, 1200);
+          transcript.push({
+            role: "user",
+            content: `${browserRepairDirective(reasons)}\n
 (Files you wrote this run: ${writtenPaths.join(", ").slice(0, 2000)}. Fix and rewrite them with write_file.)`,
-        });
-        const repairText = await currentAdapter.complete(transcript as never).catch(() => "");
-        const repairCalls = parseToolCalls(repairText).filter((c) => String(c.name) === "write_file");
-        const repairResults: string[] = [];
-        for (const call of repairCalls) {
-          const out = await executeTool(call as never, ctx, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, undefined, { userId: run.userId, remoteTools });
-          repairResults.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
-        }
-        if (repairCalls.length > 0) {
+          });
+          const repairText = await currentAdapter.complete(transcript as never).catch(() => "");
+          const repairCalls = parseToolCalls(repairText).filter((c) => String(c.name) === "write_file");
+          const repairResults: string[] = [];
+          for (const call of repairCalls) {
+            const out = await executeTool(call as never, ctx!, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, undefined, { userId: run.userId, remoteTools });
+            repairResults.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
+          }
+          if (repairCalls.length === 0) {
+            summary += `\n\nBrowser verification failed (console errors) — see the verification artifact for review.`;
+            break;
+          }
           transcript.push({ role: "user", content: repairResults.join("\n") });
-          await emit(run.id, "verify-repaired", { fixes: repairCalls.length });
-          summary += `\n\nBrowser verification failed and was repaired (${repairCalls.length} file fix(es)).`;
-        } else {
-          summary += `\n\nBrowser verification failed (console errors) — see the verification artifact for review.`;
+          await emit(run.id, "verify-repaired", { fixes: repairCalls.length, round: repairRound });
+          // Re-verify after the repairs land; the walkthrough/timeline artifacts
+          // above describe the first session, the summary carries the verdicts.
+          const reResult = (await withVerifySlot(() =>
+            verifyUI({
+              workDir: wtDir,
+              devCommand: pickDevCommand(pkgRaw, hasIndex, verifyPort),
+              port: verifyPort,
+              path: "/",
+              recordVideo: false,
+            }).catch(() => null),
+          )) as VerifyResult | null;
+          verifyResult = reResult && reResult.success ? reResult : reResult ?? verifyResult;
+          consoleErrors = Array.isArray(verifyResult?.consoleErrors)
+            ? verifyResult.consoleErrors
+            : [];
+          summary += `\n\nBrowser verification round ${repairRound}/${effortBudget.verifyRounds}: ${verifyResult?.success ? "passed after repair" : "still failing"} (${repairCalls.length} fix(es)).`;
         }
-      } else if (verifyResult?.success) {
+
+        // Speculative dual-patch retry (opt-in ORPLEX_SPECULATIVE=1): when the
+        // iterative budget and the model's own repair attempts are exhausted
+        // red, branch the worktree state into TWO alternative fix attempts —
+        // a same-shape minimal patch and a structurally different one (each
+        // starting from a restore point so attempt B never builds on A).
+        // The first attempt that re-verifies green wins; otherwise the honest
+        // failure stands. git-only (restore needs a ref).
+        if (!verifyResult?.success && consoleErrors.length > 0 && process.env.ORPLEX_SPECULATIVE === "1" && ctx.isGitRepo) {
+          try {
+            const { createCheckpoint: mkCp, restoreCheckpointGit } = await import("../checkpoints");
+            const baseCp = await mkCp(ctx.worktreeDir, `${run.id}-spec`, `pre-speculative snapshot`, []);
+            const speculationNote = (attempt: number): string =>
+              `${attempt === 1
+                ? "Attempt A of a speculative two-shot: make the MINIMAL same-shape fix. Change only what is provably wrong."
+                : "Attempt B of a speculative two-shot: the previous-style fix did not clear the console. Propose a STRUCTURALLY DIFFERENT fix (different mechanism or code path), then apply it."}`;
+
+            const repairOnce = async (attempt: number): Promise<number> => {
+              const reasons = consoleErrors.slice(0, 8).join("\n").slice(0, 1200);
+              transcript.push({
+                role: "user",
+                content: `${browserRepairDirective(reasons)}\n${speculationNote(attempt)}\n(Files you wrote this run: ${writtenPaths.join(", ").slice(0, 2000)}. Fix them with write_file.)`,
+              });
+              const repairText = await currentAdapter.complete(transcript as never).catch(() => "");
+              transcript.push({ role: "assistant", content: repairText || "(no response)" });
+              const repairCalls = parseToolCalls(repairText).filter((c) => String(c.name) === "write_file");
+              const repairResults: string[] = [];
+              for (const call of repairCalls) {
+                const out = await executeTool(call as never, ctx!, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, undefined, { userId: run.userId, remoteTools });
+                repairResults.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
+              }
+              if (repairResults.length > 0) {
+                transcript.push({ role: "user", content: repairResults.join("\n") });
+              }
+              return repairCalls.length;
+            };
+            const reverify = async () => {
+              const re = (await withVerifySlot(() =>
+                verifyUI({
+                  workDir: wtDir,
+                  devCommand: pickDevCommand(pkgRaw, hasIndex, verifyPort),
+                  port: verifyPort,
+                  path: "/",
+                  recordVideo: false,
+                }).catch(() => null),
+              )) as VerifyResult | null;
+              return re;
+            };
+
+            for (const attempt of [1, 2]) {
+              if (verifyResult?.success) break;
+              const fixes = await repairOnce(attempt);
+              if (fixes === 0) {
+                if (attempt === 2 && baseCp.ref) {
+                  await restoreCheckpointGit(ctx.worktreeDir, baseCp.ref, run.id).catch(() => {});
+                }
+                continue;
+              }
+              await emit(run.id, "speculative-repair", { attempt, fixes }).catch(() => {});
+              const re = await reverify();
+              if (re && re.success) {
+                verifyResult = re;
+                consoleErrors = [];
+                summary += `\n\nSpeculative attempt ${attempt === 1 ? "A" : "B"} passed verification (${fixes} fix(es) kept).`;
+              } else {
+                consoleErrors = Array.isArray(re?.consoleErrors) ? re.consoleErrors : consoleErrors;
+                // Restore FIRST, then summarize: the old order appended the
+                // restore claim before the restore ran (and swallowed its
+                // failure), promising a state that might not exist.
+                const restored = baseCp.ref
+                  ? await restoreCheckpointGit(ctx.worktreeDir, baseCp.ref, run.id).then(() => true).catch(() => false)
+                  : false;
+                summary += `\n\nSpeculative attempt ${attempt === 1 ? "A" : "B"} still failed — ${restored ? "state restored to the pre-speculative snapshot" : "snapshot restore FAILED; the failed fixes remain in the worktree"}.`;
+              }
+            }
+          } catch (err) {
+            await emit(run.id, "speculative-error", { error: String((err as Error).message).slice(0, 200) }).catch(() => {});
+          }
+        }
+      }
+      if (verifyResult?.success) {
         verifyPass = true;
         summary += `\n\nBrowser verification passed (rendered without console errors).`;
       }
@@ -1538,7 +1968,11 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       if (writtenPaths.length > 0 && ctx.isGitRepo) {
         try {
           const { createCheckpoint } = await import("../checkpoints");
-          const cp = await createCheckpoint(ctx.worktreeDir, run.id, `verified: ${writtenPaths.length} file(s)`, []);
+          // Honest label: a red verification must not checkpoint as "verified".
+          const cpLabel = verifyResult?.success
+            ? `verified: ${writtenPaths.length} file(s)`
+            : `post-verify (failing): ${writtenPaths.length} file(s)`;
+          const cp = await createCheckpoint(ctx.worktreeDir, run.id, cpLabel, []);
           await prisma.runCheckpoint.create({
             data: { runId: run.id, sequence: cp.n >= 0 ? cp.n : 0, kind: cp.kind, ref: cp.ref, label: cp.label, filesCount: cp.files.length },
           }).catch(() => {});
@@ -1735,6 +2169,16 @@ export async function requeueOrphanedRuns(): Promise<number> {
       }
       await prisma.agentRun
         .update({ where: { id: r.id }, data: { status: "pending", retries: { increment: 1 } } })
+        .catch(() => {});
+      // The run's task graph is requeued too: a task left status:"running" by
+      // the dead process is never leasable (leaseNextRuntimeTask only CASes
+      // status:"pending"), so the retry would lease nothing and report
+      // {completed:0, failed:0}. Reset live task rows back to pending.
+      await prisma.agentTask
+        .updateMany({
+          where: { runId: r.id, status: { in: ["running", "leased", "verifying"] } },
+          data: { status: "pending", leaseOwner: null, leaseUntil: null },
+        })
         .catch(() => {});
       await emit(r.id, "requeued-after-restart", { requeue: r.retries + 1 }).catch(() => {});
       requeued++;

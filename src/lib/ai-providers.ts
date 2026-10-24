@@ -742,13 +742,13 @@ export function sseTransform(stream: ReadableStream): ReadableStream {
                 // duplicated it into the answer and lied about what happened.
                 // Say plainly that the turn produced no answer instead.
                 if (!hasContent && thinkingText.length > 0) {
+                  // No text delta: the turn's substance already streamed into
+                  // the Thought panel, so the answer bubble stays EMPTY. A
+                  // prose placeholder ("NO_ANSWER: …") used to be injected here,
+                  // which rendered fake reasoning-flavored text in the chat.
                   controller.enqueue(
                     encoder.encode(
-                      `data: ${JSON.stringify({
-                        content:
-                          "_NO_ANSWER_: this turn produced no answer — the model returned only internal reasoning.",
-                        no_answer: true,
-                      })}\n\n`,
+                      `data: ${JSON.stringify({ no_answer: true })}\n\n`,
                     ),
                   );
                 }

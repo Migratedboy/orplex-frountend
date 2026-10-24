@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useToast } from "@/components/Toast";
 
 import { apiFetch } from "@/lib/api-base";
@@ -83,6 +83,39 @@ export function useFileSystem() {
   // Keep handles mapped by path for fast writes
   const fileHandlesRef = useRef<Map<string, FileSystemFileHandle>>(new Map());
 
+  // Warm the project-reopen chunks at mount. They stay dynamically imported
+  // (code splitting is unchanged), but by the time the user clicks a project
+  // row the modules are already in the module cache, so `reopenProject` has no
+  // pending chunk-load await sitting between the click and requestPermission.
+  // That await was enough to exhaust the click's user-activation window.
+  //
+  // The persisted handles are pulled in at the same time, so the click path can
+  // reach an already-in-memory handle and request permission in the click's own
+  // tick — requestPermission rejects with a SecurityError once ANY task (an
+  // IndexedDB open, a microtask flush, a chunk fetch) has run since the click.
+  const prefetchedHandlesRef = useRef<Map<string, FileSystemDirectoryHandle>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { loadProjectHandle, listProjectsLocal } = await import("@/lib/project-registry");
+        for (const p of listProjectsLocal()) {
+          const h = await loadProjectHandle(p.name);
+          if (cancelled) return;
+          if (h) prefetchedHandlesRef.current.set(p.name, h);
+        }
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    void import("@/lib/project-registry").catch(() => {});
+    void import("@/lib/project-reopen").catch(() => {});
+  }, []);
+
   // Recursively scans a directory handle and constructs the tree
   const scanDirectory = useCallback(async (
     dirHandle: FileSystemDirectoryHandle,
@@ -155,6 +188,17 @@ export function useFileSystem() {
     setDirectoryHandle(handle);
     setDirectoryName(handle.name);
 
+    // Persist the handle NOW, at the one choke point every attach flow passes
+    // through (picker open, sidebar reopen). Without this only handles saved
+    // by some other path survived, and reopen after a restart reported
+    // "opened on another device" for folders the user plainly opened here
+    // (live-observed: psd10 had a handle, Documents never did).
+    // Fire-and-forget: an IDB hiccup must not fail the attach.
+    try {
+      const { saveProjectHandle } = await import("@/lib/project-registry");
+      void saveProjectHandle(handle.name, handle);
+    } catch {}
+
     // Resolve the ABSOLUTE path from the directory handle BEFORE anything
     // else. The old flow derived it from a file in fileHandlesRef AFTER a
     // scan that SKIPS whole subtrees (node_modules, .git, .next, dist, ...).
@@ -203,6 +247,18 @@ export function useFileSystem() {
       } catch {}
     }
 
+    // Silent failure was worse than the error it caused downstream: with no
+    // path recorded, the desktop terminal lane resolves cwd to null and
+    // EVERY agent command is refused ("no workspace folder path is
+    // registered") while the folder looks plainly open. Say so immediately.
+    if (!absPath) {
+      try {
+        toast(
+          `Opened "${handle.name}", but its absolute path could not be captured — agent commands may be refused. Close and re-open the project once (via the sidebar) to retry.`,
+          "error"
+        );
+      } catch {}
+    }
     const tree = await scanDirectory(handle);
     setFileTree(tree);
 
@@ -291,8 +347,37 @@ export function useFileSystem() {
     try {
       const { loadProjectHandle, requestHandlePermission, touchProject } = await import("@/lib/project-registry");
       const { reopenProject: runReopen } = await import("@/lib/project-reopen");
+
+      // requestPermission ONLY succeeds inside the click's synchronous user
+      // activation window. Chromium throws
+      // "SecurityError: User activation is required" once ANY task has run
+      // since the click — and awaiting a dynamic import or an IndexedDB open
+      // is a task. We used to await `loadHandle` first, so the prompt was
+      // always dead and the SecurityError was swallowed as "denied": a valid,
+      // previously-granted project silently refused to reopen.
+      //
+      // Fix: the handle is prefetched into a ref at mount (see
+      // prefetchedHandlesRef), so when it is already in memory we issue the
+      // permission request as the FIRST statement of this continuation — the
+      // closest thing to the click's own tick that an async function can do.
+      // Falls back to the awaited load when the prefetch missed.
+      const cached = prefetchedHandlesRef.current.get(name);
+      let preGranted: FileSystemDirectoryHandle | null = null;
+      if (cached) {
+        const anyHandle = cached as any;
+        if (typeof anyHandle.requestPermission === "function") {
+          try {
+            const state: string = await anyHandle.requestPermission({ mode: "readwrite" });
+            if (state === "granted") preGranted = cached;
+          } catch {
+            // Still activation-blocked (e.g. reopened without a click). Let the
+            // normal path report the outcome.
+          }
+        }
+      }
+
       outcome = await runReopen(name, {
-        loadHandle: (n) => loadProjectHandle(n),
+        loadHandle: async (n) => preGranted ?? prefetchedHandlesRef.current.get(n) ?? (await loadProjectHandle(n)),
         checkPermission: (h, mode, query) => requestHandlePermission(h, mode, query),
         attach: (h) => openFolderHandle(h),
         touch: (n) => {
@@ -311,7 +396,7 @@ export function useFileSystem() {
       toast(outcome.message, outcome.status === "denied" ? "info" : "error");
     }
     return outcome;
-  }, [openFolderHandle, toast]);
+  }, [openFolderHandle, toast, prefetchedHandlesRef]);
 
   const readFile = useCallback(async (path: string): Promise<string> => {
     try {

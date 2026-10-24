@@ -135,6 +135,14 @@ async function assessSdkMcpRisk(fullName: string): Promise<{ level: "low" | "med
 
 export interface ToolContext {
   mode: string;
+  /**
+   * Who/where this run belongs to — passed to in-memory staging (create_file
+   * keeps the attribution on the entry; the cap itself is one app-wide scope
+   * because the desktop process has a single user). The worker passes the
+   * conversation id; userId is only set when the lane knows it (server lanes
+   * via request context, the browser lane does not).
+   */
+  owner?: { userId?: string | null; conversationId?: string | null };
   /** Files read this task (path → count) — dedup tracking */
   readFiles: Map<string, number>;
   /** Cached full contents of files read this task */
@@ -471,7 +479,9 @@ export async function dispatchToolCall(
         result(`<tool_result name="read_file" path="${call.path}">\n[Already read ${readCount} times — showing cached content, do NOT re-read]\n${cached ?? preview}\n</tool_result>\n`);
         ctx.appendDisplay(`[OK] Read \`${call.path}\` (cached — already read ${readCount}×)\n`);
         ctx.syncDisplay();
-        return { resultXml: toolResults, blocked: false };
+        // dedupRead: this is the dispatcher's only cache-HIT return; fresh
+        // disk reads below must NOT set it (anyDup/skippedDueToDup depend on it).
+        return { resultXml: toolResults, blocked: false, dedupRead: true };
       }
     }
 
@@ -674,6 +684,138 @@ export async function dispatchToolCall(
         : `[ERROR] Failed to write \`${call.path}\``
     );
     ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+
+  // ── create_file — in-memory staged deliverable (NOT a disk write) ─────
+  // The model produces something worth keeping that is NOT project code — a
+  // summary, a checklist, a snippet bundle. Staging puts the bytes in the
+  // desktop app's own local process (memory-file-store.ts; the backend has no
+  // such store and would 404, which turns into an honest tool_result) and
+  // surfaces them as a download card in the chat. The card store expires at
+  // 4h and holds at most 2 entries — creating the 3rd evicts the oldest, and
+  // the result XML tells the model exactly that.
+  // Models habitually reuse write_file's arg shape, so `path` is accepted as
+  // an alias for `filename` — the store's basename validation stays the
+  // single source of truth for what a legal name is (workspace-relative
+  // paths and separators are refused with an honest correction hint).
+  const stageName =
+    (typeof call.filename === "string" && call.filename) ||
+    (typeof call.path === "string" && call.path) ||
+    undefined;
+  if (call.name === "create_file" && stageName && call.content !== undefined) {
+    const stageFilename = stageName as string;
+    ctx.setStatus("tool_executing", `Staging ${stageFilename}...`);
+    emitActivity({ type: "file", message: `Staging ${stageFilename}`, agent: "coder" });
+    ctx.appendDisplay(`staging [${stageFilename}]\n`);
+    ctx.syncDisplay();
+
+    // "Project open" = the registered workspace cwd (the same registry exec
+    // and every real write run against). The staging lane runs in the desktop
+    // app's own host process, so ONE local round-trip against the local
+    // route answers it. THE GATE IS INVERTED BY DESIGN: create_file is the
+    // deliverable lane for when NO project is open (the model has no
+    // write_file target there); with a real workspace attached, content
+    // belongs in the workspace — refuse and point at write_file.
+    let workspaceCwd: string | null = null;
+    try {
+      const cwdRes = await ctxFetch(resolveApiUrl("/api/agent/workspace-cwd"), { method: "GET" }, ctx, 5000);
+      if (cwdRes.ok) {
+        const cwdJson = (await cwdRes.json()) as { cwd?: unknown };
+        if (typeof cwdJson.cwd === "string" && cwdJson.cwd) workspaceCwd = cwdJson.cwd;
+      }
+    } catch {}
+    if (workspaceCwd) {
+      ctx.replaceStatus(`[BLOCKED] Project open — \`${stageFilename}\` belongs in the workspace`);
+      ctx.syncDisplay();
+      result(
+        `<tool_result name="create_file" path="${stageFilename}">refused: a project folder IS open — content like this belongs in the workspace. Retry with write_file (path + content) instead; create_file exists only for deliverables when no project is open.</tool_result>\n`
+      );
+      return { resultXml: toolResults, blocked: true };
+    }
+
+    const lineCount = call.content.split("\n").length;
+    let staged:
+      | { id: string; filename: string; bytes: number; lines: number; expiresAt: number; evicted: { id: string; filename: string } | null; duplicate: boolean }
+      | { error: string } = { error: "network" };
+    try {
+      const res = await ctxFetch(
+        resolveApiUrl("/api/files"),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: stageFilename,
+            content: call.content,
+            conversationId: ctx.owner?.conversationId ?? null,
+          }),
+        },
+        ctx,
+        15_000
+      );
+      const json = (await res.json()) as {
+        id?: string; filename?: string; bytes?: number; lines?: number; expiresAt?: number;
+        evicted?: { id: string; filename: string } | null;
+        duplicate?: boolean;
+        error?: string;
+      };
+      if (res.ok && json?.id && json.filename) {
+        staged = {
+          id: json.id,
+          filename: json.filename,
+          bytes: json.bytes ?? call.content.length,
+          lines: json.lines ?? lineCount,
+          expiresAt: json.expiresAt ?? Date.now() + 4 * 60 * 60 * 1000,
+          evicted: json.evicted ?? null,
+          duplicate: json.duplicate === true,
+        };
+      } else if (json?.error) {
+        staged = { error: json.error };
+      }
+    } catch {
+      // staging route unreachable — the honest error text below is generic by
+      // design (never log the failed body's content).
+    }
+
+    if ("error" in staged) {
+      ctx.replaceStatus(`[ERROR] Could not stage \`${stageFilename}\``);
+      ctx.syncDisplay();
+      const refusalText =
+        staged.error === "network"
+          ? "error: the staging service is unavailable in this environment"
+          : staged.error.startsWith("error:")
+            ? staged.error.replace(/^error:\s*/, "refused: ")
+            : `refused: ${staged.error}`;
+      result(
+        `<tool_result name="create_file" path="${stageFilename}">${refusalText}</tool_result>\n`
+      );      return { resultXml: toolResults, blocked: true };
+    }
+
+    ctx.replaceStatus(
+      staged.duplicate
+        ? `[SUCCESS] \`${staged.filename}\` was already staged — same card, nothing new created`
+        : `[SUCCESS] Created \`${staged.filename}\` (${staged.lines} lines) — staged in memory for download${staged.evicted ? `; oldest staged file ${`\`${staged.evicted.filename}\``} was evicted` : ""}`
+    );
+    // The locator marker the chat renderer turns into the interactive card
+    // (message-content.ts parses [FILECARD]:<json> the same way it parses
+    // [CLARIFIED]:). Compact single-line JSON; the filename is sanitized by
+    // the store so it cannot contain quotes/newlines.
+    ctx.appendDisplay(
+      `\n[FILECARD]:${JSON.stringify({
+        id: staged.id,
+        filename: staged.filename,
+        bytes: staged.bytes,
+        lines: staged.lines,
+        expiresAt: staged.expiresAt,
+        evicted: staged.duplicate ? null : staged.evicted,
+      })}\n`
+    );
+    ctx.syncDisplay();
+    result(
+      staged.duplicate
+        ? `<tool_result name="create_file" path="${stageFilename}" file_id="${staged.id}">success: an identical \`${staged.filename}\` was ALREADY staged — the existing card was re-shown and NOTHING new was created. Do not call create_file again for artefacts already staged in this chat; the card does not need refreshing.</tool_result>\n`
+        : `<tool_result name="create_file" path="${stageFilename}" file_id="${staged.id}">success: staged \`${staged.filename}\` (${staged.lines} lines) in memory — the user sees a download card in the chat. It expires in 4 hours and holds at max 2 files; ${staged.evicted ? `the oldest staged file (\`${staged.evicted.filename}\`) was just evicted and is gone. ` : "The next stage call after 2 files will evict one. "}Disk was never touched — use write_file when the content belongs in the workspace instead.</tool_result>\n`
+    );
     return { resultXml: toolResults, blocked: false };
   }
 
@@ -1328,6 +1470,11 @@ export async function dispatchToolCall(
       result(`<tool_result name="scratchpad_update">error - no scratchpad in this environment; keep your reasoning in the reply text instead.</tool_result>\n`);
     } else if (!["plan", "hypotheses", "findings", "next"].includes(section)) {
       result(`<tool_result name="scratchpad_update">error - section must be one of: plan, hypotheses, findings, next.</tool_result>\n`);
+    } else if (content.trim() === "" || content === '""') {
+      // Content coerced from an absent arg used to be recorded silently as
+      // the literal string `""` — refuse it honestly instead.
+      result(`<tool_result name="scratchpad_update">error - missing or empty content — nothing was recorded.</tool_result>\n`);
+      ctx.replaceStatus(`[FAIL] Scratchpad: empty ${section} refused`);
     } else {
       ctx.scratchpad.update(
         section as import("../scratchpad").ScratchpadSection,
@@ -1371,6 +1518,18 @@ export async function dispatchToolCall(
   // dies. The answered exchange is folded into the display transcript as a
   // [CLARIFIED] marker so the compact card survives in message history.
   if (call.name === "ask_clarification") {
+    // Hard gate BEFORE any coercion: the old coercion path turned an absent
+    // question into the 2-char string `""` (always truthy), so the missing-
+    // question refusal below was dead code and the run parked waiting for
+    // the user to answer a question rendered literally as `""`.
+    if (typeof call.question !== "string" || call.question.trim() === "") {
+      ctx.replaceStatus("[BLOCKED] ask_clarification arrived without a question");
+      ctx.syncDisplay();
+      result(
+        `<tool_result name="ask_clarification">error - missing or invalid question — the call carried no \`question\` string, so there is nothing to ask. Decide a reasonable assumption instead if you have nothing real to ask.</tool_result>\n`
+      );
+      return { resultXml: toolResults, blocked: true };
+    }
     const question = typeof call.question === "string" ? call.question : JSON.stringify(call.question ?? "");
     const context = typeof call.context === "string" ? call.context : "";
     const options = Array.isArray(call.options)
@@ -1801,6 +1960,38 @@ export async function dispatchToolCall(
   }
 
   // ── Unknown / not-implemented tool ────────────────────────────────────
+  // Two distinct honest refusals here. If the NAME is a real native tool, a
+  // call reaching this point means its required args were missing — most
+  // often a dropped/mangled args fragment — and telling the model "not
+  // available" (the old behaviour) was false and pointed nowhere. In that
+  // case name the real problem: missing argument(s). Only genuinely unknown
+  // names get the roster message.
+  const REQUIRED_NATIVE_TOOL_ARGS: Record<string, string> = {
+    read_file: "path",
+    extract_archive: "path",
+    write_file: "path and content",
+    write_file_chunk: "path and content",
+    edit_file: "path, old_text, and new_text",
+    batch_edit: "a non-empty edits array",
+    create_file: "filename (or path as alias) and content",
+    search_code: "query",
+    code_search: "query",
+    web_search: "query",
+    run_command: "command",
+    run_in_sandbox: "command",
+    undo_last_change: "path",
+    take_screenshot: "url",
+    preview_browser: "url",
+  };
+  const requiredArgs = REQUIRED_NATIVE_TOOL_ARGS[call.name];
+  if (requiredArgs) {
+    result(
+      `<tool_result name="${call.name}">error — the tool call was INCOMPLETE: it is missing required argument(s) (${requiredArgs}). The tool does exist in this environment; its arguments likely failed to parse. Retry the exact same call with all required arguments present and valid.</tool_result>\n`
+    );
+    ctx.replaceStatus(`[FAIL] Tool "${call.name}" arrived without its required arguments`);
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: true };
+  }
     result(`<tool_result name="${call.name || "unknown"}">error — this tool is not available in this environment. Use one of: read_file, list_files, write_file, write_file_chunk, edit_file, batch_edit, search_code, code_search, run_command, run_in_sandbox, undo_last_change, take_screenshot, todo_list, ask_question, ask_clarification, scratchpad_update, preview_browser, verify_app, web_search, playbook_search, skill_create, session_search, or browser_* tools.</tool_result>\n`);
   ctx.replaceStatus(`[WARN] Tool "${call.name}" is not available here`);
   ctx.syncDisplay();

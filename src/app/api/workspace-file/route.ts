@@ -5,7 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
-import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
+import { resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve, sep, extname } from "node:path";
 
@@ -33,7 +33,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const workspace = getWorkspaceCwdForUser(session.user.id);
+    // Durable resolution (Map → User.workspacePath): the in-memory map dies
+    // with the process, so a server restart would 404 every artifact render
+    // until the user re-registered. The sync Map hits fast when warm.
+    const workspace = await resolveWorkspaceCwd(session.user.id);
     if (!workspace) {
       return NextResponse.json({ error: "No workspace open" }, { status: 404 });
     }

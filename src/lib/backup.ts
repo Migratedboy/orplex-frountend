@@ -8,9 +8,8 @@
 // pg_dump directly with `--file` and PG's built-in gzip compression, resolving
 // the binary in this order:
 //   1. .localpg/pgbin/  — vendored by `npm run db:pgdump` (fetch-pgdump.mjs)
-//   2. embedded-postgres bundle (if a future version ships pg_dump)
-//   3. PG_BIN env dir   — self-hosters with a real Postgres install
-//   4. PATH
+//   2. PG_BIN env dir   — self-hosters with a real Postgres install
+//   3. PATH
 // Output files are PostgreSQL custom-format dumps (`.dump`), restorable with
 // `pg_restore -d <url> <file>` — not raw SQL despite the historical name.
 //
@@ -87,25 +86,13 @@ export function evaluateBackupRetention(input: {
   return warnings;
 }
 
-/** Locally bundled pg_dump (embedded-postgres ships pg_ctl but not pg_dump). */
-const EMBEDDED_PG_DUMP = join(
-  process.cwd(),
-  "node_modules",
-  "@embedded-postgres",
-  `${process.platform}-x64`,
-  "native",
-  "bin",
-  `pg_dump${process.platform === "win32" ? ".exe" : ""}`,
-);
-
 /** Vendored by scripts/fetch-pgdump.mjs (`npm run db:pgdump`). */
 const VENDORED_PG_DUMP = join(process.cwd(), ".localpg", "pgbin", `pg_dump${process.platform === "win32" ? ".exe" : ""}`);
 
-export type PgDumpSource = "vendored" | "embedded" | "pgbin-env" | "path" | "missing";
+export type PgDumpSource = "vendored" | "pgbin-env" | "path" | "missing";
 
 function resolvePgDump(): { cmd: string; source: PgDumpSource } | null {
   if (existsSync(VENDORED_PG_DUMP)) return { cmd: VENDORED_PG_DUMP, source: "vendored" };
-  if (existsSync(EMBEDDED_PG_DUMP)) return { cmd: EMBEDDED_PG_DUMP, source: "embedded" };
   const pgBin = process.env.PG_BIN;
   if (pgBin) {
     const candidate = join(pgBin, `pg_dump${process.platform === "win32" ? ".exe" : ""}`);
@@ -124,7 +111,7 @@ function resolvePgDump(): { cmd: string; source: PgDumpSource } | null {
     pathProbeAvailable = false;
   }
   if (!pathProbeAvailable) {
-    recordRuntimeLog("backup", "warn", "pg_dump not found (vendored / embedded / PG_BIN / PATH) — backups disabled");
+    recordRuntimeLog("backup", "warn", "pg_dump not found (vendored / PG_BIN / PATH) — backups disabled");
   }
   return pathProbeAvailable ? { cmd: "pg_dump", source: "path" } : null;
 }
@@ -273,7 +260,7 @@ export async function runBackup(): Promise<{ path: string; size: number } | null
   if (!pgDump) {
     if (!warnedNoPgDump) {
       warnedNoPgDump = true;
-      console.warn("[backup] pg_dump not found (embedded-postgres bundle / PG_BIN / PATH) — backups disabled.");
+      console.warn("[backup] pg_dump not found (vendored / PG_BIN / PATH) — backups disabled.");
     }
     recordBackupOutcome("unconfigured", "pg_dump not found — run npm run db:pgdump");
     return null;

@@ -4,14 +4,18 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useConversations, type Conversation } from "@/components/ConversationProvider";
 import { announceConversationOpen } from "@/lib/navigation-events";
 import { matchesWorkspaceFilter, projectLabel, workspaceFromQuery } from "@/lib/project-threads";
-import { IconSearch, IconMessage, IconTrash, IconClose } from "@/components/Icons";
+import { IconSearch, IconMessage, IconTrash, IconClose, IconFork } from "@/components/Icons";
+import { useToast } from "@/components/Toast";
+import { forkConversation, isLocalConversationMode } from "@/lib/conversations-transport";
 
 export default function HistoryPage() {
-  const { conversations, loading, deleteConversation } = useConversations();
+  const { conversations, loading, deleteConversation, refresh } = useConversations();
   const [search, setSearch] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [forkingId, setForkingId] = useState<string | null>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { toast } = useToast();
   // ?workspace=<name> (or __ungrouped__) — the Projects sidebar "Load threads"
   // deep link. Re-read on navigation (client-side pushes don't remount).
   const [workspace, setWorkspace] = useState<string | null>(null);
@@ -41,6 +45,29 @@ export default function HistoryPage() {
     setDeletingId(id);
     await deleteConversation(id);
     setDeletingId(null);
+  };
+
+  // Fork is a local-store deep copy (desktop only): new thread, identical
+  // transcript, "(fork)" title, opened immediately. Null on the web build —
+  // the button only renders when the bridge is present.
+  const forkConv = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setForkingId(id);
+    try {
+      const result = await forkConversation(id);
+      if (!result) {
+        toast("Fork failed — the thread may have been deleted.", "error");
+        return;
+      }
+      toast(`Forked — ${result.copied} message${result.copied === 1 ? "" : "s"} copied.`, "success");
+      refresh();
+      router.push(`/?c=${result.conversationId}`);
+      announceConversationOpen(result.conversationId);
+    } catch {
+      toast("Fork failed — the thread may have been deleted.", "error");
+    } finally {
+      setForkingId(null);
+    }
   };
 
   const groups = groupByDate(filtered);
@@ -101,6 +128,16 @@ export default function HistoryPage() {
                               <span className="history-item-time">
                                 {new Date(item.updatedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}
                               </span>
+                              {isLocalConversationMode() && (
+                                <button
+                                  onClick={(e) => forkConv(item.id, e)}
+                                  className="history-item-delete"
+                                  title="Fork into a new chat (copy of this thread)"
+                                  disabled={forkingId === item.id}
+                                >
+                                  <IconFork size={14} />
+                                </button>
+                              )}
                               <button
                                 onClick={(e) => deleteConv(item.id, e)}
                                 className="history-item-delete"
