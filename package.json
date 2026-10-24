@@ -1,6 +1,6 @@
 {
   "name": "orplex-code",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "private": true,
   "description": "Orplex Code — the AI coding agent for your desktop and cloud.",
   "author": {
@@ -117,8 +117,14 @@
     ],
     "npmRebuild": false,
     "extraResources": [
-      { "from": "electron/assets/icon.ico", "to": "icon.ico" },
-      { "from": "electron/assets/icon.png", "to": "icon.png" }
+      {
+        "from": "electron/assets/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "electron/assets/icon.png",
+        "to": "icon.png"
+      }
     ],
     "win": {
       "target": "nsis",
