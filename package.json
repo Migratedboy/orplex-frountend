@@ -25,7 +25,7 @@
     "lint": "eslint .",
     "audit": "node scripts/audit-wiring.mjs",
     "audit:mcp": "node scripts/audit-mcp-catalog.mjs",
-    "postinstall": "node scripts/fetch-pgdump.mjs",
+    "postinstall": "prisma generate && node scripts/fetch-pgdump.mjs",
     "test": "jest --forceExit",
     "test:e2e": "playwright test",
     "eval:reliability": "node evals/reliability/run.mjs",
