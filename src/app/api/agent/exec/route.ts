@@ -19,7 +19,15 @@ import { isCommandAllowed, buildSafeEnv } from "@/lib/exec-guard";
 import { TIMEOUTS, LIMITS } from "@/lib/constants";
 import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
 import { dispatchSandbox, isSandboxConfigured } from "@/lib/ci-sandbox";
+import {
+  isVercelSandboxAvailable,
+  runShellCommand,
+  languageFromCommand,
+} from "@/lib/vercel-sandbox";
 import { publicErrorMessage } from "@/lib/errors";
+
+// Sandbox runs budget up to 90s in-VM; let the function live long enough.
+export const maxDuration = 120;
 
 /**
  * Kill switch for hosted deployments. Set AGENT_EXEC_DISABLED=1 anywhere the
@@ -44,9 +52,41 @@ export async function POST(request: NextRequest) {
     }
 
     if (!checkExecEnabled()) {
-      // Hard-disabled local exec. If a CI sandbox is configured, keep
-      // run_command useful WITHOUT touching this machine's filesystem: the
-      // command runs on an ephemeral GitHub Actions runner (see ci-sandbox.ts
+      // Hard-disabled local exec. Prefer the Vercel Sandbox lane when this
+      // deployment can use it: the command runs (`sh -c`) inside an isolated
+      // micro VM that auths via our own deployment OIDC identity — no local
+      // filesystem, no stored keys. GitHub Actions remains the fallback, and
+      // the honest 403 is the last resort. Same auth, same exec-guard screening.
+      if (await isVercelSandboxAvailable()) {
+        const { command, timeout } = await request.json().catch(() => ({}) as { command?: string; timeout?: number });
+        if (!command || typeof command !== "string") {
+          return Response.json({ error: "No command provided" }, { status: 400 });
+        }
+        if (command.length > 4000) {
+          return Response.json({ error: "Command too long" }, { status: 400 });
+        }
+        const guard = isCommandAllowed(command);
+        if (!guard.allowed) {
+          return Response.json({ stdout: "", stderr: `BLOCKED: ${guard.reason}`, exitCode: 126 });
+        }
+        try {
+          const run = await runShellCommand({
+            userId,
+            family: "exec",
+            language: languageFromCommand(command),
+            shell: command,
+            timeoutMs: Math.min(typeof timeout === "number" && timeout > 0 ? timeout : TIMEOUTS.SANDBOX_EXEC, TIMEOUTS.SANDBOX_EXEC),
+          });
+          return Response.json({ stdout: run.stdout, stderr: run.stderr, exitCode: run.exitCode, sandbox: "vercel" });
+        } catch (err) {
+          return Response.json({
+            stdout: "",
+            stderr: `sandbox dispatch failed: ${(err as Error).message}`,
+            exitCode: 125,
+          });
+        }
+      }
+      // No VM lane — ephemeral GitHub Actions runner (see ci-sandbox.ts
       // + agent-sandbox.yml). Same auth, same exec-guard screening.
       if (isSandboxConfigured()) {
         const { command, timeout } = await request.json().catch(() => ({}) as { command?: string; timeout?: number });

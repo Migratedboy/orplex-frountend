@@ -19,6 +19,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import type { ArtifactControl, ArtifactPayload } from "@/lib/message-content";
+import { apiFetch } from "@/lib/api-base";
 
 const FRAME_HEIGHT = 420;
 
@@ -183,6 +184,26 @@ export default function SandboxArtifact({ artifact }: { artifact: ArtifactPayloa
   const valuesRef = useRef<Record<string, string | number | boolean>>(
     Object.fromEntries(controls.map((c) => [c.id, controlDefault(c)]))
   );
+  // Bumped whenever the server-mode control values change: the served app
+  // reads them from the query string (it has no bridge to talk to).
+  const [valuesVersion, setValuesVersion] = useState(0);
+
+  // ── server mode (live app inside a Vercel Sandbox VM) ─────────────────
+  const [server, setServer] = useState<{ status: "idle" | "booting" | "live" | "error"; url?: string; message?: string }>({ status: "idle" });
+
+  // ── one-shot code run (python/node script in the sandbox) ─────────────
+  const [run, setRun] = useState<{ status: "idle" | "running" | "done" | "error"; stdout?: string; stderr?: string; exitCode?: number; message?: string }>({ status: "idle" });
+
+  const serverEntry = artifact.server;
+  // One-shot inference: a .py file runs as python, .js/.mjs as node.
+  const scriptEntry = useMemo(() => {
+    if (serverEntry) return null;
+    const py = artifact.files.find((f) => /\.py$/i.test(f.name));
+    if (py) return { name: py.name, language: "python" as const };
+    const js = artifact.files.find((f) => /\.(js|mjs)$/i.test(f.name));
+    if (js) return { name: js.name, language: "node" as const };
+    return null;
+  }, [artifact.files, serverEntry]);
 
   const post = (msg: ControlValueMessage) => {
     try {
@@ -192,31 +213,161 @@ export default function SandboxArtifact({ artifact }: { artifact: ArtifactPayloa
     }
   };
 
+  // Served apps have no postMessage bridge: values travel in the query
+  // string, so a control change re-embeds the frame with fresh values.
+  const serverSrc = useMemo(() => {
+    if (server.status !== "live" || !server.url) return undefined;
+    const payload = JSON.stringify(valuesRef.current);
+    return `${server.url}${server.url.includes("?") ? "&" : "?"}__orplex=${encodeURIComponent(payload)}&v=${valuesVersion}`;
+  }, [server.status, server.url, valuesVersion]);
+
+  const startServer = async () => {
+    if (!serverEntry) return;
+    setServer({ status: "booting" });
+    try {
+      const res = await apiFetch("/api/agent/sandbox/artifact-serve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          files: artifact.files.map((f) => ({ path: f.name, content: f.content })),
+          entry: serverEntry.entry,
+          language: serverEntry.type,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setServer({ status: "error", message: data?.error || "server failed to start" });
+        return;
+      }
+      setServer({ status: "live", url: data.url });
+    } catch (err) {
+      setServer({ status: "error", message: (err as Error).message });
+    }
+  };
+
+  const runScript = async () => {
+    if (!scriptEntry) return;
+    setRun({ status: "running" });
+    try {
+      const res = await apiFetch("/api/agent/sandbox/artifact-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          files: artifact.files.map((f) => ({ path: f.name, content: f.content })),
+          entry: scriptEntry.name,
+          language: scriptEntry.language,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setRun({ status: "error", message: data?.error || "run failed" });
+        return;
+      }
+      setRun({ status: "done", stdout: data.stdout, stderr: data.stderr, exitCode: data.exitCode });
+    } catch (err) {
+      setRun({ status: "error", message: (err as Error).message });
+    }
+  };
+
+  const sendValues = () => {
+    if (server.status === "live") {
+      // Server mode: re-embed with the new values.
+      setValuesVersion((v) => v + 1);
+      return;
+    }
+    post({ __orplex: "controls", values: valuesRef.current });
+  };
+
   return (
     <div className="sandbox-artifact">
       <div className="sandbox-artifact-head">
         <span className="sandbox-artifact-title">{artifact.title || "Preview"}</span>
         <div className="sandbox-artifact-head-actions">
+          {serverEntry && server.status !== "live" && (
+            <button
+              type="button"
+              className="sandbox-artifact-run"
+              onClick={startServer}
+              disabled={server.status === "booting"}
+              title="Run this app inside a Vercel Sandbox and embed the live URL"
+            >
+              {server.status === "booting" ? "Starting…" : server.status === "error" ? "Retry server" : "Run server"}
+            </button>
+          )}
+          {scriptEntry && (
+            <button
+              type="button"
+              className="sandbox-artifact-run"
+              onClick={runScript}
+              disabled={run.status === "running"}
+              title="Execute this script inside a Vercel Sandbox"
+            >
+              {run.status === "running" ? "Running…" : "Run code"}
+            </button>
+          )}
           <button
             type="button"
             className="sandbox-artifact-restart"
-            onClick={() => setGen((g) => g + 1)}
+            onClick={() => {
+              if (server.status === "live") {
+                // A live server lives in the VM — restarting it means a fresh
+                // process (and a fresh app workspace) on the same VM.
+                startServer();
+                return;
+              }
+              setGen((g) => g + 1);
+            }}
             title="Restart the preview (resets its state)"
           >
             Restart
           </button>
         </div>
       </div>
-      <iframe
-        key={gen}
-        ref={frameRef}
-        className="sandbox-artifact-frame"
-        sandbox="allow-scripts"
-        title={artifact.title || "Interactive preview"}
-        srcDoc={doc}
-        style={{ height: FRAME_HEIGHT }}
-        onLoad={() => post({ __orplex: "controls", values: valuesRef.current })}
-      />
+      {server.status === "live" && server.url ? (
+        <iframe
+          key={`server-${gen}-${valuesVersion}`}
+          ref={frameRef}
+          className="sandbox-artifact-frame"
+          sandbox="allow-scripts allow-forms allow-popups"
+          title={artifact.title || "Live app"}
+          src={serverSrc}
+          style={{ height: FRAME_HEIGHT }}
+        />
+      ) : (
+        <iframe
+          key={gen}
+          ref={frameRef}
+          className="sandbox-artifact-frame"
+          sandbox="allow-scripts"
+          title={artifact.title || "Interactive preview"}
+          srcDoc={doc}
+          style={{ height: FRAME_HEIGHT }}
+          onLoad={() => post({ __orplex: "controls", values: valuesRef.current })}
+        />
+      )}
+      {server.status === "error" && (
+        <div className="sandbox-artifact-console sandbox-artifact-console-error">
+          Server failed: {server.message}
+        </div>
+      )}
+      {server.status === "live" && server.url && (
+        <div className="sandbox-artifact-meta">
+          Live at <a href={server.url} target="_blank" rel="noreferrer">{server.url}</a>
+        </div>
+      )}
+      {run.status !== "idle" && (
+        <div className="sandbox-artifact-console">
+          {run.status === "running" && <div className="sandbox-artifact-console-line">Running in sandbox…</div>}
+          {run.status === "error" && <div className="sandbox-artifact-console-line sandbox-artifact-console-error">{run.message}</div>}
+          {run.status === "done" && (
+            <>
+              {run.stdout ? <pre className="sandbox-artifact-console-out">{run.stdout}</pre> : null}
+              {run.stderr ? <pre className="sandbox-artifact-console-out sandbox-artifact-console-error">{run.stderr}</pre> : null}
+              <div className="sandbox-artifact-console-line">exit code {run.exitCode}</div>
+            </>
+          )}
+        </div>
+      )}
       {controls.length > 0 && (
         <div className="sandbox-artifact-controls">
           {controls.map((c) => (
@@ -226,10 +377,16 @@ export default function SandboxArtifact({ artifact }: { artifact: ArtifactPayloa
               defaultValue={valuesRef.current[c.id]}
               onChange={(id, value, kind) => {
                 if (kind === "action") {
-                  post({ __orplex: "action", id });
+                  if (server.status === "live") {
+                    // Actions have no query-string channel — a re-embed is the
+                    // closest equivalent (the app re-reads state on load).
+                    setValuesVersion((v) => v + 1);
+                  } else {
+                    post({ __orplex: "action", id });
+                  }
                 } else {
                   valuesRef.current[id] = value;
-                  post({ __orplex: "controls", values: valuesRef.current });
+                  sendValues();
                 }
               }}
             />

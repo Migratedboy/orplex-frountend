@@ -4344,6 +4344,37 @@ html:not(.dark) .sb-expand-fab:hover { color:#a04100; border-color:#fdba74; }
   font-size:11px; padding:3px 10px; border-radius:6px; cursor:pointer;
 }
 .sandbox-artifact-restart:hover { color:var(--text-primary); border-color:var(--text-tertiary); }
+.sandbox-artifact-run {
+  border:1px solid var(--border);
+  background:transparent;
+  color:var(--text-secondary);
+  font-size:11px; padding:3px 10px; border-radius:6px; cursor:pointer;
+}
+.sandbox-artifact-run:hover:not(:disabled) { color:var(--text-primary); border-color:var(--text-tertiary); }
+.sandbox-artifact-run:disabled { opacity:.55; cursor:default; }
+.sandbox-artifact-console {
+  padding:9px 12px;
+  border-top:1px solid var(--border);
+  font-size:11px;
+  color:var(--text-secondary);
+  background:var(--bg-secondary, rgba(127,127,127,.05));
+}
+.sandbox-artifact-console-line { line-height:1.5; }
+.sandbox-artifact-console-out {
+  margin:0 0 6px;
+  padding:7px 9px;
+  border-radius:6px;
+  background:rgba(127,127,127,.1);
+  color:var(--text-primary);
+  font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size:11px;
+  line-height:1.5;
+  white-space:pre-wrap;
+  word-break:break-word;
+  max-height:220px;
+  overflow:auto;
+}
+.sandbox-artifact-console-error { color:#d9534f; }
 .sandbox-artifact-frame {
   display:block; width:100%;
   border:0; background:#fff;

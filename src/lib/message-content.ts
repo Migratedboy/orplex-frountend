@@ -87,13 +87,24 @@ export interface ArtifactFile {
   content: string;
 }
 
+/** Optional server-mode declaration: the artifact ships a runnable app. */
+export interface ArtifactServer {
+  type: "python" | "node";
+  /** Bare filename of the entry point (must exist in files). */
+  entry: string;
+  /** Preferred port (the sandbox exposes 3000/8000; other values map to the family default). */
+  port?: number;
+}
+
 export interface ArtifactPayload {
   title?: string;
   files: ArtifactFile[];
   controls?: ArtifactControl[];
+  server?: ArtifactServer;
 }
 
 const ARTIFACT_FILE_NAME_RE = /^[A-Za-z0-9._\-\/]{1,64}$/;
+const ARTIFACT_ENTRY_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const ARTIFACT_CONTROL_ID_RE = /^[A-Za-z0-9_]{1,40}$/;
 const ARTIFACT_SINGLE_FILE_MAX = 80_000;
 const ARTIFACT_TOTAL_MAX = 200_000;
@@ -106,7 +117,7 @@ const ARTIFACT_TOTAL_MAX = 200_000;
 export function parseArtifactPayload(value: unknown): ArtifactPayload | null {
   if (!value || typeof value !== "object") return null;
   const v = value as {
-    title?: unknown; files?: unknown; controls?: unknown;
+    title?: unknown; files?: unknown; controls?: unknown; server?: unknown;
   };
   if (!Array.isArray(v.files) || v.files.length < 1 || v.files.length > 25) return null;
   let total = 0;
@@ -183,11 +194,116 @@ export function parseArtifactPayload(value: unknown): ArtifactPayload | null {
   const out: ArtifactPayload = { files };
   if (typeof v.title === "string" && v.title.trim() && v.title.length <= 80) out.title = v.title.trim();
   if (controls?.length) out.controls = controls;
+
+  // Optional server mode: {type:"python"|"node", entry:"main.py", port?}
+  if (v.server !== undefined) {
+    if (!v.server || typeof v.server !== "object") return null;
+    const s = v.server as Record<string, unknown>;
+    if (s.type !== "python" && s.type !== "node") return null;
+    if (typeof s.entry !== "string" || !ARTIFACT_ENTRY_RE.test(s.entry)) return null;
+    if (!files.some((f) => f.name === s.entry)) return null;
+    const server: ArtifactServer = { type: s.type, entry: s.entry };
+    if (s.port !== undefined) {
+      if (typeof s.port !== "number" || !Number.isInteger(s.port) || s.port < 1 || s.port > 65535) return null;
+      server.port = s.port;
+    }
+    out.server = server;
+  }
   return out;
 }
 
 /** `create_file` card locator — everything the renderer needs to fetch state
  *  and offer the download. No content rides in the marker itself. */
+/**
+ * Split a JSON object into its top-level key/value spans (string-aware).
+ * Used only to REPAIR the one duplicate-key shape models actually emit:
+ * two "files" arrays in one artifact (JSON.parse would silently keep the
+ * last one and drop the HTML).
+ */
+function splitTopLevel(jsonText: string): { key: string; valueText: string }[] | null {
+  const s = jsonText.trim();
+  if (!s.startsWith("{") || !s.endsWith("}")) return null;
+  const end = s.length - 1;
+  const out: { key: string; valueText: string }[] = [];
+  let i = 1;
+  while (i < end) {
+    while (i < end && /[\s,]/.test(s[i])) i++;
+    if (i >= end) break;
+    if (s[i] !== '"') return null;
+    const keyStart = i;
+    i++;
+    while (i < end && s[i] !== '"') {
+      if (s[i] === "\\") i++;
+      i++;
+    }
+    if (i >= end) return null;
+    const key = s.slice(keyStart + 1, i);
+    i++;
+    while (i < end && /\s/.test(s[i])) i++;
+    if (s[i] !== ":") return null;
+    i++;
+    while (i < end && /\s/.test(s[i])) i++;
+    const valueStart = i;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    while (i < end) {
+      const ch = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === "\\") esc = true;
+        else if (ch === '"') inStr = false;
+      } else if (ch === '"') {
+        inStr = true;
+      } else if (ch === "{" || ch === "[") {
+        depth++;
+      } else if (ch === "}" || ch === "]") {
+        if (depth === 0) break;
+        depth--;
+      } else if (ch === "," && depth === 0) {
+        break;
+      }
+      i++;
+    }
+    out.push({ key, valueText: s.slice(valueStart, i) });
+  }
+  return out;
+}
+
+/**
+ * Parse an artifact marker payload. Plain JSON first; if that yields an
+ * unusable payload (usually a duplicated "files" key), the top-level spans
+ * are re-assembled with the file arrays MERGED. Malformed input still
+ * returns null — it is dropped, never rendered raw.
+ */
+export function parseArtifactJson(raw: string): ArtifactPayload | null {
+  try {
+    const direct = parseArtifactPayload(JSON.parse(raw));
+    if (direct) return direct;
+  } catch {
+    // fall through to the repair path
+  }
+  const parts = splitTopLevel(raw);
+  if (!parts || parts.length === 0) return null;
+  const fileArrays: unknown[] = [];
+  const others: Record<string, unknown> = {};
+  for (const part of parts) {
+    try {
+      if (part.key === "files") {
+        const arr = JSON.parse(part.valueText);
+        if (!Array.isArray(arr)) return null;
+        fileArrays.push(...arr);
+      } else {
+        others[part.key] = JSON.parse(part.valueText);
+      }
+    } catch {
+      // a broken sibling key must not sink the artifact
+    }
+  }
+  if (fileArrays.length === 0) return null;
+  return parseArtifactPayload({ ...others, files: fileArrays });
+}
+
 export interface FileCardPayload {
   id: string;
   filename: string;
@@ -361,12 +477,8 @@ export function parseContent(raw: string): ContentSegment[] {
       // AI-authored runnable widget — the chat's own artifacts are model text
       // by design (see ARTIFACT header comment); anything malformed degrades
       // to dropped rather than raw-rendered, matching FILECARD policy.
-      try {
-        const parsed = parseArtifactPayload(JSON.parse(line.slice("[ARTIFACT]:".length)));
-        if (parsed) segments.push({ type: "artifact", content: line, artifact: parsed });
-      } catch {
-        // fall through — never render the raw marker
-      }
+      const parsed = parseArtifactJson(line.slice("[ARTIFACT]:".length));
+      if (parsed) segments.push({ type: "artifact", content: line, artifact: parsed });
     } else if (line.startsWith("[FILECARD]:")) {
       // create_file staging card locator — JSON with id/filename/bytes/lines
       // (+ optional expiresAt/evicted). Malformed payloads are dropped rather

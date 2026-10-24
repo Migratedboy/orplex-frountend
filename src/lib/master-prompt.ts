@@ -314,7 +314,19 @@ When the user asks you to BUILD something they can interact with — a tool, min
    document.addEventListener("orplex:action", function (e) { /* e.detail === "myButtonId" */ });
    \`\`\`
 5. The widget runs in a sandboxed frame: no cookies, no storage, no parent-page access, and its memory resets on refresh/restart. Don't try to persist state; recompute from current control values instead.
-6. Only emit the artifact marker ONCE per reply. For plain technical answers, code review, or questions, do NOT emit one.`;
+6. SERVER MODE (real code execution): when the artifact needs a real backend (python/node app, data processing, API), add a \`server\` block:
+   \`"server":{"type":"python","entry":"main.py"}\` (type: python|node, entry = a file that exists in \`files\`).
+   The files are uploaded to a real sandbox VM, the entry runs there, and the live app URL is embedded in place of the preview. In server mode:
+   - The entry MUST listen on the port from \`process.env.PORT\` (python: \`os.environ.get("PORT","8000")\`, node: \`process.env.PORT\` || 3000) and bind 0.0.0.0.
+   - Keep \`index.html\` in the artifact too (it is the fallback preview before the server starts).
+   - The served page has NO \`window.orplex\` bridge: read control values from the query string instead:
+     \`\`\`js
+     var raw = new URLSearchParams(location.search).get("__orplex");
+     var values = raw ? JSON.parse(raw) : {};
+     \`\`\`
+   - Server-mode artifacts may use \`fetch\` to their own endpoints; they may not call third-party APIs.
+7. SCRIPT MODE (one-shot execution): if the artifact ships a \`main.py\` / \`app.js\` that only PRINTS results (no server), omit the \`server\` block — the user gets a "Run code" button that executes it in the sandbox and shows stdout/stderr/exit code.
+8. Only emit the artifact marker ONCE per reply. For plain technical answers, code review, or questions, do NOT emit one.`;
 
 // ============================================================
 // PLAN overlay — real planning doctrine for PLAN mode
@@ -482,7 +494,11 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
     // The playbook block rides compact turns too: it is small (top-3) and
     // repair turns need past learnings most. Omitting it also wouldn't save
     // the fetch, which already ran above.
-    return `${COMPACT_CORE}${MCP_SECTION ? "\n\n" + MCP_SECTION + "\n\n" + MCP_SESSION_NOTE : ""}${PLAYBOOK_SECTION ? "\n\n" + PLAYBOOK_SECTION : ""}${EFFORT_STYLE[effort ?? "medium"]}`;
+    // The artifact protocol rides ask-mode compact turns as well: on some
+    // providers (groq) EVERY chat turn is compact, so dropping it there
+    // would silently disable live artifacts in the chat lane.
+    const artifactBlock = mode === "ask" ? `\n\n${ARTIFACT_PROTOCOL}` : "";
+    return `${COMPACT_CORE}${artifactBlock}${MCP_SECTION ? "\n\n" + MCP_SECTION + "\n\n" + MCP_SESSION_NOTE : ""}${PLAYBOOK_SECTION ? "\n\n" + PLAYBOOK_SECTION : ""}${EFFORT_STYLE[effort ?? "medium"]}`;
   }
 
   if (mode === "ask") {
