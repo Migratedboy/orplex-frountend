@@ -70,11 +70,14 @@ jobs:
           path: installers
           merge-multiple: true
 
-      - name: Attach to Release (draft)
+      - name: Attach to Release
         uses: softprops/action-gh-release@v2
         with:
           files: installers/*
-          draft: true
+          # Published straight away: the in-app updater reads published
+          # Releases as its feed, and a draft is invisible to it.
+          draft: false
+          prerelease: false
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
