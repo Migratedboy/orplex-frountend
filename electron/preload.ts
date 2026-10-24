@@ -203,6 +203,54 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
    * Node-side passthrough so remote servers' CORS can never block the app.
    */
   /**
+   * LOCAL-FIRST CONVERSATIONS: the on-device JSON store in userData replaces
+   * the cloud backend for chat history CRUD. The presence of this bridge is
+   * itself the signal the renderer uses to switch transports.
+   */
+  conversations: {
+    list: () => ipcRenderer.invoke("orplex:conversations:list") as Promise<
+      Array<{
+        id: string;
+        title: string;
+        workspaceName: string | null;
+        createdAt: string;
+        updatedAt: string;
+        messages: { content: string }[];
+      }>
+    >,
+    get: (id: string) =>
+      ipcRenderer.invoke("orplex:conversations:get", id) as Promise<{
+        id: string;
+        title: string;
+        workspaceName: string | null;
+        createdAt: string;
+        updatedAt: string;
+        messages: { role: string; content: string; createdAt: string }[];
+      } | null>,
+    save: (
+      input: { conversationId?: string | null; workspaceName?: string | null; messages: Array<{ role: string; content: string }> }
+    ) =>
+      ipcRenderer.invoke("orplex:conversations:save", input) as Promise<
+        { conversationId: string } | { error: string }
+      >,
+    rename: (id: string, title: string) =>
+      ipcRenderer.invoke("orplex:conversations:rename", id, title) as Promise<boolean>,
+    remove: (id: string) =>
+      ipcRenderer.invoke("orplex:conversations:remove", id) as Promise<boolean>,
+    fork: (id: string) =>
+      ipcRenderer.invoke("orplex:conversations:fork", id) as Promise<{
+        id: string;
+        messages: { role: string; content: string; createdAt: string }[];
+      } | null>,
+    import: (list: unknown[]) =>
+      ipcRenderer.invoke("orplex:conversations:import", list) as Promise<{
+        imported: number;
+        skipped: number;
+      }>,
+    /** Force any pending debounced write to disk (used after imports). */
+    flush: () => ipcRenderer.invoke("orplex:conversations:flush") as Promise<boolean>,
+  },
+  /**
    * DESKTOP SIGN-IN: the renderer opens the backend's OAuth start page in
    * the user's real browser; the backend deep-links back to orplex://auth
    * with a one-time code, which the main process relays here. The renderer

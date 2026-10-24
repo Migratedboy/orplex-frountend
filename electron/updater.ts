@@ -8,7 +8,9 @@
 // registerUpdaterIpc) and receives "orplex:update-status" events.
 // Dev/unpackaged runs are no-ops (electron-updater needs published metadata).
 
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow } from "electron";
+import type { IpcGate } from "./terminal";
+import { isPackagedRuntime } from "./dev-mode";
 
 export type UpdateState =
   | "idle"
@@ -65,7 +67,7 @@ async function updater() {
 
 /** Check now (manual from menu/Settings, or the boot/interval schedule). */
 export async function checkForUpdates(getWindow: WindowGetter): Promise<UpdateStatus> {
-  if (!app.isPackaged) return { state: "idle" };
+  if (!isPackagedRuntime()) return { state: "idle" };
   try {
     sendStatus(getWindow, { state: "checking" });
     const au = await updater();
@@ -101,7 +103,7 @@ export async function checkForUpdates(getWindow: WindowGetter): Promise<UpdateSt
 
 /** Download the pending update. Progress streams as update-status events. */
 export async function downloadUpdate(getWindow: WindowGetter): Promise<UpdateStatus> {
-  if (!app.isPackaged) return { state: "idle" };
+  if (!isPackagedRuntime()) return { state: "idle" };
   cancelRequested = false;
   try {
     // The force-update card can fire before any successful check (boot check
@@ -165,22 +167,24 @@ export async function downloadUpdate(getWindow: WindowGetter): Promise<UpdateSta
 
 /** Restart into the downloaded update. Only called from an explicit user click. */
 export async function installUpdate(): Promise<void> {
-  if (!app.isPackaged) return;
+  if (!isPackagedRuntime()) return;
   const au = await updater();
   au.quitAndInstall(false, true);
 }
 
-/** Wire the 4 renderer IPC handlers. Safe to call once at startup. */
-export function registerUpdaterIpc(getWindow: WindowGetter): void {
+/** Wire the 4 renderer IPC handlers. Safe to call once at startup.
+ * Gated at the sender like every other channel — installUpdate force-quits,
+ * so a hostile sandboxed preview frame must never be able to invoke it. */
+export function registerUpdaterIpc(getWindow: WindowGetter, gate: IpcGate): void {
   if (initialized) return;
   initialized = true;
-  ipcMain.handle("orplex:update-check", () => checkForUpdates(getWindow));
-  ipcMain.handle("orplex:update-download", () => downloadUpdate(getWindow));
-  ipcMain.handle("orplex:update-cancel", () => {
+  gate("orplex:update-check", () => checkForUpdates(getWindow));
+  gate("orplex:update-download", () => downloadUpdate(getWindow));
+  gate("orplex:update-cancel", () => {
     cancelRequested = true;
     return { ok: true };
   });
-  ipcMain.handle("orplex:update-install", () => installUpdate().then(() => ({ ok: true })));
+  gate("orplex:update-install", () => installUpdate().then(() => ({ ok: true })));
 }
 
 /**
@@ -188,7 +192,7 @@ export function registerUpdaterIpc(getWindow: WindowGetter): void {
  * Packaged only; dev runs skip silently (no published metadata to read).
  */
 export function startUpdateSchedule(getWindow: WindowGetter): void {
-  if (!app.isPackaged) return;
+  if (!isPackagedRuntime()) return;
   const CHECK_MS = 6 * 60 * 60 * 1000;
   setTimeout(() => {
     void checkForUpdates(getWindow).catch(() => {});

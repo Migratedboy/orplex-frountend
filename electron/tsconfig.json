@@ -12,5 +12,7 @@
     "sourceMap": false,
     "types": ["node"]
   },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts"],
+  // Tests run under jest projects (src ts-jest) and need no jest types here.
+  "exclude": ["__tests__"]
 }

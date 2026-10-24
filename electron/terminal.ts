@@ -11,7 +11,7 @@
  * every command with exec-guard; main re-enforces the critical denylist below
  * (defense in depth — never trust the renderer alone).
  */
-import { ipcMain, BrowserWindow } from "electron";
+import { BrowserWindow } from "electron";
 import { spawn, ChildProcess, execSync } from "node:child_process";
 import { statSync } from "node:fs";
 import net from "node:net";
@@ -175,12 +175,19 @@ export function killAllTerminalChildren(): void {
 }
 
 type GetWindow = () => BrowserWindow | null;
+/**
+ * Origin gate injected by main (handleAppIpc). Defence in depth: the
+ * sandboxed preview/agent views have ipcRenderer access even without the
+ * preload bridge, so spawn-with-shell:true must be gated at the handler too,
+ * not only by who can see the bridge.
+ */
+export type IpcGate = (channel: string, handler: (event: any, ...args: any[]) => any) => void;
 
-export function registerTerminalIpc(getWindow: GetWindow): void {
+export function registerTerminalIpc(getWindow: GetWindow, gate: IpcGate): void {
   // ── One-shot exec with live streaming ────────────────────────────────
   // Renderer passes a streamId; chunks arrive as terminal:stream events so
   // the Terminal tab paints live (same shape as the SSE lane it replaces).
-  ipcMain.handle(
+  gate(
     "terminal:exec",
     async (
       _e,
@@ -269,7 +276,7 @@ export function registerTerminalIpc(getWindow: GetWindow): void {
   );
 
   // ── Detached serve lane ──────────────────────────────────────────────
-  ipcMain.handle(
+  gate(
     "terminal:serve-start",
     async (_e, args: { command?: string; cwd?: string }) => {
       const refusal = screenTerminalCommand(args?.command);
@@ -348,7 +355,7 @@ export function registerTerminalIpc(getWindow: GetWindow): void {
     }
   );
 
-  ipcMain.handle("terminal:serve-stop", async (_e, args: { id?: number }) => {
+  gate("terminal:serve-stop", async (_e, args: { id?: number }) => {
     const id = Number(args?.id);
     const entry = serveRegistry.get(id);
     if (!entry) return { ok: false, error: `no server with id ${args?.id}` };
@@ -357,7 +364,7 @@ export function registerTerminalIpc(getWindow: GetWindow): void {
     return { ok: true, stopped: id };
   });
 
-  ipcMain.handle("terminal:serve-list", async () => {
+  gate("terminal:serve-list", async () => {
     return {
       ok: true,
       servers: [...serveRegistry.values()].map((e) => ({

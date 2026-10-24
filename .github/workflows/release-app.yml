@@ -44,6 +44,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The installer packages .next/standalone + electron-dist/main.js —
+      # both are BUILD OUTPUTS, so they must exist before electron-builder
+      # runs (a fresh checkout has neither, and packaging fails outright).
+      - name: Build app (Next standalone + electron main)
+        run: npm run build && npm run electron:build:main
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/orplex
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/orplex
+          NEXTAUTH_SECRET: release-build-only-secret
+          NEXT_TELEMETRY_DISABLED: 1
+
       - name: Build + package (${{ matrix.os }})
         run: npx electron-builder --publish never ${{ matrix.args }}
         env:

@@ -9,6 +9,8 @@
  * from the repo-root .env via the loader at the top of this file.
  */
 import { app, BrowserWindow, shell, Menu, dialog, ipcMain, WebContentsView, session, nativeImage } from "electron";
+import type { NativeImage } from "electron";
+import { isDevRuntime } from "./dev-mode";
 import { homedir } from "node:os";
 import { spawn, ChildProcess } from "node:child_process";
 import http from "node:http";
@@ -16,6 +18,7 @@ import net from "node:net";
 import { registerMcpIpc } from "./mcp-bridge";
 import { registerDesktopAuth, handleDesktopAuthArgv } from "./auth-desktop";
 import { registerTerminalIpc, killAllTerminalChildren } from "./terminal";
+import { createConversationStore } from "./conversations-store";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -62,7 +65,10 @@ import path from "node:path";
   } catch {}
 })();
 
-const isDev = !app.isPackaged;
+// A branded dev binary (renamed electron.exe with our icon) makes Electron
+// report isPackaged=true — ORPLEX_DEV=1 from the dev launcher restores the
+// checkout semantics the rest of this file relies on.
+const isDev = isDevRuntime();
 // Electron OWNS both Next.js processes — the user never runs one separately.
 // ORPLEX_PORT / ORPLEX_API_PORT only override for special setups.
 const UI_PORT = Number(process.env.ORPLEX_PORT || 5000);
@@ -123,15 +129,22 @@ function isAppOrigin(raw: string): boolean {
     return false;
   }
 }
-const LOCAL_DB_PORT = Number(process.env.LOCAL_DB_PORT || 5433);
-
 // === LIGHTWEIGHT MODE =======================================================
-// ORPLEX_LIGHTWEIGHT=1 (repo .env or shell env) skips the embedded local
-// Postgres entirely. For cloud setups where auth/chat/runs live behind
-// ORPLEX_API_URL and the local DB only serves legacy local tables, this
-// cuts ~30s of DB boot from every launch and removes a whole failure class
-// (port 5433 held, stale cluster, initdb corruption). UI still boots.
+// ORPLEX_LIGHTWEIGHT=1 (repo .env or shell env) records that the run expects
+// no local database at all. There is no embedded/local Postgres any more —
+// the backend owns the database — so this flag no longer changes startup,
+// it is kept only so existing env files stay valid and self-documenting.
 const LIGHTWEIGHT = /^(1|true|yes)$/i.test(process.env.ORPLEX_LIGHTWEIGHT || "");
+
+// === LOCAL-FIRST CONVERSATIONS ==============================================
+// Conversations are ON-DEVICE data in the desktop app. This JSON file in
+// userData is the source of truth (one-time imported from the cloud on first
+// run — see conversations:migrate-from-cloud — then never written to the
+// backend again). The proxy stops forwarding /api/conversations, so no
+// sign-in outage or deploy hiccup can take the History/Sidebar away.
+const conversationsStore = createConversationStore({
+  file: process.env.ORPLEX_CONVERSATIONS_FILE || path.join(app.getPath("userData"), "conversations.json"),
+});
 
 let nextProcess: ChildProcess | null = null;
 let apiProcess: ChildProcess | null = null;
@@ -456,7 +469,7 @@ function normalizePreviewUrl(raw: string): string | null {
 
 /** Resolve the repo root in dev / resources dir when packaged. */
 function projectRoot(): string {
-  return app.isPackaged ? process.resourcesPath : path.join(app.getAppPath());
+  return isDev ? path.join(app.getAppPath()) : process.resourcesPath;
 }
 
 /** Health-check: GET / until it answers (any status). */
@@ -591,60 +604,16 @@ function startNextServer(which: "ui" | "api"): void {
   }
 }
 
-/** Single TCP probe: resolves true if something accepts on 127.0.0.1:port. */
-function isPortOpen(port: number, timeout = 1200): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect({ port, host: "127.0.0.1" });
-    const done = (ok: boolean) => {
-      socket.destroy();
-      resolve(ok);
-    };
-    socket.setTimeout(timeout, () => done(false));
-    socket.once("connect", () => done(true));
-    socket.once("error", () => done(false));
-  });
-}
-
-/**
- * Ensure the embedded local Postgres is running (dev cluster in .localpg/).
- * We spawn `next dev` directly — bypassing any npm pre-hooks — so WITHOUT
- * this the app boots with PrismaClientInitializationError and every
- * DB-backed feature (auth, chat, history, quota) fails. The DB is left
- * running on quit: it holds no ports we need back and restarts are cheap.
- */
-async function ensureLocalDb(): Promise<void> {
-  if (await isPortOpen(LOCAL_DB_PORT)) return;
-  const script = path.join(projectRoot(), "scripts", "local-db.mjs");
-  // Packaged/remote-DB setups manage their own database — nothing to do.
-  if (!fs.existsSync(script)) return;
-  process.stdout.write("[db] starting local postgres…\n");
-  const child = spawn(process.execPath, [script, "start"], {
-    cwd: projectRoot(),
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  child.stdout?.on("data", (d: Buffer) => process.stdout.write(`[db] ${d}`));
-  child.stderr?.on("data", (d: Buffer) => process.stderr.write(`[db] ${d}`));
-  const started = Date.now();
-  while (!(await isPortOpen(LOCAL_DB_PORT))) {
-    if (Date.now() - started > 30000) {
-      throw new Error(`Local database did not become ready on port ${LOCAL_DB_PORT}`);
-    }
-    await new Promise((r) => setTimeout(r, 400));
-  }
-  process.stdout.write("[db] local postgres is up\n");
-}
-
 // === APP ICON ===============================================================
 // Finds the icon on disk no matter where the code runs from: compiled output
 // (dist-electron), the electron/ source folder, or a packaged app's resources.
 // Windows needs the .ico for a crisp taskbar icon; PNG is the fallback.
 function resolveIconPath(): string | undefined {
   const names = process.platform === "win32" ? ["icon.ico", "icon.png"] : ["icon.png", "icon.ico"];
-  // Start points: compiled dir, app root, cwd, packaged resources. From each,
-  // walk UP a few levels and probe the usual icon folders at every level.
-  const starts = [__dirname, app.getAppPath(), process.cwd(), process.resourcesPath || ""];
+  // Start points: packaged resources (a REAL file, not inside the asar),
+  // compiled dir, app root, cwd. From each, walk UP a few levels and probe
+  // the usual icon folders at every level.
+  const starts = [process.resourcesPath || "", __dirname, app.getAppPath(), process.cwd()];
   const subs = ["", "assets", "electron", path.join("electron", "assets"), "build", "public", "resources",
     // Packaged app: files land inside app.asar (fs.existsSync reads through asar).
     path.join("app.asar", "electron", "assets"), path.join("app", "electron", "assets")];
@@ -677,6 +646,17 @@ function createWindow(): void {
   writeSessionState(false);
   const iconPath = resolveIconPath();
   const appIcon = iconPath ? nativeImage.createFromPath(iconPath) : undefined;
+  // Windows draws the TASKBAR button from the icon RESOURCE: it picks the
+  // 16/24/32px frame that fits. A nativeImage built from an .ico keeps only
+  // the largest frame (256px), so the taskbar button ends up blank or
+  // upscaled garbage — passing the .ico PATH lets the shell pick the right
+  // frame itself. Elsewhere (mac/linux) the nativeImage is the right form.
+  const iconArg: NativeImage | string | undefined =
+    process.platform === "win32" && iconPath && iconPath.toLowerCase().endsWith(".ico")
+      ? iconPath
+      : appIcon && !appIcon.isEmpty()
+        ? appIcon
+        : iconPath;
   try {
     const bytes = iconPath ? fs.statSync(iconPath).size : 0;
     const sz = appIcon ? appIcon.getSize() : { width: 0, height: 0 };
@@ -695,7 +675,7 @@ function createWindow(): void {
     autoHideMenuBar: true,
     // Orplex logo for the window + taskbar. On Windows an .ico carries the
     // full size range (16–256) so the taskbar renders crisply; PNG elsewhere.
-    icon: appIcon,
+    icon: iconArg,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -726,7 +706,13 @@ function createWindow(): void {
   }
 
   mainWindow.once("ready-to-show", () => {
-    if (appIcon && !appIcon.isEmpty()) mainWindow?.setIcon(appIcon);
+    // Re-assert the icon after the window exists: Windows sometimes caches
+    // the pre-show placeholder icon for the taskbar button.
+    if (iconArg) {
+      try {
+        mainWindow?.setIcon(iconArg);
+      } catch {}
+    }
     mainWindow?.setTitle("Orplex Code");
     mainWindow?.show();
   });
@@ -768,8 +754,38 @@ function createWindow(): void {
   });
   // Deny every powerful permission request from the app origin (camera,
   // geolocation, notifications, ...) - the app never asks for any.
-  mainWindow.webContents.session.setPermissionRequestHandler((_wc, _perm, callback) => {
-    callback(false);
+  //
+  // EXCEPTION: "fileSystem". This is NOT an app-initiated capability probe,
+  // it is how a PERSISTED FileSystemDirectoryHandle is re-granted. The
+  // Projects sidebar reloads its saved handles from IndexedDB on every launch
+  // and calls requestPermission to re-attach them; denying it made every
+  // previously-opened project permanently unopenable after a restart — the row
+  // stayed in the sidebar and clicking it silently did nothing, because
+  // requestPermission resolved "denied" instead of raising the one-click prompt
+  // the UI is written around. Granting it re-approves access to a folder the
+  // user already picked with the OS picker; it grants no new path access.
+  mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === "fileSystem");
+  });
+
+  // Renderer crash recovery: a gone renderer used to leave a blank window
+  // forever. Reload once after a short delay (a boolean guard keeps an
+  // endlessly-crashing renderer from spinning a reload loop), or recreate
+  // the window if it destroyed itself.
+  let rendererRecoveredOnce = false;
+  mainWindow.webContents.on("render-process-gone", (_e, details: any) => {
+    process.stdout.write(`[main-window] renderer gone: ${details?.reason || "?"}\n`);
+    if (quitting || rendererRecoveredOnce) return;
+    rendererRecoveredOnce = true;
+    setTimeout(() => {
+      if (quitting) return;
+      const win = getMainWindow();
+      if (win && !win.isDestroyed()) {
+        win.webContents.reload();
+      } else if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    }, 1500);
   });
 
   mainWindow.on("closed", () => {
@@ -831,7 +847,50 @@ function buildMenu(): void {
 
 app.on("before-quit", () => {
   quitting = true;
+  conversationsStore.flush();
 });
+
+// === CONVERSATIONS IPC (local-first store bridging) =========================
+// The renderer's CRUD calls land here instead of the cloud backend. All
+// guarded by handleAppIpc (app origin only) like every other channel.
+registerConversationIpc();
+function registerConversationIpc(): void {
+  handleAppIpc("orplex:conversations:list", () => conversationsStore.list());
+  handleAppIpc("orplex:conversations:get", (_e, id: string) =>
+    typeof id === "string" ? conversationsStore.get(id) : null
+  );
+  handleAppIpc(
+    "orplex:conversations:save",
+    (_e, input: { conversationId?: string | null; workspaceName?: string | null; messages: unknown[] }) => {
+      if (!input || !Array.isArray(input.messages)) return { error: "Invalid body" };
+      return conversationsStore.save({
+        conversationId: input.conversationId ?? null,
+        workspaceName: input.workspaceName ?? undefined,
+        messages: input.messages as Array<{ role?: unknown; content?: unknown }>,
+      });
+    }
+  );
+  handleAppIpc("orplex:conversations:rename", (_e, id: string, title: string) =>
+    typeof id === "string" && typeof title === "string"
+      ? conversationsStore.rename(id, title)
+      : false
+  );
+  handleAppIpc("orplex:conversations:remove", (_e, id: string) =>
+    typeof id === "string" ? conversationsStore.remove(id) : false
+  );
+  handleAppIpc("orplex:conversations:fork", (_e, id: string) =>
+    typeof id === "string" ? conversationsStore.fork(id) : null
+  );
+  handleAppIpc(
+    "orplex:conversations:import",
+    (_e, list: Array<{ id?: unknown; title?: unknown; workspaceName?: unknown; createdAt?: unknown; updatedAt?: unknown; messages?: unknown }>) =>
+      Array.isArray(list) ? conversationsStore.importAll(list) : { imported: 0, skipped: 0 }
+  );
+  handleAppIpc("orplex:conversations:flush", () => {
+    conversationsStore.flush();
+    return true;
+  });
+}
 
 // === PREVIEW IPC (registered once, guarded by partition session) =========
 handleAppIpc("preview:create-tab", () => {
@@ -901,6 +960,20 @@ handleAppIpc("orplex:path-for-directory", async (_e, name: string) => {
     const { readdir, stat } = await import("node:fs/promises");
     const { join } = await import("node:path");
     const roots = [homedir(), app.getPath("documents"), app.getPath("desktop")];
+    // Windows fixed drives: users keep projects at drive roots too
+    // (live-observed: C:\psd10 was invisible to the old search, so the
+    // workspace path came back "" and every agent command was refused with
+    // "no workspace folder path is registered"). Cheap: one stat per drive
+    // plus its top-level entries.
+    if (process.platform === "win32") {
+      for (let letter = 67; letter <= 90; letter++) {
+        // C..Z — A/B are legacy floppy; skip the drive we run from if listed
+        const drive = String.fromCharCode(letter) + ":\\";
+        try {
+          if (fs.statSync(drive).isDirectory()) roots.push(drive);
+        } catch {}
+      }
+    }
     const isDir = async (p: string) => {
       try {
         return (await stat(p)).isDirectory();
@@ -1568,15 +1641,36 @@ handleAppIpc("agent-browser:screenshot-advanced", async (_e, args: { fullPage?: 
   };
 });
 
-/** Kill whatever process is listening on the given port (Windows + POSIX). */
+/**
+ * Take over a port held by a stale/zombie listener (Windows + POSIX).
+ * Two safety fixes over the old findstr pipeline: `findstr :${port}`
+ * substring-matched ":5000" against ":50001" (killing an innocent listener
+ * on a superset port), so rows are now parsed in JS with the local address
+ * required to END at `:port` (followed by whitespace) AND the row required
+ * to be LISTENING. And a kill only happens after the HTTP probe confirms a
+ * real listener up (callers may probe too — a blind taskkill is the failure
+ * mode being guarded against).
+ */
 async function killPortListener(port: number): Promise<void> {
+  if (!(await probeServer(`http://localhost:${port}`))) return;
   const { execSync } = await import("node:child_process");
   try {
     if (process.platform === "win32") {
-      const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: "utf8" });
-      const pid = out.trim().split(/\s+/).pop();
-      if (pid && /^\d+$/.test(pid)) {
-        execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore" });
+      const out = execSync("netstat -ano", { encoding: "utf8" });
+      // `TCP  <local>  <foreign>  LISTENING  <pid>` — local addr ends at :port.
+      const row = new RegExp(`\\S+:${port}\\s+\\S+\\s+LISTENING\\s+(\\d+)`);
+      const pids = new Set<string>();
+      for (const line of out.split(/\r?\n/)) {
+        const m = row.exec(line);
+        if (m && m[1] !== String(process.pid)) pids.add(m[1]);
+      }
+      // Skip our own PID: this Electron process (or its in-process sockets)
+      // must never taskkill'ed out from under itself.
+      pids.delete(String(process.pid));
+      for (const pid of pids) {
+        try {
+          execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore" });
+        } catch {}
       }
     } else {
       execSync(`lsof -ti tcp:${port} | xargs -r kill -9`, { stdio: "ignore" });
@@ -1634,11 +1728,14 @@ app.whenReady().then(async () => {
 
   // MCP remote servers: OAuth 2.1 browser flow + Node-side JSON-RPC
   // passthrough (renderer has no Node and remote servers may lack CORS).
-  registerMcpIpc();
+  // Gated at the sender like every other channel (handleAppIpc).
+  registerMcpIpc(handleAppIpc);
 
   // On-device terminal: exec streaming + detached serve registry, all in the
-  // user's workspace folder (see electron/terminal.ts).
-  registerTerminalIpc(getMainWindow);
+  // user's workspace folder (see electron/terminal.ts). terminal:exec spawns
+  // with shell:true — gating at the handler is the last line of defence
+  // against the sandboxed IPC-capable preview views.
+  registerTerminalIpc(getMainWindow, handleAppIpc);
 
   // Renderer → main: open http(s) links in the OS default browser.
   handleAppIpc("orplex:open-external", (_event, url: string) => {
@@ -1666,11 +1763,6 @@ app.whenReady().then(async () => {
     // a crashed previous run, take it over cleanly; the user's own processes
     // on OTHER ports are never touched.
     const cloudApi = process.env.ORPLEX_API_URL || "";
-    if (LIGHTWEIGHT) {
-      process.stdout.write("[startup] lightweight mode: skipping embedded local DB\n");
-    } else {
-      await ensureLocalDb();
-    }
     for (const [which, port] of [
       ["ui", UI_PORT],
       ["api", API_PORT],
@@ -1725,7 +1817,7 @@ app.whenReady().then(async () => {
   // reuses the same check path.
   try {
     const { registerUpdaterIpc, startUpdateSchedule } = await import("./updater");
-    registerUpdaterIpc(getMainWindow);
+    registerUpdaterIpc(getMainWindow, handleAppIpc);
     startUpdateSchedule(getMainWindow);
   } catch {
     // Updates are convenience — never block startup on them.

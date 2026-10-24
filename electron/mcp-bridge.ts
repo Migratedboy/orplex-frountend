@@ -24,7 +24,8 @@
 // validates `state`, and self-closes (callback or 5-minute timeout). The
 // passthrough accepts only http(s) URLs.
 
-import { BrowserWindow, ipcMain, shell } from "electron";
+import { BrowserWindow, shell } from "electron";
+import type { IpcGate } from "./terminal";
 import http from "node:http";
 import crypto from "node:crypto";
 
@@ -419,7 +420,7 @@ async function exchangeCode(tokenEndpoint: string, body: Record<string, string>)
   };
 }
 
-export function registerMcpIpc(): void {
+export function registerMcpIpc(gate: IpcGate): void {
   // ── SDK-driven flow (spec Phase 3): loopback only RELAYS the AS redirect ──
   // The renderer drives the official MCP client via /api/mcp/* and holds the
   // session cookie; the main process has none. So this listener's job is just:
@@ -447,7 +448,7 @@ export function registerMcpIpc(): void {
   const relayPage = (ok: boolean, detail: string): string =>
     `<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;background:#141414;color:#eee;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:${ok ? "#ff6b00" : "#eee"}">${ok ? "&#10003; Orplex received the sign-in" : "Connection failed"}</h2><p style="color:#9aa">${detail}</p></div></body>`;
 
-  ipcMain.handle(
+  gate(
     "orplex:mcp-oauth-prepare",
     async (): Promise<{ ok: boolean; redirectUri?: string; error?: string }> => {
       closeLoopback(); // one active flow at a time
@@ -504,7 +505,7 @@ export function registerMcpIpc(): void {
     }
   );
 
-  ipcMain.handle(
+  gate(
     "orplex:mcp-oauth-open",
     async (_e, params: { authUrl?: string }): Promise<{ ok: boolean; error?: string }> => {
       if (!loopback) return { ok: false, error: "No prepared loopback listener — call mcpOAuth.prepare() first." };
@@ -533,7 +534,7 @@ export function registerMcpIpc(): void {
   // Generic HTTP passthrough so the renderer's MCP JSON-RPC client avoids
   // CORS on remote servers. SSRF-gated (same policy as the server lane),
   // method-allowlisted, body-capped, 30s ceiling.
-  ipcMain.handle(
+  gate(
     "orplex:mcp-request",
     async (_e, params: { url: string; method?: string; headers?: Record<string, string>; body?: string }) => {
       try {
@@ -562,7 +563,7 @@ export function registerMcpIpc(): void {
   // Full OAuth 2.1 flow for a remote MCP server. Runs entirely in the main
   // process: discovery → DCR → browser sign-in → loopback callback → token
   // exchange. The renderer only supplies the server URL.
-  ipcMain.handle("orplex:mcp-oauth-authorize", async (_e, params: { serverUrl: string; label?: string }): Promise<OAuthResult> => {
+  gate("orplex:mcp-oauth-authorize", async (_e, params: { serverUrl: string; label?: string }): Promise<OAuthResult> => {
     try {
       if (typeof params.serverUrl !== "string") return { ok: false, error: "Missing serverUrl" };
       const entryBlocked = mcpFetchUrlError(params.serverUrl);
@@ -656,7 +657,7 @@ export function registerMcpIpc(): void {
     }
   });
 
-  ipcMain.handle(
+  gate(
     "orplex:mcp-oauth-refresh",
     async (_e, params: { serverUrl: string; refreshToken: string; clientId: string; clientSecret?: string; tokenEndpoint?: string }): Promise<OAuthResult> => {
       try {

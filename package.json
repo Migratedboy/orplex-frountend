@@ -8,7 +8,7 @@
   },
   "scripts": {
     "predev": "node scripts/fetch-fonts.mjs && npm run electron:build:main",
-    "dev": "electron .",
+    "dev": "node scripts/dev-branded-electron.mjs",
     "dev:ui": "next dev -p 5000",
     "prebuild": "node scripts/fetch-fonts.mjs",
     "build": "next build && node scripts/prepare-standalone.mjs",
@@ -111,19 +111,25 @@
       "package.json"
     ],
     "npmRebuild": false,
-    "extraResources": [],
+    "extraResources": [
+      { "from": "electron/assets/icon.ico", "to": "icon.ico" },
+      { "from": "electron/assets/icon.png", "to": "icon.png" }
+    ],
     "win": {
       "target": "nsis",
-      "icon": "electron/assets/icon.ico"
+      "icon": "electron/assets/icon.ico",
+      "artifactName": "Orplex-Code-Setup-${version}.${ext}"
     },
     "mac": {
       "target": "dmg",
       "icon": "electron/assets/icon.icns",
-      "category": "public.app-category.developer-tools"
+      "category": "public.app.developer-tools",
+      "artifactName": "Orplex-Code-${version}.${ext}"
     },
     "linux": {
       "target": "AppImage",
-      "icon": "electron/assets/icon.png"
+      "icon": "electron/assets/icon.png",
+      "artifactName": "Orplex-Code-${version}.${ext}"
     }
   }
 }
