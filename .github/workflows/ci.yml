@@ -105,7 +105,7 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/orplex_test
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/orplex_test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/orplex_test
       NEXTAUTH_SECRET: test-secret-for-build-only
       NEXTAUTH_URL: http://localhost:5000
 
