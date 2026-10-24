@@ -81,11 +81,12 @@ if (process.platform !== "win32") {
       const languages = vi.getAllLanguagesForStringValues();
       const lang = languages.length > 0 ? languages[0] : { lang: 0x0409, codepage: 1200 };
       vi.setStringValues(lang, {
-        CompanyName: "Orplex",
+        CompanyName: "orplex.techlimited",
         ProductName: "Orplex Code",
         FileDescription: "Orplex Code",
         InternalName: "Orplex Code",
         OriginalFilename: "Orplex Code.exe",
+        LegalCopyright: "Copyright © 2026 orplex.techlimited",
       });
       vi.outputToResourceEntries(res.entries);
 

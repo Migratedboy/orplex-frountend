@@ -2,6 +2,11 @@
   "name": "orplex-code",
   "version": "1.0.0",
   "private": true,
+  "description": "Orplex Code — the AI coding agent for your desktop and cloud.",
+  "author": {
+    "name": "orplex.techlimited"
+  },
+  "copyright": "Copyright © 2026 orplex.techlimited",
   "main": "electron-dist/main.js",
   "engines": {
     "node": ">=20"
