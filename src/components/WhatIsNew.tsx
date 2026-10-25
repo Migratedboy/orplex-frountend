@@ -14,6 +14,15 @@ import { useEffect, useState } from "react";
 // no backend round-trip, works offline, matches the installer's content.
 
 const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
+  "1.0.11": {
+    title: "Desktop sign-in that actually works",
+    items: [
+      "Google and GitHub sign-in no longer stall on “Taking you to …”",
+      "You stay signed in after the browser hand-off — no bounce back to the login screen",
+      "A second sign-in attempt works instead of failing with “Sign-in could not start”",
+      "Sign-in codes are stateless (HMAC + AES-GCM), so nothing is lost between server instances",
+    ],
+  },
   "1.1.0": {
     title: "Faster path to your first win",
     items: [
@@ -25,6 +34,17 @@ const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
   },
 };
 
+/** "1.0.9" < "1.0.10" < "1.1.0" — plain numeric segment compare. */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
 const EVENT = "orplex:whats-new";
 
 /** Fire from anywhere (Help menu, palette, Electron after an update). */
@@ -35,6 +55,7 @@ export function openWhatIsNew(version?: string) {
 export default function WhatIsNew() {
   const [open, setOpen] = useState(false);
   const [version, setVersion] = useState<string | null>(null);
+  const [currentVersion, setCurrentVersion] = useState<string | null>(null);
 
   useEffect(() => {
     // Auto-open after an UPDATE: the packaged app reports its real version
@@ -45,6 +66,7 @@ export default function WhatIsNew() {
       try {
         const current = (await window.orplexDesktop?.getAppVersion?.()) || localStorage.getItem("orplex.lastVersion");
         if (!current) return;
+        setCurrentVersion(current);
         const seen = localStorage.getItem("orplex.appVersion");
         if (seen && seen !== current) {
           setVersion(seen); // "updated from vX"
@@ -56,7 +78,7 @@ export default function WhatIsNew() {
 
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { version?: string } | undefined;
-      if (detail?.version) setVersion(detail.version);
+      if (detail?.version) setCurrentVersion(detail.version);
       setOpen(true);
     };
     window.addEventListener(EVENT, handler);
@@ -64,8 +86,9 @@ export default function WhatIsNew() {
   }, []);
 
   if (!open) return null;
-  const entry = (version && WHATS_NEW[version]) || WHATS_NEW[Object.keys(WHATS_NEW)[0]];
-  const seenKey = `orplex.whatsNewSeen.${version || "latest"}`;
+  const known = Object.keys(WHATS_NEW).sort(compareVersions);
+  const entry = (currentVersion && WHATS_NEW[currentVersion]) || WHATS_NEW[known[known.length - 1]];
+  const seenKey = `orplex.whatsNewSeen.${currentVersion || "latest"}`;
 
   const dismiss = () => {
     try { localStorage.setItem(seenKey, "1"); } catch {}
