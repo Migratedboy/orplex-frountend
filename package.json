@@ -20,7 +20,7 @@
     "start": "npm run electron:build:main && electron .",
     "electron:dev": "npm run dev",
     "electron:start": "npm run start",
-    "electron:build:main": "tsc -p electron/tsconfig.json",
+    "electron:build:main": "tsc -p electron/tsconfig.json && node scripts/prepare-electron-deps.mjs",
     "electron:dist": "npm run build && npm run electron:build:main && electron-builder",
     "lint": "eslint .",
     "audit": "node scripts/audit-wiring.mjs",
