@@ -111,8 +111,9 @@
       "electron/assets/icon32.png",
       "electron/assets/tray.png",
       "electron/assets/icon.icns",
-      ".next/standalone/**/*",
-      "!node_modules/**/*",
+    ".next/standalone/**/*",
+    "!.next/standalone/.localpg/**/*",
+    "!node_modules/**/*",
       "package.json"
     ],
     "npmRebuild": false,
