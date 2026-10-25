@@ -62,7 +62,28 @@ function sendStatus(getWindow: WindowGetter, status: UpdateStatus): void {
 }
 
 async function updater() {
-  return (await import("electron-updater")).autoUpdater;
+  const au = (await import("electron-updater")).autoUpdater;
+  au.logger = console;
+  return au;
+}
+
+/** Release notes can be HTML (GitHub renderer) — the toast is plain text. */
+function notesToText(raw: unknown): string | undefined {
+  if (Array.isArray(raw)) {
+    return notesToText((raw as Array<{ note?: string }>).map((n) => n.note ?? "").join("\n"));
+  }
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  const text = raw
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return text.slice(0, 2000) || undefined;
 }
 
 /** Check now (manual from menu/Settings, or the boot/interval schedule). */
@@ -78,11 +99,7 @@ export async function checkForUpdates(getWindow: WindowGetter): Promise<UpdateSt
     // Only NEWER versions toast — a lagging feed must never "update" a
     // newer local build (downgrade shaped as available).
     if (info && isNewerThan(info.version, app.getVersion())) {
-      const notes = Array.isArray((info as { releaseNotes?: unknown }).releaseNotes)
-        ? ((info as { releaseNotes: Array<{ note?: string }> }).releaseNotes.map((n) => n.note || "").join("\n").slice(0, 2000) || undefined)
-        : typeof (info as { releaseNotes?: unknown }).releaseNotes === "string"
-          ? String((info as { releaseNotes: string }).releaseNotes).slice(0, 2000)
-          : undefined;
+      const notes = notesToText((info as { releaseNotes?: unknown }).releaseNotes);
       const status: UpdateStatus = { state: "available", version: info.version, notes };
       pendingVersion = info.version;
       sendStatus(getWindow, status);
@@ -92,6 +109,7 @@ export async function checkForUpdates(getWindow: WindowGetter): Promise<UpdateSt
     sendStatus(getWindow, idle);
     return idle;
   } catch (err) {
+    console.error("[updater] check failed:", err instanceof Error ? err.message : err);
     const status: UpdateStatus = {
       state: "error",
       error: err instanceof Error ? err.message.slice(0, 200) : "update check failed",
@@ -116,6 +134,10 @@ export async function downloadUpdate(getWindow: WindowGetter): Promise<UpdateSta
           : checked;
       }
     }
+    // Flip the card to "downloading" immediately: the first on-disk progress
+    // event can lag several seconds behind the click (blockmap preflight,
+    // request setup) — a silent button for 10s reads as broken.
+    sendStatus(getWindow, { state: "downloading", percent: 0 });
     const au = await updater();
     const { CancellationToken } = await import("builder-util-runtime");
     const token = new CancellationToken();
@@ -160,6 +182,7 @@ export async function downloadUpdate(getWindow: WindowGetter): Promise<UpdateSta
       state: "error",
       error: err instanceof Error ? err.message.slice(0, 200) : "download failed",
     };
+    console.error("[updater] download failed:", err instanceof Error ? err.message : err);
     sendStatus(getWindow, status);
     return status;
   }

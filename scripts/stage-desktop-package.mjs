@@ -17,16 +17,19 @@
 // and hand electron-builder a dependencies-free package.json, which makes the
 // dependency scan instant (there is nothing to collect).
 //
-// Source stays untouched: staging happens in a temp dir, never in the repo.
+// Source stays untouched: staging happens in its own tree, never over the
+// repo's own files.
 
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 const root = process.cwd();
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 
-const stage = path.join(os.tmpdir(), "orplex-package");
+// Staged INSIDE the repo (not the OS temp dir) so the electron-builder
+// invocation can point at it with a repo-relative --projectDir on every
+// platform (a %TEMP% path in an npm script is Windows-only).
+const stage = path.join(root, ".desktop-package");
 rmSync(stage, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 

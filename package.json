@@ -21,7 +21,7 @@
     "electron:dev": "npm run dev",
     "electron:start": "npm run start",
     "electron:build:main": "tsc -p electron/tsconfig.json && node scripts/prepare-electron-deps.mjs",
-    "electron:dist": "npm run build && npm run electron:build:main && electron-builder",
+    "electron:dist": "npm run build && npm run electron:build:main && npm run electron:stage && npm run electron:package",
     "lint": "eslint .",
     "audit": "node scripts/audit-wiring.mjs",
     "audit:mcp": "node scripts/audit-mcp-catalog.mjs",
@@ -36,7 +36,9 @@
     "bench:report": "node scripts/bench-report.mjs",
     "clean": "node scripts/clean.mjs",
     "setup": "node scripts/setup-env.mjs",
-    "env:check": "node scripts/setup-env.mjs --check"
+    "env:check": "node scripts/setup-env.mjs --check",
+    "electron:stage": "node scripts/stage-desktop-package.mjs",
+    "electron:package": "electron-builder --projectDir .desktop-package"
   },
   "dependencies": {
     "@hugeicons/core-free-icons": "^4.3.3",
@@ -95,6 +97,7 @@
   "build": {
     "appId": "tech.orplex.app",
     "productName": "Orplex Code",
+    "asar": false,
     "publish": {
       "provider": "github",
       "owner": "Migratedboy",
@@ -111,9 +114,9 @@
       "electron/assets/icon32.png",
       "electron/assets/tray.png",
       "electron/assets/icon.icns",
-    ".next/standalone/**/*",
-    "!.next/standalone/.localpg/**/*",
-    "!node_modules/**/*",
+      ".next/standalone/**/*",
+      "!.next/standalone/.localpg/**/*",
+      "!node_modules/**/*",
       "package.json"
     ],
     "npmRebuild": false,
@@ -142,6 +145,7 @@
       "target": "AppImage",
       "icon": "electron/assets/icon.png",
       "artifactName": "Orplex-Code-${version}.${ext}"
-    }
+    },
+    "electronVersion": "41.7.1"
   }
 }

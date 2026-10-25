@@ -63,8 +63,17 @@ jobs:
           NEXTAUTH_SECRET: release-build-only-secret
           NEXT_TELEMETRY_DISABLED: 1
 
+      # Stage the minimal package tree (electron-dist + standalone server,
+      # symlinks resolved) so electron-builder copies a small, real-file tree.
+      # Packaging the repo root instead fails on Windows: the standalone
+      # bundle contains symlinks that cannot be recreated without elevated
+      # privileges (EPERM), and the repo's node_modules makes the dependency
+      # scan take many minutes.
+      - name: Stage desktop package
+        run: npm run electron:stage
+
       - name: Build + package (${{ matrix.os }})
-        run: npx electron-builder --publish never ${{ matrix.args }}
+        run: npx electron-builder --projectDir .desktop-package --publish never ${{ matrix.args }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEXT_TELEMETRY_DISABLED: 1

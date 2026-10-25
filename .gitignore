@@ -20,6 +20,7 @@ build/
 # Electron
 electron-dist/
 release/
+.desktop-package/
 
 # Logs
 logs/
