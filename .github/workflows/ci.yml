@@ -54,7 +54,7 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       issues: write
     steps:
       - uses: actions/checkout@v4
@@ -100,8 +100,8 @@ jobs:
           retention-days: 7
 
       # Step logs need a PAT, so a red Tests job used to be a guessing game:
-      # the failing test names were invisible from outside the runner. An
-      # issue body is public for a public repo and readable via the API.
+      # the failing test names were invisible from outside the runner. Pushing
+      # the output to a diagnostics branch keeps it readable via the public API.
       - name: Publish the jest output
         if: failure()
         env:
@@ -120,6 +120,21 @@ jobs:
           else
             gh issue create --title "CI test failures" --body-file summary.md || true
           fi
+
+      - name: Push the jest output to the ci-diagnostics branch
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p ci-output
+          cp jest-output.txt "ci-output/jest-output-${{ github.sha }}.txt"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin ci-diagnostics || true
+          git checkout -B ci-diagnostics
+          git add -A ci-output
+          git commit -m "ci: jest output for ${{ github.sha }}" || true
+          git push --force origin ci-diagnostics
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
