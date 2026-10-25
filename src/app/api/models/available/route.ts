@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { after } from "next/server";
 import { requireAuth } from "@/lib/chat-middleware";
 import { getVerifiedModels, modelHealth } from "@/lib/model-catalog";
+import { readIngestedCatalog } from "@/lib/catalog-ingest";
 import { prisma } from "@/lib/prisma";
 import { ensureCatalogsFresh } from "@/lib/catalog-sync";
 
@@ -77,8 +78,34 @@ export async function GET(_request: NextRequest) {
     // Passed through so the picker can HIDE them while the wake engine warms
     // them — a still-cold model never replied, and the picker's contract is
     // "only models proven to answer". They reappear (unflagged) as soon as a
-    // wake probe gets a real completion out of them.
+    // wake probe answers.
     const coldIds = new Set(models.filter((m) => (m as { cold?: boolean }).cold).map((m) => m.id));
+
+    // SERVERLESS RESCUE (read side): when this server has no live catalog at
+    // all — probes can't complete on serverless — serve the snapshot a healthy
+    // local client published via /api/models/ingest instead of an empty
+    // picker. Only fires when the live sweep contributed NOTHING, so a real
+    // result always wins over the rescue copy.
+    const liveEmpty = models.length === 0 && (throttledModels ?? []).length === 0;
+    if (liveEmpty) {
+      const snap = readIngestedCatalog();
+      if (snap) {
+        return Response.json({
+          success: true,
+          models: snap.models,
+          throttledModels: snap.throttledModels,
+          health: Object.fromEntries(
+            snap.models.map((m) => [m.id, { health: "amber" as const, lastVerifiedAt: snap.probedAt }])
+          ),
+          coldModelIds: snap.models.filter((m) => m.cold).map((m) => m.id),
+          probedAt: snap.probedAt,
+          providers: snap.providers,
+          providerIssues: snap.providerIssues,
+          userModels: [],
+          keysRev: "",
+        });
+      }
+    }
 
     // BYOK listings from the user's stored keys. Empty caches simply
     // contribute nothing; failures must never break the endpoint.

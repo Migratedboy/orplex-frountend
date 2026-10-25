@@ -97,6 +97,7 @@ service-account*.json
 .model-test-results.json
 .orplex-workspaces/
 .env-backups/
+.orplex-catalog-ingest.json
 .vercel
 .env*
 # Negation must come AFTER the .env* rule (last-match-wins).
