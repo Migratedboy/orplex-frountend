@@ -97,21 +97,29 @@ jobs:
           retention-days: 7
 
       # Step logs need a PAT, so a red Tests job used to be a guessing game:
-      # the failing test names were invisible from outside the runner. A
-      # commit comment is public for a public repo and readable via the API.
-      - name: Comment the jest output on the commit
+      # the failing test names were invisible from outside the runner. An
+      # issue body is public for a public repo and readable via the API.
+      - name: Publish the jest output
         if: failure()
+        permissions:
+          contents: read
+          issues: write
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           {
-            echo "### Jest output (tail)"
+            echo "### Jest output (tail) — ${{ github.sha }}"
             echo '```text'
             tail -n 250 jest-output.txt || true
             echo '```'
           } > summary.md
-          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
-            -f body="$(cat summary.md)" || true
+          number=$(gh issue list --state open --limit 100 --json number,title \
+            --jq '[.[] | select(.title == "CI test failures")] | .[0].number // empty' || true)
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file summary.md || true
+          else
+            gh issue create --title "CI test failures" --body-file summary.md || true
+          fi
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
