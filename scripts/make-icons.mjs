@@ -14,11 +14,7 @@
 //                                 NOT copy assets, so this script mirrors them)
 //
 // The in-app animated mascot is untouched — this only refreshes the OUTER
-// shell surfaces. Run: node scripts/make-icons.mjs [source-svg-or-png] [flags]
-//   --no-ring      skip the amplified orange glow ring (art that is already a
-//                  finished tile design — glow would shadow it)
-//   --shell-only   write only electron/assets + mirrors (never public/ or
-//                  src/app icons — the in-app/web surfaces stay on the mascot)
+// shell surfaces. Run: node scripts/make-icons.mjs [source-svg-or-png]
 // The ICO is a hand-rolled PNG-in-ICO container (Vista+), so sharp alone
 // suffices — no icon-editor dependency.
 import { strict as assert } from "node:assert";
@@ -31,9 +27,6 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const src = process.argv[2] ?? join(root, "public", "logo.svg");
 assert.ok(existsSync(src), `source icon not found: ${src}`);
 const isVector = /\.svg$/i.test(src);
-const flags = new Set(process.argv.slice(3));
-const noRing = flags.has("--no-ring");
-const shellOnly = flags.has("--shell-only");
 
 const sizes = {
   iconPng: 512,
@@ -99,44 +92,17 @@ function buildIco(entries) {
 }
 
 // The amplified glow ring only makes sense on the dark-tile art; the bare
-// mascot renders as-is, and so does any --no-ring source (finished artwork).
-const makeIcon = (size) => (isVector || noRing ? pngOf(size) : withGlowBorder(size));
+// mascot renders as-is.
+const makeIcon = (size) => (isVector ? pngOf(size) : withGlowBorder(size));
 const [icon512, tray32, fav256] = await Promise.all([sizes.iconPng, sizes.tray, sizes.favicon].map((s) => makeIcon(s)));
 const icoEntries = (await Promise.all(sizes.ico.map((s) => makeIcon(s).then((bytes) => ({ size: s, bytes }))))).sort((a, b) => a.size - b.size);
 const icoBuf = buildIco(icoEntries);
-
-// ICNS (mac): PNG-compressed entries are valid since macOS 10.13. Only the
-// large dock/app surfaces need cover — Electron takes the .icns from
-// electron-builder, and `type` encodes the logical pixel size.
-function buildIcns(entries) {
-  const body = Buffer.concat(entries.map((e) => {
-    const sub = Buffer.alloc(8);
-    sub.write(e.type, 0, "ascii");
-    sub.writeUInt32BE(e.bytes.length + 8, 4);
-    return Buffer.concat([sub, e.bytes]);
-  }));
-  const header = Buffer.alloc(8);
-  header.write("icns", 0, "ascii");
-  header.writeUInt32BE(body.length + 8, 4);
-  return Buffer.concat([header, body]);
-}
-
-const asIcnsEntry = (type, size) => makeIcon(size).then((bytes) => ({ type, bytes }));
-const icnsBuf = buildIcns(
-  await Promise.all([
-    asIcnsEntry("ic07", 128),
-    asIcnsEntry("ic08", 256),
-    asIcnsEntry("ic09", 512),
-    asIcnsEntry("ic10", 1024),
-  ])
-);
 
 const targets = [
   [join(root, "electron/assets/icon.png"), icon512],
   [join(root, "electron/assets/icon.ico"), icoBuf],
   [join(root, "electron/assets/icon32.png"), tray32],
   [join(root, "electron/assets/tray.png"), tray32],
-  [join(root, "electron/assets/icon.icns"), icnsBuf],
   [join(root, "public/logo.png"), fav256],
   [join(root, "src/app/icon.png"), fav256],
   // Mirror into the compiled output the Electron shell loads from.
@@ -146,11 +112,9 @@ const targets = [
   [join(root, "electron-dist/assets/tray.png"), tray32],
 ];
 
-const shellTargets = targets.filter(([file]) => !file.includes("public") && !file.includes(join("src", "app")));
-
-for (const [file, data] of (shellOnly ? shellTargets : targets)) {
+for (const [file, data] of targets) {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, data);
   console.log(`wrote ${file} (${data.length} bytes)`);
 }
-console.log("outer-shell icons regenerated from", src, shellOnly ? "(shell only)" : "");
+console.log("outer-shell icons regenerated from", src);
