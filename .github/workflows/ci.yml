@@ -53,6 +53,9 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -101,9 +104,6 @@ jobs:
       # issue body is public for a public repo and readable via the API.
       - name: Publish the jest output
         if: failure()
-        permissions:
-          contents: read
-          issues: write
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
