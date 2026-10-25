@@ -12,6 +12,7 @@
 
 import { getToken } from "next-auth/jwt";
 import type { NextRequest } from "next/server";
+import { appSessionUserFromRequest } from "@/lib/app-session";
 
 const SESSION_COOKIE_NAMES = [
   "__Secure-next-auth.session-token",
@@ -21,7 +22,13 @@ const SESSION_COOKIE_NAMES = [
 /** The signed-in user's id from either cookie name, or null. */
 export async function sessionUserId(req: NextRequest): Promise<string | null> {
   const secret = process.env.NEXTAUTH_SECRET;
-  if (!secret) return null;
+  // No local secret (the packaged app): fall back to the app's own Ed25519
+  // session cookie, which the backend signs and the app verifies with the
+  // shipped public key. Without this every local route rejected the user.
+  if (!secret) {
+    const appUser = await appSessionUserFromRequest(req);
+    return appUser?.id ?? null;
+  }
   for (const cookieName of SESSION_COOKIE_NAMES) {
     try {
       const token = await getToken({ req, secret, cookieName });

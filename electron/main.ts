@@ -57,9 +57,17 @@ import path from "node:path";
       const cfg = JSON.parse(fs.readFileSync(p, "utf8")) as {
         apiUrl?: string;
         lightweight?: boolean;
+        sessionPublicKey?: string;
       };
       if (cfg.apiUrl && !process.env.ORPLEX_API_URL) process.env.ORPLEX_API_URL = cfg.apiUrl;
       if (cfg.lightweight && !process.env.ORPLEX_LIGHTWEIGHT) process.env.ORPLEX_LIGHTWEIGHT = "1";
+      // The app verifies its own session cookie with the backend's PUBLIC
+      // key (the private key never leaves the backend). Without it the local
+      // page gate cannot recognize a signed-in user and bounces everyone back
+      // to /auth/signin right after a successful sign-in.
+      if (cfg.sessionPublicKey && !process.env.ORPLEX_SESSION_PUBLIC_KEY) {
+        process.env.ORPLEX_SESSION_PUBLIC_KEY = cfg.sessionPublicKey;
+      }
       return;
     }
   } catch {}

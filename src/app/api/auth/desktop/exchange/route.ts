@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { encode } from "next-auth/jwt";
-import { consumeDesktopCode } from "@/lib/desktop-auth";
+import { readDesktopGrant } from "@/lib/desktop-auth";
+import { APP_SESSION_COOKIE, signAppSession } from "@/lib/app-session";
 import { checkRateLimit, clientIp } from "@/lib/rate-limiter";
 import { prisma } from "@/lib/prisma";
 
@@ -20,15 +21,18 @@ export async function POST(request: Request) {
   try {
     code = String((await request.json())?.code || "");
   } catch {}
-  const entry = code ? consumeDesktopCode(code) : null;
-  if (!entry?.session?.id) {
+  // The app redeems the encrypted grant minted by the finish route. It is
+  // self-contained (no server-side handle), so the exchange works even when
+  // it lands on another serverless instance than the OAuth round-trip.
+  const session = code ? readDesktopGrant(code) : null;
+  if (!session?.id) {
     return NextResponse.json({ error: "Invalid or expired sign-in code" }, { status: 401 });
   }
 
   const secret = process.env.NEXTAUTH_SECRET;
   if (!secret) return NextResponse.json({ error: "NEXTAUTH_SECRET is not set" }, { status: 500 });
 
-  const user = entry.session;
+  const user = session;
   try {
     // Ensure a matching User row exists — FK-backed saves in the app would
     // otherwise fail on first write (mirrors /api/dev/session).
@@ -55,14 +59,32 @@ export async function POST(request: Request) {
 
     const response = NextResponse.json({ ok: true, user: { id: user.id, email: user.email, name: user.name } });
     const base = { httpOnly: true, sameSite: "lax" as const, path: "/", maxAge: SESSION_MAX_AGE };
-    // Plain name: what the app's Edge proxy check reads. Secure in
-    // production (plain-HTTP would expose the JWT to sniffers); plain HTTP
-    // allowed only for local dev.
-    const secure = process.env.NODE_ENV === "production";
+    // The desktop app's origin is plain-HTTP loopback (http://localhost:5000).
+    // A Secure cookie is only accepted there by browsers that treat loopback
+    // as a secure context — and the local server must not depend on that:
+    // drop Secure when the request was forwarded from a loopback host.
+    const forwardedHost = (request.headers.get("x-forwarded-host") || "").toLowerCase();
+    const loopback = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(forwardedHost);
+    const secure = process.env.NODE_ENV === "production" && !loopback;
     response.cookies.set("next-auth.session-token", token, { ...base, secure });
     // Prefixed name: what NextAuth in production reads. Chromium accepts
     // Secure cookies on localhost, so this lands on the app's origin too.
     response.cookies.set("__Secure-next-auth.session-token", token, { ...base, secure: true });
+
+    // The app's OWN session credential: Ed25519-signed by the backend and
+    // verified locally with the shipped public key. The packaged app has no
+    // NEXTAUTH_SECRET, so without this its page gate could not tell a
+    // signed-in user from an anonymous one and bounced everyone to
+    // /auth/signin right after a successful sign-in.
+    const appToken = await signAppSession({
+      id: user.id,
+      name: user.name ?? null,
+      email: user.email ?? null,
+      image: user.image ?? null,
+    });
+    if (appToken) {
+      response.cookies.set(APP_SESSION_COOKIE, appToken, { ...base, secure });
+    }
     return response;
   } catch (error) {
     // Never log the full error object — it can contain the bearer code (in

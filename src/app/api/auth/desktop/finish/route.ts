@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
-import { armDesktopCode, checkDesktopFlow, getDesktopCode, DESKTOP_FLOW_COOKIE } from "@/lib/desktop-auth";
+import {
+  mintDesktopGrant,
+  readDesktopCode,
+  checkDesktopFlow,
+  DESKTOP_FLOW_COOKIE,
+} from "@/lib/desktop-auth";
 import { checkRateLimit, clientIp } from "@/lib/rate-limiter";
 
 export const dynamic = "force-dynamic";
@@ -21,11 +26,11 @@ export async function GET(request: Request) {
     return page(`<h2 style="color:#ff6b00">Too many sign-in attempts</h2><p style="color:#9aa">Wait a minute and try again.</p>`);
   }
   const code = new URL(request.url).searchParams.get("code") || "";
-  const entry = getDesktopCode(code);
-  if (!entry) return page(`<h2 style="color:#ff6b00">Link expired</h2><p style="color:#9aa">Return to the app and start sign-in again.</p>`);
+  const claims = readDesktopCode(code);
+  if (!claims) return page(`<h2 style="color:#ff6b00">Link expired</h2><p style="color:#9aa">Return to the app and start sign-in again.</p>`);
 
   // Login-CSRF defense: only the browser that minted the code (holder of
-  // the HttpOnly flow cookie) may arm it. A cross-site lure carries no
+  // the HttpOnly flow cookie) may complete it. A cross-site lure carries no
   // cookie → same generic "expired" page (never reveal why).
   const cookieHeader = request.headers.get("cookie") || "";
   const flowToken = cookieHeader
@@ -34,7 +39,7 @@ export async function GET(request: Request) {
     .find(([k]) => k === DESKTOP_FLOW_COOKIE)?.[1];
   let flowOk = false;
   try {
-    flowOk = checkDesktopFlow(code, flowToken ? decodeURIComponent(flowToken) : null);
+    flowOk = checkDesktopFlow(claims, flowToken ? decodeURIComponent(flowToken) : null);
   } catch {
     flowOk = false;
   }
@@ -44,7 +49,11 @@ export async function GET(request: Request) {
   if (!session?.user) {
     return page(`<h2 style="color:#ff6b00">Sign-in did not complete</h2><p style="color:#9aa">Return to the app and try again.</p>`);
   }
-  armDesktopCode(code, {
+
+  // Hand the app an encrypted grant instead of a server-side handle: the
+  // exchange call can land on another serverless instance, so no state may
+  // be kept between here and there.
+  const grant = mintDesktopGrant({
     id: (session.user as { id?: string }).id || session.user.email || "",
     name: session.user.name,
     email: session.user.email,
@@ -53,7 +62,7 @@ export async function GET(request: Request) {
 
   // Deep link via JS (a 302 to a custom scheme would be blocked by browsers);
   // keep a manual <a> fallback in case the OS has no orplex:// handler.
-  const deepLink = `orplex://auth?code=${encodeURIComponent(code)}`;
+  const deepLink = `orplex://auth?code=${encodeURIComponent(grant)}`;
   return page(
     `<h2 style="color:#ff6b00">&#10003; Signed in</h2>` +
       `<p style="color:#9aa">Returning to Orplex Code… you can close this tab.</p>` +

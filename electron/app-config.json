@@ -1,6 +1,8 @@
 {
-  "//": "Shipped app configuration. Read by the Electron MAIN process at boot.",
-  "//2": "A packaged app has no .env next to it (and must never ship one: it holds the DB password), so the cloud backend origin + lightweight mode live here. Repo-root .env and real shell env still win, which keeps local dev unchanged.",
-  "apiUrl": "https://orplex-backend.vercel.app",
-  "lightweight": true
+    "//":  "Shipped app configuration. Read by the Electron MAIN process at boot.",
+    "lightweight":  true,
+    "sessionPublicKey":  "eyJjcnYiOiJFZDI1NTE5IiwieCI6ImhxdmZXMDlfcG5pMy1URmJmYUpCTkFPOWlzRmZLOU40RElEX2RjbEZRTFkiLCJrdHkiOiJPS1AifQ",
+    "//3":  "PUBLIC key (Ed25519) the app uses to verify the backend-signed app session. Public by design - the private key stays in the backend\u0027s Vercel env.",
+    "//2":  "A packaged app has no .env next to it (and must never ship one: it holds the DB password), so the cloud backend origin + lightweight mode live here. Repo-root .env and real shell env still win, which keeps local dev unchanged.",
+    "apiUrl":  "https://orplex-backend.vercel.app"
 }

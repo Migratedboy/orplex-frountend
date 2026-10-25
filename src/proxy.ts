@@ -16,6 +16,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { appSessionUserFromRequest } from "@/lib/app-session";
 import { meetsMinimum } from "@/lib/app-version";
 
 // Simple request ID generation - Edge Runtime compatible (no Node.js modules)
@@ -266,17 +267,29 @@ if (
   if (requiresPageAuth(request.nextUrl.pathname)) {
     // Desktop sign-in (orplex:// deep link) can set either the plain or the
     // __Secure- session cookie depending on the environment — accept both.
-    const token =
-      (await getToken({
-        req: request,
-        secret: process.env.NEXTAUTH_SECRET,
-      })) ??
-      (await getToken({
-        req: request,
-        secret: process.env.NEXTAUTH_SECRET,
-        cookieName: "__Secure-next-auth.session-token",
-      }));
-    if (!token) {
+    const secret = process.env.NEXTAUTH_SECRET;
+    let signedIn = false;
+    if (secret) {
+      const token =
+        (await getToken({
+          req: request,
+          secret,
+        })) ??
+        (await getToken({
+          req: request,
+          secret,
+          cookieName: "__Secure-next-auth.session-token",
+        }));
+      signedIn = !!token;
+    } else {
+      // The packaged app ships no NEXTAUTH_SECRET (a signing key must not
+      // live in a client binary), so the backend's session cookie cannot be
+      // verified here. The backend ALSO issues an Ed25519-signed app session
+      // whose PUBLIC key ships with the app — that one verifies locally.
+      const appUser = await appSessionUserFromRequest(request);
+      signedIn = !!appUser;
+    }
+    if (!signedIn) {
       const signIn = new URL("/auth/signin", request.url);
       signIn.searchParams.set("callbackUrl", request.nextUrl.pathname);
       return NextResponse.redirect(signIn);

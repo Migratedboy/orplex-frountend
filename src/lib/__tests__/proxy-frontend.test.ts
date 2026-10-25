@@ -43,10 +43,15 @@ function loadProxy() {
 
 beforeAll(() => {
   process.env.NEXT_PUBLIC_API_BASE_URL = "http://localhost:5010";
+  // A local secret means the gate verifies the backend's session cookie
+  // itself (dev / self-hosted). The packaged app has no secret and falls
+  // back to the app session — covered by its own describe block below.
+  process.env.NEXTAUTH_SECRET = "proxy-test-secret";
 });
 
 afterAll(() => {
   delete process.env.NEXT_PUBLIC_API_BASE_URL;
+  delete process.env.NEXTAUTH_SECRET;
 });
 
 beforeEach(() => {
@@ -82,6 +87,54 @@ describe("page auth (cloud reachable)", () => {
     // backend; the page's own /api/auth + /api/dev calls are rewritten there.
     const signin = await handler(req("/auth/signin"));
     expect(signin.status).toBe(200);
+  });
+});
+
+describe("page auth without a local secret (packaged app)", () => {
+  // The packaged app ships no NEXTAUTH_SECRET: the gate must accept the
+  // app session the backend signs (verified with the shipped public key).
+  beforeEach(async () => {
+    delete process.env.NEXTAUTH_SECRET;
+    const { generateKeyPair, exportJWK } = await import("jose");
+    const { publicKey, privateKey } = await generateKeyPair("EdDSA", { extractable: true });
+    const pub = await exportJWK(publicKey);
+    const priv = await exportJWK(privateKey);
+    process.env.ORPLEX_SESSION_PUBLIC_KEY = Buffer.from(JSON.stringify(pub), "utf8").toString("base64url");
+    process.env.ORPLEX_SESSION_PRIVATE_KEY = Buffer.from(JSON.stringify(priv), "utf8").toString("base64url");
+    jest.spyOn(global, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
+    loadProxy();
+  });
+
+  afterEach(() => {
+    delete process.env.ORPLEX_SESSION_PUBLIC_KEY;
+    delete process.env.ORPLEX_SESSION_PRIVATE_KEY;
+    process.env.NEXTAUTH_SECRET = "proxy-test-secret";
+  });
+
+  async function signedAppSessionCookie(): Promise<string> {
+    const { signAppSession } = require("@/lib/app-session");
+    const token = await signAppSession({ id: "u-app" });
+    return `orplex-app-session=${encodeURIComponent(token || "")}`;
+  }
+
+  it("lets a signed-in app user through", async () => {
+    const request = req("/settings") as { headers: Headers };
+    request.headers = new Headers({ cookie: await signedAppSessionCookie() });
+    const res = await handler(request);
+    expect(res.status).toBe(200);
+  });
+
+  it("redirects when the app session is missing", async () => {
+    const res = await handler(req("/settings"));
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/auth/signin");
+  });
+
+  it("redirects when the app session is forged", async () => {
+    const request = req("/settings") as { headers: Headers };
+    request.headers = new Headers({ cookie: "orplex-app-session=not.a.token" });
+    const res = await handler(request);
+    expect(res.status).toBe(307);
   });
 });
 
