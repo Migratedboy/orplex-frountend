@@ -77,9 +77,9 @@ function capOutput(raw: string): { output: string; truncated: boolean; matchCoun
   return { output, truncated, matchCount };
 }
 
-async function tryRipgrep(rootDir: string, pattern: string, isRegex: boolean): Promise<string | null> {
+async function tryRipgrep(rootDir: string, pattern: string, isRegex: boolean, perFileLimit: number): Promise<string | null> {
   try {
-    const args = ["--line-number", "--no-heading", "--max-count", "5", "--color", "never"];
+    const args = ["--line-number", "--no-heading", "--max-count", String(perFileLimit), "--color", "never"];
     if (!isRegex) args.push("--fixed-strings");
     args.push("-e", pattern, ".");
     const { stdout } = await execFileAsync("rg", args, {
@@ -97,9 +97,9 @@ async function tryRipgrep(rootDir: string, pattern: string, isRegex: boolean): P
   }
 }
 
-async function tryGitGrep(rootDir: string, pattern: string, isRegex: boolean): Promise<string | null> {
+async function tryGitGrep(rootDir: string, pattern: string, isRegex: boolean, perFileLimit: number): Promise<string | null> {
   try {
-    const args = ["grep", "-n", "-I", "--max-count", "5"];
+    const args = ["grep", "-n", "-I", "--max-count", String(perFileLimit)];
     if (!isRegex) args.push("-F");
     args.push("-e", pattern);
     const { stdout } = await execFileAsync("git", args, {
@@ -149,7 +149,7 @@ async function walkFiles(rootDir: string, maxFiles: number, maxDepth: number): P
   return out;
 }
 
-async function nodeScan(rootDir: string, pattern: string, isRegex: boolean): Promise<string | null> {
+async function nodeScan(rootDir: string, pattern: string, isRegex: boolean, perFileLimit: number): Promise<string | null> {
   try {
     let regex: RegExp;
     try {
@@ -185,7 +185,7 @@ async function nodeScan(rootDir: string, pattern: string, isRegex: boolean): Pro
         const content = await fs.readFile(abs, "utf8");
         const lines = content.split("\n");
         let perFile = 0;
-        for (let i = 0; i < lines.length && perFile < 5; i++) {
+        for (let i = 0; i < lines.length && perFile < perFileLimit; i++) {
           if (results.length >= MAX_SEARCH_MATCHES) {
             capped = true;
             break;
@@ -233,8 +233,11 @@ export async function codeSearch(
   const rg = await tryRipgrepContext(root, pattern, isRegex, context);
   if (rg !== null) return formatSnippets(rg, pattern, "ripgrep");
 
-  // 2. git grep → synthesize context from per-file reads
-  const plain = await grepSearch(root, pattern, { isRegex });
+  // 2. git grep → synthesize context from per-file reads. The snippet mode
+  // needs the FULL per-file count (to print "## file (12 matches)"), so the
+  // fallback engines use the snippet cap rather than the plain-search cap of
+  // 5 — the grouped output is identical whichever engine is available.
+  const plain = await grepSearch(root, pattern, { isRegex, perFileLimit: SNIPPET_MAX_MATCHES });
   if (plain) return formatSnippets(plain.output, pattern, plain.engine);
   return null;
 }
@@ -325,16 +328,17 @@ async function formatSnippets(raw: string, pattern: string, engine: SearchResult
 export async function grepSearch(
   rootDir: string,
   pattern: string,
-  opts: { isRegex?: boolean } = {}
+  opts: { isRegex?: boolean; perFileLimit?: number } = {}
 ): Promise<SearchResult | null> {
   const root = resolveRoot(rootDir);
   if (!root || !pattern || pattern.length > 500) return null;
   const isRegex = opts.isRegex ?? false;
+  const perFileLimit = Math.max(1, Math.min(SNIPPET_MAX_MATCHES, Math.floor(opts.perFileLimit ?? 5)));
 
   const engines: Array<[SearchResult["engine"], () => Promise<string | null>]> = [
-    ["ripgrep", () => tryRipgrep(root, pattern, isRegex)],
-    ["gitgrep", () => tryGitGrep(root, pattern, isRegex)],
-    ["node", () => nodeScan(root, pattern, isRegex)],
+    ["ripgrep", () => tryRipgrep(root, pattern, isRegex, perFileLimit)],
+    ["gitgrep", () => tryGitGrep(root, pattern, isRegex, perFileLimit)],
+    ["node", () => nodeScan(root, pattern, isRegex, perFileLimit)],
   ];
 
   for (const [engine, run] of engines) {

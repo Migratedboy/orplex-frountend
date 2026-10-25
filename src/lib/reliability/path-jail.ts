@@ -109,6 +109,12 @@ export async function containPath(
   targetPath: string,
 ): Promise<{ ok: true; abs: string } | { ok: false; reason: string }> {
   const rootAbs = resolve(rootDir);
+  // A path that is absolute on ANOTHER platform (Windows drive, UNC share)
+  // can never be inside the workspace — reject it before it is joined onto
+  // the root, which on Linux would turn "C:/Windows/x" into a relative path.
+  if (/^[a-zA-Z]:[\\/]/.test(targetPath) || targetPath.startsWith("\\\\") || targetPath.startsWith("//")) {
+    return { ok: false, reason: `"${targetPath}" is an absolute path outside the workspace root` };
+  }
   const full = isAbsolute(targetPath) ? resolve(targetPath) : resolve(rootAbs, targetPath);
   // Lexical containment — the same first gate as archive-extract's containPath.
   if (full !== rootAbs && !full.startsWith(rootAbs + sep)) {

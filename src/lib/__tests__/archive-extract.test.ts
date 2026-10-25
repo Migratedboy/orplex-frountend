@@ -86,6 +86,14 @@ describe("containPath", () => {
   it("rejects an absolute path elsewhere", () => {
     expect(containPath(root, "C:/Windows/system32/x.dll")).toBeNull();
   });
+
+  it("rejects absolute paths of OTHER platforms too (Windows drive, UNC)", () => {
+    // On Linux "C:/Windows/…" is not absolute, but it must still never be
+    // joined onto the workspace root.
+    expect(containPath(root, "C:\\Windows\\system32\\x.dll")).toBeNull();
+    expect(containPath(root, "\\\\host\\share\\x.dll")).toBeNull();
+    expect(containPath(root, "//host/share/x.dll")).toBeNull();
+  });
 });
 
 describe("safeEntryName", () => {

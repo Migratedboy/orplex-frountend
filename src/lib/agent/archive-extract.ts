@@ -60,11 +60,27 @@ export interface ExtractResult {
 }
 
 /**
+ * Absolute on some platform, not necessarily this one: a Windows drive
+ * ("C:\Windows", "C:/Windows"), a UNC share ("\\host\share") or a POSIX
+ * root ("/etc"). Such a path can never point inside a workspace root, so it
+ * is rejected everywhere — otherwise a Windows-authored archive entry would
+ * be silently treated as a RELATIVE name on Linux and written inside the
+ * workspace as a literal "C:" directory.
+ */
+export function isAbsoluteAnyPlatform(p: string): boolean {
+  if (isAbsolute(p)) return true;
+  if (/^[a-zA-Z]:[\\/]/.test(p)) return true; // C:\… or C:/…
+  if (p.startsWith("\\\\") || p.startsWith("//")) return true; // UNC
+  return false;
+}
+
+/**
  * Resolve `p` against `root` and require it to stay inside.
  * Returns null when the path escapes the root.
  */
 export function containPath(root: string, p: string): string | null {
   const rootAbs = resolve(root);
+  if (isAbsoluteAnyPlatform(p)) return null;
   const full = isAbsolute(p) ? resolve(p) : resolve(rootAbs, p);
   if (full !== rootAbs && !full.startsWith(rootAbs + sep)) return null;
   return full;

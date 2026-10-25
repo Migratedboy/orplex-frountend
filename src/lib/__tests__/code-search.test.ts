@@ -7,9 +7,16 @@
 import { codeSearch } from "../grep-search";
 import { mkdtemp, rm, mkdir, writeFile } from "fs/promises";
 import { tmpdir } from "os";
+import { spawnSync } from "child_process";
 import path from "path";
 
 let root: string;
+
+/** ripgrep is optional — the engine chain falls back to git grep / node scan. */
+function ripgrepAvailable(): boolean {
+  const probe = spawnSync("rg", ["--version"], { stdio: "ignore" });
+  return probe.status === 0;
+}
 
 beforeAll(async () => {
   root = await mkdtemp(path.join(tmpdir(), "code-search-"));
@@ -51,10 +58,18 @@ describe("codeSearch", () => {
   it("returns grouped per-file sections with headers", async () => {
     const res = await codeSearch(root, "hardcoded VAT rate");
     expect(res).not.toBeNull();
-    expect(res!.engine).toBe("ripgrep");
+    // The engine depends on what the machine has (rg → git grep → node scan);
+    // the OUTPUT must be the same for every engine.
+    expect(["ripgrep", "gitgrep", "node"]).toContain(res!.engine);
     expect(res!.output).toContain("## src/invoice.ts");
     expect(res!.output).toContain("## src/other.ts");
     expect(res!.matchCount).toBe(2);
+  }, 30_000);
+
+  it("prefers ripgrep when it is installed", async () => {
+    if (!ripgrepAvailable()) return; // no rg on this machine — chain falls back
+    const res = await codeSearch(root, "hardcoded VAT rate");
+    expect(res!.engine).toBe("ripgrep");
   }, 30_000);
 
   it("annotates each match with a read_file hint whose window covers the match", async () => {
