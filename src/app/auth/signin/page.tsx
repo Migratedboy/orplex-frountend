@@ -400,11 +400,17 @@ export default function SignInPage() {
           {/* Footer */}
           <p className="text-center text-[11px] text-[var(--text-secondary)] font-['JetBrains_Mono',monospace] mt-[16px]">
             By continuing, you agree to Orplex Code&apos;s{" "}
-            <a className="text-[var(--brand)] hover:text-[var(--brand-vivid)] transition-colors" href="#">
+            <a
+              className="text-[var(--brand)] hover:text-[var(--brand-vivid)] transition-colors"
+              href="/legal/terms"
+            >
               Terms
             </a>{" "}
             and{" "}
-            <a className="text-[var(--brand)] hover:text-[var(--brand-vivid)] transition-colors" href="#">
+            <a
+              className="text-[var(--brand)] hover:text-[var(--brand-vivid)] transition-colors"
+              href="/legal/privacy"
+            >
               Privacy Policy
             </a>
           </p>

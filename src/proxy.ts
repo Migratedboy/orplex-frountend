@@ -128,8 +128,16 @@ function isLocalOnlyApi(pathname: string, searchParams?: URLSearchParams): boole
 
 // Page routes that require a session (the frontend has no API routes left).
 function requiresPageAuth(pathname: string): boolean {
-  // Sign-in/out and static assets never redirect.
-  if (pathname.startsWith("/auth") || pathname.startsWith("/_next") || pathname === "/favicon.ico") return false;
+  // Sign-in/out, the legal pages and static assets never redirect. The terms
+  // and privacy policy have to be readable BEFORE signing in — that is the
+  // whole point of asking someone to agree to them.
+  if (
+    pathname.startsWith("/auth") ||
+    pathname.startsWith("/legal") ||
+    pathname.startsWith("/_next") ||
+    pathname === "/favicon.ico"
+  )
+    return false;
   // "has a file extension" -> treated as a static asset, so no auth. This is
   // latent rather than exploitable today (no page route in src/app contains a
   // dot), but it is a footgun: adding a route like /settings/2.0 or a dotted

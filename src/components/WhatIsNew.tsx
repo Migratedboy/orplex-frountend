@@ -57,6 +57,14 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "The new build takes the place of the old one — nothing to delete or reinstall",
     ],
   },
+  "1.0.16": {
+    title: "Terms, privacy and a steadier start",
+    items: [
+      "The sign-in page now links the real Terms of Service and Privacy Policy",
+      "Both documents are readable before you sign in — no dead placeholder links",
+      "Fixed: the app no longer gives up on a slow start and shows Server failed to start",
+    ],
+  },
   "1.1.0": {
     title: "Faster path to your first win",
     items: [

@@ -88,6 +88,12 @@ describe("page auth (cloud reachable)", () => {
     const signin = await handler(req("/auth/signin"));
     expect(signin.status).toBe(200);
   });
+
+  it("never guards the legal pages (terms must be readable before signing in)", async () => {
+    getToken.mockResolvedValue(null);
+    expect((await handler(req("/legal/terms"))).status).toBe(200);
+    expect((await handler(req("/legal/privacy"))).status).toBe(200);
+  });
 });
 
 describe("page auth without a local secret (packaged app)", () => {

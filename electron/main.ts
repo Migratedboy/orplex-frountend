@@ -495,8 +495,12 @@ function projectRoot(): string {
   return isDev ? path.join(app.getAppPath()) : process.resourcesPath;
 }
 
-/** Health-check: GET / until it answers (any status). */
-function waitForServer(urls: string | string[], timeoutMs = 45000): Promise<void> {
+/** Health-check: GET / until it answers (any status).
+ *  The timeout is generous: on a loaded machine (the app itself plus a dev
+ *  build of the UI) the standalone server can need a couple of minutes to
+ *  come up, and giving up early only produced a "Server failed to start"
+ *  dialog while the server was about to answer. */
+function waitForServer(urls: string | string[], timeoutMs = 150000): Promise<void> {
   const list = Array.isArray(urls) ? urls : [urls];
   const started = Date.now();
   return new Promise((resolve, reject) => {
