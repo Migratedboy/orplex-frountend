@@ -13,7 +13,7 @@ import { useEffect, useState } from "react";
 // Changelog lives in code (WHATS_NEW) so shipping notes is a one-file diff —
 // no backend round-trip, works offline, matches the installer's content.
 
-const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
+export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
   "1.0.11": {
     title: "Desktop sign-in that actually works",
     items: [
@@ -21,6 +21,22 @@ const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "You stay signed in after the browser hand-off — no bounce back to the login screen",
       "A second sign-in attempt works instead of failing with “Sign-in could not start”",
       "Sign-in codes are stateless (HMAC + AES-GCM), so nothing is lost between server instances",
+    ],
+  },
+  "1.0.12": {
+    title: "The right notes for this build",
+    items: [
+      "Sign-in with Google or GitHub no longer stalls or bounces you back to the login screen",
+      "“What’s new” now lists what THIS version changed instead of the same old notes",
+      "Each release gets its own notes — the newest one you have installed wins",
+    ],
+  },
+  "1.0.13": {
+    title: "Release notes that match your build",
+    items: [
+      "“What’s new” shows what THIS version changed — no more copy-paste from another release",
+      "Every build now picks the notes of the newest release it contains",
+      "Desktop sign-in with Google and GitHub keeps working after an update",
     ],
   },
   "1.1.0": {
@@ -43,6 +59,22 @@ function compareVersions(a: string, b: string): number {
     if (diff !== 0) return diff;
   }
   return 0;
+}
+
+/**
+ * The notes of the running version. When a build has no entry of its own,
+ * fall back to the newest release that is NOT newer than it — never to a
+ * release from a future line (that is what made every update show the same
+ * unrelated notes).
+ */
+export function entryFor(current: string | null): { title: string; items: string[] } {
+  const known = Object.keys(WHATS_NEW).sort(compareVersions);
+  if (current && WHATS_NEW[current]) return WHATS_NEW[current];
+  if (current) {
+    const notNewer = known.filter((v) => compareVersions(v, current) <= 0);
+    if (notNewer.length) return WHATS_NEW[notNewer[notNewer.length - 1]];
+  }
+  return WHATS_NEW[known[0]];
 }
 
 const EVENT = "orplex:whats-new";
@@ -86,8 +118,7 @@ export default function WhatIsNew() {
   }, []);
 
   if (!open) return null;
-  const known = Object.keys(WHATS_NEW).sort(compareVersions);
-  const entry = (currentVersion && WHATS_NEW[currentVersion]) || WHATS_NEW[known[known.length - 1]];
+  const entry = entryFor(currentVersion);
   const seenKey = `orplex.whatsNewSeen.${currentVersion || "latest"}`;
 
   const dismiss = () => {
