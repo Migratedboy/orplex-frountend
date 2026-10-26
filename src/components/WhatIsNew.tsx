@@ -57,6 +57,13 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "The new build takes the place of the old one — nothing to delete or reinstall",
     ],
   },
+  "1.0.17": {
+    title: "Back to the Orplex look",
+    items: [
+      "Fixed: the app icon sometimes showed as Electron's default logo — the Windows icon is rebuilt and intact",
+      "Icon files are now protected from ever being corrupted again",
+    ],
+  },
   "1.0.16": {
     title: "Terms, privacy and a steadier start",
     items: [
