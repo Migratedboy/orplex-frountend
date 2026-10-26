@@ -39,6 +39,24 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Desktop sign-in with Google and GitHub keeps working after an update",
     ],
   },
+  "1.0.14": {
+    title: "The app updates itself",
+    items: [
+      "A newer version is found and downloaded in the background — no button to hunt for",
+      "Orplex restarts into the new build by itself, so it simply replaces the old one",
+      "Nothing to delete or reinstall: the update is applied over your install",
+      "Restarts wait for your running agents to finish (or press “Later” to hold it)",
+    ],
+  },
+  "1.0.15": {
+    title: "The app starts again — and updates itself",
+    items: [
+      "Fixed: the app could show Server failed to start even though its server was running",
+      "The internal server is now reached on the address it is actually bound to (127.0.0.1)",
+      "A newer version is found on your device, downloaded in the background and installed by itself",
+      "The new build takes the place of the old one — nothing to delete or reinstall",
+    ],
+  },
   "1.1.0": {
     title: "Faster path to your first win",
     items: [
@@ -51,7 +69,7 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
 };
 
 /** "1.0.9" < "1.0.10" < "1.1.0" — plain numeric segment compare. */
-function compareVersions(a: string, b: string): number {
+export function compareVersions(a: string, b: string): number {
   const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
   const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {

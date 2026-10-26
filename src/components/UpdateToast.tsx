@@ -1,18 +1,22 @@
-// UpdateToast.tsx — Freebuff-style in-app update card (bottom-right).
+// UpdateToast.tsx — in-app update card (bottom-right).
 //
-// Persistent (never auto-dismisses mid-download), three live states plus a
-// mandatory one driven by backend 426s:
-//   available   — "Update available vX" [Download] [Later]
+// The app updates itself: a newer version is fetched in the background and
+// the app restarts into it, so the new build takes the place of the old one.
+// The card only reports what is happening:
+//   available   — "Update available vX" (the download starts by itself)
 //   downloading — "Downloading Orplex vX" + bar + %  [Cancel]
-//   downloaded  — "Restart to apply" [Restart now] [Later]
+//   downloaded  — "Restarting to apply vX" [Restart now] [Later]
 //   force       — "Update required" [Download now] (no Later; backend refuses old clients)
 //   notice      — transient error line [Dismiss]
+// "Later" (and agent runs in flight) postpone the restart — the downloaded
+// build is applied on the next quit or the next boot.
 // Mounted once in AppLayout. Renders nothing outside Electron.
 
 "use client";
 
 import { useEffect } from "react";
 import { useAppUpdater } from "@/hooks/useAppUpdater";
+import { useActiveRunCount } from "@/hooks/useActiveRunCount";
 
 function Bar({ percent }: { percent: number }) {
   const pct = Math.max(0, Math.min(100, Math.round(percent)));
@@ -24,7 +28,8 @@ function Bar({ percent }: { percent: number }) {
 }
 
 export default function UpdateToast() {
-  const { state, download, cancel, install, dismiss, isElectron } = useAppUpdater();
+  const { state, download, cancel, install, defer, arm, dismiss, isElectron } = useAppUpdater();
+  const { activeRuns } = useActiveRunCount();
 
   // Transient notices clear themselves so a failed check doesn't linger.
   useEffect(() => {
@@ -32,6 +37,17 @@ export default function UpdateToast() {
     const t = setTimeout(dismiss, 6000);
     return () => clearTimeout(t);
   }, [state.phase, state.error, dismiss]);
+
+  // Never restart the app out from under a running agent — postpone instead,
+  // and pick the update back up as soon as the runs are done.
+  useEffect(() => {
+    if (state.phase !== "downloaded") return;
+    if (activeRuns > 0) {
+      void defer();
+    } else {
+      void arm();
+    }
+  }, [state.phase, activeRuns, defer, arm]);
 
   if (!isElectron) return null;
   if (state.phase === "hidden") return null;
@@ -44,8 +60,7 @@ export default function UpdateToast() {
         <>
           <div className="update-toast-row">
             <span className="ms" aria-hidden="true">system_update</span>
-            <span className="update-toast-title">Update available{v}</span>
-            <button className="update-toast-btn" onClick={download}>Download</button>
+            <span className="update-toast-title">Update available{v} — downloading</span>
             <button className="update-toast-btn update-toast-btn-quiet" onClick={dismiss}>Later</button>
           </div>
           {state.notes ? <div className="update-toast-notes">{state.notes}</div> : null}
@@ -65,9 +80,13 @@ export default function UpdateToast() {
       {state.phase === "downloaded" && (
         <div className="update-toast-row">
           <span className="ms" aria-hidden="true">restart_alt</span>
-          <span className="update-toast-title">Update downloaded{v} — restart to apply</span>
+          <span className="update-toast-title">
+            Update ready{v} — restarting{activeRuns > 0 ? " when your runs finish" : ""}
+          </span>
           <button className="update-toast-btn" onClick={install}>Restart now</button>
-          <button className="update-toast-btn update-toast-btn-quiet" onClick={dismiss}>Later</button>
+          <button className="update-toast-btn update-toast-btn-quiet" onClick={() => { void defer(); dismiss(); }}>
+            Later
+          </button>
         </div>
       )}
       {state.phase === "force" && (
@@ -89,4 +108,3 @@ export default function UpdateToast() {
     </div>
   );
 }
-

@@ -42,9 +42,12 @@ import { apiFetch, withApiBase, API_BASE } from "@/lib/api-base";
 //              the desktop install is unchanged.
 function resolveApiUrl(path: string): string {
   if (typeof window !== "undefined") return withApiBase(path);
+  // The desktop app binds its server to 127.0.0.1 (IPv4). "localhost" can
+  // resolve to ::1 (IPv6) first, and a request that lands there never
+  // reaches the server — so the default is the address we actually bind.
   const origin = (
     API_BASE ||
-    (process.env.NEXT_PUBLIC_APP_URL || "http://localhost:5000").trim().replace(/\/+$/, "")
+    (process.env.NEXT_PUBLIC_APP_URL || "http://127.0.0.1:5000").trim().replace(/\/+$/, "")
   );
   return `${origin}${path}`;
 }

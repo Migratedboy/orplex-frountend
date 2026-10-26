@@ -80,7 +80,32 @@ export function useAppUpdater() {
     }
   }, []);
 
+  /**
+   * Postpone the automatic restart. The downloaded build stays on disk and
+   * is applied on the next quit or the next boot — nothing is lost.
+   */
+  const defer = useCallback(async () => {
+    try {
+      await (window as unknown as {
+        orplexDesktop?: { updates?: { defer?: () => Promise<unknown> } };
+      }).orplexDesktop?.updates?.defer?.();
+    } catch {
+      /* deferring is best-effort */
+    }
+  }, []);
+
+  /** Re-arm the automatic restart (the runs that blocked it are done). */
+  const arm = useCallback(async () => {
+    try {
+      await (window as unknown as {
+        orplexDesktop?: { updates?: { arm?: () => Promise<unknown> } };
+      }).orplexDesktop?.updates?.arm?.();
+    } catch {
+      /* re-arming is best-effort */
+    }
+  }, []);
+
   const dismiss = useCallback(() => dispatch({ type: "dismiss" }), []);
 
-  return { state, check, download, cancel, install, dismiss, isElectron: isElectron() };
+  return { state, check, download, cancel, install, defer, arm, dismiss, isElectron: isElectron() };
 }

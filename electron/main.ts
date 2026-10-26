@@ -16,6 +16,7 @@ import { spawn, ChildProcess } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
 import { registerMcpIpc } from "./mcp-bridge";
+import { loopbackUrl, loopbackProbeUrls } from "./loopback";
 import { registerDesktopAuth, handleDesktopAuthArgv } from "./auth-desktop";
 import { registerTerminalIpc, killAllTerminalChildren } from "./terminal";
 import { createConversationStore } from "./conversations-store";
@@ -107,7 +108,21 @@ function handleAppIpc(channel: string, handler: (event: any, ...args: any[]) => 
   });
 }
 
-const APP_URL = `http://localhost:${UI_PORT}`;
+/**
+ * The address the app's own Next.js server is bound to.
+ *
+ * The server is spawned with HOSTNAME=127.0.0.1 (IPv4 loopback). "localhost"
+ * is NOT a safe alias for it: on Windows it resolves to ::1 (IPv6) first, and
+ * a request that lands on ::1 never reaches the IPv4 listener — the readiness
+ * probe timed out and the app showed "Server failed to start" while the
+ * server was up and answering on 127.0.0.1. Always talk to the address we
+ * bind, and keep "localhost" only as a probe fallback.
+ */
+const APP_URL = loopbackUrl(UI_PORT);
+const API_URL = loopbackUrl(API_PORT);
+/** Probe order: the bound address first, "localhost" as a fallback. */
+const APP_PROBES = loopbackProbeUrls(UI_PORT);
+const API_PROBES = loopbackProbeUrls(API_PORT);
 
 /**
  * Is this URL our own app?
@@ -481,23 +496,32 @@ function projectRoot(): string {
 }
 
 /** Health-check: GET / until it answers (any status). */
-function waitForServer(url: string, timeoutMs = 45000): Promise<void> {
+function waitForServer(urls: string | string[], timeoutMs = 45000): Promise<void> {
+  const list = Array.isArray(urls) ? urls : [urls];
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const attempt = () => {
-      probeServer(url)
+      probeAnyServer(list)
         .then((up) => (up ? resolve() : retry()))
         .catch(retry);
     };
     const retry = () => {
       if (Date.now() - started > timeoutMs) {
-        reject(new Error(`Next.js server did not become ready at ${url}`));
+        reject(new Error(`Next.js server did not become ready at ${list[0]}`));
         return;
       }
       setTimeout(attempt, 400);
     };
     attempt();
   });
+}
+
+/** Probe every candidate address until one answers. */
+async function probeAnyServer(urls: string[], timeoutMs = 2500): Promise<boolean> {
+  for (const url of urls) {
+    if (await probeServer(url, timeoutMs)) return true;
+  }
+  return false;
 }
 
 /** Single probe: resolves true if the URL answers with any HTTP status. */
@@ -1660,7 +1684,7 @@ handleAppIpc("agent-browser:screenshot-advanced", async (_e, args: { fullPage?: 
  * mode being guarded against).
  */
 async function killPortListener(port: number): Promise<void> {
-  if (!(await probeServer(`http://localhost:${port}`))) return;
+  if (!(await probeAnyServer(loopbackProbeUrls(port)))) return;
   const { execSync } = await import("node:child_process");
   try {
     if (process.platform === "win32") {
@@ -1775,16 +1799,16 @@ app.whenReady().then(async () => {
       ["ui", UI_PORT],
       ["api", API_PORT],
     ] as const) {
-      if (await probeServer(`http://localhost:${port}`)) {
+      if (await probeAnyServer(loopbackProbeUrls(port))) {
         process.stdout.write(`[startup] port ${port} (${which}) held by a stale process — taking it over\n`);
         await killPortListener(port);
       }
     }
     await startNextServer("ui");
     if (!cloudApi) await startNextServer("api");
-    await waitForServer(APP_URL);
+    await waitForServer(APP_PROBES);
     if (!cloudApi) {
-      await waitForServer(`http://localhost:${API_PORT}`);
+      await waitForServer(API_PROBES);
     } else {
       process.stdout.write(`[startup] cloud mode: UI points at ${cloudApi} — no local API spawned\n`);
     }

@@ -45,15 +45,20 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
   getAppVersion: () =>
     ipcRenderer.invoke("orplex:app-version") as Promise<string>,
   /**
-   * IN-APP UPDATES: user-consented download flow (available → downloading w/
-   * progress + cancel → downloaded → restart). All UI lives in the renderer
-   * (UpdateToast); main only checks/downloads/installs on explicit calls.
+   * IN-APP UPDATES: the app updates itself (check → download in the
+   * background → install + relaunch). The renderer can defer the restart;
+   * the downloaded build is then applied on the next quit or boot. All UI
+   * lives in the renderer (UpdateToast); main only drives the updater.
    */
   updates: {
     check: () => ipcRenderer.invoke("orplex:update-check") as Promise<{ state: string; version?: string }>,
     download: () => ipcRenderer.invoke("orplex:update-download") as Promise<{ state: string; version?: string }>,
     cancel: () => ipcRenderer.invoke("orplex:update-cancel") as Promise<{ ok: boolean }>,
     install: () => ipcRenderer.invoke("orplex:update-install") as Promise<{ ok: boolean }>,
+    /** Postpone the automatic restart ("Later", or while runs are active). */
+    defer: () => ipcRenderer.invoke("orplex:update-defer") as Promise<{ ok: boolean }>,
+    /** Re-arm the automatic restart once the blocker is gone. */
+    arm: () => ipcRenderer.invoke("orplex:update-arm") as Promise<{ ok: boolean }>,
     /** update-status events from main (checking/available/downloading/downloaded/error). */
     onStatus: (listener: (status: {
       state: string;
