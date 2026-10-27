@@ -57,6 +57,13 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "The new build takes the place of the old one — nothing to delete or reinstall",
     ],
   },
+  "1.0.20": {
+    title: "Code mode works again — prompts stay model-sized",
+    items: [
+      "Fixed: sending a prompt in code mode could fail with HTTP 500 — the workspace context pushed more text than some models accept",
+      "The disk-driven context now travels with much smaller per-file windows (10 files, ~16K characters each) so every model gets a prompt that fits",
+    ],
+  },
   "1.0.19": {
     title: "Files stay on disk — loaded only when needed",
     items: [

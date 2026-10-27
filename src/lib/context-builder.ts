@@ -38,20 +38,22 @@ function buildFileTreeString(nodes: any[], depth = 0): string {
 const SIMPLE_PATTERNS = /^(hi|hello|hey|thanks|thank you|ok|yes|no|help|bye|sup|yo|hola|howdy|cool|nice|great|awesome|perfect)/i;
 
 // Bounded per-file window: a candidate's head is enough for scoring plus a
-// useful snippet. Oversized files stay on disk — read_file/search_code reach
-// the rest on demand.
-const HEAD_LINES = 350;
-const HEAD_CHARS = 60_000;
+// usable snippet. Oversized files stay on disk — read_file/search_code reach
+// the rest on demand. Kept small so mid-window models (free Minimax tier)
+// never receive a prompt bigger than their context.
+const HEAD_LINES = 120;
+const HEAD_CHARS = 16_000;
 
-// Prompt budget (chars). ~160K tokens of context copies — way under any model
-// window and orders of magnitude smaller than the old full-dump path.
-const CONTEXT_CAP_CHARS = 640_000;
+// Prompt budget (chars). ~40K tokens — sized for the free-tier models'
+// windows (Minimax M3.1 Flash ≈196K) while staying far above the old
+// full-dump minimum for small repos.
+const CONTEXT_CAP_CHARS = 160_000;
 
 // How many distinct files may contribute content to one prompt.
-const MAX_FILES = 28;
+const MAX_FILES = 10;
 
 // Number of candidates actively read from disk for scoring.
-const MAX_CANDIDATE_READS = 60;
+const MAX_CANDIDATE_READS = 20;
 
 /** Detect task type from user message for smarter file prioritization */
 function detectTaskType(message: string): string {
@@ -201,7 +203,7 @@ export async function buildDiskContext(
   let sigContent = "";
   for (const h of heads) {
     if (includedPaths.has(h.path) || h.sigs.length === 0) continue;
-    if (sigContent.length > 40_000) break;
+    if (sigContent.length > 20_000) break;
     sigContent += `\n--- ${h.path} (signatures) ---\n${h.sigs.join("\n")}\n`;
   }
   if (sigContent) context += `\nSignatures (remaining scored files — use read_file for details):\n${sigContent}\n`;
@@ -300,7 +302,7 @@ export function buildM3Context(
     const headLower = head.toLowerCase();
     for (const kw of keywords) if (headLower.includes(kw)) effective += 5;
 
-    if (includedPaths.size < MAX_FILES && tier1Tokens + estimateTokens(head) <= 280_000) {
+    if (includedPaths.size < MAX_FILES && tier1Tokens + estimateTokens(head) <= 40_000) {
       tier1Content += `\n--- ${path} (head) ---\n${head}\n`;
       tier1Tokens += estimateTokens(head);
       tier1Count++;
@@ -316,7 +318,7 @@ export function buildM3Context(
         if (sigs.length >= 25) break;
       }
     }
-    if (sigs.length > 0 && sigContent.join("").length < 40_000) {
+    if (sigs.length > 0 && sigContent.join("").length < 20_000) {
       sigContent.push(`\n--- ${path} (signatures) ---\n${sigs.join("\n")}\n`);
     }
     void score;
