@@ -844,9 +844,11 @@ function listFilesUnderPath(path: string): string {
 // === Build workspace context ===
 
 async function buildContext(userMessage: string): Promise<string> {
-  // Use M3-aware context builder — leverages 1M token context window
-  const { buildM3Context } = await import("./context-builder");
-  const { context } = buildM3Context(_fileTree, _fileContents, userMessage, _directoryName);
+  // Disk-driven context builder: each candidate file is read exactly once,
+  // head-only, directly from the workspace — the renderer never materializes
+  // a resident copy of the whole workspace for prompting.
+  const { buildDiskContext } = await import("./context-builder");
+  const { context } = await buildDiskContext(_fileTree, _readFile, userMessage, _directoryName ?? "");
   return context;
 }
 
