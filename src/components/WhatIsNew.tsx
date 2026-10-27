@@ -57,6 +57,13 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "The new build takes the place of the old one — nothing to delete or reinstall",
     ],
   },
+  "1.0.18": {
+    title: "No way around the sign-in screen",
+    items: [
+      "Fixed: Terms of Service and Privacy Policy open in your browser as a separate page — they can no longer swap out the sign-in screen",
+      "The taskbar always shows the Orplex logo — the default Electron icon bug is gone for good, even if a dev run leaves junk behind",
+    ],
+  },
   "1.0.17": {
     title: "Back to the Orplex look",
     items: [
