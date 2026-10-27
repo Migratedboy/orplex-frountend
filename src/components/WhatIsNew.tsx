@@ -57,6 +57,13 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "The new build takes the place of the old one — nothing to delete or reinstall",
     ],
   },
+  "1.0.19": {
+    title: "Files stay on disk — loaded only when needed",
+    items: [
+      "The agent no longer packs the whole workspace into one message — it now reads the file tree, then opens just the most relevant files from disk",
+      "Big projects no longer balloon memory or prompt size; oversized files are read as head windows, never fully materialized",
+    ],
+  },
   "1.0.18": {
     title: "No way around the sign-in screen",
     items: [
