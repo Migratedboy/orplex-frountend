@@ -403,6 +403,8 @@ export default function SignInPage() {
             <a
               className="text-[var(--brand)] hover:text-[var(--brand-vivid)] transition-colors"
               href="/legal/terms"
+              target="_blank"
+              rel="noreferrer"
             >
               Terms
             </a>{" "}
@@ -410,6 +412,8 @@ export default function SignInPage() {
             <a
               className="text-[var(--brand)] hover:text-[var(--brand-vivid)] transition-colors"
               href="/legal/privacy"
+              target="_blank"
+              rel="noreferrer"
             >
               Privacy Policy
             </a>

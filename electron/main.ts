@@ -133,8 +133,7 @@ const API_PROBES = loopbackProbeUrls(API_PORT);
  * string prefix, so `http://localhost:3000.evil.com` and
  * `http://evil.com/?x=http://localhost:3000` cannot pass.
  */
-function isAppOrigin(raw: string): boolean {
-  try {
+function isAppOrigin(raw: string): boolean {  try {
     const u = new URL(raw);
     if (u.protocol !== "http:" && u.protocol !== "https:") return false;
     // The packaged app and dev both serve from loopback on UI_PORT. Dev may be
@@ -148,6 +147,19 @@ function isAppOrigin(raw: string): boolean {
     // to orplexDesktop). The main window must stay loopback-only, so anything
     // else is refused.
     return false;
+  } catch {
+    return false;
+  }
+}
+
+// Legal pages (Terms of Service / Privacy Policy) must never load inside the
+// app window: the proxy deliberately serves them WITHOUT an auth gate, so an
+// in-place navigation from the sign-in page would swap the auth screen for a
+// public page and let the app shell boot unlocked. Clicking them sends the
+// document to the OS browser instead ("a different page", as requested).
+function isLegalPageUrl(raw: string): boolean {
+  try {
+    return isAppOrigin(raw) && new URL(raw).pathname.replace(/\/+$/, "").startsWith("/legal/");
   } catch {
     return false;
   }
@@ -212,11 +224,39 @@ function writeSessionState(clean: boolean): void {
 // user's own dev servers AND a healthy app instance).
 const gotTheLock = app.requestSingleInstanceLock();
 // Taskbar identity FIRST (before ready): Windows groups the taskbar button
-// by AppUserModelId + exe. Set as early as possible so the shell never
-// associates this process with electron.exe's default icon.
+// by AppUserModelId + exe and CACHES the icon per AUMID. Only the packaged
+// exe may claim the stable AUMID — a dev run of electron.exe claiming it
+// poisons the shell mapping "tech.orplex.app -> electron.exe generic icon"
+// (visible as the default Electron icon in the taskbar even for packaged
+// builds). Dev gets no custom AUMID at all.
 try {
-  app.setAppUserModelId("tech.orplex.app");
+  if (app.isPackaged) app.setAppUserModelId("tech.orplex.app");
 } catch {}
+// Self-healing icon-poison sweep: Electron's Windows toast-notification
+// path self-installs a Start Menu "Electron.lnk" carrying its own AUMID.
+// One pointing at a dev electron.exe propagates the generic icon into the
+// shell caches — delete it on sight from the packaged app.
+try {
+  if (app.isPackaged) {
+    const poisonPath = path.join(
+      app.getPath("appData"),
+      "Microsoft",
+      "Windows",
+      "Start Menu",
+      "Programs",
+      "Electron.lnk"
+    );
+    if (fs.existsSync(poisonPath)) {
+      const poison = shell.readShortcutLink(poisonPath);
+      if (/node_modules[\\/]electron[\\/]dist[\\/]electron\.exe$/i.test(poison.target || "")) {
+        fs.unlinkSync(poisonPath);
+        console.log("[win-icon] removed poisonous Electron.lnk:", poison.target);
+      }
+    }
+  }
+} catch (iconPoisonError) {
+  console.log("[win-icon] poison sweep noop:", String(iconPoisonError));
+}
 if (!gotTheLock) {
   app.quit();
 } else {
@@ -774,6 +814,10 @@ function createWindow(): void {
     if (!isAppOrigin(url)) {
       event.preventDefault();
       if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    } else if (isLegalPageUrl(url)) {
+      // Legal docs open outside the app window (proxy serves them pre-auth).
+      event.preventDefault();
+      shell.openExternal(url);
     }
   });
   // Same protection for in-page redirects that never emit will-navigate on
@@ -782,6 +826,9 @@ function createWindow(): void {
     if (!isAppOrigin(url)) {
       event.preventDefault();
       if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    } else if (isLegalPageUrl(url)) {
+      event.preventDefault();
+      shell.openExternal(url);
     }
   });
   // Block attaching webviews/frames to arbitrary origins.
@@ -1746,10 +1793,10 @@ app.on("activate", () => {
 });
 
 app.whenReady().then(async () => {
-  // (AppUserModelId is set at module top, before ready — kept here as a
-  // no-op-safe reaffirm for the packaged appId parity.)
+  // (AppUserModelId handling is at module top, before ready. Packaged builds
+  // reaffirm the stable AUMID; dev runs keep no custom AUMID.)
   try {
-    app.setAppUserModelId("tech.orplex.app");
+    if (app.isPackaged) app.setAppUserModelId("tech.orplex.app");
   } catch {}
 
   // Desktop sign-in: register the orplex:// protocol handler and the IPC
