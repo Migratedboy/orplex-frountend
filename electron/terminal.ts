@@ -13,7 +13,8 @@
  */
 import { BrowserWindow } from "electron";
 import { spawn, ChildProcess, execSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { statSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import net from "node:net";
 
 const MAX_COMMAND_CHARS = 4000;
@@ -111,6 +112,85 @@ function buildSafeEnv(): NodeJS.ProcessEnv {
     env[k] = v;
   }
   delete env.NODE_ENV;
+  return env as NodeJS.ProcessEnv;
+}
+
+/**
+ * Shell resolution for Windows: the agent writes POSIX commands (`ls`, `wc`,
+ * `cat`), which cmd.exe rejects with "'wc' is not recognized" — exit 1 on
+ * perfectly safe one-liners. Git for Windows ships a real toolchain, so when
+ * it is installed we spawn through its bash (`--login -c`) — the profile
+ * exposes /usr/bin while the Windows cwd carries over via msys. When bash is
+ * absent but a Git `usr\bin` exists, appending it to PATH lets cmd.exe still
+ * resolve ls.exe/wc.exe etc. Memoized; only win32 picks a non-default shell.
+ */
+interface ShellPick {
+  path: string;
+  args: string[];
+  /** POSIX-style shell — commands run bash semantics. */
+  isPosix: boolean;
+}
+
+let shellCache: ShellPick | null | undefined;
+let usrBinCache: string | null | undefined;
+
+function firstFile(candidates: string[]): string | null {
+  for (const c of candidates) {
+    if (!c) continue;
+    try {
+      if (statSync(c).isFile()) return c;
+    } catch {}
+  }
+  return null;
+}
+
+/** Locate a Git install root from `where git`, covering custom install paths. */
+function probeGitToolchain(): { bash: string | null; usrBin: string | null } {
+  try {
+    const out = execSync("where.exe git", {
+      timeout: 5000,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    for (const line of String(out).split(/\r?\n/)) {
+      const gitExe = line.trim();
+      if (!/git\.exe$/i.test(gitExe) || !existsSync(gitExe)) continue;
+      // <root>\cmd\git.exe or <root>\bin\git.exe → root = two levels up.
+      const root = dirname(dirname(gitExe));
+      const bash = firstFile([join(root, "bin", "bash.exe"), join(root, "usr", "bin", "bash.exe")]);
+      const usrBin = [join(root, "usr", "bin")].find((p) => existsSync(p)) || null;
+      if (bash || usrBin) return { bash, usrBin };
+    }
+  } catch {}
+  return { bash: null, usrBin: null };
+}
+
+function gitToolchain(): { bash: string | null; usrBin: string | null } {
+  if (usrBinCache === undefined) {
+    const probed = probeGitToolchain();
+    shellCache = probed.bash
+      ? { path: probed.bash, args: ["--login", "-c"], isPosix: true }
+      : null;
+    usrBinCache = probed.usrBin;
+  }
+  return { bash: shellCache?.path ?? null, usrBin: usrBinCache };
+}
+
+function pickShell(): ShellPick | null {
+  if (process.platform !== "win32") return null;
+  gitToolchain(); // ensure memoized
+  return shellCache ?? null;
+}
+
+function buildSafeEnvWithToolchain(): NodeJS.ProcessEnv {
+  const env = buildSafeEnv() as Record<string, string>;
+  const { usrBin } = gitToolchain();
+  if (usrBin) {
+    const pathKey = Object.keys(env).find((k) => k.toLowerCase() === "path") || "PATH";
+    if (!String(env[pathKey]).toLowerCase().includes(usrBin.toLowerCase())) {
+      env[pathKey] = env[pathKey] ? `${env[pathKey]};${usrBin}` : usrBin;
+    }
+  }
   return env as NodeJS.ProcessEnv;
 }
 
@@ -222,14 +302,23 @@ export function registerTerminalIpc(getWindow: GetWindow, gate: IpcGate): void {
 
       return new Promise((resolve) => {
         const isWin = process.platform === "win32";
+        const shell = pickShell();
         let child: ChildProcess;
         try {
-          child = spawn(args!.command as string, {
-            cwd,
-            env: buildSafeEnv(),
-            shell: isWin ? process.env.ComSpec || "cmd.exe" : "/bin/sh",
-            windowsHide: true,
-          });
+          if (isWin && shell) {
+            child = spawn(shell.path, [...shell.args, args!.command as string], {
+              cwd,
+              env: buildSafeEnvWithToolchain(),
+              windowsHide: true,
+            });
+          } else {
+            child = spawn(args!.command as string, {
+              cwd,
+              env: buildSafeEnvWithToolchain(),
+              shell: isWin ? process.env.ComSpec || "cmd.exe" : "/bin/sh",
+              windowsHide: true,
+            });
+          }
         } catch (err) {
           resolve({ ok: false, error: String((err as Error)?.message || err) });
           return;
@@ -293,14 +382,23 @@ export function registerTerminalIpc(getWindow: GetWindow, gate: IpcGate): void {
       const command = (args!.command as string).trim();
       const port = parseServePort(command);
       const isWin = process.platform === "win32";
+      const shell = pickShell();
       let child: ChildProcess;
       try {
-        child = spawn(command, {
-          cwd,
-          env: buildSafeEnv(),
-          shell: isWin ? process.env.ComSpec || "cmd.exe" : "/bin/sh",
-          windowsHide: true,
-        });
+        if (isWin && shell) {
+          child = spawn(shell.path, [...shell.args, command], {
+            cwd,
+            env: buildSafeEnvWithToolchain(),
+            windowsHide: true,
+          });
+        } else {
+          child = spawn(command, {
+            cwd,
+            env: buildSafeEnvWithToolchain(),
+            shell: isWin ? process.env.ComSpec || "cmd.exe" : "/bin/sh",
+            windowsHide: true,
+          });
+        }
       } catch (err) {
         return { ok: false, error: String((err as Error)?.message || err) };
       }

@@ -57,6 +57,13 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "The new build takes the place of the old one — nothing to delete or reinstall",
     ],
   },
+  "1.0.21": {
+    title: "The agent's commands now run on your device",
+    items: [
+      "Fixed: one-liners like wc -l and ls -la failed with exit 1 on Windows — commands were run through cmd.exe, which has no Unix tools",
+      "Commands now run through Git Bash when Git for Windows is installed, with the classic tooling available again; cmd.exe remains the fallback",
+    ],
+  },
   "1.0.20": {
     title: "Code mode works again — prompts stay model-sized",
     items: [
