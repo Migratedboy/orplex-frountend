@@ -45,57 +45,106 @@ const BLOCKED_ENV_KEYS = [
 
 /**
  * Critical command screen (compact twin of src/lib/exec-guard.ts — the
- * renderer runs the full screen first; this is the backstop). Returns a
- * refusal reason, or null when the command may run.
+ * renderer runs the full screen first; this is the backstop). Argument-aware
+ * on purpose: `rm -rf ./dist`, `npm run format` and `git commit -m "fix
+ * shutdown handling"` must NOT be blocked, while recursive deletes of root
+ * paths, pipe-to-shell and raw disk writes still are.
  */
 export function screenTerminalCommand(raw: unknown): string | null {
   if (typeof raw !== "string" || !raw.trim()) return "empty command";
   if (raw.length > MAX_COMMAND_CHARS) return "command too long (4000 char cap)";
   const cmd = raw.toLowerCase();
-  // Destructive / exfiltration / escape patterns.
-  const denied: Array<[RegExp, string]> = [
-    [/rm\s+(-{1,2}(r|rf|fr)\b)/, "recursive delete"],
-    [/:\(\)\s*\{/, "fork bomb"],
-    [/mkfs|dd\s+.*of=\/dev\//, "disk destroyer"],
-    [/>(\s*)\/dev\/sd/, "raw disk write"],
-    [/shutdown|reboot|halt\b|poweroff/, "power control"],
-    [/net\s+user|adduser|useradd/, "account manipulation"],
-    [/reg\s+(delete|add)/, "registry edit"],
-    [/takeown|icacls/, "ownership/ACL change"],
-    [/bcdedit|bootrec/, "boot config change"],
-    [/vssadmin/, "shadow-copy tampering"],
-    [/cipher\s+\/w/, "secure wipe"],
-    [/format\s+[a-z]:/, "disk format"],
-    [/\b(?:rd|rmdir)\b[^&|;]*\/s/, "recursive remove"],
-    [/\bdel(?:\.exe)?\b[^&|;]*\/s/, "recursive delete"],
-    [/\berase\b[^&|;]*\/s/, "recursive erase"],
-    [/\bdeltree\b/, "legacy recursive delete"],
-    [/remove-item\b[^&|;]*-recurse/, "recursive remove-item"],
-    [/curl[^|]*\|\s*(sh|bash|powershell|cmd)/, "pipe-to-shell download"],
-    [/wget[^|]*\|\s*(sh|bash)/, "pipe-to-shell download"],
-    [/powershell.*-enc(odedcommand)?\s/, "encoded powershell payload"],
-    [/certutil.*-decode/, "certutil decode trick"],
-    [/bitsadmin\s+\/transfer/, "bitsadmin download"],
-    [/\$\([^)]*\)|\`[^\`]*\`/, "command substitution"],
-    [/base64\s+(-d|--decode)[^|]*\|\s*(sh|bash)/, "base64 pipe-to-shell"],
-    [/\|\s*nc(\s|$)/, "netcat pipe"],
-    [/ncat\s+.*-e\s/, "netcat exec"],
-    [/python3?\s+-c\s+.*socket/, "inline socket code"],
-    [/chmod\s+(-r\s+)?777/, "world-writable chmod"],
-    [/chown\s+.*-r/, "recursive chown"],
-  ];
-  for (const [re, why] of denied) {
-    if (re.test(cmd)) return `blocked: ${why}`;
+
+  // Obfuscation markers.
+  if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(raw)) return "control characters are not permitted";
+  if (/[\r\n]/.test(raw)) return "multi-line commands are not permitted";
+
+  // Pipe-to-shell and decode-to-shell.
+  if (/(?:curl|wget|fetch)[^|]*\|\s*(?:ba|z|da|k)?sh\b/.test(cmd)) return "blocked: pipe-to-shell download";
+  if (/(?:base64|openssl|xxd|certutil)[^|]*\|\s*(?:ba|z|da|k)?sh\b/.test(cmd)) return "blocked: decode-to-shell";
+  if (/\|[^\n|]*\b(?:ba|z|da|k)?sh\b/.test(cmd) && !/\|\s*(?:head|tail|grep|sed|awk|sort|uniq|wc|cat|xargs|jq)\b/.test(cmd)) {
+    return "blocked: piping into a shell";
   }
+
+  // Fork bomb / disk destroyer / raw disk write / power control.
+  if (/:\(\)\s*\{.*\|.*&.*\}\s*;\s*:/.test(cmd)) return "blocked: fork bomb";
+  if (/\bmkfs(\.|\s)/.test(cmd)) return "blocked: disk destroyer";
+  if (/\bdd\b[^|;]*\bof=\/dev\/|\bdd\b[^|;]*\bof=[a-z]:/i.test(cmd)) return "blocked: raw disk write";
+  if (/(^|[;&|]\s*)(shutdown|reboot|halt|poweroff)\b/.test(cmd)) return "blocked: power control";
+  if (/(^|[;&|]\s*)init\s+[06]\b/.test(cmd)) return "blocked: power control";
+
+  // Account / registry / boot / shadow-copy / secure-wipe mutations.
+  if (/(^|[;&|]\s*)(net\s+user|adduser|useradd)\b/.test(cmd)) return "blocked: account manipulation";
+  if (/(^|[;&|]\s*)reg\s+(delete|add)\b/.test(cmd)) return "blocked: registry edit";
+  if (/(^|[;&|]\s*)(bcdedit|bootrec)\b/.test(cmd)) return "blocked: boot config change";
+  if (/(^|[;&|]\s*)vssadmin\b/.test(cmd)) return "blocked: shadow-copy tampering";
+  if (/(^|[;&|]\s*)cipher\s+\/w\b/.test(cmd)) return "blocked: secure wipe";
+
+  // Recursive delete — refused only for root/system targets.
+  const recursiveDelete = /\brm\b[^|;&]*\s-[a-zA-Z]*[rR][a-zA-Z]*\b|\b(?:rd|rmdir|del)\b[^|;&]*\/s\b|\bremove-item\b[^|;&]*-recurse/i.test(cmd);
+  if (recursiveDelete) {
+    const dangerous = /(^|[;&|]\s*)(?:rm|rd|rmdir|del|remove-item)\b[^|;&]*\s(?:-[a-zA-Z]*[rR][a-zA-Z]*|\/s)\b[^|;&]*\s(?:["']?)(?:\/|~|\*|\.|\.\.|c:\\|c:\/)(?:["']?)(?:\s|$)/i.test(cmd);
+    if (dangerous) return "blocked: recursive delete of a root or system path";
+  }
+
+  // World-writable system paths.
+  if (/\bchmod\b[^|;&]*777[^|;&]*\s(?:\/|c:\\)(?:\s|$)/i.test(cmd)) return "blocked: world-writable chmod";
+
+  // Process substitution.
+  if (/<\(/.test(raw) || />\(/.test(raw)) return "blocked: process substitution";
+
+  // Command substitution is allowed, but its CONTENTS are screened too — a
+  // hidden payload inside $() must not slip past the backstop.
+  for (const inner of extractSubstitutions(raw)) {
+    const refusal = screenTerminalCommand(inner.trim());
+    if (refusal) return `blocked: substitution content — ${refusal}`;
+  }
+
   return null;
+}
+
+/** Extract `$( … )` / backtick contents so they can be screened recursively. */
+function extractSubstitutions(command: string): string[] {
+  const found: string[] = [];
+  let i = 0;
+  while (i < command.length) {
+    if (command[i] === "$" && command[i + 1] === "(") {
+      let depth = 1;
+      let j = i + 2;
+      while (j < command.length && depth > 0) {
+        if (command[j] === "(") depth++;
+        else if (command[j] === ")") depth--;
+        if (depth === 0) break;
+        j++;
+      }
+      found.push(command.slice(i + 2, j));
+      i = j + 1;
+      continue;
+    }
+    if (command[i] === "`") {
+      const end = command.indexOf("`", i + 1);
+      if (end === -1) break;
+      found.push(command.slice(i + 1, end));
+      i = end + 1;
+      continue;
+    }
+    i++;
+  }
+  return found;
 }
 
 /** Absolute-path directory check — refuses anything that is not a real dir. */
 export function resolveTerminalCwd(raw: unknown): string | null {
   if (typeof raw !== "string" || !raw) return null;
   const abs = raw.trim();
-  if (!/^(?:[A-Za-z]:[\\/]|\/)/.test(abs)) return null; // absolute only
-  if (abs.length > 500) return null;
+  // Drive paths (C:\…), POSIX paths (/…), UNC shares (\\server\share) and
+  // extended paths (\\?\C:\…) are all legitimate workspace roots.
+  const isDrive = /^[A-Za-z]:[\\/]/.test(abs);
+  const isPosix = abs.startsWith("/");
+  const isUnc = /^\\\\[^\\]+\\[^\\]+/.test(abs);
+  const isExtended = /^\\\\\?\\/.test(abs);
+  if (!isDrive && !isPosix && !isUnc && !isExtended) return null;
+  if (abs.length > 2000) return null;
   try {
     if (!statSync(abs).isDirectory()) return null;
   } catch {

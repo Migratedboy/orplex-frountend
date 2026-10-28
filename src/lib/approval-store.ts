@@ -20,7 +20,7 @@ export interface PendingApproval {
   diff?: string;         // For write_file/edit_file: the diff to show
   createdAt: number;
   status: "pending" | "approved" | "rejected";
-  resolve?: (approved: boolean) => void; // Promise resolver
+  resolve?: (outcome: ApprovalOutcome) => void; // Promise resolver
 }
 
 // In-memory store: approvalId -> PendingApproval
@@ -50,7 +50,7 @@ function attachAbort(id: string, signal: AbortSignal): void {
     const a = pending.get(id);
     if (a && a.status === "pending") {
       a.status = "rejected";
-      a.resolve?.(false);
+      a.resolve?.({ approved: false });
       pending.delete(id);
     }
     detachAbort(id, signal);
@@ -72,11 +72,18 @@ export function rejectAllPendingApprovals(): void {
   for (const [id, a] of Array.from(pending.entries())) {
     if (a.status === "pending") {
       a.status = "rejected";
-      a.resolve?.(false);
+      a.resolve?.({ approved: false });
       pending.delete(id);
     }
     detachAbort(id);
   }
+}
+
+export interface ApprovalOutcome {
+  approved: boolean;
+  /** True when nobody answered in time (5 min) — the model must be told this
+   *  is NOT the user saying "no". */
+  timedOut?: boolean;
 }
 
 export function requestApproval(
@@ -94,6 +101,24 @@ export function requestApproval(
    */
   signal?: AbortSignal | null
 ): Promise<boolean> {
+  return requestApprovalDetailed(type, summary, details, diff, riskHint, signal).then(
+    (outcome) => outcome.approved
+  );
+}
+
+/**
+ * Same as requestApproval but reports WHY the request ended. A timeout used
+ * to look exactly like a user rejection, so the model abandoned the task as
+ * if the user had denied it.
+ */
+export function requestApprovalDetailed(
+  type: ApprovalType,
+  summary: string,
+  details: Record<string, unknown>,
+  diff?: string,
+  riskHint?: RiskLevel,
+  signal?: AbortSignal | null
+): Promise<ApprovalOutcome> {
   const assessment = riskHint
     ? { level: riskHint, reason: "Caller-classified", autoApprovable: false }
     : classifyRisk(toolForType(type), details);
@@ -101,13 +126,13 @@ export function requestApproval(
   // A remembered "Always allow" rule silently approves identical requests
   // (never high-risk ones — those always require explicit review).
   if (assessment.level !== "high" && hasAlwaysRule(type, details)) {
-    return Promise.resolve(true);
+    return Promise.resolve({ approved: true });
   }
 
   // Already aborted — never raise a dialog for a dead task.
-  if (signal?.aborted) return Promise.resolve(false);
+  if (signal?.aborted) return Promise.resolve({ approved: false });
 
-  return new Promise<boolean>((resolve) => {
+  return new Promise<ApprovalOutcome>((resolve) => {
     const id = nextId();
     const approval: PendingApproval = {
       id,
@@ -130,7 +155,8 @@ export function requestApproval(
       const a = pending.get(id);
       if (a && a.status === "pending") {
         a.status = "rejected";
-        a.resolve?.(false);
+        // Timeout ≠ user rejection — the model needs to know nobody answered.
+        a.resolve?.({ approved: false, timedOut: true });
         pending.delete(id);
         detachAbort(id, signal);
       }
@@ -147,7 +173,7 @@ export function approveRequest(id: string): boolean {
   const a = pending.get(id);
   if (!a || a.status !== "pending") return false;
   a.status = "approved";
-  a.resolve?.(true);
+  a.resolve?.({ approved: true });
   pending.delete(id);
   // The abort listener was only detached on the FAILURE paths (the auto-reject
   // timer and rejectAllPendingApprovals), so every approval the user accepted
@@ -162,7 +188,7 @@ export function rejectRequest(id: string): boolean {
   const a = pending.get(id);
   if (!a || a.status !== "pending") return false;
   a.status = "rejected";
-  a.resolve?.(false);
+  a.resolve?.({ approved: false });
   pending.delete(id);
   detachAbort(id);
   return true;
@@ -242,7 +268,7 @@ export function approveRequestAlways(id: string): boolean {
   }
 
   a.status = "approved";
-  a.resolve?.(true);
+  a.resolve?.({ approved: true });
   pending.delete(id);
   detachAbort(id);
   return true;

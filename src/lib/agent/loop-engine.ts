@@ -41,6 +41,9 @@ export interface ParsedTurnCalls {
   calls: Array<Record<string, unknown> & { name: string }>;
   /** Calls dropped for missing required args (transcription-truncation victims). */
   truncated: Array<Record<string, unknown> & { name: string }>;
+  /** Calls removed by the lane's tool whitelist — they must be reported to
+   *  the model, otherwise it assumes they ran. */
+  filteredOut: Array<Record<string, unknown> & { name: string }>;
 }
 
 export interface DispatchedCall {
@@ -118,6 +121,21 @@ export interface TurnLoopOptions {
   onTruncatedOnly?: (
     turn: number,
     truncated: ParsedTurnCalls["truncated"],
+    out: TurnOutput
+  ) => void | Promise<void>;
+  /** Some calls lost required arguments (dropped before dispatch). The lane
+   *  should tell the model which calls never ran — otherwise it assumes they
+   *  executed and moves on with missing work. */
+  onTruncated?: (
+    turn: number,
+    truncated: ParsedTurnCalls["truncated"],
+    out: TurnOutput
+  ) => void | Promise<void>;
+  /** Calls removed by the lane's tool whitelist — report them so the model
+   *  knows the tool is unavailable here instead of silently losing the work. */
+  onFilteredCalls?: (
+    turn: number,
+    filtered: ParsedTurnCalls["filteredOut"],
     out: TurnOutput
   ) => void | Promise<void>;
 
@@ -290,8 +308,14 @@ export function parseTurnCalls(
       raw = opts.parseBareJsonToolCalls(text);
     }
   }
+  const filteredOut: Array<Record<string, unknown> & { name: string }> = [];
   if (opts.filterToolCalls) {
-    raw = raw.filter((c) => opts.filterToolCalls!(String(c.name)));
+    const allowed = opts.filterToolCalls;
+    for (const c of raw) {
+      if (allowed(String(c.name))) continue;
+      filteredOut.push(c);
+    }
+    raw = raw.filter((c) => allowed(String(c.name)));
   }
 
   // Truncation detection — the intersection both loops shipped:
@@ -302,7 +326,7 @@ export function parseTurnCalls(
     return false;
   });
   const calls = raw.filter((tc) => !truncated.includes(tc));
-  return { calls, truncated };
+  return { calls, truncated, filteredOut };
 }
 
 const STRIP_XML_RE = /[<]tool_call[\s\S]*?[<]\/tool_call[>]/g;
@@ -356,7 +380,18 @@ export async function runTurnLoop(opts: TurnLoopOptions): Promise<TurnLoopExit> 
 
     const textOnly = stripToolCallText(out.content);
 
+    // === FILTERED CALLS: tool not available in this lane ====================
+    if (parsed.filteredOut.length > 0) {
+      await opts.onFilteredCalls?.(turn, parsed.filteredOut, out);
+    }
+
     // === TRUNCATED-ONLY: every call in this turn lost required args =========
+    if (parsed.truncated.length > 0 && parsed.calls.length > 0) {
+      // Mixed turn: some calls ran, others were dropped before dispatch.
+      // Tell the lane which ones never ran — a silently dropped call looks to
+      // the model like a successful one.
+      await opts.onTruncated?.(turn, parsed.truncated, out);
+    }
     if (parsed.truncated.length > 0 && parsed.calls.length === 0) {
       await opts.onTruncatedOnly?.(turn, parsed.truncated, out);
       continue;

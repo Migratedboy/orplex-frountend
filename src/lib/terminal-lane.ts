@@ -39,7 +39,12 @@ export function resolveDesktopCwd(dirName?: string | null): string | null {
     if (typeof window === "undefined" || !dirName) return null;
     const entry = listProjects(window.localStorage).find((p) => p.name === dirName);
     const cand = entry?.lastPath;
-    if (typeof cand === "string" && /^(?:[A-Za-z]:[\\/]|\/)/.test(cand)) return cand;
+    if (typeof cand !== "string") return null;
+    const isDrive = /^[A-Za-z]:[\\/]/.test(cand);
+    const isPosix = cand.startsWith("/");
+    const isUnc = /^\\\\[^\\]+\\[^\\]+/.test(cand);
+    const isExtended = /^\\\\\?\\/.test(cand);
+    if (isDrive || isPosix || isUnc || isExtended) return cand;
     return null;
   } catch {
     return null;

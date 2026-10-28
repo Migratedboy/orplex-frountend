@@ -20,7 +20,11 @@ export function diagnosePortConflict(command: string, output: string): string {
     command.match(/http\.server\s+(\d{2,5})/) ||
     command.match(/:\s?(\d{4,5})\b/);
   const port = portMatch ? portMatch[1] : null;
-  const isConflict = /eaddrinuse|address already in use|port is already|listen eacces|permission denied/.test(o);
+  // Only REAL port evidence. "permission denied" on its own is a file-system
+  // or install-cache problem (npm cache, /root write access) and telling the
+  // model to kill a process sent users chasing the wrong thing.
+  const isConflict =
+    /eaddrinuse|address already in use|port is already in use|listen eacces/.test(o);
   if (!isConflict) return "";
   if (port) {
     return `\n\n[HINT] Port ${port} is taken — likely a zombie server from an earlier attempt. Find and kill it: run_command({ command: "netstat -ano | findstr :${port}" }) then run_command({ command: "taskkill /PID <pid> /T /F" }) (Windows) — or serve on another port.`;

@@ -86,9 +86,17 @@ function safeName(base: string): string {
   return base.replace(/[^a-z0-9-]/gi, "-").toLowerCase().replace(/^-+|-+$/g, "").slice(0, 40);
 }
 
-/** Stable sandbox identity for one user (+ execution family). */
-export function sandboxNameFor(userId: string, family: "exec" | "serve"): string {
-  const name = `orplex-${family}-${safeName(userId)}`;
+/** Stable sandbox identity for one user (+ execution family + image family).
+ *  The language is part of the name on purpose: the platform reuses a VM by
+ *  NAME, so a single name per user meant a python command could land in the
+ *  warm node VM (no python3 → exit 127) and the language mix-up was silent. */
+export function sandboxNameFor(
+  userId: string,
+  family: "exec" | "serve",
+  language: SandboxLanguage = "node"
+): string {
+  const suffix = language === "python" ? "py" : "node";
+  const name = `orplex-${family}-${safeName(userId)}-${suffix}`;
   if (!SANDBOX_NAME_RE.test(name)) {
     // Unreachable with cuid user ids — a malformed name must never reach a
     // billable create() call.
@@ -119,7 +127,7 @@ function poolGet(name: string): PoolEntry | undefined {
 }
 
 async function acquire(opts: { userId: string; family: "exec" | "serve"; language: SandboxLanguage }): Promise<{ sandbox: SandboxHandle; name: string }> {
-  const name = sandboxNameFor(opts.userId, opts.family);
+  const name = sandboxNameFor(opts.userId, opts.family, opts.language);
   const cached = poolGet(name);
   if (cached) return { sandbox: cached.sandbox, name };
 
@@ -127,9 +135,10 @@ async function acquire(opts: { userId: string; family: "exec" | "serve"; languag
   const base = {
     name,
     ports: EXPOSED_PORTS,
-    // 5-minute idle: the platform stops the VM (auto-snapshotting it). The
-    // next command auto-resumes from the snapshot — that IS the warm cache.
-    timeout: 5 * 60_000,
+    // Idle timeout: exec VMs are short-lived (the platform stops + snapshots
+    // them), serve VMs stay up much longer so a preview server does not die
+    // five minutes after the agent started it.
+    timeout: opts.family === "serve" ? 60 * 60_000 : 5 * 60_000,
     // Bounded storage: only the two most recent snapshots are kept.
     keepLastSnapshots: { count: 2 },
     tags: { app: "orplex", family: opts.family, language: opts.language },
@@ -155,16 +164,16 @@ async function acquire(opts: { userId: string; family: "exec" | "serve"; languag
 function serialize(entry: PoolEntry | undefined, run: () => Promise<void>): Promise<void> {
   if (!entry) return run();
   const previous = entry.busy;
-  const next = (async () => {
-    try {
-      if (previous) await previous.catch(() => {});
-      await run();
-    } finally {
-      entry.busy = undefined;
-    }
-  })();
-  entry.busy = next;
-  return next;
+  // The old version cleared entry.busy in a finally block, which wiped the
+  // chain pointer of a NEWER queued command (two commands then ran in
+  // parallel inside the same VM). Keep the chain, and only clear it when the
+  // stored promise is still the one this call installed.
+  const chained = (previous ? previous.catch(() => {}) : Promise.resolve()).then(run);
+  const tracked: Promise<void> = chained.finally(() => {
+    if (entry.busy === tracked) entry.busy = undefined;
+  });
+  entry.busy = tracked;
+  return tracked;
 }
 
 // ---------------------------------------------------------------- exec ----
@@ -195,6 +204,11 @@ export function languageFromCommand(command: string): SandboxLanguage {
 function assertSafePaths(files: SandboxFileSpec[]): void {
   for (const f of files) {
     if (!f.path || f.path.includes("..") || f.path.includes("\\") || f.path.startsWith("/")) {
+      throw new Error(`unsafe sandbox path: ${f.path}`);
+    }
+    // Windows-style absolute paths ("C:/Windows/…") slipped past the checks
+    // above and wrote OUTSIDE the sandbox workspace.
+    if (/^[A-Za-z]:/.test(f.path) || f.path.startsWith("~")) {
       throw new Error(`unsafe sandbox path: ${f.path}`);
     }
   }

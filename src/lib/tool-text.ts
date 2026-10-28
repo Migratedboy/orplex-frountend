@@ -122,18 +122,36 @@ export function parseToolCalls(text: string): XmlToolCall[] {
 
 const TOOL_CALL_NAME_RE = /^[a-z][a-z0-9_]{1,63}$/i;
 
+/** Bounded argument value: scalars, small arrays and small nested objects.
+ *  Tool args are usually flat, but MCP calls (arguments objects), batch
+ *  variants and edit lists are NOT — rejecting them meant a perfectly valid
+ *  tool call was treated as prose and the model got no tool at all. */
+function isBoundedArgValue(value: unknown, depth = 0): boolean {
+  if (value === null) return true;
+  if (typeof value === "string") return value.length <= 20_000;
+  if (typeof value === "number" || typeof value === "boolean") return true;
+  if (depth >= 2) return false;
+  if (Array.isArray(value)) {
+    return value.length <= 50 && value.every((v) => isBoundedArgValue(v, depth + 1));
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    return entries.length <= 30 && entries.every(([, v]) => isBoundedArgValue(v, depth + 1));
+  }
+  return false;
+}
+
 /** A tool-call-shaped object: string "name" matching tool-name shape, only
- *  flat scalar argument values (tool args are flat), bounded key count. */
+ *  bounded argument values, bounded key count. */
 function isToolCallShaped(obj: unknown): obj is Record<string, unknown> & { name: string } {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
   const rec = obj as Record<string, unknown>;
   if (typeof rec.name !== "string" || !TOOL_CALL_NAME_RE.test(rec.name)) return false;
   const keys = Object.keys(rec);
-  if (keys.length < 1 || keys.length > 12) return false;
+  if (keys.length < 1 || keys.length > 20) return false;
   for (const [k, v] of Object.entries(rec)) {
     if (k === "name") continue;
-    if (v === null || typeof v === "object") return false; // args are flat scalars
-    if (typeof v === "string" && v.length > 20_000) return false;
+    if (!isBoundedArgValue(v)) return false;
   }
   return true;
 }

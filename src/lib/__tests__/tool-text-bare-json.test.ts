@@ -52,9 +52,16 @@ describe("parseBareJsonToolCalls", () => {
     expect(parseBareJsonToolCalls('{"role":"assistant","content":"hi"}')).toHaveLength(0);
   });
 
-  it("never fires on non-tool-shaped names or nested args", () => {
+  it("never fires on non-tool-shaped names", () => {
     expect(parseBareJsonToolCalls('{"name":"Not A Tool","path":"x"}')).toHaveLength(0);
-    expect(parseBareJsonToolCalls('{"name":"read_file","opts":{"deep":true}}')).toHaveLength(0);
+  });
+
+  it("accepts nested argument objects (MCP calls carry them)", () => {
+    // The old flat-scalar rule rejected every call whose arguments were an
+    // object — MCP servers and batch variants then looked like prose and the
+    // model got no tool at all.
+    const calls = parseBareJsonToolCalls('{"name":"mcp_call","arguments":{"serverId":"x","method":"run"}}');
+    expect(calls).toHaveLength(1);
   });
 
   it("never fires on malformed JSON", () => {

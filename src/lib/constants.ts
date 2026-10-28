@@ -1,6 +1,8 @@
 // constants.ts — Centralized magic numbers and configuration values
 // Every timeout, limit, and threshold in one place. No more guessing what 5000 means.
 
+import { isCommandAllowed } from "./exec-guard";
+
 // === Timeouts ===
 export const TIMEOUTS = {
   /** Max time to wait for a shell command (ms) */
@@ -122,10 +124,13 @@ export const BLOCKED_COMMANDS = [
   "chown -R",
 ] as const;
 
-/** Check if a command matches any blocked pattern */
+/**
+ * Check if a command is refused. Delegates to the argument-aware screen in
+ * exec-guard (the old substring list blocked harmless commands like
+ * `npm run format` and `rm -rf ./dist`).
+ */
 export function isBlockedCommand(command: string): boolean {
-  const lower = command.toLowerCase();
-  return BLOCKED_COMMANDS.some(blocked => lower.includes(blocked.toLowerCase()));
+  return !isCommandAllowed(command).allowed;
 }
 
 // === UI ===

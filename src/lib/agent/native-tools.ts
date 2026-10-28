@@ -8,10 +8,10 @@
 // previously they silently returned nothing and the model burned turns
 // waiting for a result that never came.
 
-import { TIMEOUTS, LIMITS, isBlockedCommand } from "../constants";
+import { TIMEOUTS, LIMITS } from "../constants";
 import { isCommandAllowed } from "../exec-guard";
 import { classifyRisk } from "../risk-classifier";
-import { requestApproval } from "../approval-store";
+import { requestApproval, requestApprovalDetailed } from "../approval-store";
 import { computeDiff } from "../file-history";
 import { virtualFS } from "../virtual-fs";
 import {
@@ -255,8 +255,29 @@ function previewOf(content: string, maxLines = 5): string {
 // the tool surfaces a head window instead of materializing megabytes into the
 // model context AND the per-task caches. Pagination: offset/limit args let
 // the agent walk the rest natively (no sed workaround).
-const MAX_READ_CHARS = 200_000;
-const MAX_PAGE_CHARS = 200_000; // per-call ceiling for offset/limit pages too
+const MAX_READ_CHARS = 60_000;
+const MAX_PAGE_CHARS = 60_000; // per-call ceiling for offset/limit pages too
+
+// Tool output ceiling: command stdout/stderr that becomes a tool_result is
+// capped head+tail. Without it a single `npm run build` (tens of thousands of
+// lines) flooded the prompt and slowed every later turn.
+const TOOL_OUTPUT_CAP = 20_000;
+const TOOL_OUTPUT_TAIL = 6_000;
+
+/**
+ * Cap a command's output for the model: keep the head and the tail (the tail
+ * usually holds the actual error), drop the middle with an explicit marker so
+ * the model knows output was elided instead of assuming the command printed
+ * nothing.
+ */
+export function capToolOutput(text: string): string {
+  const value = typeof text === "string" ? text : "";
+  if (value.length <= TOOL_OUTPUT_CAP) return value;
+  const head = value.slice(0, TOOL_OUTPUT_CAP - TOOL_OUTPUT_TAIL);
+  const tail = value.slice(-TOOL_OUTPUT_TAIL);
+  const dropped = value.length - head.length - tail.length;
+  return `${head}\n\n…[${dropped.toLocaleString()} characters of output omitted — re-run with a narrower command or pipe through a filter]\n\n${tail}`;
+}
 
 /**
  * Slice a page out of full file content by LINES (agent-friendly: line
@@ -1099,9 +1120,11 @@ export async function dispatchToolCall(
 
   // ── run_command (approval → serve lane or exec) ───────────────────────
   if (call.name === "run_command" && call.command) {
-    // Safety: block destructive commands (centralized blocklist)
-    if (isBlockedCommand(call.command)) {
-      result(`<tool_result name="run_command" command="${call.command}">BLOCKED: command is too dangerous to execute</tool_result>\n`);
+    // Safety: argument-aware screen (the old substring blocklist refused
+    // harmless work like `npm run format` or `rm -rf ./dist`).
+    const commandGuard = isCommandAllowed(call.command);
+    if (!commandGuard.allowed) {
+      result(`<tool_result name="run_command" command="${call.command}">BLOCKED: ${commandGuard.reason}</tool_result>\n`);
       ctx.replaceStatus(`[FAIL] Command blocked for safety: \`${call.command.slice(0, 50)}\``);
       ctx.syncDisplay();
       return { resultXml: toolResults, blocked: false };
@@ -1109,6 +1132,7 @@ export async function dispatchToolCall(
 
     const commandRisk = classifyRisk("run_command", { command: call.command });
     let approved = true;
+    let approvalTimedOut = false;
     if (commandRisk.autoApprovable === false) {
       if (commandRisk.level === "high") {
         emitActivity({ type: "tool", message: `High-risk command requires approval: ${call.command.slice(0, 40)}`, agent: "coder" });
@@ -1116,7 +1140,9 @@ export async function dispatchToolCall(
       ctx.setStatus("awaiting_approval", `Waiting for approval: ${call.command.slice(0, 40)}`);
       ctx.appendDisplay(`running [${call.command}] — awaiting approval\n`);
       ctx.syncDisplay();
-      approved = await requestApproval("run_command", `Run: ${call.command}`, { command: call.command }, undefined, undefined, ctx.abortSignal);
+      const outcome = await requestApprovalDetailed("run_command", `Run: ${call.command}`, { command: call.command }, undefined, undefined, ctx.abortSignal);
+      approved = outcome.approved;
+      approvalTimedOut = outcome.timedOut === true;
     } else {
       ctx.setStatus("tool_executing", `Running: ${call.command.slice(0, 40)}...`);
       emitActivity({ type: "tool", message: `Running ${call.command.slice(0, 40)}`, agent: "coder" });
@@ -1126,8 +1152,14 @@ export async function dispatchToolCall(
 
     if (!approved) {
       ctx.stats.rejectedAction();
-      result(`<tool_result name="run_command" command="${call.command}">rejected by user</tool_result>\n`);
-      ctx.replaceStatus(`[FAIL] Command rejected: \`${call.command.slice(0, 50)}\``);
+      // A timeout is NOT a user rejection — say which one it was, or the model
+      // gives up on the whole task as if the user had said no.
+      result(
+        approvalTimedOut
+          ? `<tool_result name="run_command" command="${call.command}">approval timed out — nobody answered within 5 minutes. The command was NOT run. Either ask the user to approve it or continue without it.</tool_result>\n`
+          : `<tool_result name="run_command" command="${call.command}">rejected by user</tool_result>\n`
+      );
+      ctx.replaceStatus(approvalTimedOut ? "[TIMEOUT] Approval timed out" : `[FAIL] Command rejected: \`${call.command.slice(0, 50)}\``);
       ctx.syncDisplay();
       return { resultXml: toolResults, blocked: false };
     }
@@ -1204,23 +1236,28 @@ export async function dispatchToolCall(
         signal: ctx.abortSignal,
         source: "agent",
       });
+      // Output is capped (head + tail) BEFORE it becomes a tool_result — a
+      // build log with 20k lines used to flood the model's context and slow
+      // every later turn down.
+      const out = capToolOutput(execData.stdout);
+      const errOut = capToolOutput(execData.stderr);
+      const laneNote = execData.lane === "desktop" ? "[ran on this device]" : "[ran via the app server]";
+      const meta = `${laneNote} exit code: ${execData.exitCode}${execData.timedOut ? " (timed out — the process was killed)" : ""}`;
       if (execData.exitCode === 0) {
         ctx.stats.commandRun();
-        result(`<tool_result name="run_command" command="${call.command}">\n${execData.stdout}${execData.stderr ? `\nSTDERR: ${execData.stderr}` : ""}\n</tool_result>\n`);
+        result(`<tool_result name="run_command" command="${call.command}">OK ${meta}\n${out}${errOut ? `\nSTDERR (non-fatal): ${errOut}` : ""}\n</tool_result>\n`);
         ctx.replaceStatus(`[OK] Command completed: \`${call.command.slice(0, 50)}\``);
       } else {
         ctx.stats.failedStep();
-        const portHint = diagnosePortConflict(call.command, execData.stderr || execData.stdout || "");
-        // The false branch used to interpolate execData.stderr itself, emitting the
-      // literal string "undefined" into the model's context when stderr was
-      // undefined (line 959 already had the correct form).
-      result(`<tool_result name="run_command" command="${call.command}">\n${execData.stdout}${execData.stderr ? `\nSTDERR: ${execData.stderr}` : ""}${portHint}\n</tool_result>\n`);
+        const portHint = diagnosePortConflict(call.command, `${execData.stderr}\n${execData.stdout}`);
+        const reason = execData.error ? `\nERROR: ${execData.error}` : "";
+        result(`<tool_result name="run_command" command="${call.command}">FAILED ${meta}${reason}\n${out}${errOut ? `\nSTDERR: ${errOut}` : ""}${portHint}\n</tool_result>\n`);
         ctx.replaceStatus(`[FAIL] Command failed: \`${call.command.slice(0, 50)}\` (exit ${execData.exitCode})${portHint ? " — port busy" : ""}`);
         recordFailure("command", `${call.command}\n${execData.stderr || execData.stdout || "exit " + execData.exitCode}`, []);
       }
     } catch (err) {
       ctx.stats.failedStep();
-      result(`<tool_result name="run_command" command="${call.command}">error: ${(err as Error).message}\n</tool_result>\n`);
+      result(`<tool_result name="run_command" command="${call.command}">FAILED (the runner threw): ${(err as Error).message}\n</tool_result>\n`);
       ctx.replaceStatus(`[FAIL] Command failed: ${(err as Error).message.slice(0, 50)}`);
     }
     ctx.syncDisplay();

@@ -123,12 +123,30 @@ export function findFailedExchange(
  * user message. buildM3Context wraps sends as:
  *   `[WORKSPACE: <dir>]\n…\nUser request: <typed text>`
  * so everything from the last `User request: ` marker onward is the prompt.
+ *
+ * The marker is USER-CONTROLLED: a prompt that itself contains
+ * "User request: " made lastIndexOf pick the inner occurrence and the Retry
+ * button re-sent only the tail of the original request. The marker is only
+ * honoured when it appears in the WRAPPER part of the message — i.e. before
+ * the typed text starts — so an inner occurrence can never win.
  */
 export function userTypedText(content: string): string {
-  const idx = content.lastIndexOf("User request: ");
+  const marker = "User request: ";
+  const idx = content.lastIndexOf(marker);
   if (idx !== -1) {
-    const typed = content.slice(idx + "User request: ".length).trim();
-    if (typed) return typed;
+    const typed = content.slice(idx + marker.length).trim();
+    if (typed) {
+      // A wrapper marker is followed by the typed request; when the typed
+      // request itself contains the marker again, the LAST one is inside the
+      // user's text — keep the FIRST occurrence after the workspace header.
+      const wrapperIdx = content.indexOf(marker);
+      const head = content.slice(0, wrapperIdx);
+      const isWrapped = /^\s*\[WORKSPACE:/.test(head);
+      if (!isWrapped || wrapperIdx === idx) return typed;
+      const firstTyped = content.slice(wrapperIdx + marker.length).trim();
+      if (firstTyped) return firstTyped;
+      return typed;
+    }
   }
   return content;
 }

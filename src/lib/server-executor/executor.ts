@@ -1422,6 +1422,15 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       parseBareJsonToolCalls: (text) =>
         parseBareJsonToolCalls(text) as unknown as Array<Record<string, unknown> & { name: string }>,
       filterToolCalls: (n) => TOOL_WHITELIST.has(String(n)) || String(n).startsWith("mcp__"),
+      onFilteredCalls: async (_turn, filtered) => {
+        // A tool the model asked for is not available in this lane. Say so —
+        // silently dropping the call made the model believe the work happened.
+        const names = filtered.map((c) => String(c.name)).join(", ");
+        transcript.push({
+          role: "user",
+          content: `<tool_result name="unavailable">error — the tool(s) ${names} are not available in this environment. Use one of: read_file, list_files, write_file, edit_file, run_command, search_code. Do not retry an unavailable tool.</tool_result>`,
+        });
+      },
       shouldAbort: () => false,
       throwAbort: () => new Error("Aborted"),
       onTurnStart: async (turn) => {

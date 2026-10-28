@@ -776,11 +776,29 @@ export async function readStream(
         try {
           const args = JSON.parse(acc.arguments) as Record<string, unknown>;
           if (args && typeof args === "object") {
+            // Keep the KNOWN fields exactly as before (typed checks for the
+            // array-valued ones), then carry EVERY other argument through:
+            // the allowlist alone silently dropped newer tools' args
+            // (spawn_subagent's "task", MCP servers' own fields), so the model
+            // called the tool with an EMPTY payload and retried forever.
             for (const f of TOOL_ARG_FIELDS) {
               const v = args[f];
               if (v === undefined) continue;
               if ((f === "edits" || f === "items" || f === "options" || f === "interactions") && !Array.isArray(v)) continue;
               (call as unknown as Record<string, unknown>)[f] = v;
+            }
+            for (const [key, v] of Object.entries(args)) {
+              if (key === "name") continue; // never let an arg clobber the dispatch target
+              if (key in call) continue; // already copied above
+              if (v === undefined) continue;
+              if (typeof v === "string") {
+                if (v.length > 400_000) continue;
+              } else if (Array.isArray(v)) {
+                if (v.length > 500) continue;
+              } else if (typeof v === "object" && v !== null) {
+                continue; // nested objects are not tool arguments
+              }
+              (call as unknown as Record<string, unknown>)[key] = v;
             }
           }
         } catch {}

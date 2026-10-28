@@ -12,10 +12,11 @@ import { classifyRisk } from "./risk-classifier";
 import { virtualFS } from "./virtual-fs";
 import { beforeToolCall, afterToolCall, onFileWrite, onFileEdit, onTaskStart, onTaskComplete, onTaskFail } from "./plugins/registry";
 import { initializePlugins, isPluginEnabled } from "./plugins/initializer";
-import { TIMEOUTS, LIMITS, isBlockedCommand } from "./constants";
+import { TIMEOUTS, LIMITS } from "./constants";
 import { runTurnLoop, stripToolCallText, type DispatchedCall } from "./agent/loop-engine";
 import { estimateComplexity, effortForTier } from "./effort";
 import { readStream, deduplicateWords, dedupeStreamedChunk, replaceLastStatus, parseToolCalls, normalizeThinkingBlocks, stripRedundantFences, appendTaskAnchor, repairInterleavedReplay, type ToolCall, type StreamResult, type StreamCallbacks } from "./stream-reader";
+import { parseBareJsonToolCalls } from "./tool-text";
 import {
   createLoopStreaks,
   trackToolTurn,
@@ -1427,6 +1428,10 @@ export async function runInBackground(
       throwAbort: () => new DOMException("Aborted", "AbortError"),
       loopStreaks,
       parseXmlToolCalls: (t) => parseToolCalls(t || "") as unknown as Array<Record<string, unknown> & { name: string }>,
+      // Weak models sometimes skip the <tool_call> wrapper and emit bare JSON.
+      // Without this recovery the turn looked like a final answer and the run
+      // ended without a single tool call.
+      parseBareJsonToolCalls: (t) => parseBareJsonToolCalls(t || "") as unknown as Array<Record<string, unknown> & { name: string }>,
       onTurnStart: (turn) => {
         sharedTurn = turn;
         updateTaskStatus("streaming", turn === 0 ? "Thinking…" : "Processing…");
@@ -1597,6 +1602,45 @@ export async function runInBackground(
           toolCounts.set(call.name, (toolCounts.get(call.name) || 0) + 1);
           if (call.name === "write_file" || call.name === "edit_file") totalWrites++;
         }
+      },
+      onTruncated: (turn, truncated, out) => {
+        // A call that lost required arguments NEVER ran. Say so explicitly —
+        // otherwise the model assumes the edit/write happened and moves on
+        // with missing work (or repeats the same broken shape forever).
+        const lines = truncated.map((tc) => {
+          const missing: string[] = [];
+          if (tc.name === "write_file") {
+            if (!tc.path) missing.push("path");
+            if (tc.content === undefined) missing.push("content");
+          } else if (tc.name === "edit_file") {
+            if (!tc.path) missing.push("path");
+            if (!tc.old_text) missing.push("old_text");
+            if (!tc.new_text) missing.push("new_text");
+          } else if (!tc.path) {
+            missing.push("path");
+          }
+          return `- ${tc.name}${missing.length ? ` (missing: ${missing.join(", ")})` : " (arguments were cut off)"}`;
+        });
+        apiMessages.push({
+          role: "user",
+          content: `[TOOL CALL NOT EXECUTED — INCOMPLETE ARGUMENTS]\n${lines.join("\n")}\nThese calls were rejected before execution because required arguments never arrived. Re-send each one with ALL required arguments in a single call (keep large payloads smaller — write long files in chunks or use edit_file for small edits).`,
+        });
+        updateTaskStatus("streaming", "Tool call was incomplete — asking the model to retry");
+        void turn;
+        void out;
+      },
+      onTruncatedOnly: (turn, truncated, out) => {
+        // All calls in this turn were truncated → nothing ran. Push the
+        // assistant text plus the rejection notice so the next turn can fix
+        // the call shape.
+        if (out?.content) apiMessages.push({ role: "assistant", content: out.content });
+        const names = truncated.map((t) => t.name).join(", ");
+        apiMessages.push({
+          role: "user",
+          content: `[TOOL CALL NOT EXECUTED — INCOMPLETE ARGUMENTS]\nNo tool ran this turn. The call(s) ${names} were missing required arguments. Re-send with every required argument present, one call at a time.`,
+        });
+        updateTaskStatus("streaming", "Re-sending the tool call with complete arguments…");
+        void turn;
       },
       onLoopTrip: (loopVerdict, out, textOnly) => {
         // === LOOP TRIP: self-heal once, then stop honestly ==================
