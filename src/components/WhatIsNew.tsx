@@ -57,6 +57,17 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "The new build takes the place of the old one — nothing to delete or reinstall",
     ],
   },
+  "1.0.22": {
+    title: "The agent stops losing work and blocking itself",
+    items: [
+      "Fixed: harmless commands were refused — rm -rf ./dist, npm run format, git commit -m \"fix format handling\" and echo \"$(git rev-parse HEAD)\" now run normally",
+      "Fixed: a tool call that lost its arguments was dropped in silence — the agent now sees that the call never ran and retries properly",
+      "Fixed: tool arguments the model sent were sometimes discarded, so tools arrived empty",
+      "Command output is now capped before it reaches the model — huge build logs no longer slow every later turn down",
+      "The agent's command results always state the exit code, the error and whether it ran on your device",
+      "Backend fixes: a temporary database hiccup no longer leaves code mode permanently broken, and one run is no longer handed to two tabs",
+    ],
+  },
   "1.0.21": {
     title: "The agent's commands now run on your device",
     items: [
