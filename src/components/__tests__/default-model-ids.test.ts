@@ -12,7 +12,15 @@
  *
  * Skips (rather than fails) when the network is unavailable, so an offline dev
  * box is not blocked.
+ *
+ * It also asserts the ids are UNIQUE. The picker renders one row per entry and
+ * React keys the row by model id, so a duplicated id renders two children with
+ * the same key - React logs a console error and may drop/re-create rows. That
+ * shipped once: `nvidia/nemotron-3-ultra-550b-a55b:free` was listed twice
+ * after a retired id was renamed onto a live one.
  */
+
+import { DEFAULT_MODELS } from "@/lib/default-models";
 
 const OPENROUTER_MODELS = "https://openrouter.ai/api/v1/models";
 
@@ -32,26 +40,7 @@ beforeAll(async () => {
   }
 }, 45_000);
 
-const DEFAULT_KEYS = [
-  // Groq free tier
-  "openai/gpt-oss-120b",
-  "qwen/qwen3.8-27b",
-  // OpenRouter :free
-  "thinkingmachines/inkling:free",
-  "thinkingmachines/inkling-small:free",
-  "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "nvidia/nemotron-3.5-super-vl:free",
-  "nvidia/nemotron-3.5-lightning:free",
-  "dots-studio/dots-3-note-preview:free",
-  "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "google/gemma-4-26b-a4b-it:free",
-  "google/gemma-4-31b-it:free",
-  "poolside/laguna-s-2.1:free",
-  "poolside/laguna-xs-2.1:free",
-  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-  "cohere/north-mini-code:free",
-  "liquid/lfm-2.5-2.6b:free",
-];
+const DEFAULT_KEYS = DEFAULT_MODELS.map((m) => m.key);
 
 /** The two ids that are served by Groq rather than OpenRouter. */
 const GROQ_KEYS = new Set(["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]);
@@ -83,6 +72,25 @@ describe("default model ids exist upstream", () => {
     for (const k of DEFAULT_KEYS) {
       if (GROQ_KEYS.has(k)) continue;
       expect(k.endsWith(":free")).toBe(true);
+    }
+  });
+});
+
+describe("default model ids are unique", () => {
+  it("no id appears twice - a duplicate renders two rows with one React key", () => {
+    const seen = new Set<string>();
+    const duplicates = DEFAULT_KEYS.filter((k) => {
+      if (seen.has(k)) return true;
+      seen.add(k);
+      return false;
+    });
+    expect(duplicates).toEqual([]);
+  });
+
+  it("every row has a name and a picker group", () => {
+    for (const m of DEFAULT_MODELS) {
+      expect(m.name.length).toBeGreaterThan(0);
+      expect(m.group).toBe("Default Models");
     }
   });
 });

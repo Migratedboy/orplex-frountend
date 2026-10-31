@@ -3,10 +3,11 @@
 import { ErrorBoundary } from "react-error-boundary";
 import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { useState, useEffect, useCallback } from "react";
 import ScrollFadeManager from "./ScrollFadeManager";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { ShortcutsPanel } from "./ui";
+import { ShortcutsPanel, OnboardingTour } from "./ui";
 
 const ArtifactPanel = dynamic(() => import("./ArtifactPanel"), { ssr: false });
 const RightPanel = dynamic(() => import("./RightPanel"), { ssr: false });
@@ -97,6 +98,36 @@ export default function AppLayout({ children }: AppLayoutProps) {
   const [rightPanelResizing, setRightPanelResizing] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+
+  // === First-run guided tour ===
+  // Shown exactly once per browser profile: the first authenticated visit to
+  // home (i.e. right after the account was created — sign-up is OAuth and
+  // lands on "/"). Completion is persisted locally; "Take the tour" in the
+  // empty-start hero reopens it on demand via orplex:open-tutorial.
+  const [tourOpen, setTourOpen] = useState(false);
+  const { status } = useSession();
+  useEffect(() => {
+    if (status !== "authenticated" || pathname !== "/") return;
+    // Let the dynamic sidebar/prompt bar + BootGate settle before the first
+    // spotlight appears.
+    const t = setTimeout(() => {
+      try {
+        if (localStorage.getItem("orplex.hasCompletedTutorial") !== "1") setTourOpen(true);
+      } catch {
+        setTourOpen(true); // no storage (private mode) → show anyway, once per mount
+      }
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [status, pathname]);
+  const finishTour = useCallback(() => {
+    try { localStorage.setItem("orplex.hasCompletedTutorial", "1"); } catch {}
+    setTourOpen(false);
+  }, []);
+  useEffect(() => {
+    const onOpenTour = () => setTourOpen(true);
+    window.addEventListener("orplex:open-tutorial", onOpenTour);
+    return () => window.removeEventListener("orplex:open-tutorial", onOpenTour);
+  }, []);
 
   // === Left sidebar collapse ===
   // User-controlled collapse (separate from the automatic left-hidden when
@@ -259,6 +290,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
       <ApprovalDialog />
       <ScrollFadeManager />
       <UpdateToast />
+      {tourOpen && <OnboardingTour onComplete={finishTour} />}
     </>
   );
 }

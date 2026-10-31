@@ -3,93 +3,14 @@
 // Covers: the verified-run gate (unverified runs derive nothing), the
 // merge/boost path (repeated evidence raises confidence, capped at 1.0),
 // the contradiction/decay path, score-gated retrieval, and the prompt
-// formatter. Prisma + embeddings are mocked — no DB, no model download.
+// formatter. The store is a real temp playbook.json (no DB, no model).
 
-type Row = {
-  id: string;
-  projectId: string;
-  pattern: string;
-  content: string;
-  tags: string[];
-  sourceRunId: string | null;
-  confidence: number;
-  verified: boolean;
-  useCount: number;
-  pinned: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-};
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
-const store = new Map<string, Row>();
-let seq = 0;
-
-jest.mock("../prisma", () => ({
-  prisma: {
-    learning: {
-      findFirst: jest.fn(async ({ where }: any) => {
-        for (const r of store.values()) {
-          if (where.projectId && r.projectId !== where.projectId) continue;
-          if (where.pattern && r.pattern !== where.pattern) continue;
-          if (where.id && r.id !== where.id) continue;
-          return { ...r };
-        }
-        return null;
-      }),
-      // Honors skip/take like real Prisma: the cap-check query passes
-      // skip: MAX (overflow rows only). A mock that ignores skip would
-      // return every row and the cap check would delete the whole store.
-      findMany: jest.fn(async ({ where, take, skip }: any) => {
-        const all: Row[] = [];
-        for (const r of store.values()) {
-          if (where?.projectId && r.projectId !== where.projectId) continue;
-          all.push({ ...r });
-        }
-        const sliced = typeof skip === "number" ? all.slice(skip) : all;
-        return typeof take === "number" ? sliced.slice(0, take) : sliced;
-      }),
-      create: jest.fn(async ({ data }: any) => {
-        const row: Row = {
-          id: `pb-${++seq}`,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          ...data,
-        };
-        store.set(row.id, row);
-        return { ...row };
-      }),
-      update: jest.fn(async ({ where, data }: any) => {
-        const cur = store.get(where.id);
-        if (!cur) throw new Error("not found");
-        const next: Row = { ...cur, updatedAt: new Date() };
-        for (const [k, v] of Object.entries(data)) {
-          if (v && typeof v === "object" && "increment" in (v as object)) {
-            (next as any)[k] = (cur as any)[k] + (v as any).increment;
-          } else {
-            (next as any)[k] = v;
-          }
-        }
-        store.set(next.id, next);
-        return { ...next };
-      }),
-      deleteMany: jest.fn(async ({ where }: any) => {
-        let count = 0;
-        if (where?.id?.in) {
-          for (const id of where.id.in as string[]) {
-            if (store.delete(id)) count++;
-          }
-        } else {
-          for (const [id, r] of store) {
-            if (where?.id && r.id !== where.id) continue;
-            if (where?.projectId && r.projectId !== where.projectId) continue;
-            store.delete(id);
-            count++;
-          }
-        }
-        return { count };
-      }),
-    },
-  },
-}));
+const storeDir = mkdtempSync(join(tmpdir(), "orplex-pb-"));
+const storeFile = join(storeDir, "playbook.json");
 
 // Embeddings disabled by default (lexical path); enabled per-test.
 let mockTaskVec: Float32Array | null = null;
@@ -117,12 +38,20 @@ import {
   updatePlaybook,
   deletePlaybook,
   listPlaybooks,
+  resetPlaybookCacheForTests,
 } from "../playbook";
 
 beforeEach(() => {
-  store.clear();
-  seq = 0;
-  mockTaskVec = null;
+  if (existsSync(storeFile)) rmSync(storeFile);
+  // Point the store at the per-suite temp file. Restored after the suite so
+  // the env can't leak into another test file running in the same worker.
+  process.env.ORPLEX_PLAYBOOK_FILE = storeFile;
+  resetPlaybookCacheForTests();
+});
+
+afterAll(() => {
+  delete process.env.ORPLEX_PLAYBOOK_FILE;
+  rmSync(storeDir, { recursive: true, force: true });
 });
 
 const verifiedFiles = {
@@ -348,5 +277,51 @@ describe("update/delete", () => {
   it("returns null/false for unknown ids", async () => {
     expect(await updatePlaybook("nope", "default", { pinned: true })).toBeNull();
     expect(await deletePlaybook("nope", "default")).toBe(false);
+  });
+});
+
+describe("JSON file store", () => {
+  it("writes the playbook to disk and reads it back after a cache reset", async () => {
+    await mergeOrCreate("default", {
+      pattern: "stack",
+      content: "This workspace uses Next.js.",
+      tags: ["stack"],
+      evidence: {},
+    });
+    expect(existsSync(storeFile)).toBe(true);
+    const raw = JSON.parse(readFileSync(storeFile, "utf8"));
+    expect(raw.version).toBe(1);
+    expect(raw.projects.default.length).toBe(1);
+    expect(raw.projects.default[0].content).toBe("This workspace uses Next.js.");
+    expect(typeof raw.projects.default[0].createdAt).toBe("string");
+
+    // A fresh module cache must still see the rows (the file is the truth).
+    resetPlaybookCacheForTests();
+    const rows = await listPlaybooks("default");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].createdAt).toBeInstanceOf(Date);
+  });
+
+  it("degrades to an empty store when the file is corrupt", async () => {
+    writeFileSync(storeFile, "{not json", "utf8");
+    resetPlaybookCacheForTests();
+    expect(await listPlaybooks("default")).toEqual([]);
+    // …and the next write repairs the file instead of throwing.
+    await mergeOrCreate("default", {
+      pattern: "stack",
+      content: "This workspace uses Next.js.",
+      tags: ["stack"],
+      evidence: {},
+    });
+    expect(await listPlaybooks("default")).toHaveLength(1);
+  });
+
+  it("keeps namespaces apart", async () => {
+    await mergeOrCreate("alpha", { pattern: "stack", content: "A uses Vue.", tags: [], evidence: {} });
+    await mergeOrCreate("beta", { pattern: "stack", content: "B uses React.", tags: [], evidence: {} });
+    expect(await listPlaybooks("alpha")).toHaveLength(1);
+    expect(await listPlaybooks("beta")).toHaveLength(1);
+    expect((await listPlaybooks("alpha"))[0].content).toContain("Vue");
+    expect((await listPlaybooks("beta"))[0].content).toContain("React");
   });
 });

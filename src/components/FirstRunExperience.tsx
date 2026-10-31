@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { useFileSystemContext } from "./FileSystemProvider";
-import { OnboardingTour } from "./ui";
 
 // FirstRunExperience.tsx — the empty-chat hero, Codex-style.
 //
@@ -22,7 +21,6 @@ const ADVANCED_ITEMS = [
 export default function FirstRunExperience() {
   const { directoryName, openFolder } = useFileSystemContext();
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [tourOpen, setTourOpen] = useState(false);
 
   // Ctrl+O opens the folder from the hero pill's keyboard hint.
   useEffect(() => {
@@ -85,17 +83,11 @@ export default function FirstRunExperience() {
           )}
         </div>
 
-        <button className="empty-hero-advanced-toggle" onClick={() => setTourOpen(true)}>
+        <button className="empty-hero-advanced-toggle" onClick={() => window.dispatchEvent(new CustomEvent("orplex:open-tutorial"))}>
           <span className="ms ms-sm">explore</span>
           Take the tour
         </button>
       </div>
-      {tourOpen && (
-        // Deferred close: the tour invokes onComplete from render once its
-        // steps run out — a direct setState there would update this component
-        // while the tour is still rendering.
-        <OnboardingTour onComplete={() => setTimeout(() => setTourOpen(false), 0)} />
-      )}
     </div>
   );
 }

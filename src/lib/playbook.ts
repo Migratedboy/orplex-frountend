@@ -6,38 +6,27 @@
 //
 // Trust model: entries only come from verified/completed runs (typecheck
 // lane passed). The user can inspect, pin, edit, and delete via /api/playbook.
+//
+// Storage is a plain JSON file on the device — local-first, no database.
+// (The DB kept this dead whenever Postgres was down, which also blanked the
+// UI in dev.) One file, namespaced per project key:
+//
+//   <cwd>/.orplex/playbook.json     (or $ORPLEX_PLAYBOOK_FILE)
+//   {
+//     "version": 1,
+//     "projects": {
+//       "<projectId>": [ { id, pattern, content, tags, confidence, ... } ]
+//     }
+//   }
+//
+// Write contract mirrors .orplex/bundles.json: atomic write (tmp + rename),
+// corrupt/unreadable file degrades to an empty store, and every mutation is
+// serialized through a single in-process lock so route handlers can't interleave.
 
-import { createHash } from "crypto";
-import { prisma } from "./prisma";
+import { createHash, randomUUID } from "crypto";
+import { mkdir, readFile, rename, writeFile } from "fs/promises";
+import { dirname, join } from "path";
 import { embedText, cosineSimilarity } from "./embeddings";
-
-// The generated Prisma client may predate the confidence/verified/useCount/
-// pinned/kind columns on Learning (run `prisma db push` after pulling this
-// change to add them). This typed delegate keeps the module compiling
-// against a stale client; at runtime the columns exist after the push.
-interface LearningRow {
-  id: string;
-  projectId: string;
-  pattern: string;
-  content: string;
-  tags: string[];
-  sourceRunId: string | null;
-  confidence: number;
-  verified: boolean;
-  useCount: number;
-  pinned: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-const learningDb = () => prisma.learning as unknown as {
-  findFirst(args: unknown): Promise<LearningRow | null>;
-  findMany(args: unknown): Promise<LearningRow[]>;
-  create(args: unknown): Promise<LearningRow>;
-  update(args: unknown): Promise<LearningRow>;
-  deleteMany(args: unknown): Promise<{ count: number }>;
-};
-
 
 export interface PlaybookEntry {
   id: string;
@@ -71,6 +60,29 @@ export interface SearchResult {
   score: number;
 }
 
+interface PlaybookRow {
+  id: string;
+  pattern: string;
+  content: string;
+  tags: string[];
+  confidence: number;
+  verified: boolean;
+  useCount: number;
+  pinned: boolean;
+  sourceRunId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface PlaybookFile {
+  version: 1;
+  projects: Record<string, PlaybookRow[]>;
+}
+
+function playbookFilePath(): string {
+  return process.env.ORPLEX_PLAYBOOK_FILE || join(process.cwd(), ".orplex", "playbook.json");
+}
+
 function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex").slice(0, 32);
 }
@@ -86,11 +98,109 @@ const MAX_SKILL_CHARS = 1500;
 const MAX_ENTRIES_PER_PROJECT = 250;
 /** Rows re-scored with the semantic term per search (latency cap). */
 const SEMANTIC_CANDIDATES = 25;
-const STALE_MS = 90 * 24 * 60 * 60 * 1000;
 const CONFIDENCE_DECAY = 0.85;
 const CONFIDENCE_BOOST = 0.1;
 const MAX_CONFIDENCE = 1.0;
 const MIN_CONFIDENCE = 0.1;
+
+function rowToEntry(r: PlaybookRow): PlaybookEntry {
+  const created = Date.parse(r.createdAt || "");
+  const updated = Date.parse(r.updatedAt || "");
+  return {
+    id: r.id,
+    pattern: r.pattern,
+    content: r.content,
+    tags: r.tags,
+    confidence: r.confidence ?? 0.5,
+    verified: r.verified ?? true,
+    useCount: r.useCount ?? 1,
+    pinned: r.pinned ?? false,
+    sourceRunId: r.sourceRunId ?? null,
+    createdAt: new Date(Number.isFinite(created) ? created : Date.now()),
+    updatedAt: new Date(Number.isFinite(updated) ? updated : Date.now()),
+  };
+}
+
+function updatedMs(r: PlaybookRow): number {
+  const t = Date.parse(r.updatedAt || "");
+  return Number.isFinite(t) ? t : 0;
+}
+
+// ── JSON file store ─────────────────────────────────────────────────────────
+
+// In-process cache: the file is the only writer (single Node server process),
+// so the cache stays authoritative between mutations. Dev HMR re-imports the
+// module, which also resets the cache.
+let cached: PlaybookFile | null = null;
+
+function freshFile(): PlaybookFile {
+  return { version: 1, projects: {} };
+}
+
+async function loadStore(): Promise<PlaybookFile> {
+  if (cached) return cached;
+  try {
+    const parsed = JSON.parse(await readFile(playbookFilePath(), "utf8")) as PlaybookFile;
+    const projects: Record<string, PlaybookRow[]> = {};
+    if (parsed && typeof parsed === "object" && parsed.projects && typeof parsed.projects === "object") {
+      for (const [key, rows] of Object.entries(parsed.projects)) {
+        if (Array.isArray(rows)) projects[key] = rows;
+      }
+    }
+    cached = { version: 1, projects };
+  } catch {
+    cached = freshFile(); // missing OR corrupt → start empty, never throw
+  }
+  return cached;
+}
+
+// Write lock: every read-modify-write queues behind the previous one.
+let writeChain: Promise<unknown> = Promise.resolve();
+
+async function persist(file: PlaybookFile): Promise<void> {
+  try {
+    const filePath = playbookFilePath();
+    await mkdir(dirname(filePath), { recursive: true });
+    const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tmp, JSON.stringify(file, null, 1), "utf8");
+    await rename(tmp, filePath);
+  } catch {
+    // A read-only disk or sandbox must never take the chat lane down —
+    // the in-memory store keeps working; persistence just degrades.
+  }
+}
+
+/**
+ * Serialized read-modify-write. The mutator receives the cached file and
+ * returns `{ out, changed }`; both the mutation result and the file write
+ * happen strictly in chain, in order.
+ */
+function withStore<T>(
+  mutator: (file: PlaybookFile) => Promise<{ out: T; changed: boolean }>
+): Promise<{ out: T; changed: boolean }> {
+  const run = writeChain.then(async () => {
+    const file = await loadStore();
+    const result = await mutator(file);
+    if (result.changed) {
+      cached = file; // keep the cache pointing at the persisted state
+      await persist(file);
+    }
+    return result;
+  });
+  writeChain = run.catch(() => {});
+  return run;
+}
+
+/** Newest-first rows of one project as hydrated entries. */
+async function readProject(projectId: string): Promise<PlaybookEntry[]> {
+  const file = await loadStore();
+  return (file.projects[projectId] || [])
+    .slice()
+    .sort((a, b) => updatedMs(b) - updatedMs(a))
+    .map(rowToEntry);
+}
+
+// ── Derivation (pure — unchanged) ───────────────────────────────────────────
 
 /**
  * Derive playbook entries from a completed run. Returns empty array when
@@ -178,7 +288,8 @@ export function deriveFromRun(input: DeriveInput): Array<{
  * Merge a derived entry into the playbook store. If a matching entry exists
  * (same pattern + content hash), confidence rises and useCount increments.
  * If a contradicting entry exists (same pattern, different content), the
- * old one decays. Otherwise creates a new entry.
+ * old ones decay. Otherwise creates a new entry (capped per project, pins
+ * never evicted).
  */
 export async function mergeOrCreate(
   projectId: string,
@@ -190,98 +301,73 @@ export async function mergeOrCreate(
   if (!content) return null;
 
   const contentHash = hashContent(content);
+  const nowIso = new Date().toISOString();
 
-  // Match against EVERY row with this pattern (newest first), not just the
-  // first: flip-flopping evidence must boost the matching row when one
-  // exists instead of decaying an arbitrary sibling and growing a new row.
-  // (?? fallbacks below: a DB that hasn't had `prisma db push` run yet
-  // returns undefined for new columns — degrade to defaults, never NaN.)
-  const siblings = await learningDb().findMany({
-    where: { projectId, pattern: entry.pattern },
-    orderBy: { updatedAt: "desc" },
-  });
+  const { out } = await withStore(async (file) => {
+    const rows = file.projects[projectId] || [];
+    file.projects[projectId] = rows;
 
-  const match = siblings.find((r) => hashContent(r.content) === contentHash);
-  if (match) {
-    // Same evidence — boost confidence
-    const newConfidence = Math.min(MAX_CONFIDENCE, (match.confidence ?? 0.5) + CONFIDENCE_BOOST);
-    const updated = await learningDb().update({
-      where: { id: match.id },
-      data: {
-        confidence: newConfidence,
-        useCount: { increment: 1 },
-        tags: entry.tags,
-        sourceRunId: sourceRunId || match.sourceRunId,
-      },
-    });
-    return {
-      id: updated.id,
-      pattern: updated.pattern,
-      content: updated.content,
-      tags: updated.tags,
-      confidence: updated.confidence ?? newConfidence,
-      verified: updated.verified ?? true,
-      useCount: updated.useCount ?? 1,
-      pinned: updated.pinned ?? false,
-      sourceRunId: updated.sourceRunId,
-      createdAt: updated.createdAt,
-      updatedAt: updated.updatedAt,
-    };
-  }
+    // Match against EVERY row with this pattern (newest first), not just the
+    // first: flip-flopping evidence must boost the matching row when one
+    // exists instead of decaying an arbitrary sibling and growing a new row.
+    rows.sort((a, b) => updatedMs(b) - updatedMs(a));
+    const siblings = rows.filter((r) => r.pattern === entry.pattern);
+    const match = siblings.find((r) => hashContent(r.content) === contentHash);
 
-  // No identical row: decay every contradicting sibling, then store the new
-  // evidence as its own row below.
-  for (const r of siblings) {
-    const decayed = Math.max(MIN_CONFIDENCE, (r.confidence ?? 0.5) * CONFIDENCE_DECAY);
-    await learningDb()
-      .update({ where: { id: r.id }, data: { confidence: decayed } })
-      .catch(() => null);
-  }
+    if (match) {
+      // Same evidence — boost confidence
+      match.confidence = Math.min(MAX_CONFIDENCE, (match.confidence ?? 0.5) + CONFIDENCE_BOOST);
+      match.useCount = (match.useCount ?? 1) + 1;
+      match.tags = entry.tags;
+      match.sourceRunId = sourceRunId || match.sourceRunId;
+      match.verified = true;
+      match.updatedAt = nowIso;
+      return { out: rowToEntry(match), changed: true };
+    }
 
-  // Create new entry
-  const created = await learningDb().create({
-    data: {
-      projectId,
+    // No identical row: decay every contradicting sibling, then store the new
+    // evidence as its own row below.
+    for (const r of siblings) {
+      r.confidence = Math.max(MIN_CONFIDENCE, (r.confidence ?? 0.5) * CONFIDENCE_DECAY);
+      r.updatedAt = nowIso;
+    }
+
+    rows.push({
+      id: randomUUID(),
       pattern: entry.pattern,
       content,
       tags: entry.tags,
-      sourceRunId: sourceRunId || null,
       confidence: 0.5,
       verified: true,
       useCount: 1,
-    },
+      pinned: false,
+      sourceRunId: sourceRunId || null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+
+    // Cap per project: drop the oldest non-pinned overflow. Pinned rows are
+    // excluded from BOTH the overflow read and the delete — a user pin must
+    // never be silently evicted.
+    const evictedIds = new Set(
+      rows
+        .filter((r) => !r.pinned)
+        .sort((a, b) => updatedMs(b) - updatedMs(a))
+        .slice(MAX_ENTRIES_PER_PROJECT)
+        .map((r) => r.id)
+    );
+    if (evictedIds.size > 0) {
+      file.projects[projectId] = rows.filter((r) => !evictedIds.has(r.id));
+    }
+
+    return { out: null as PlaybookEntry | null, changed: true };
   });
 
-  // Cap per project: drop oldest non-pinned overflow. Pinned rows are
-  // excluded from BOTH the overflow read and the delete — a user pin must
-  // never be silently evicted.
-  try {
-    const all = await learningDb().findMany({
-      where: { projectId, pinned: false },
-      orderBy: { updatedAt: "desc" },
-      skip: MAX_ENTRIES_PER_PROJECT,
-      select: { id: true },
-    });
-    if (all.length > 0) {
-      await learningDb().deleteMany({
-        where: { id: { in: all.map((r) => r.id) }, pinned: false },
-      });
-    }
-  } catch {}
-
-  return {
-    id: created.id,
-    pattern: created.pattern,
-    content: created.content,
-    tags: created.tags,
-    confidence: created.confidence ?? 0.5,
-    verified: true,
-    useCount: created.useCount ?? 1,
-    pinned: false,
-    sourceRunId: created.sourceRunId,
-    createdAt: created.createdAt,
-    updatedAt: created.updatedAt,
-  };
+  if (out) return out;
+  // Creation path: read back the just-created row (the cap may have even
+  // evicted it immediately if it overflowed a full project — then it's gone).
+  const newest = (await readProject(projectId)).find((e) => e.pattern === entry.pattern && hashContent(e.content) === contentHash);
+  return newest ?? null;
 }
 
 /**
@@ -294,11 +380,7 @@ export async function searchPlaybooks(
   k = 5
 ): Promise<SearchResult[]> {
   if (!(task || "").trim()) return [];
-  const rows = await learningDb().findMany({
-    where: { projectId },
-    orderBy: { updatedAt: "desc" },
-    take: MAX_ENTRIES_PER_PROJECT,
-  });
+  const rows = (await readProject(projectId)).slice(0, MAX_ENTRIES_PER_PROJECT);
 
   if (rows.length === 0) return [];
 
@@ -315,8 +397,8 @@ export async function searchPlaybooks(
     let score = 0;
     const ageDays = (now - r.updatedAt.getTime()) / 86_400_000;
     score += Math.max(0, 2 - ageDays / 7);
-    score += Math.min(2, Math.log2(1 + (r.useCount ?? 1)));
-    score += (r.confidence ?? 0.5);
+    score += Math.min(2, Math.log2(1 + r.useCount));
+    score += r.confidence;
 
     const contentLower = r.content.toLowerCase();
     for (const t of taskTokens) {
@@ -328,7 +410,7 @@ export async function searchPlaybooks(
       pattern: r.pattern,
       content: r.content,
       tags: r.tags,
-      confidence: r.confidence ?? 0.5,
+      confidence: r.confidence,
       score,
     });
   }
@@ -364,24 +446,7 @@ export async function searchPlaybooks(
  * List all playbooks for a project (for the UI).
  */
 export async function listPlaybooks(projectId: string): Promise<PlaybookEntry[]> {
-  const rows = await learningDb().findMany({
-    where: { projectId },
-    orderBy: { updatedAt: "desc" },
-    take: 200,
-  });
-  return rows.map((r) => ({
-    id: r.id,
-    pattern: r.pattern,
-    content: r.content,
-    tags: r.tags,
-    confidence: r.confidence ?? 0.5,
-    verified: r.verified ?? false,
-    useCount: r.useCount ?? 1,
-    pinned: r.pinned ?? false,
-    sourceRunId: r.sourceRunId,
-    createdAt: r.createdAt,
-    updatedAt: r.updatedAt,
-  }));
+  return (await readProject(projectId)).slice(0, 200);
 }
 
 /**
@@ -392,43 +457,31 @@ export async function updatePlaybook(
   projectId: string,
   data: { content?: string; pinned?: boolean; tags?: string[] }
 ): Promise<PlaybookEntry | null> {
-  const existing = await learningDb().findFirst({
-    where: { id, projectId },
+  const { out } = await withStore(async (file) => {
+    const rows = file.projects[projectId] || [];
+    const existing = rows.find((r) => r.id === id);
+    if (!existing) return { out: null, changed: false };
+    if (data.content !== undefined) existing.content = data.content.slice(0, MAX_CONTENT_CHARS);
+    if (data.pinned !== undefined) existing.pinned = data.pinned;
+    if (data.tags !== undefined) existing.tags = data.tags;
+    existing.updatedAt = new Date().toISOString();
+    return { out: rowToEntry(existing), changed: true };
   });
-  if (!existing) return null;
-
-  const updated = await learningDb().update({
-    where: { id },
-    data: {
-      ...(data.content !== undefined && { content: data.content.slice(0, MAX_CONTENT_CHARS) }),
-      ...(data.pinned !== undefined && { pinned: data.pinned }),
-      ...(data.tags !== undefined && { tags: data.tags }),
-    },
-  });
-
-  return {
-    id: updated.id,
-    pattern: updated.pattern,
-    content: updated.content,
-    tags: updated.tags,
-    confidence: updated.confidence ?? 0.5,
-    verified: updated.verified ?? false,
-    useCount: updated.useCount ?? 1,
-    pinned: updated.pinned ?? false,
-    sourceRunId: updated.sourceRunId,
-    createdAt: updated.createdAt,
-    updatedAt: updated.updatedAt,
-  };
+  return out;
 }
 
 /**
  * Delete a playbook entry.
  */
 export async function deletePlaybook(id: string, projectId: string): Promise<boolean> {
-  const res = await learningDb().deleteMany({
-    where: { id, projectId },
+  const { out } = await withStore(async (file) => {
+    const rows = file.projects[projectId] || [];
+    const next = rows.filter((r) => r.id !== id);
+    const changed = next.length < rows.length;
+    file.projects[projectId] = next;
+    return { out: changed, changed };
   });
-  return res.count > 0;
+  return out;
 }
 
 /**
@@ -446,4 +499,10 @@ export function formatPlaybooksForPrompt(results: SearchResult[]): string | null
     "",
     "These are evidence-backed observations from verified runs. Apply them when relevant; ignore them when a task clearly calls for something different.",
   ].join("\n");
+}
+
+/** Test hook: drop the in-memory cache so each test starts from its file. */
+export function resetPlaybookCacheForTests(): void {
+  cached = null;
+  writeChain = Promise.resolve();
 }

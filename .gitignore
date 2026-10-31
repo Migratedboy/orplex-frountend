@@ -34,6 +34,10 @@ npm-debug.log*
 .orplex/*.log
 # Local chat image attachments (user data, never in the repo)
 .orplex/attachments/
+# Device-local stores (playbook learnings, workspace registry) — never in the repo
+.orplex/playbook.json
+.orplex/workspaces.json
+.orplex/*.tmp
 
 # IDE / OS
 .vscode-test
@@ -42,10 +46,18 @@ npm-debug.log*
 
 # Project specific
 nexus_core
+nexus_core_super_secret_*
 stitch_ai_preview/
 stitch_ai_web_generation_engine.zip
 google auth.txt
 .freebuff/
+
+# Local debugging scratch (one-off probes, never part of the build)
+.cdp-*.mjs
+probe-*.mjs
+probecatalog.mjs
+reload-app.mjs
+create-file-verify.mjs
 
 # Diagnostic reports
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json

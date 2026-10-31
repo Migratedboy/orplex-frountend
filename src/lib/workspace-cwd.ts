@@ -11,10 +11,58 @@
 // user, which is why the bug was invisible there.
 
 import { stat } from "node:fs/promises";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const MAX_PATH_LENGTH = 500;
 /** Registered paths per user. Small: one open folder per session. */
 const workspaceCwds = new Map<string, string>();
+
+/**
+ * Durable, DEVICE-LOCAL registry file: <ORPLEX_WORKSPACES_FILE> (the desktop
+ * app points it at its per-user data dir) or <cwd>/.orplex/workspaces.json.
+ *
+ * The in-memory Map alone died with the process, so every app restart forgot
+ * the open folder: the Plugins page went back to "no workspace open", the
+ * agent lost its terminal cwd, and the DB fallback could not help because the
+ * desktop's Postgres is not the store that matters here. The file keeps the
+ * mapping on THIS machine, next to the rest of the device-local state.
+ */
+function workspaceFilePath(): string {
+  return process.env.ORPLEX_WORKSPACES_FILE || join(process.cwd(), ".orplex", "workspaces.json");
+}
+
+/** Seed the map from the durable file. Never throws. */
+function loadWorkspaceFile(): void {
+  try {
+    const raw = readFileSync(workspaceFilePath(), "utf8");
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    if (parsed && typeof parsed === "object") {
+      for (const [uid, path] of Object.entries(parsed)) {
+        if (typeof uid === "string" && typeof path === "string" && path) {
+          workspaceCwds.set(uid, path);
+        }
+      }
+    }
+  } catch {
+    // No file yet (or unreadable) → start from the empty in-memory map.
+  }
+}
+
+/** Persist the mapping (atomic tmp + rename). Never throws. */
+function persistWorkspaceFile(): void {
+  try {
+    const file = workspaceFilePath();
+    mkdirSync(dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(Object.fromEntries(workspaceCwds), null, 1), "utf8");
+    renameSync(tmp, file);
+  } catch {
+    // A read-only disk must not break the registration itself.
+  }
+}
+
+loadWorkspaceFile();
 
 function sanitizeUserId(userId: string): string | null {
   return typeof userId === "string" && userId.length > 0 && userId.length <= 128
@@ -60,9 +108,11 @@ export async function setWorkspaceCwd(path: string, userId: string): Promise<boo
     if (!isForeignOsPath(path)) return false;
   }
   workspaceCwds.set(uid, path);
-  // Durable copy: the in-memory map dies with the process, and a restart
-  // must not break merges of runs whose worktrees point at this workspace.
-  // Fire-and-forget — a DB hiccup must not fail the registration itself.
+  // Durable DEVICE-LOCAL copy: the in-memory map dies with the process, and a
+  // restart must not break merges of runs whose worktrees point at this
+  // workspace (or the Plugins page, which is scoped to this folder).
+  persistWorkspaceFile();
+  // Cloud mirror — best effort, a DB hiccup must not fail the registration.
   void (async () => {
     try {
       const { prisma } = await import("@/lib/prisma");

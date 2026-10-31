@@ -173,18 +173,22 @@ export default function Sidebar() {
               label: "New Chat",
               value: "/",
               children: undefined,
+              tourId: "nav-new-chat",
             },
             {
               label: "History",
               value: "/history",
+              tourId: "nav-history",
             },
             {
               label: "Agents",
+              tourId: "nav-agents",
               children: [
                 {
                   value: "/manager",
                   label: "Agent Manager",
                   icon: <MsIcon name="hub" />,
+                  tourId: "nav-manager",
                   badge:
                     pendingApprovals > 0 ? (
                       <span className="sidebar-nav-badge sidebar-nav-badge-warn" title={`${pendingApprovals} approval(s) pending`}>
@@ -196,6 +200,7 @@ export default function Sidebar() {
                   value: "/runs",
                   label: "Runs Board",
                   icon: <MsIcon name="view_kanban" />,
+                  tourId: "nav-runs",
                   badge:
                     activeRuns >= 2 ? (
                       <span className="sidebar-nav-badge" title={`${activeRuns} active runs`}>
@@ -208,13 +213,16 @@ export default function Sidebar() {
             {
               label: "Plugins",
               value: "/plugins",
+              tourId: "nav-plugins",
             },
             {
               label: "Playbook",
               value: "/playbook",
+              tourId: "nav-playbook",
             },
             {
               label: "Settings",
+              tourId: "nav-settings",
               children: [
                 { value: "/settings?tab=profile", label: "Profile", icon: <MsIcon name="person" /> },
                 { value: "/settings?tab=appearance", label: "Appearance", icon: <MsIcon name="palette" /> },

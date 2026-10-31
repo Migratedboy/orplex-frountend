@@ -601,6 +601,15 @@ function startNextServer(which: "ui" | "api"): void {
     // forwards /api/* there. The browser stays same-origin so the session
     // cookie is first-party on the UI origin — no CORS, no cross-site 401s.
     // Nothing NEXT_PUBLIC_* is injected on purpose.
+    // The playbook store is a plain JSON file on THIS device (the user's
+    // machine), so it must live in the writable per-user data dir — never in
+    // the install folder (read-only under Program Files) and never on the
+    // cloud backend.
+    ORPLEX_PLAYBOOK_FILE: process.env.ORPLEX_PLAYBOOK_FILE || path.join(app.getPath("userData"), "playbook.json"),
+    // The open workspace folder (per user) is device-local state too — it
+    // must survive an app restart so the Plugins page, the agent's terminal
+    // cwd and the workspace-scoped routes keep working.
+    ORPLEX_WORKSPACES_FILE: process.env.ORPLEX_WORKSPACES_FILE || path.join(app.getPath("userData"), "workspaces.json"),
   } as NodeJS.ProcessEnv;
 
   const tag = which === "ui" ? "[ui]" : "[api]";

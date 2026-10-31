@@ -8,7 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions } from "@/lib/auth";
-import { getWorkspaceCwd } from "@/lib/workspace-cwd";
+import { resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import { clearToolHookCache } from "@/lib/tool-hooks";
 import { installPlugin } from "@/lib/plugin-bundles";
 import { BUILTIN_BUNDLES, isBundleInstalled, materializeBundle } from "@/lib/plugin-library";
@@ -23,7 +23,7 @@ export async function GET() {
   if (!session?.user) return err("Unauthorized", 401);
 
   const userId = (session.user as { id?: string }).id || "";
-  const cwd = getWorkspaceCwd(userId);
+  const cwd = await resolveWorkspaceCwd(userId);
   if (!cwd) return NextResponse.json({ library: [], workspaceOpen: false });
 
   const state = await readBundleState(cwd);
@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
   if (!session?.user) return err("Unauthorized", 401);
 
   const userId = (session.user as { id?: string }).id || "";
-  const cwd = getWorkspaceCwd(userId);
+  const cwd = await resolveWorkspaceCwd(userId);
   if (!cwd) return err("No workspace folder is open", 400);
 
   const body = await request.json().catch(() => ({}));
@@ -79,7 +79,7 @@ export async function PATCH(request: NextRequest) {
   const session = await getServerSession(jwtOnlyOptions);
   if (!session?.user) return err("Unauthorized", 401);
 
-  const cwd = getWorkspaceCwd((session.user as { id?: string }).id || "");
+  const cwd = await resolveWorkspaceCwd((session.user as { id?: string }).id || "");
   if (!cwd) return err("No workspace folder is open", 400);
 
   const body = await request.json().catch(() => ({}));

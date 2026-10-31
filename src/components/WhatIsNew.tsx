@@ -57,6 +57,17 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "The new build takes the place of the old one — nothing to delete or reinstall",
     ],
   },
+  "1.0.23": {
+    title: "Plugins work, and the app remembers your folder",
+    items: [
+      "Fixed: the Plugins page came back empty — the plugin list and the 40 built-in bundles now load on your own machine instead of the cloud",
+      "Your open folder is remembered across restarts, so the agent's terminal and the Plugins page keep working",
+      "Installing a bundle writes its skills, rules and hooks straight into that folder — one click, ready to use",
+      "Playbook keeps its learned lessons in a plain file on this device — no database, no cloud copy, survives restarts",
+      "New: a guided tour walks you through the app once, and “Take the tour” replays it any time",
+      "Fixed: the model picker listed one model twice and logged a console error — no more duplicate rows",
+    ],
+  },
   "1.0.22": {
     title: "The agent stops losing work and blocking itself",
     items: [

@@ -66,6 +66,19 @@ const LOCAL_ONLY_API_ROUTES = [
   // Conversations: top-level list/create. Children (rename/delete/fork,
   // migrate-from-cloud) are covered by the /api/conversations/ prefix below.
   "/api/conversations",
+  // Playbook (learned, evidence-backed entries): a plain JSON file on THIS
+  // device — the local Next server owns it and the file lives in the app's
+  // per-user data dir (ORPLEX_PLAYBOOK_FILE). Forwarding it would put the
+  // user's learnings in the cloud database and cost storage there; the
+  // desktop app is local-first for this data.
+  "/api/playbook",
+  // Plugin bundles: installed into <workspace>/.orplex on THIS machine, and
+  // the library view is scoped to the folder open HERE. Forwarded to the
+  // cloud, the cloud had no registered workspace and no access to the user's
+  // disk — the page came back empty ("no plugins available") even with a
+  // folder open. These routes must run on-device.
+  "/api/agent/plugins",
+  "/api/agent/plugin-library",
 ];
 
 // Conversations are LOCAL-FIRST in the desktop app: history CRUD reads and
@@ -84,6 +97,9 @@ const LOCAL_ONLY_API_PREFIXES = [
   // LOCAL_ONLY_API_ROUTES comment above.
   "/api/files/",
   "/api/conversations/",
+  // Playbook children (/api/playbook/<id>, /api/playbook/capture) — the
+  // device-local JSON store, see LOCAL_ONLY_API_ROUTES.
+  "/api/playbook/",
 ];
 
 // Chat image attachments are local BY DESIGN: the bytes live on the user's own
@@ -338,5 +354,5 @@ if (
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|_next/hmr|favicon.ico).*)"],
 };

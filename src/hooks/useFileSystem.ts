@@ -116,6 +116,48 @@ export function useFileSystem() {
     void import("@/lib/project-reopen").catch(() => {});
   }, []);
 
+  // Re-register the last opened workspace with the server after a restart.
+  //
+  // The folder was only registered when the user opened it, so every app
+  // restart left the server without a workspace: the Plugins page went back
+  // to "no workspace open" and the agent lost its terminal cwd — even though
+  // the folder was still open on the device. The roster remembers the
+  // absolute path, so restore it silently (no toast: nothing was opened by
+  // the user here).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { listProjectsLocal } = await import("@/lib/project-registry");
+        const projects = listProjectsLocal()
+          .filter((p) => typeof p.lastPath === "string" && p.lastPath)
+          .sort((a, b) => (b.lastOpenedAt || 0) - (a.lastOpenedAt || 0));
+        if (!projects.length || cancelled) return;
+        const lastPath = projects[0].lastPath as string;
+
+        const current = await apiFetch("/api/agent/workspace-cwd");
+        if (current.ok) {
+          const data = await current.json().catch(() => null);
+          if (data?.cwd) return; // already registered — leave it alone
+        }
+        const res = await apiFetch("/api/agent/workspace-cwd", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: lastPath }),
+        });
+        if (res.ok && !cancelled) {
+          setDirectoryName((prev) => prev ?? projects[0].name);
+        }
+      } catch {
+        // No roster, no server, or a folder that no longer exists — the
+        // normal path (opening a folder) still works.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Recursively scans a directory handle and constructs the tree
   const scanDirectory = useCallback(async (
     dirHandle: FileSystemDirectoryHandle,

@@ -34,6 +34,8 @@ export interface BranchedChild {
   badge?: ReactNode;
   /** Native title/tooltip. */
   title?: string;
+  /** Stable hook for the onboarding tour spotlight. */
+  tourId?: string;
 }
 
 export interface BranchedItem {
@@ -47,6 +49,8 @@ export interface BranchedItem {
   badge?: ReactNode;
   /** Native title/tooltip for the header row. */
   title?: string;
+  /** Stable hook for the onboarding tour spotlight. */
+  tourId?: string;
 }
 
 interface BranchedMenuProps {
@@ -266,6 +270,7 @@ export default function BranchedMenu({
               }}
               type="button"
               className="branched-menu__head"
+              data-tour-id={item.tourId}
               aria-expanded={kids ? isOpen : undefined}
               aria-current={leafActive ? "true" : undefined}
               data-active={leafActive ? "" : undefined}
@@ -340,6 +345,7 @@ export default function BranchedMenu({
                         key={kid.value}
                         type="button"
                         className="branched-menu__item"
+                        data-tour-id={kid.tourId}
                         aria-current={kid.value === active ? "true" : undefined}
                         data-active={kid.value === active ? "" : undefined}
                         title={kid.title}

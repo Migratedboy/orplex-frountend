@@ -131,6 +131,27 @@ function groupByCreator(rows: PromptBarModel[]): PromptBarModel[] {
   return buckets.size > 1 ? Array.from(buckets.values()).flat() : rows;
 }
 
+/**
+ * Drop rows whose key was already seen, keeping the first.
+ *
+ * The model menu keys each row by its model id. Two rows sharing an id render
+ * as two children with the same key, which React reports as a console error
+ * and which can make React drop and re-create rows instead of updating them.
+ * A duplicate id can reach here from more than one feed (the curated defaults
+ * and the live catalog both carry the same model), so the menu collapses them
+ * itself rather than trusting every feed to be clean.
+ */
+function dedupeByKey(rows: PromptBarModel[]): PromptBarModel[] {
+  const seen = new Set<string>();
+  const out: PromptBarModel[] = [];
+  for (const row of rows) {
+    if (seen.has(row.key)) continue;
+    seen.add(row.key);
+    out.push(row);
+  }
+  return out;
+}
+
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 const pathAt = (a: number[], b: number[], t: number) => {
   let d = "";
@@ -381,8 +402,8 @@ export default function PromptBar({
     if (open === "model") {
       const q = modelQuery.trim().toLowerCase();
       if (q) {
-        return models.filter(
-          (m) => m.name.toLowerCase().includes(q) || m.key.toLowerCase().includes(q)
+        return dedupeByKey(
+          models.filter((m) => m.name.toLowerCase().includes(q) || m.key.toLowerCase().includes(q))
         );
       }
       // Empty search → recently used first (deduped, still verified list members)
@@ -390,9 +411,9 @@ export default function PromptBar({
         const seen = new Set<string>();
         const recents = recentModels.filter((m) => models.some((x) => x.key === m.key) && !seen.has(m.key) && seen.add(m.key));
         const rest = models.filter((m) => !seen.has(m.key));
-        return [...recents, ...rest];
+        return dedupeByKey([...recents, ...rest]);
       }
-      return models;
+      return dedupeByKey(models);
     }
     if (open === "mode") return modes;
     return [];

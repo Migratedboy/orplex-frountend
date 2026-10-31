@@ -28,7 +28,12 @@ module.exports = {
       testEnvironment: "jsdom",
       roots: ["<rootDir>/src"],
       testMatch: ["**/__tests__/**/*.test.tsx"],
-      moduleNameMapper: { "^@/(.*)$": "<rootDir>/src/$1" },
+      // Component tests import the component's own stylesheet; without a stub
+      // the CSS is parsed as JavaScript and the suite fails to load.
+      moduleNameMapper: {
+        "^@/(.*)$": "<rootDir>/src/$1",
+        "\\.(css|less|scss|sass)$": "<rootDir>/jest.styleMock.js",
+      },
       transform: {
         "^.+\\.tsx?$": ["ts-jest", { tsconfig: "tsconfig.json", isolatedModules: true }],
       },

@@ -4266,7 +4266,7 @@ html:not(.dark) .sb-expand-fab:hover { color:#a04100; border-color:#fdba74; }
    correct value in one mode. Converted to the same vocabulary as the rest of
    the app (.topbar-btn / .empty-hero-pill): light default, .dark override. */
 
-.tp-card, .as-card, .ot-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+ .tp-card, .as-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
 .tp-head, .as-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 16px; background:var(--well); font-size:13px; font-weight:500; color:var(--text-primary); }
 .tp-count, .as-count { font-size:11px; color:var(--text-tertiary); font-weight:400; }
 .tp-body { padding:12px 16px; }
@@ -4291,20 +4291,33 @@ html:not(.dark) .sb-expand-fab:hover { color:#a04100; border-color:#fdba74; }
 .as-track { width:64px; height:6px; border-radius:999px; background:var(--well); overflow:hidden; flex-shrink:0; }
 .as-fill { height:100%; background:var(--brand); border-radius:999px; transition:width .3s ease; }
 
-.ot-overlay { position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.55); backdrop-filter:blur(2px); }
-.ot-card { width:320px; max-width:92vw; padding:24px; border-radius:12px; box-shadow:0 20px 50px rgba(0,0,0,.28); }
-.ot-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
-.ot-step { font-size:11px; color:var(--text-tertiary); }
-.ot-skip { background:none; border:none; cursor:pointer; font-size:11px; color:var(--text-tertiary); padding:2px 6px; border-radius:4px; }
-.ot-skip:hover { color:var(--brand); }
-.ot-title { font-size:16px; font-weight:600; margin:0 0 8px; color:var(--text-primary); }
-.ot-desc { font-size:13px; line-height:1.55; margin:0 0 24px; color:var(--text-secondary); }
-.ot-actions { display:flex; gap:8px; }
-.ot-btn { flex:1; padding:8px 16px; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; border:1px solid var(--border); background:var(--well); color:var(--text-primary); transition:background .15s, border-color .15s, color .15s; }
-.ot-btn:hover { border-color:var(--brand-vivid); color:var(--brand); }
-.ot-btn--primary { flex:1; padding:8px 16px; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; border:1px solid var(--brand); background:var(--brand); color:#fff; transition:background .15s, border-color .15s; }
-.ot-btn--primary:hover { background:var(--brand-vivid); border-color:var(--brand-vivid); color:#fff; }
-.dark .ot-btn--primary { color:#0b0b0d; }
+/* ===== Guided tour (OnboardingTour.tsx) =====
+   Coach marks: the spotlight hole + page-wide dim are rendered inline with
+   fixed positioning from JS; only the tooltip card lives here. */
+.tour-card {
+  position: fixed;
+  width: 340px;
+  max-width: min(92vw, 380px);
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0,0,0,.35);
+  animation: tour-pop .22s cubic-bezier(.2,.8,.3,1);
+}
+.tour-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+.tour-step { font-size:11px; color:var(--text-tertiary); font-family:'JetBrains Mono',monospace; }
+.tour-skip { background:none; border:none; cursor:pointer; font-size:11px; color:var(--text-tertiary); padding:2px 6px; border-radius:4px; }
+.tour-skip:hover { color:var(--brand); }
+.tour-title { font-size:16px; font-weight:600; margin:0 0 8px; color:var(--text-primary); }
+.tour-desc { font-size:13px; line-height:1.55; margin:0 0 20px; color:var(--text-secondary); }
+.tour-actions { display:flex; gap:8px; }
+.tour-btn { flex:1; padding:8px 16px; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; border:1px solid var(--border); background:var(--well); color:var(--text-primary); transition:background .15s, border-color .15s, color .15s; }
+.tour-btn:hover { border-color:var(--brand-vivid); color:var(--brand); }
+.tour-btn--primary { flex:3; padding:8px 16px; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; border:1px solid var(--brand); background:var(--brand); color:#fff; transition:background .15s, border-color .15s; }
+.tour-btn--primary:hover { background:var(--brand-vivid); border-color:var(--brand-vivid); color:#fff; }
+.dark .tour-btn--primary { color:#0b0b0d; }
+@keyframes tour-pop { from { opacity:0; } to { opacity:1; } }
 
 /* Quiet model-list notice (catalog still settling, fallback list usable). */
 .prompt-bar__model-settling { padding:8px 16px; font-size:11px; color:var(--text-tertiary); border-top:1px solid var(--border); }

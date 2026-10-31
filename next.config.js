@@ -5,6 +5,11 @@ const nextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   compress: true,
+  // The desktop dev app loads the UI from 127.0.0.1 (explicit IPv4 loopback),
+  // so module-script requests carry Origin: http://127.0.0.1:5000 — without
+  // this entry the dev server 403s them and every dynamic(ssr:false) chunk
+  // hangs forever on its skeleton fallback.
+  allowedDevOrigins: ["127.0.0.1"],
   // Self-contained server bundle. This is what the PACKAGED desktop app runs
   // (.next/standalone/server.js): electron-builder then ships only the traced
   // production deps instead of the whole monorepo node_modules tree, which is
