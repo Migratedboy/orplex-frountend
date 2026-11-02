@@ -110,7 +110,7 @@ function mirrorToServer(path: string, prev: string | null, next: string): void {
  * Hydrate the local buffer from the durable server copy (new tab, another
  * machine). Server entries FILL GAPS only — newer local entries win.
  */
-export async function hydrateFromServer(): Promise<number> {
+async function hydrateFromServer(): Promise<number> {
   if (!storageAvailable()) return 0;
   const oldestLocal = history.length > 0 ? history[history.length - 1].timestamp : 0;
   try {

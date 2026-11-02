@@ -79,7 +79,6 @@ export const IconMcp = ({ size = 16, className }: IconProps) => (
 
 export const IconFolder = (p: IconProps) => <Ms name="folder" {...p} />;
 export const IconFolderOpen = (p: IconProps) => <Ms name="folder_open" {...p} />;
-export const IconPaperclip = (p: IconProps) => <Ms name="attach_file" {...p} />;
 export const IconImage = (p: IconProps) => <Ms name="image" {...p} />;
 export const IconDownload = (p: IconProps) => <Ms name="download" {...p} />;
 export const IconCopy = (p: IconProps) => <Ms name="content_copy" {...p} />;
@@ -87,31 +86,13 @@ export const IconCopy = (p: IconProps) => <Ms name="content_copy" {...p} />;
 // === Chat ===
 
 export const IconPlus = (p: IconProps) => <Ms name="add" {...p} />;
-export const IconStop = (p: IconProps) => <Ms name="stop_circle" {...p} />;
-export const IconSend = (p: IconProps) => <Ms name="send" {...p} />;
 export const IconClose = (p: IconProps) => <Ms name="close" {...p} />;
 export const IconX = (p: IconProps) => <Ms name="close" {...p} />;
 export const IconCheck = (p: IconProps) => <Ms name="check" {...p} />;
 
-// === Severity Indicators (bug report) — colored dots, not glyphs ===
-
-export function IconSeverityHigh({ size = 12, className }: IconProps) {
-  return <span className={`ms-severity ${className || ""}`} style={{ width: size, height: size, background: "#ef4444" }} />;
-}
-export function IconSeverityMedium({ size = 12, className }: IconProps) {
-  return <span className={`ms-severity ${className || ""}`} style={{ width: size, height: size, background: "#eab308" }} />;
-}
-export function IconSeverityLow({ size = 12, className }: IconProps) {
-  return <span className={`ms-severity ${className || ""}`} style={{ width: size, height: size, background: "#22c55e" }} />;
-}
-
 // === Package Icons ===
 
 export const IconModule = (p: IconProps) => <Ms name="layers" {...p} />;
-/** Agent Manager — multi-agent orchestration hub. */
-export const IconAgentManager = (p: IconProps) => <Ms name="hub" {...p} />;
-/** Runs Board — the kanban-style run board. */
-export const IconRunsBoard = (p: IconProps) => <Ms name="view_kanban" {...p} />;
 export const IconAgent = (p: IconProps) => <Ms name="smart_toy" {...p} />;
 
 // === Misc ===
@@ -135,8 +116,7 @@ export const IconInsights = (p: IconProps) => <Ms name="query_stats" {...p} />;
 // Vertical kebab (overflow menus).
 export const IconMore = (p: IconProps) => <Ms name="more_vert" {...p} />;
 export const IconCircle = (p: IconProps) => <Ms name="radio_button_unchecked" {...p} />;
-export const IconLoader = (p: IconProps) => <Ms name="progress_activity" {...p} />;
-export const IconMinus = (p: IconProps) => <Ms name="remove" {...p} />;
+ const IconLoader = (p: IconProps) => <Ms name="progress_activity" {...p} />;
 export const IconRefresh = (p: IconProps) => <Ms name="refresh" {...p} />;
 /** Fork a conversation into a new on-device copy (History rows / TopBar). */
 export const IconFork = (p: IconProps) => <Ms name="call_split" {...p} />;

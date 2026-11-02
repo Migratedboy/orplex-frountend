@@ -25,6 +25,8 @@ import { DEFAULT_MODELS } from "@/lib/default-models";
 const OPENROUTER_MODELS = "https://openrouter.ai/api/v1/models";
 
 let ids: Set<string> | null = null;
+/** Live price per id: a model is free when BOTH prompt and completion cost 0. */
+let prices: Map<string, { prompt: string; completion: string }> | null = null;
 let skipped = false;
 
 beforeAll(async () => {
@@ -33,8 +35,16 @@ beforeAll(async () => {
       signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as { data?: Array<{ id?: string }> };
+    const data = (await res.json()) as {
+      data?: Array<{ id?: string; pricing?: { prompt?: string; completion?: string } }>;
+    };
     ids = new Set((data.data ?? []).map((m) => m.id ?? ""));
+    prices = new Map(
+      (data.data ?? []).map((m) => [
+        m.id ?? "",
+        { prompt: m.pricing?.prompt ?? "", completion: m.pricing?.completion ?? "" },
+      ]),
+    );
   } catch {
     skipped = true;
   }
@@ -60,18 +70,35 @@ describe("default model ids exist upstream", () => {
   });
 
   it("contains NO paid models - a default row must never bill the user", () => {
-    // Every OpenRouter default must be a :free id. Paid frontier models
-    // (claude-sonnet-4.5, gpt-5.1, gemini-2.5-pro, deepseek-v3.2) were briefly
-    // shipped here and are exactly the surprise-cost hazard this blocks: a
-    // default the user never consciously chose, charging per token.
-    const paid = DEFAULT_KEYS.filter((k) => !GROQ_KEYS.has(k) && !k.endsWith(":free"));
+    // Every OpenRouter default must be free. The live catalogue's PRICE is the
+    // authority, not the `:free` suffix: `openrouter/free` (the Free Models
+    // Router) costs 0 for both directions but carries no suffix, while a `:free`
+    // id is only a naming convention. A paid id that merely looked free is
+    // exactly the surprise-cost hazard this blocks - a default the user never
+    // consciously chose, charging per token.
+    if (skipped || !prices) {
+      console.warn("[skipped] could not reach OpenRouter; price check not run");
+      return;
+    }
+    const paid = DEFAULT_KEYS.filter((k) => {
+      if (GROQ_KEYS.has(k)) return false; // served by Groq, priced by Groq's free tier
+      const p = prices!.get(k);
+      if (!p) return false; // missing from the catalogue is caught by the test above
+      return p.prompt !== "0" || p.completion !== "0";
+    });
     expect(paid).toEqual([]);
   });
 
   it("labels every non-Groq default as free", () => {
     for (const k of DEFAULT_KEYS) {
       if (GROQ_KEYS.has(k)) continue;
-      expect(k.endsWith(":free")).toBe(true);
+      if (skipped || !prices) {
+        expect(k.endsWith(":free") || k === "openrouter/free").toBe(true);
+        continue;
+      }
+      const p = prices!.get(k);
+      if (!p) continue; // missing ids are reported by the catalogue test
+      expect(p.prompt === "0" && p.completion === "0").toBe(true);
     }
   });
 });

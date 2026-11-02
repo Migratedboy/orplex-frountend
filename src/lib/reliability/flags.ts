@@ -53,7 +53,7 @@ export function reliabilityTestLaneEnabled(): boolean {
  * "it was already broken", so a pre-existing failure must not block a task by
  * default — only a regression must.
  */
-export function reliabilityBlockOnBaselineFailures(): boolean {
+ function reliabilityBlockOnBaselineFailures(): boolean {
   try {
     return reliabilityGatesEnabled() && process.env.RELIABILITY_BLOCK_BASELINE === "1";
   } catch {

@@ -175,7 +175,7 @@ export function reportError(error: Error, context: ErrorContext = {}): void {
 /**
  * Report a non-error event (for tracking notable events).
  */
-export function reportMessage(
+ function reportMessage(
   message: string,
   level: "info" | "warning" | "error" = "info",
   context: ErrorContext = {}

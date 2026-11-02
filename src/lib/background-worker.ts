@@ -79,9 +79,7 @@ import { validateToolArgs, MUTATING_TOOL_NAMES } from "./reliability/tool-args";
 import { evaluateCallCapability } from "./reliability/capability-policy";
 import { detectTamper } from "./reliability/tamper-detector";
 import { classifyTestOutcome } from "./reliability/flake-control";
-import { applyEditOpsAtomic } from "./reliability/atomic-batch";
 import { assertSafeWrite } from "./reliability/path-jail";
-import { canWrite } from "./reliability/roles";
 import {
   normalizeCallSignature,
   trackOscillation,
@@ -93,8 +91,10 @@ import {
   recordCallFailure,
 } from "@/lib/agent/contract";
 import { hashWorkspaceState, gateFingerprint } from "./reliability/progress-hash";
-import { reliabilityVerificationReportEnabled } from "./reliability/flags";
+import type { InterventionRung } from "./loop-detect";
+import { reliabilityVerificationReportEnabled, reliabilityAcceptanceSpecEnabled } from "./reliability/flags";
 import { buildVerificationReport, formatVerificationReport } from "./reliability/verification-report";
+import { extractAcceptanceFromTask } from "./reliability/acceptance";
 
 let _pluginsInitialized = false;
 import {
@@ -1176,11 +1176,147 @@ export async function runInBackground(
   // particular piece of untrusted content was flagged as injection-bearing, so a
   // later write derived from it can be held for approval instead of auto-run.
   const toolTaint = new TaintStore();
+  // Phase 5: real gate/workspace progress tracking for the extended loop guard.
+  // lastGateFp fingerprints the LAST verification sweep (lane/outcome/newErrors),
+  // so trackProgress can tell "the workspace changed" from "the gate changed".
+  // lastGateResults is the same sweep shaped for the final Verification Report.
+  let lastGateFp = gateFingerprint([]);
+  let lastGateResults: Array<{ lane: string; outcome: string; durationMs: number; newErrors: string[]; preExisting: boolean }> | null = null;
+  // Phase 2: tamper detection state. tamperState.before snapshots the test
+  // surface
+  // before the first mutating call; tamperFindings accumulates detector output
+  // across repair rounds for the final report.
+  const tamperState: { before: GatedTestSnapshot | null } = { before: null };
+  let tamperFindings: Array<{ signal: string; severity: string; evidence: string }> = [];
+  // Phase 5: intervention ladder position (client lane escalates 1 → 2 → 3;
+  // rung 3 IS the hard denylist, rung 4 needs a rollback checkpoint the
+  // client lane does not record). Each directive is pushed into the model's
+  // transcript exactly once.
+  let interventionRung: InterventionRung = 1;
+  const interventionPushed = new Set<InterventionRung>();
+  // Per-task count of writes the edit lock refused — feeds the Verification
+  // Report's refused-writes line. Tracked locally because the in-memory lock
+  // state is deleted when lanes clear, and a reported count must survive that.
+  let editLockRefusals = 0;
   // True when the gate pipeline is STILL red after every repair round. A task
   // that ends in this state is a failure wearing a success — the files are
   // written but the workspace does not compile — so it must close as [FAILED]
   // (Retry offered, ledger records FAIL), exactly like an empty response does.
   let gateRed = false;
+
+  // === PHASE 2: real tamper-detection data =================================
+  // detectTamper is a pure function of a before/after test-surface snapshot.
+  // These helpers produce the REAL snapshots from the same facts the gate
+  // pipeline already uses: the workspace git history (via /api/agent/exec,
+  // the same channel VERIFY_COMMAND runs on) and the process's own file
+  // bridge (toolCtx.fs). A workspace that is not a git repo yields null and
+  // tamper detection skips honestly for that task.
+  const GATED_TEST_FILE_RE = /(^|[\\/])__tests__[\\/]|(\.test|\.spec)\.[jt]sx?$/i;
+  const TEST_CASE_RE = /\b(?:it|test)\s*\(/g;
+  const countTestCases = (content: string): number => (content.match(TEST_CASE_RE) ?? []).length;
+
+  // One test-surface snapshot: the file set, per-file contents (always
+  // complete files — fs reads are whole-file here), and the its-test count.
+  interface GatedTestSnapshot {
+    files: string[];
+    content: Map<string, string>;
+    testCount: number;
+  }
+
+  const reliabilityExec = async (
+    command: string,
+    timeoutMs = 20_000,
+  ): Promise<{ exitCode?: number; stdout: string; ok: boolean }> => {
+    try {
+      const res = await apiFetch("/api/agent/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command, timeout: timeoutMs }),
+        signal: abortSignal ?? undefined,
+      });
+      const d = await res.json();
+      return {
+        exitCode: typeof d?.exitCode === "number" ? d.exitCode : undefined,
+        stdout: String(d?.stdout ?? ""),
+        ok: res.ok,
+      };
+    } catch {
+      return { stdout: "", ok: false };
+    }
+  };
+
+  const tamperBeforeSnapshot = async (): Promise<GatedTestSnapshot | null> => {
+    const ls = await reliabilityExec("git ls-files");
+    if (!ls.ok) return null;
+    if (ls.exitCode !== 0) return null; // not a git workspace — no snapshot
+    const files = ls.stdout
+      .split(/\r?\n/)
+      .map((p) => p.trim())
+      .filter((p) => p && GATED_TEST_FILE_RE.test(p))
+      .slice(0, 40);
+    const content = new Map<string, string>();
+    let testCount = 0;
+    for (const p of files) {
+      // HEAD version, not the worktree version: the "before" state must be
+      // what the gate baseline also uses, so tamper findings line up with
+      // the lane evidence. Not tracked in HEAD → skip (untracked file,
+      // likely created by the task itself; the after snapshot covers it).
+      const show = await reliabilityExec(`git show "HEAD:${p}"`, 5000);
+      if (show.ok && show.exitCode === 0) {
+        const head = show.stdout.slice(0, 200_000);
+        content.set(p, head);
+        testCount += countTestCases(head);
+      }
+    }
+    return { files, content, testCount };
+  };
+
+  const parseNameStatus = (raw: string): Array<{ status: string; name: string }> => {
+    const rows: Array<{ status: string; name: string }> = [];
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line) continue;
+      const m = line.match(/^([AMD])\s+(.+)$/);
+      if (m) rows.push({ status: m[1], name: m[2].trim() });
+    }
+    return rows;
+  };
+
+  const tamperRoundSnapshot = async (read: ((p: string) => Promise<string | null>) | null): Promise<(GatedTestSnapshot & { diff: string; beforeContent: Map<string, string> }) | null> => {
+    const before = tamperState.before;
+    if (!read || !before) return null;
+    const diff = await reliabilityExec("git diff HEAD --unified=3");
+    if (!diff.ok) return null;
+    const rawDiff = diff.stdout.slice(0, 200_000);
+    const ns = await reliabilityExec("git diff HEAD --name-status");
+    const rows = parseNameStatus(ns.ok ? ns.stdout : "");
+    const afterFiles = new Set(before.files);
+    for (const r of rows) {
+      if (r.status === "D") afterFiles.delete(r.name);
+      else afterFiles.add(r.name);
+    }
+    // A brand-new test file the task wrote is not in `git diff HEAD` (it is
+    // untracked), so close that hole with this task's own write ledger.
+    for (const p of writtenFiles.keys()) {
+      if (GATED_TEST_FILE_RE.test(p)) afterFiles.add(p);
+    }
+    // HEAD ("before") content for each MODIFIED test file — those are the
+    // deletions/weakenings the detector needs an OLD version to find.
+    const beforeContent = new Map(tamperState.before?.content ?? new Map<string, string>());
+    for (const r of rows.filter((x) => x.status === "M" && GATED_TEST_FILE_RE.test(x.name)).slice(0, 10)) {
+      const show = await reliabilityExec(`git show "HEAD:${r.name}"`, 5000);
+      if (show.ok && show.exitCode === 0) beforeContent.set(r.name, show.stdout.slice(0, 200_000));
+    }
+    // Worktree ("after") content straight from the file bridge.
+    const content = new Map<string, string>();
+    let testCount = 0;
+    for (const f of afterFiles) {
+      const current = (await read(f).catch(() => null)) ?? null;
+      if (current === null) continue; // gone since ls — not counted, honest
+      content.set(f, current);
+      testCount += countTestCases(current);
+    }
+    return { files: [...afterFiles], content, testCount, diff: rawDiff, beforeContent };
+  };
   // One collapsible [THINKING] block per turn — rebuilt in place as
   // reasoning streams in, then closed once the turn's answer text folds in.
   let thinkingDisplay = "";
@@ -1776,6 +1912,12 @@ export async function runInBackground(
           { role: "assistant", content: streamedContent || "" },
           { role: "user", content: `[TOOL RESULTS]\n${toolResults}${contextFiles.size ? `\n${buildWorkspaceDigest()}` : ""}${scratchBlock ? `\n${scratchBlock}` : ""}${scratchNudge}\n${sufficiencyDirective}` },
         ];
+        // Real token accounting for the extended loop guard (R6): this
+        // turn's streamed answer plus the tool results it produced ARE new
+        // context the next model call must re-send, so they are honest
+        // budget deltas (the old `recordBudget(loopStreaks, 0)` stub counted
+        // nothing).
+        recordBudget(loopStreaks, estimateTokens(streamedContent) + estimateTokens(toolResults));
         return null;
       },
     });
@@ -1946,11 +2088,12 @@ export async function runInBackground(
     // repair loop uses to clear the gate, and locking it would wedge the task.
     if (
       reliabilityEditLockEnabled() &&
-      (call.name === "write_file" || call.name === "write_file_chunk" || call.name === "edit_file" || call.name === "batch_edit")
+      (call.name === "write_file" || call.name === "write_file_chunk" || call.name === "edit_file" || call.name === "batch_edit" || call.name === "apply_edit_ops")
     ) {
       const lock = isEditLocked(taskId);
       if (lock) {
         recordRefusedWrite(taskId);
+        editLockRefusals += 1;
         const redList = [...lock.redLanes].join(", ");
         fullDisplayContent += `[GATE] ${call.name} blocked — edit lock (${redList})\n`;
         setDisplayContent(fullDisplayContent);
@@ -1960,17 +2103,59 @@ export async function runInBackground(
 
     // === CAPABILITY POLICY (Phase 4) ===
     if (reliabilityCapabilityPolicyEnabled()) {
+      // Provenance (Phase 4 rule): the code's value ledger decides what this
+      // call may inherit. A path/command that was flagged as injection-bearing
+      // (or derived from such content) carries its recorded provenance here —
+      // most dangerously, prose — while a first-seen value parses from the
+      // model's native XML envelope. The previous hardcoded "user" literal
+      // made the policy trust every parsed call by definition, which is the
+      // exact A-behind gap provenance.ts exists to close.
+      const valueKey = String(call.path ?? call.command ?? call.name);
       const verdict = evaluateCallCapability({
         tool: String(call.name),
         path: call.path ? String(call.path) : undefined,
         command: call.command ? String(call.command) : undefined,
-        provenance: "user",
+        provenance: toolTaint.get(valueKey) ?? "native",
         taint: toolTaint,
       });
       if (verdict.blocked) {
         fullDisplayContent += `[CAPABILITY] ${call.name} blocked\n`;
         setDisplayContent(fullDisplayContent);
         return { resultXml: `<tool_result name="${call.name}">BLOCKED by capability policy: ${verdict.reasons.join("; ")}</tool_result>\n` };
+      }
+      // requiresApproval → the call walks the SAME approval dialog MCP tools
+      // and overwrite paths use. The verdict used to be computed and then
+      // dropped, so a tainted write auto-ran with full authority.
+      if (verdict.requiresApproval) {
+        const approvalType: ApprovalType =
+          call.name === "write_file" || call.name === "write_file_chunk"
+            ? "write_file"
+            : call.name === "edit_file" || call.name === "batch_edit"
+              ? "edit_file"
+              : call.name === "run_command" || call.name === "run_in_sandbox"
+                ? "run_command"
+                : "mcp_tool";
+        const approved = await requestApproval(
+          approvalType,
+          `Approval requested — capability policy flagged ${call.name}`,
+          {
+            taskId,
+            tool: call.name,
+            path: call.path ?? null,
+            command: call.command ?? null,
+            provenance: toolTaint.get(valueKey) ?? "native",
+            reasons: verdict.reasons.join("; "),
+          },
+          undefined,
+          "high",
+          abortSignal ?? getTaskAbortSignal() ?? undefined,
+        );
+        if (!approved) {
+          fullDisplayContent += `[CAPABILITY] ${call.name} — approval denied\n`;
+          setDisplayContent(fullDisplayContent);
+          return { resultXml: `<tool_result name="${call.name}">BLOCKED: the capability policy flagged this call (derived from tainted content) and the user did not approve it. Re-derive the step from an untainted, user-authored source instead.</tool_result>\n` };
+        }
+        fullDisplayContent += `[CAPABILITY] ${call.name} — user approved\n`;
       }
     }
     // === PATH JAIL (Phase 3) ===
@@ -1981,33 +2166,6 @@ export async function runInBackground(
         setDisplayContent(fullDisplayContent);
         return { resultXml: `<tool_result name="${call.name}">BLOCKED by path jail: ${safe.reason}</tool_result>\n` };
       }
-    }
-    // === DEAD-CODE RELIABILITY WIRING (no-op when flags off) ===
-    if (reliabilityTamperDetectionEnabled()) {
-      void detectTamper({
-        beforeTestFiles: [],
-        afterTestFiles: [],
-        beforeTestCount: 0,
-        afterTestCount: 0,
-        beforeContent: new Map(),
-        afterContent: new Map(),
-        diff: "",
-      });
-    }
-    if (reliabilityFlakeControlEnabled()) {
-      void classifyTestOutcome("", 0);
-    }
-    if (reliabilityEditOpsEnabled()) {
-      void applyEditOpsAtomic([], {
-        readFile: async () => null,
-        writeFile: async () => true,
-        deleteFile: async () => true,
-        moveFile: async () => true,
-        fileExists: async () => false,
-      });
-    }
-    if (reliabilityPathJailEnabled()) {
-      void canWrite("developer");
     }
     // === TOOL ARG VALIDATION (Phase 3) ===
     // The dispatcher previously ran a linear if-chain with no schema check:
@@ -2038,24 +2196,49 @@ export async function runInBackground(
         setDisplayContent(fullDisplayContent);
         return { resultXml: `<tool_result name="${call.name}">refused: this exact call has already failed repeatedly. Change the approach — do not retry it verbatim.</tool_result>\n` };
       }
-       const _tp = trackProgress(loopStreaks, turnsWithTools, hashWorkspaceState(contextFiles as any), gateFingerprint([]));
-       const _rb = recordBudget(loopStreaks, 0);
-       void buildInterventionDirective(loopStreaks, 1);
-       void _tp; void _rb;
-       const osc = trackOscillation(loopStreaks, sig);
-       if (osc.oscillating) {
+      // Real progress tracking (R5): the workspace hash comes from the files
+      // the task itself wrote (content-diffed), and the gate fingerprint from
+      // the LAST verification sweep's lane outcomes. Two identical snapshots
+      // = this task is going nowhere and the counts below say so.
+      const filesHash = hashWorkspaceState(writtenFiles);
+      const tp = trackProgress(loopStreaks, turnsWithTools, filesHash, lastGateFp);
+      const osc = trackOscillation(loopStreaks, sig);
+      if (osc.oscillating) {
         fullDisplayContent += `[LOOP] ${call.name} refused — oscillation (period ${osc.period})\n`;
         setDisplayContent(fullDisplayContent);
         return { resultXml: `<tool_result name="${call.name}">refused: you are oscillating between ${osc.period} repeating calls without making progress. Step back and choose a different approach.</tool_result>\n` };
       }
-      if (checkWallClock(loopStreaks).exceeded) {
-        fullDisplayContent += `\n**Task halted** — the wall-clock budget for this task is exhausted.\n`;
+      // Budget + wall clock. Token spend is accumulated per call by counting
+      // this call's result envelope (recordBudget below, post-dispatch), so
+      // an exceeded budget refuses every FURTHER call in the turn.
+      const budget = recordBudget(loopStreaks, 0);
+      if (checkWallClock(loopStreaks).exceeded || budget.exceeded) {
+        const reason = budget.exceeded ? budget.reason ?? "the token budget is exhausted" : "the wall-clock budget is exhausted";
+        fullDisplayContent += `\n**Task halted** — ${reason}.\n`;
         setDisplayContent(fullDisplayContent);
         // The legacy `break` here skipped all remaining calls WITHOUT emitting
         // a <tool_result> for them — an incomplete turn the model then hung
         // on. Refuse per-call with an honest result instead: the turn stays
         // complete and the model sees exactly why nothing ran.
-        return { resultXml: `<tool_result name="${call.name}">refused: the wall-clock budget for this task is exhausted. Finish up and report what exists.</tool_result>\n` };
+        return { resultXml: `<tool_result name="${call.name}">refused: ${reason === "the wall-clock budget is exhausted" ? "the wall-clock budget for this task is exhausted. Finish up and report what exists." : `${reason}. Finish up and summarize what exists instead of continuing to loop.`}</tool_result>\n` };
+      }
+      // Intervention ladder (real escalation): only when the stall is REAL —
+      // several consecutive dispatches with no new file state and no gate
+      // change — does the directive climb one rung and get pushed into the
+      // model's transcript once. The previously discarded
+      // `void buildInterventionDirective(...)` result is now live context.
+      if (tp.stalled) {
+        const nextRung = (interventionRung + 1 <= 3 ? interventionRung + 1 : 3) as InterventionRung;
+        if (nextRung !== interventionRung && !interventionPushed.has(nextRung)) {
+          interventionRung = nextRung;
+          interventionPushed.add(nextRung);
+          const directive = buildInterventionDirective(loopStreaks, nextRung, {
+            reason: `No workspace or verification progress for ${tp.stepsWithoutProgress} consecutive steps`,
+          });
+          apiMessages.push({ role: "user", content: directive });
+          fullDisplayContent += `\n[LOOP] intervention rung ${nextRung} — directive queued for the next turn\n`;
+          setDisplayContent(fullDisplayContent);
+        }
       }
     }
 
@@ -2064,25 +2247,32 @@ export async function runInBackground(
     // write, not after: the baseline is the "before" snapshot the gate diffs
     // against to decide whether a failure is this task's fault.
     if (
-      reliabilityBaselineEnabled() &&
       !gateBaselineCaptured &&
-      (call.name === "write_file" || call.name === "write_file_chunk" || call.name === "edit_file" || call.name === "batch_edit")
+      (call.name === "write_file" || call.name === "write_file_chunk" || call.name === "edit_file" || call.name === "batch_edit" || call.name === "apply_edit_ops") &&
+      (reliabilityBaselineEnabled() || reliabilityTamperDetectionEnabled())
     ) {
       gateBaselineCaptured = true;
-      updateTaskStatus("tool_executing", "Capturing pre-task verification baseline…");
-      gateBaseline = await captureBaseline(
-        (cmd, timeoutMs) =>
-          apiFetch("/api/agent/exec", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ command: cmd, timeout: timeoutMs }),
-            signal: abortSignal ?? undefined,
-          }).then(async (r) => {
-            const d = await r.json();
-            return { exitCode: d?.exitCode as number | undefined, stdout: d?.stdout as string, stderr: d?.stderr as string };
-          }),
-        abortSignal ?? undefined,
-      );
+      if (reliabilityBaselineEnabled()) {
+        updateTaskStatus("tool_executing", "Capturing pre-task verification baseline…");
+        gateBaseline = await captureBaseline(
+          (cmd, timeoutMs) =>
+            apiFetch("/api/agent/exec", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ command: cmd, timeout: timeoutMs }),
+              signal: abortSignal ?? undefined,
+            }).then(async (r) => {
+              const d = await r.json();
+              return { exitCode: d?.exitCode as number | undefined, stdout: d?.stdout as string, stderr: d?.stderr as string };
+            }),
+          abortSignal ?? undefined,
+        );
+      }
+      // Phase 2: the tamper detector's "before" state — the same HEAD-level
+      // fact the gate baseline is built on, captured BEFORE the first write.
+      if (reliabilityTamperDetectionEnabled()) {
+        tamperState.before = await tamperBeforeSnapshot();
+      }
     }
 
     // A throwing tool must not take down the turn. Several tools are only
@@ -2363,6 +2553,47 @@ export async function runInBackground(
       signal: abortSignal ?? undefined,
     });
     for (const r of gateResult.results) recordLaneOutcome(r.lane, r.outcome);
+    // Real state the extended loop guard + Verification Report consume: the
+    // fingerprint reader watches THIS sweep, and `lastGateResults` is the
+    // same sweep shaped for the final report.
+    lastGateResults = gateResult.results.map((r) => ({
+      lane: r.lane,
+      outcome: r.outcome,
+      durationMs: typeof r.durationMs === "number" ? r.durationMs : 0,
+      newErrors: [...(r.newErrors ?? [])],
+      preExisting: r.preExisting === true,
+    }));
+    lastGateFp = gateFingerprint(gateResult.results);
+    // Edit lock (real lifecycle, not just final-round): a FAIL acquires the
+    // lock FOR THE ROUND — a mid-repair round that goes red refuses further
+    // writes immediately instead of waiting for the final round, and a lane
+    // that turned green drops its hold the moment it passes.
+    if (reliabilityEditLockEnabled()) {
+      const wasLocked = isEditLocked(taskId) !== null;
+      if (gateResult.verdict === "FAIL") {
+        for (const r of gateResult.blocking) {
+          acquireEditLock(taskId, r.lane, `${gateResult.blocking.length} verification lane(s) red — writes refused until this lane passes`);
+        }
+        if (!wasLocked) {
+          const redList = gateResult.blocking.map((r) => r.lane).join(", ");
+          fullDisplayContent += `\n**Edit lock engaged** — the ${redList} lane(s) are red. Further writes are refused until they pass.\n`;
+        }
+      } else {
+        for (const r of gateResult.results) {
+          if (r.outcome === "pass") clearLane(taskId, r.lane);
+        }
+      }
+    }
+    // Phase 2, flake classification on the REAL test-lane output (the old
+    // `classifyTestOutcome("", 0)` stub parsed an empty string).
+    const testLaneResult = gateResult.results.find((r) => r.lane === "test");
+    if (reliabilityFlakeControlEnabled() && testLaneResult && testLaneResult.outcome !== "skipped") {
+      const flake = classifyTestOutcome(testLaneResult.findings || "", 0);
+      if (flake.flaky) {
+        fullDisplayContent += "\n[FLAKE] the test lane's outcome is classified as unstable — likely a flaky test rather than this change. Treat the failure with suspicion before rewriting code.\n";
+        setDisplayContent(fullDisplayContent);
+      }
+    }
     fullDisplayContent += formatGateResult(gateResult) + "\n";
     setDisplayContent(fullDisplayContent);
     const tc = gateResult.results.find((r) => r.lane === "typecheck");
@@ -2396,13 +2627,47 @@ export async function runInBackground(
             findings = summarizeTypecheckOutput(`${data.stdout || ""}\n${data.stderr || ""}`);
             // Feed the adaptive Failure Doctrine with real evidence
             recordFailure("typecheck", findings, [...writtenFiles.keys()]);
+            lastGateFp = gateFingerprint([{ lane: "typecheck", outcome: "fail", newErrors: [] }]);
           } else if (data.exitCode === 0) {
             typecheckRan = true;
+            lastGateFp = gateFingerprint([{ lane: "typecheck", outcome: "pass", newErrors: [] }]);
+            // A green legacy typecheck releases its lane hold, exactly like
+            // the gate pipeline path does.
+            if (reliabilityEditLockEnabled()) clearLane(taskId, "typecheck");
           }
         } catch {
           // exec route unavailable (e.g. unit tests without the server) — the
           // lane did NOT run. typecheckRan stays false so it is never a pass.
         }
+  }
+
+  // Phase 2, real tamper detection: compare THIS round's test surface
+  // against the pre-task snapshot taken before the first write. The old
+  // `detectTamper({}…)` stub fed the detector constants it could never flag.
+  // Findings are annotations here (block-severity ones surface in the
+  // transcript) and flow into the Verification Report's residual risk.
+  if (reliabilityTamperDetectionEnabled() && tamperState.before) {
+    const before = tamperState.before;
+    const after = await tamperRoundSnapshot(toolCtx.fs?.readFile ?? null);
+    if (after) {
+      const found = detectTamper({
+        beforeTestFiles: before.files,
+        afterTestFiles: after.files,
+        beforeTestCount: before.testCount,
+        afterTestCount: after.testCount,
+        beforeContent: before.content,
+        afterContent: after.content,
+        diff: after.diff,
+      });
+      if (found.length > 0) {
+        tamperFindings.push(...found);
+        const blocking = found.filter((f) => f.severity === "block");
+        if (blocking.length > 0) {
+          fullDisplayContent += `\n**[TAMPER]** the test surface changed suspiciously while writing:\n${blocking.map((f) => `- ${f.signal}: ${f.evidence}`).join("\n")}\n`;
+          setDisplayContent(fullDisplayContent);
+        }
+      }
+    }
   }
 
         if (!typecheckRan && !findings) {
@@ -2420,6 +2685,8 @@ export async function runInBackground(
           recordLaneOutcome("typecheck", "pass");
           setDisplayContent(fullDisplayContent);
           clearFailures("typecheck"); // solved — drop from failure memory
+          // Legacy lane went green: release its hold under the edit lock too.
+          if (reliabilityEditLockEnabled()) clearLane(taskId, "typecheck");
           break;
         }
 
@@ -2442,14 +2709,23 @@ export async function runInBackground(
           // refused — this is what turns "the gate reported a failure" into
           // "the gate refuses the next write". Released only by a green pipeline
           // or a task end.
-          if (reliabilityEditLockEnabled() && gateResult && gateResult.verdict === "FAIL") {
-            const redLanes = gateResult.blocking.map((r) => r.lane).join(", ");
-            acquireEditLock(
-              taskId,
-              redLanes,
-              `${gateResult.blocking.length} verification lane(s) still failing after ${repairRoundsTotal} repair round(s)`,
-            );
-            fullDisplayContent += `\n**Edit lock engaged** — the ${redLanes} lane(s) are still red. Further writes are refused until they pass.\n`;
+          if (reliabilityEditLockEnabled() && !isEditLocked(taskId)) {
+            if (gateResult && gateResult.verdict === "FAIL") {
+              for (const r of gateResult.blocking) {
+                acquireEditLock(
+                  taskId,
+                  r.lane,
+                  `${gateResult.blocking.length} verification lane(s) still failing after ${repairRoundsTotal} repair round(s)`,
+                );
+              }
+              const redLanes = gateResult.blocking.map((r) => r.lane).join(", ");
+              fullDisplayContent += `\n**Edit lock engaged** — the ${redLanes} lane(s) are still red. Further writes are refused until they pass.\n`;
+            } else {
+              // Legacy path: no lane ledger, but typecheck itself is the red
+              // lane — refuse the next write against it the same way.
+              acquireEditLock(taskId, "typecheck", `typecheck still failing after ${repairRoundsTotal} repair round(s)`);
+              fullDisplayContent += `\n**Edit lock engaged** — typecheck is still red. Further writes are refused until it passes.\n`;
+            }
           }
           setDisplayContent(fullDisplayContent);
           break;
@@ -2986,8 +3262,26 @@ export async function runInBackground(
           taskId,
           finalStatus,
           lanes: getObservationMeta()?.lanes as Record<string, "pass" | "fail" | "skipped"> | undefined,
+          // The gate pipeline's actual results — new errors, durations and the
+          // pre-existing mark now feed the report's residual-risk rules
+          // instead of being dropped on the floor.
+          gates: lastGateResults && lastGateResults.length > 0 ? lastGateResults : undefined,
           filesWritten: [...writtenFiles.keys()],
-          editLockRefused: gateRed ? 1 : 0,
+          editLockRefused: editLockRefusals,
+          tamperFindings: tamperFindings.length > 0 ? tamperFindings : undefined,
+          // Acceptance-first: the task's own declared acceptance items
+          // ("- [ ] ...", "must ...") are extracted from the request and
+          // checked against the lanes that actually ran. A declared item with
+          // no matching lane is reported as NOT verified — the acceptance
+          // module existed but nothing ever fed it a spec. The extractor
+          // speaks "statement", the gate speaks "description": adapt here.
+          acceptanceSpec: reliabilityAcceptanceSpecEnabled()
+            ? extractAcceptanceFromTask(String(userMessage || "")).items.map((i) => ({
+                id: i.id,
+                description: i.statement,
+                verifiedBy: i.verifiedBy,
+              }))
+            : undefined,
         });
         fullDisplayContent += "\n" + formatVerificationReport(report) + "\n";
       } catch {

@@ -14,7 +14,7 @@ const manifest: PluginManifest = {
 
 let workspaceRoot = "";
 
-export function setWorkspaceRoot(root: string) { workspaceRoot = root; }
+function setWorkspaceRoot(root: string) { workspaceRoot = root; }
 
 const hooks: PluginHook[] = [{
   name: "beforeToolCall",

@@ -105,7 +105,7 @@ export function buildTrayWithNotifications(appUrl: string): void {
   if (timer.unref) timer.unref();
 }
 
-export function stopTray(): void {
+function stopTray(): void {
   if (timer) clearInterval(timer);
   timer = null;
   tray?.destroy();

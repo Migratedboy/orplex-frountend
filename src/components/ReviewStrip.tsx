@@ -17,7 +17,7 @@ const STATUS_STYLE: Record<ReviewStatus, { label: string; className: string }> =
   rejected: { label: "Rejected", className: "pm-chip-danger" },
 };
 
-export function ReviewStrip({
+ function ReviewStrip({
   artifactId,
   runId,
   initialStatus,

@@ -19,7 +19,7 @@ export const API_BASE: string = (() => {
 })();
 
 /** True when the frontend talks to a DIFFERENT origin than its own. */
-export function isSplitDeployment(): boolean {
+function isSplitDeployment(): boolean {
   if (typeof window === "undefined") return false;
   return API_BASE !== "" && API_BASE !== window.location.origin;
 }

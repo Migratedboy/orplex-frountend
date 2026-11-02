@@ -53,6 +53,7 @@ google auth.txt
 .freebuff/
 
 # Local debugging scratch (one-off probes, never part of the build)
+.cloud-fix/
 .cdp-*.mjs
 probe-*.mjs
 probecatalog.mjs

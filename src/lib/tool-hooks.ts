@@ -1,23 +1,4 @@
-// tool-hooks.ts — Minimal, config-driven tool gating for both agent loops.
-//
-// Claude Code's hook system is a power feature; the common needs are "never
-// touch X" and "tell me when Y happens". This implements exactly those two as
-// declarative rules in orplex.config.json at the workspace root:
-//
-//   { "toolHooks": { "deny":  ["rm\\s+-rf", "drop\\s+table"],
-//                    "notify": ["run_command", "write_file"] } }
-//
-// deny:    regexes matched (case-insensitive) against "<tool> <args-summary>".
-//          A hit BLOCKS the call — the agent sees the reason.
-// notify:  tool names (or regexes) that emit a runtime event when invoked.
-//
-// Deliberately NOT supported: process-spawning hooks. Arbitrary per-tool-call
-// exec is a risk and a RAM cost this machine doesn't need.
 
-export interface ToolHookConfig {
-  deny: string[];
-  notify: string[];
-}
 
 export interface ToolHookDecision {
   blocked: boolean;

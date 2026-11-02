@@ -143,6 +143,6 @@ export async function loadEnabledBundleRules(workspaceRoot: string): Promise<Ena
 }
 
 /** Category of a slug (for the API/UI), or null if unknown. */
-export function bundleCategory(slug: string): PluginCategory | null {
+function bundleCategory(slug: string): PluginCategory | null {
   return BUILTIN_BUNDLES.find((b) => b.slug === slug)?.category ?? null;
 }

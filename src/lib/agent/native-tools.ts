@@ -27,6 +27,10 @@ import { writeFileAudited, editFileAudited, type FileOpsFs, type FileOpsCounters
 import { isServerCommand, diagnosePortConflict } from "./serve-helpers";
 import type { ToolCall } from "../stream-reader";
 import { apiFetch, withApiBase, API_BASE } from "@/lib/api-base";
+import { reliabilityEditOpsEnabled, reliabilityPathJailEnabled } from "../reliability/flags";
+import { applyEditOpsAtomic } from "../reliability/atomic-batch";
+import { parseEditOp, EDIT_OPS_TOOL_NAME } from "../reliability/edit-ops";
+import { assertSafeWrite } from "../reliability/path-jail";
 
 // NOTE: this file runs on BOTH lanes — the browser worker and the server
 // executor — so origin resolution cannot be a single constant. It previously
@@ -617,7 +621,7 @@ export async function dispatchToolCall(
   }
 
   // ── ASK mode is read-only ─────────────────────────────────────────────
-  if (ctx.mode === "ask" && ["write_file", "write_file_chunk", "edit_file", "batch_edit", "undo_last_change"].includes(call.name)) {
+  if (ctx.mode === "ask" && ["write_file", "write_file_chunk", "edit_file", "batch_edit", "apply_edit_ops", "undo_last_change"].includes(call.name)) {
     result(`<tool_result name="${call.name}">error — file modifications are disabled in ask mode. Present the code in your response text instead.</tool_result>\n`);
     ctx.replaceStatus(`[BLOCKED] ${call.name} — disabled in ask mode`);
     ctx.syncDisplay();
@@ -634,7 +638,7 @@ export async function dispatchToolCall(
   // symptoms look unrelated. Refuse instead, and name the real blocker.
   // Server lanes always pass fs.writeFile, so they are unaffected; ask mode is
   // already refused above.
-  if (!ctx.fs.writeFile && ["write_file", "write_file_chunk", "edit_file", "batch_edit", "undo_last_change", "undo_file"].includes(call.name)) {
+  if (!ctx.fs.writeFile && ["write_file", "write_file_chunk", "edit_file", "batch_edit", "apply_edit_ops", "undo_last_change", "undo_file"].includes(call.name)) {
     result(`<tool_result name="${call.name}">error — no folder is open, so there is nowhere to write. Nothing was written. Ask the user to open a folder (sidebar → Open, or Ctrl+O), then retry the same call.</tool_result>\n`);
     ctx.replaceStatus(`[BLOCKED] ${call.name} — no folder open`);
     ctx.syncDisplay();
@@ -981,6 +985,91 @@ export async function dispatchToolCall(
       ? `[OK] Batch edit: ${successCount} files edited, 0 failed`
       : `[PARTIAL] Batch edit: ${successCount} edited, ${failCount} FAILED`,
   );
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+
+  // ── apply_edit_ops (Phase 8: the atomic structured-edit surface) ──────
+  // The model calls one op array; applyEditOpsAtomic applies it in order with
+  // ALL-or-nothing rollback (replaces batch_edit's "3 applied, 1 failed"
+  // half-applied batches), plus stale-read detection (expectedHash) and the
+  // strict exactly-one occurrence default the legacy String.replace path
+  // lacks. Lifecycle ops (delete_file / move_file) are refused up front —
+  // the renderer's fs bridge exposes read/write only, so faking a success
+  // there would be a lie; the model is told to keep those file moves as
+  // explicit write_file calls for now.
+  if (reliabilityEditOpsEnabled() && call.name === EDIT_OPS_TOOL_NAME && call.ops !== undefined) {
+    // The tool does not exist behind the flag — say so, plainly.
+    let list: unknown[];
+    if (Array.isArray(call.ops)) {
+      list = call.ops;
+    } else {
+      const single = parseEditOp(call.ops);
+      if (!single.ok) {
+        ctx.replaceStatus(`[ERROR] apply_edit_ops rejected — ${single.error}`);
+        ctx.syncDisplay();
+        result(`<tool_result name="${EDIT_OPS_TOOL_NAME}">refused: malformed ops array — ${single.error}</tool_result>\n`);
+        return { resultXml: toolResults, blocked: false };
+      }
+      list = [single.op];
+    }
+    const lifecycle = list.find(
+      (op) =>
+        op &&
+        typeof op === "object" &&
+        ((op as { op?: string }).op === "delete_file" || (op as { op?: string }).op === "move_file"),
+    );
+    if (lifecycle) {
+      ctx.replaceStatus("[ERROR] apply_edit_ops rejected — delete_file/move_file unsupported here");
+      ctx.syncDisplay();
+      result(
+        `<tool_result name="${EDIT_OPS_TOOL_NAME}">refused: delete_file and move_file ops are not supported in this workspace bridge. Express file changes as write_file calls instead — no ops were applied.</tool_result>\n`
+      );
+      return { resultXml: toolResults, blocked: false };
+    }
+    // Path jail (Phase 3) applies per-op: a batch must not smuggle in a
+    // workspace-escaping path the single-call checks never see.
+    if (reliabilityPathJailEnabled()) {
+      for (const op of list) {
+        const p =
+          typeof op === "object" && op
+            ? ((op as { path?: unknown }).path ?? (op as { from?: unknown }).from ?? (op as { to?: unknown }).to)
+            : null;
+        if (typeof p === "string" && p) {
+          const safe = await assertSafeWrite(ctx.fs.directoryName || ".", p);
+          if (!safe.ok) {
+            ctx.replaceStatus(`[ERROR] apply_edit_ops rejected by path jail`);
+            ctx.syncDisplay();
+            result(`<tool_result name="${EDIT_OPS_TOOL_NAME}">BLOCKED by path jail: ${safe.reason} — no ops were applied.</tool_result>\n`);
+            return { resultXml: toolResults, blocked: false };
+          }
+        }
+      }
+    }
+    ctx.setStatus("tool_executing", `Applying ${list.length} edit op(s)…`);
+    ctx.appendDisplay(`applying ${list.length} edit op(s)\n`);
+    ctx.syncDisplay();
+    const readOp = async (p: string): Promise<string | null> => (await ctx.fs.readFile?.(p).catch(() => null)) ?? null;
+    const outcome = await applyEditOpsAtomic(list as never, {
+      readFile: readOp,
+      // The audited write path keeps history + write counters truthful for
+      // every op, so undo and the files-changed UI stay accurate.
+      writeFile: (p, c) => writeFileAudited(p, c, ctx.fs, ctx.counters),
+      deleteFile: async () => false,
+      moveFile: async () => false,
+      fileExists: async (p) => (await readOp(p)) !== null,
+    });
+    if (outcome.ok) {
+      for (const entry of outcome.applied) {
+        const after = await readOp(entry.path).catch(() => null);
+        if (after !== null) ctx.hooks.fileWritten(entry.path, after);
+      }
+      ctx.replaceStatus(`[OK] apply_edit_ops: ${outcome.applied.length} op(s) applied atomically`);
+      result(`<tool_result name="${EDIT_OPS_TOOL_NAME}">success: ${outcome.applied.length} op(s) applied atomically (all-or-nothing), ${outcome.applied.map((a) => a.path).join(", ")}</tool_result>\n`);
+    } else {
+      ctx.replaceStatus(`[FAIL] apply_edit_ops rolled back — ${outcome.error}`);
+      result(`<tool_result name="${EDIT_OPS_TOOL_NAME}">error: ${outcome.error} — the batch was rolled back, no files changed. Fix the failing op and resend the whole batch.</tool_result>\n`);
+    }
     ctx.syncDisplay();
     return { resultXml: toolResults, blocked: false };
   }
@@ -1338,7 +1427,7 @@ export async function dispatchToolCall(
         const { Sandbox } = await import(/* webpackIgnore: true */ "e2b");
         const sandbox = await Sandbox.create({ apiKey: e2bKey });
         try {
-          const execution = await sandbox.runCommand(call.command, { timeout: sandboxTimeout * 1000 });
+          const execution = await sandbox.commands.run(call.command, { timeoutMs: sandboxTimeout * 1000 });
           const output = (execution.stdout || "") + (execution.stderr ? `\nSTDERR: ${execution.stderr}` : "");
           // execution.exitCode was never read, so a FAILING command (a red test
           // suite, a failed build) reported "[OK] Sandbox completed", counted as

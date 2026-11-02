@@ -54,7 +54,7 @@ export function QueuePanelSkeleton() {
 }
 
 /** Skeleton for the Terminal panel */
-export function TerminalPanelSkeleton() {
+function TerminalPanelSkeleton() {
   return (
     <div className="rp-terminal-skeleton" style={{ padding: 16, fontFamily: "'JetBrains Mono', monospace" }}>
       {Array.from({ length: 6 }).map((_, i) => (
@@ -75,7 +75,7 @@ function TerminalRow({ delay }: { delay: number }) {
 }
 
 /** Skeleton for the Preview panel */
-export function PreviewPanelSkeleton() {
+function PreviewPanelSkeleton() {
   return (
     <div className="rp-preview-skeleton" style={{ padding: 16 }}>
       {/* Browser chrome skeleton */}

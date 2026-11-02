@@ -544,7 +544,7 @@ export function hubStatus(userId: string, serverId: string): HubStatusView {
   };
 }
 
-export function hubStatusAll(userId: string): HubStatusView[] {
+function hubStatusAll(userId: string): HubStatusView[] {
   const out: HubStatusView[] = [];
   for (const s of sessions.values()) {
     if (s.userId === userId) out.push(hubStatus(s.userId, s.serverId));

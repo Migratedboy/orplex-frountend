@@ -16,6 +16,7 @@ export const STATE_CHANGING_TOOLS: ReadonlySet<string> = new Set([
   "write_file",
   "edit_file",
   "batch_edit",
+  "apply_edit_ops",
   "run_command",
   "run_in_sandbox",
   "browser_click",

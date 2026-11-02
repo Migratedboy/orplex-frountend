@@ -32,7 +32,7 @@ function trackCall(tool: string, duration: number, error: boolean) {
 
 let currentToolStart = 0;
 
-export function getLoggerStats(): Record<string, { calls: number; errors: number; avgDuration: number }> {
+function getLoggerStats(): Record<string, { calls: number; errors: number; avgDuration: number }> {
   const result: Record<string, { calls: number; errors: number; avgDuration: number }> = {};
   for (const [tool, stats] of toolStats) {
     result[tool] = {

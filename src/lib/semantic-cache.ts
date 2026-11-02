@@ -163,7 +163,7 @@ export function searchCache(query: string, contextHash: string = ""): CacheHit |
   return bestMatch;
 }
 
-export function getCacheStats(): { totalEntries: number; hitRate: number; avgAge: number; topQueries: Array<{ query: string; hits: number }> } {
+function getCacheStats(): { totalEntries: number; hitRate: number; avgAge: number; topQueries: Array<{ query: string; hits: number }> } {
   const now = Date.now();
   const totalHits = cacheStore.reduce((s, e) => s + e.hitCount, 0);
   const totalAge = cacheStore.reduce((s, e) => s + (now - e.timestamp), 0);
@@ -175,7 +175,7 @@ export function getCacheStats(): { totalEntries: number; hitRate: number; avgAge
   };
 }
 
-export function pruneCache(): number {
+function pruneCache(): number {
   const now = Date.now();
   const ttl = cacheConfig.ttlMs || 24 * 60 * 60 * 1000;
   const before = cacheStore.length;
@@ -183,7 +183,7 @@ export function pruneCache(): number {
   return before - cacheStore.length;
 }
 
-export function invalidateByFileChange(filePath: string): number {
+function invalidateByFileChange(filePath: string): number {
   const before = cacheStore.length;
   cacheStore = cacheStore.filter(e => !e.response.includes(filePath));
   return before - cacheStore.length;

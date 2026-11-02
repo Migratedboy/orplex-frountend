@@ -18,7 +18,7 @@ const SHORTCUTS: Shortcut[] = [
   { keys: "Ctrl+.", description: "Toggle dark mode", category: "Theme" },
 ];
 
-export function useKeyboardShortcuts(handlers: Record<string, () => void>) {
+ function useKeyboardShortcuts(handlers: Record<string, () => void>) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const key = [];

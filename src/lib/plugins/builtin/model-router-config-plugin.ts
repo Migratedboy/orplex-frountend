@@ -22,7 +22,7 @@ const hooks: PluginHook[] = [{
   },
 }];
 
-export function getModelRouterStats() { return { totalCalls: callCount }; }
+function getModelRouterStats() { return { totalCalls: callCount }; }
 
 export async function activateModelRouterConfig(): Promise<void> {
   await pluginRegistry.registerPlugin(manifest, async () => {

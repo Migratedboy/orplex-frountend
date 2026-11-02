@@ -1,16 +1,4 @@
-// client-signatures.ts — Browser-side signature extraction
-// Extracts function, class, interface, type, and export declarations
-// from TypeScript/JavaScript source files using regex (no AST parser needed)
-// This is the client-side equivalent of lib/agent/ast/parser.ts
 
-// === Types ===
-
-export interface FileSignature {
-  path: string;
-  signatures: string[];
-  score: number;
-  size: number;
-}
 
 // === Signature extraction ===
 

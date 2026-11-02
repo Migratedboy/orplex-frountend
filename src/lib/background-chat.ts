@@ -340,7 +340,7 @@ export function setFilesChanged(count: number) {
   currentTask.stats.filesChanged = count;
 }
 
-export function getTaskStats(): TaskStats | null {
+function getTaskStats(): TaskStats | null {
   return currentTask?.stats ?? null;
 }
 
@@ -359,7 +359,7 @@ export function isCurrentTask(taskId: string): boolean {
   return currentTask?.id === taskId;
 }
 
-export function isBackgroundTaskRunning(): boolean {
+function isBackgroundTaskRunning(): boolean {
   return currentTask !== null && currentTask.status !== "done" && currentTask.status !== "error";
 }
 
@@ -521,7 +521,7 @@ export function setDisplayContent(content: string) {
   notifyThrottled();
 }
 
-export function addAssistantMessage(content: string) {
+function addAssistantMessage(content: string) {
   if (!currentTask) return;
   currentTask.messages.push({
     role: "assistant",

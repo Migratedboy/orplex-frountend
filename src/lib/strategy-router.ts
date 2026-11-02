@@ -383,6 +383,6 @@ export async function runStrategy(
 }
 
 /** One-line capability blurb for the master prompt's tool roster. */
-export function describeStrategies(): string {
+function describeStrategies(): string {
   return "Planning strategies (routed automatically by task shape): scaffold (greenfield builds), branch-compare (UI variants, best wins by static quality), implement (direct writes), plan (spec + file plan). Review runs once post-write with a severity contract.";
 }

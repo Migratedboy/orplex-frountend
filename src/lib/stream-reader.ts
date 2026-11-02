@@ -428,6 +428,8 @@ export interface ToolCall {
   // ask_clarification — accept a typed reply alongside the option pills
   allow_freetext?: boolean;
   edits?: { path: string; old_text: string; new_text: string }[];
+  // apply_edit_ops — structured atomic ops (edit-ops.ts wire model)
+  ops?: unknown;
   timeout?: number;
   // verify_app
   dev_command?: string;

@@ -171,7 +171,7 @@ export function killShell(userId: string): void {
 }
 
 /** Current output buffer of a user's running/last command (for UI re-attach). */
-export function getShellBuffer(userId: string): string {
+function getShellBuffer(userId: string): string {
   return sessions.get(userId)?.currentOutput ?? "";
 }
 

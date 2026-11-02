@@ -191,7 +191,7 @@ export async function checkMemoryPressure(
 }
 
 /** Cheap synchronous check for admission decisions (no tick side effects). */
-export function currentMemoryPressure(): MemoryPressure {
+function currentMemoryPressure(): MemoryPressure {
   return state().pressure;
 }
 
@@ -219,7 +219,7 @@ export function startMemoryWatchdog(intervalMs = 10_000): void {
   console.log(`[hardware] memory watchdog started (${Math.round(intervalMs / 1000)}s interval, thresholds ${RAM_THRESHOLDS.elevated * 100}/${RAM_THRESHOLDS.high * 100}/${RAM_THRESHOLDS.critical * 100}%)`);
 }
 
-export function stopMemoryWatchdog(): void {
+function stopMemoryWatchdog(): void {
   if (watchdogTimer) {
     clearInterval(watchdogTimer);
     watchdogTimer = null;

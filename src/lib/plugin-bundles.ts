@@ -13,7 +13,7 @@ import { join } from "node:path";
 export const PLUGIN_MANIFEST = "orplex-plugin.json";
 export const MAX_PLUGIN_SKILLS = 32;
 export const MAX_HOOK_ENTRIES = 20;
-export const MAX_HOOK_COMMAND_CHARS = 500;
+const MAX_HOOK_COMMAND_CHARS = 500;
 export const MAX_PLUGIN_MCP_SERVERS = 10;
 /** Server/hook keys must be plain identifiers — never `__proto__` et al. */
 const SAFE_KEY = /^[a-z0-9-_]{1,64}$/i;

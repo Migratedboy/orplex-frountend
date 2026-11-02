@@ -6,7 +6,7 @@ import { runtimeState } from "./runtime-state";
 let cronStarted = false;
 
 /** Cron lifecycle for the admin System page (shared cross-bundle state). */
-export function getCronStatus() {
+function getCronStatus() {
   return { ...runtimeState.cron };
 }
 

@@ -176,7 +176,7 @@ export function setQueueFileSystemAccess(fs: QueueFS): void {
 }
 
 /** Test/reset hook. */
-export function resetQueueRunnerForTests(): void {
+function resetQueueRunnerForTests(): void {
   stopQueueRunner();
   activeRuns = 0;
   consecutiveFailures = 0;

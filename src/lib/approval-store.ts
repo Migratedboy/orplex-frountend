@@ -286,6 +286,6 @@ function toolForType(type: ApprovalType): string {
 }
 
 /** Get a specific approval by ID */
-export function getApproval(id: string): PendingApproval | undefined {
+function getApproval(id: string): PendingApproval | undefined {
   return pending.get(id);
 }

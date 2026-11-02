@@ -36,7 +36,7 @@ const hooks: PluginHook[] = [{
   },
 }];
 
-export function getPromptEnhancerStats() { return { vagueInputsDetected: vagueCount }; }
+function getPromptEnhancerStats() { return { vagueInputsDetected: vagueCount }; }
 
 export async function activatePromptEnhancer(): Promise<void> {
   await pluginRegistry.registerPlugin(manifest, async () => {

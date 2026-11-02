@@ -190,7 +190,7 @@ function ProjectRenameInput({
 // One collapsible project row (chevron + folder icon + name) with its
 // threads when expanded. Matches the reference screenshot: chevron toggles
 // expand; clicking the NAME re-attaches the folder as the active workspace.
-export function ProjectRow({
+ function ProjectRow({
   project,
   active,
   expanded,

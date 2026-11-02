@@ -101,17 +101,6 @@ export async function embedText(text: string): Promise<Float32Array | null> {
   }
 }
 
-/** Embed a batch; entries that fail keep their key mapped to null. */
-export async function embedBatch(texts: string[]): Promise<Map<string, Float32Array | null>> {
-  const out = new Map<string, Float32Array | null>();
-  // Single-flight init: prime once, then embed sequentially (CPU pipeline is
-  // not meaningfully parallel at this scale).
-  for (const t of texts) {
-    out.set(t, await embedText(t));
-  }
-  return out;
-}
-
 /** Cosine similarity between two unit-ish vectors. 0 on any mismatch. */
 export function cosineSimilarity(a: Float32Array, b: number[] | Float32Array): number {
   if (!a || !b || a.length !== b.length) return 0;

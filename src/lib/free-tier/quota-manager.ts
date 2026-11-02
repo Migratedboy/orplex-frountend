@@ -133,7 +133,7 @@ export async function hasQuota(
 /**
  * Increment usage count for a user (delegates to rate-limiter).
  */
-export async function incrementUsage(userId: string, _tokens: number = 0): Promise<void> {
+async function incrementUsage(userId: string, _tokens: number = 0): Promise<void> {
   await incrementUserQuota(userId);
 }
 

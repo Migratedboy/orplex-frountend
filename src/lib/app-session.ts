@@ -14,7 +14,14 @@
 //   ORPLEX_SESSION_PRIVATE_KEY  backend only  (sign)
 //   ORPLEX_SESSION_PUBLIC_KEY   backend + app (verify)
 
-import { SignJWT, jwtVerify, importJWK, type JWK, type KeyLike } from "jose";
+import { SignJWT, jwtVerify, importJWK, type JWK } from "jose";
+
+/**
+ * jose v6 stopped exporting `KeyLike` from its root. Derive the same union
+ * from the actual call sites: the sign side's key type is exactly what
+ * SignJWT.sign accepts, and the verify side accepts KeyInput (a superset).
+ */
+type SignKeyLike = Parameters<SignJWT["sign"]>[0];
 
 export const APP_SESSION_COOKIE = "orplex-app-session";
 /** Matches the next-auth session lifetime (7 days). */
@@ -37,7 +44,7 @@ function readJwk(envName: string): JWK | null {
   }
 }
 
-async function importEd25519(envName: string): Promise<KeyLike | Uint8Array | null> {
+async function importEd25519(envName: string): Promise<SignKeyLike | Uint8Array | null> {
   const jwk = readJwk(envName);
   if (!jwk) return null;
   try {

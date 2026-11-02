@@ -78,6 +78,14 @@ import path from "node:path";
 // report isPackaged=true — ORPLEX_DEV=1 from the dev launcher restores the
 // checkout semantics the rest of this file relies on.
 const isDev = isDevRuntime();
+// Taskbar identity. The packaged app owns the stable AUMID. A dev run must NOT
+// claim it: Windows draws the taskbar button of a KNOWN AUMID from the
+// registered shell app (Start Menu shortcut -> installed exe), so a dev run
+// reusing "tech.orplex.app" keeps showing the INSTALLED app's cached icon
+// even when the dev exe and the BrowserWindow carry a brand-new one.
+const PACKAGED_APP_ID = "tech.orplex.app";
+const DEV_APP_ID = "tech.orplex.app.dev";
+const APP_ID = isDev ? DEV_APP_ID : PACKAGED_APP_ID;
 // Electron OWNS both Next.js processes — the user never runs one separately.
 // ORPLEX_PORT / ORPLEX_API_PORT only override for special setups.
 const UI_PORT = Number(process.env.ORPLEX_PORT || 5000);
@@ -224,20 +232,19 @@ function writeSessionState(clean: boolean): void {
 // user's own dev servers AND a healthy app instance).
 const gotTheLock = app.requestSingleInstanceLock();
 // Taskbar identity FIRST (before ready): Windows groups the taskbar button
-// by AppUserModelId + exe and CACHES the icon per AUMID. Only the packaged
-// exe may claim the stable AUMID — a dev run of electron.exe claiming it
-// poisons the shell mapping "tech.orplex.app -> electron.exe generic icon"
-// (visible as the default Electron icon in the taskbar even for packaged
-// builds). Dev gets no custom AUMID at all.
+// by AppUserModelId + exe and CACHES the icon per AUMID. The packaged exe
+// claims the stable AUMID; a dev run gets its OWN AUMID so it never inherits
+// the shell registration (Start Menu shortcut -> installed exe) that carries
+// the installed app's cached icon.
 try {
-  if (app.isPackaged) app.setAppUserModelId("tech.orplex.app");
+  app.setAppUserModelId(APP_ID);
 } catch {}
 // Self-healing icon-poison sweep: Electron's Windows toast-notification
 // path self-installs a Start Menu "Electron.lnk" carrying its own AUMID.
 // One pointing at a dev electron.exe propagates the generic icon into the
 // shell caches — delete it on sight from the packaged app.
 try {
-  if (app.isPackaged) {
+  if (!isDev) {
     const poisonPath = path.join(
       app.getPath("appData"),
       "Microsoft",
@@ -770,16 +777,21 @@ function createWindow(): void {
     },
   });
 
-  if (appIcon && !appIcon.isEmpty()) {
+  if (iconArg) {
     try {
-      mainWindow.setIcon(appIcon);
+      // On Windows pass the .ico PATH: a nativeImage built from an .ico keeps
+      // only the largest frame, so the taskbar button ends up upscaled instead
+      // of the crisp 16/24/32px frame the shell would pick from the file.
+      mainWindow.setIcon(iconArg as any);
     } catch {}
     // Windows: pin the taskbar identity + icon explicitly so the shell stops
-    // showing electron.exe's default icon (needs a real .ico path).
+    // showing electron.exe's default icon (needs a real .ico path). The AUMID
+    // MUST match the one registered above, otherwise the shell resolves the
+    // button through the packaged app's shell registration (stale icon).
     if (process.platform === "win32" && iconPath && /\.ico$/i.test(iconPath)) {
       try {
         mainWindow.setAppDetails({
-          appId: "tech.orplex.app",
+          appId: APP_ID,
           appIconPath: iconPath,
           appIconIndex: 0,
           relaunchDisplayName: "Orplex Code",
@@ -1802,10 +1814,11 @@ app.on("activate", () => {
 });
 
 app.whenReady().then(async () => {
-  // (AppUserModelId handling is at module top, before ready. Packaged builds
-  // reaffirm the stable AUMID; dev runs keep no custom AUMID.)
+  // (AppUserModelId handling is at module top, before ready. Reaffirm the
+  // same AUMID here so the taskbar identity never falls back to the packaged
+  // registration in a dev run.)
   try {
-    if (app.isPackaged) app.setAppUserModelId("tech.orplex.app");
+    app.setAppUserModelId(APP_ID);
   } catch {}
 
   // Desktop sign-in: register the orplex:// protocol handler and the IPC
@@ -1831,8 +1844,8 @@ app.whenReady().then(async () => {
 
   // Renderer → main: open http(s) links in the OS default browser.
   handleAppIpc("orplex:open-external", (_event, url: string) => {
-    if (typeof url === "string" && /^https?:\/\//i.test(url)) {
-      shell.openExternal(url);
+    if (typeof url === "string") {
+      if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     }
   });
 

@@ -100,13 +100,6 @@ export const editOpSchema = z.discriminatedUnion("op", [
   moveFileSchema,
   batchSchema,
 ]);
-
-export type CreateFileOp = z.infer<typeof createFileSchema>;
-export type ReplaceTextOp = z.infer<typeof replaceTextSchema>;
-export type InsertAtOp = z.infer<typeof insertAtSchema>;
-export type DeleteFileOp = z.infer<typeof deleteFileSchema>;
-export type MoveFileOp = z.infer<typeof moveFileSchema>;
-export type BatchOp = z.infer<typeof batchSchema>;
 /** Everything a batch is allowed to contain — the union without `batch`. */
 export type EditOpBase = z.infer<typeof editOpBaseSchema>;
 export type EditOp = z.infer<typeof editOpSchema>;

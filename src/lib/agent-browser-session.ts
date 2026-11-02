@@ -759,6 +759,6 @@ export function activeSessionCount(): number {
 }
 
 /** Close everything (shutdown / tests). */
-export async function closeAllSessions(): Promise<void> {
+async function closeAllSessions(): Promise<void> {
   await Promise.all([...sessions.keys()].map(closeSession));
 }

@@ -85,7 +85,7 @@ export function mostDangerous(provs: readonly Provenance[]): Provenance | null {
  * True when the provenance is a USER-typed value — the trusted case.
  * Everything the model or a tool produced is suspect by definition.
  */
-export function isUserProvenance(prov: Provenance): boolean {
+function isUserProvenance(prov: Provenance): boolean {
   return prov === "user";
 }
 

@@ -209,7 +209,7 @@ async function copyDirRecursive(
 /**
  * Get a workspace by ID
  */
-export function getWorkspace(id: string): Workspace | undefined {
+ function getWorkspace(id: string): Workspace | undefined {
   return workspaces.get(id);
 }
 
@@ -301,62 +301,6 @@ export async function readWorkspaceFile(
   } catch {
     return null;
   }
-}
-
-/**
- * Write a file to a workspace
- */
-export async function writeWorkspaceFile(
-  workspaceId: string,
-  filePath: string,
-  content: string
-): Promise<boolean> {
-  const ws = workspaces.get(workspaceId);
-  if (!ws) return false;
-
-  const fullPath = resolveInside(ws.workspaceDir, filePath);
-  if (!fullPath) return false;
-
-  try {
-    await mkdir(dirname(fullPath), { recursive: true });
-    await writeFile(fullPath, content, "utf-8");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Get file stats from a workspace
- */
-export async function getWorkspaceFileStats(
-  workspaceId: string
-): Promise<
-  Array<{
-    path: string;
-    size: number;
-    modified: Date;
-  }>
-> {
-  const ws = workspaces.get(workspaceId);
-  if (!ws) return [];
-
-  const files = await getWorkspaceFiles(workspaceId);
-  const stats: Array<{ path: string; size: number; modified: Date }> = [];
-
-  for (const file of files) {
-    try {
-      const s = await stat(join(ws.workspaceDir, file));
-      if (!s.isFile()) continue;
-      stats.push({
-        path: file,
-        size: s.size,
-        modified: s.mtime,
-      });
-    } catch {}
-  }
-
-  return stats;
 }
 
 /**
@@ -544,54 +488,5 @@ export async function destroyWorkspace(
     return true;
   } catch {
     return false;
-  }
-}
-
-/**
- * Get diff between workspace and root for a specific file
- */
-export async function getFileDiff(
-  workspaceId: string,
-  filePath: string
-): Promise<string | null> {
-  const ws = workspaces.get(workspaceId);
-  if (!ws) return null;
-
-  try {
-    const wsContent = await readWorkspaceFile(workspaceId, filePath);
-    if (wsContent === null) return null;
-
-    // Never let a diff read outside the project root
-    const rootPath = resolve(ws.rootDir, filePath);
-    const rel = relative(ws.rootDir, rootPath);
-    if (rel === "" || rel.split(sep).some((part) => part === "..")) return null;
-
-    let rootContent: string | null = null;
-    try {
-      rootContent = await readFile(rootPath, "utf-8");
-    } catch {}
-
-    if (wsContent === rootContent) return null;
-    if (rootContent === null) return null; // File only exists in workspace
-
-    // Simple line-by-line diff
-    const wsLines = wsContent.split("\n");
-    const rootLines = rootContent.split("\n");
-    const diff: string[] = [];
-
-    const maxLen = Math.max(wsLines.length, rootLines.length);
-    for (let i = 0; i < maxLen; i++) {
-      const wsLine = wsLines[i];
-      const rootLine = rootLines[i];
-
-      if (wsLine !== rootLine) {
-        if (rootLine !== undefined) diff.push(`-${rootLine}`);
-        if (wsLine !== undefined) diff.push(`+${wsLine}`);
-      }
-    }
-
-    return diff.length > 0 ? diff.join("\n") : null;
-  } catch {
-    return null;
   }
 }

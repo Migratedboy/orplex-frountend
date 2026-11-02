@@ -35,7 +35,7 @@ const hooks: PluginHook[] = [
   },
 ];
 
-export function getTaskQueueStats() { return { activeCalls, maxConcurrent, totalCalls }; }
+function getTaskQueueStats() { return { activeCalls, maxConcurrent, totalCalls }; }
 
 export async function activateTaskQueue(): Promise<void> {
   await pluginRegistry.registerPlugin(manifest, async () => {

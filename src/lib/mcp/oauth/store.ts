@@ -186,7 +186,7 @@ export async function markNeedsReauth(userId: string, serverId: string, reason?:
   });
 }
 
-export async function setConnectionTestResult(userId: string, serverId: string, ok: boolean): Promise<void> {
+async function setConnectionTestResult(userId: string, serverId: string, ok: boolean): Promise<void> {
   await withConnectionLock(lockKey(userId, serverId), async () => {
     const row = await findConnection(userId, serverId);
     if (!row) return;
@@ -331,7 +331,7 @@ export async function listConnections(userId: string): Promise<SafeConnection[]>
  * Currently no production callers; the projection exists so a future one
  * cannot leak secrets by accident.
  */
-export async function getConnection(userId: string, serverId: string): Promise<SafeConnection | null> {
+async function getConnection(userId: string, serverId: string): Promise<SafeConnection | null> {
   const r = await findConnection(userId, serverId);
   if (!r) return null;
   return {

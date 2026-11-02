@@ -273,7 +273,7 @@ class StdioMcpServer implements McpServerHandle {
 // ── Session management ─────────────────────────────────────────────────────
 
 /** Cached-session accessor. Fails honestly if the server isn't configured. */
-export async function getMcpServer(server: string): Promise<McpServerHandle> {
+async function getMcpServer(server: string): Promise<McpServerHandle> {
   const cached = sessions.get(server);
   if (cached) {
     if ((cached.handle as unknown as { alive?: boolean }).alive === false) {
@@ -385,7 +385,7 @@ export async function shutdownAccountSession(
 }
 
 /** Kill everything (executor shutdown / tests). */
-export async function shutdownAllMcp(): Promise<void> {
+async function shutdownAllMcp(): Promise<void> {
   const all = [...sessions.values()];
   sessions.clear();
   if (reapTimer) {

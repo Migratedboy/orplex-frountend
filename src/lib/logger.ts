@@ -41,7 +41,7 @@ export function logError(error: unknown, context?: Record<string, unknown>) {
 
 // === Performance Logger ===
 
-export function logPerformance(operation: string, durationMs: number, extra?: Record<string, unknown>) {
+function logPerformance(operation: string, durationMs: number, extra?: Record<string, unknown>) {
   const level = durationMs > 5000 ? "warn" : "info";
   logger[level]({ operation, duration: `${durationMs}ms`, ...extra }, `${operation} completed in ${durationMs}ms`);
 }

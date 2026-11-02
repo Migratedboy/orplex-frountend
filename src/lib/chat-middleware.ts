@@ -19,19 +19,6 @@ import { getProviderDef } from "@/lib/provider-registry";
 import { extractStatedOutputCap } from "@/lib/model-output-caps";
 import type { ChatMessageInput } from "@/lib/validators";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface AuthResult {
-  userId: string;
-}
-
-export interface ValidatedRequest {
-  data: ChatMessageInput;
-  userId: string;
-}
-
 export interface ProviderConfig {
   name: string;
   url: string;

@@ -23,8 +23,8 @@ const hooks: PluginHook[] = [{
   },
 }];
 
-export function getTrackedFiles() { return [...trackedFiles]; }
-export function clearTrackedFiles() { trackedFiles.length = 0; }
+function getTrackedFiles() { return [...trackedFiles]; }
+function clearTrackedFiles() { trackedFiles.length = 0; }
 
 export async function activateExportManager(): Promise<void> {
   await pluginRegistry.registerPlugin(manifest, async () => {

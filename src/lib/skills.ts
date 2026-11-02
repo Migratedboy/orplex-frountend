@@ -1115,12 +1115,12 @@ export const SKILL_CATEGORIES: SkillCategory[] = [
 export const ALL_SKILLS: Skill[] = SKILL_CATEGORIES.flatMap((cat) => cat.skills);
 
 /** Find a skill by ID */
-export function getSkillById(id: string): Skill | undefined {
+function getSkillById(id: string): Skill | undefined {
   return ALL_SKILLS.find((s) => s.id === id);
 }
 
 /** Get skills matching a search query */
-export function searchSkills(query: string): Skill[] {
+function searchSkills(query: string): Skill[] {
   const lower = query.toLowerCase();
   return ALL_SKILLS.filter(
     (s) =>

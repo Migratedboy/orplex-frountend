@@ -32,7 +32,7 @@ const hooks: PluginHook[] = [
   { name: "onTaskFail", handler: async () => ({ continue: true }) },
 ];
 
-export function getCostStats() {
+ function getCostStats() {
   const now = Date.now();
   const day = costLog.filter(e => now - e.timestamp < 86400000);
   const week = costLog.filter(e => now - e.timestamp < 604800000);

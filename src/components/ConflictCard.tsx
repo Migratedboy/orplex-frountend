@@ -48,7 +48,7 @@ export function applyResolutions(text: string, hunks: ConflictHunk[], choices: R
   return out;
 }
 
-export function ConflictCard({
+ function ConflictCard({
   hunk,
   onResolve,
   initial,

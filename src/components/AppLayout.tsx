@@ -50,7 +50,7 @@ export function openArtifactPanel(runId: string) {
   artifactPanelBridge.open?.(runId);
 }
 
-export function closeArtifactPanel() {
+function closeArtifactPanel() {
   artifactPanelBridge.close?.();
 }
 

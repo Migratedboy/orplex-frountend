@@ -46,7 +46,7 @@ export class ForbiddenError extends AppError {
   }
 }
 
-export class ConflictError extends AppError {
+class ConflictError extends AppError {
   constructor(message: string) {
     super(message, 409);
   }

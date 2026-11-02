@@ -101,7 +101,7 @@ export interface AppliedWriteResult {
  * dispatch; everything else funnels here so undo/file-history/counters stay
  * consistent no matter which lane produced the writes.
  */
-export async function applyModelWrites(
+async function applyModelWrites(
   calls: ToolCall[],
   fs: FileOpsFs,
   counters: FileOpsCounters

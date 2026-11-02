@@ -61,25 +61,9 @@ export const LIMITS = {
   QUEUE_ITEM_TEXT: 50,
 } as const;
 
-// === Retry & Resilience ===
-export const RESILIENCE = {
-  /** Number of consecutive failures before circuit breaker trips */
-  FAILURE_THRESHOLD: 3,
-  /** Max reflection attempts in enhanced worker */
-  MAX_REFLECTION_ATTEMPTS: 3,
-  /** Default concurrency for eval harness */
-  EVAL_CONCURRENCY: 3,
-} as const;
-
-// === Risk Classification ===
-export const RISK = {
-  /** Shell commands matching this pattern are considered safe (low risk) */
-  SAFE_COMMAND_PATTERN: /npm\s+(run\s+)?(dev|start|build|test)|npx\s+(serve|vite|tsc|eslint)|yarn\s+(dev|start|build|test)|pnpm\s+(dev|start|build|test)|node\s+--version|tsc\s+--noEmit|git\s+(status|diff|log)\b/i,
-} as const;
-
 // === Blocked Commands ===
 // Patterns that are never allowed to execute — expanded beyond the basics
-export const BLOCKED_COMMANDS = [
+ const BLOCKED_COMMANDS = [
   // Destructive filesystem
   "rm -rf /",
   "rm -rf ~",
@@ -124,17 +108,8 @@ export const BLOCKED_COMMANDS = [
   "chown -R",
 ] as const;
 
-/**
- * Check if a command is refused. Delegates to the argument-aware screen in
- * exec-guard (the old substring list blocked harmless commands like
- * `npm run format` and `rm -rf ./dist`).
- */
-export function isBlockedCommand(command: string): boolean {
-  return !isCommandAllowed(command).allowed;
-}
-
 // === UI ===
-export const UI = {
+ const UI = {
   /** Delay before showing fast-answer button (ms) */
   FAST_ANSWER_DELAY: 0,
   /** Number of recent chats to show in sidebar */

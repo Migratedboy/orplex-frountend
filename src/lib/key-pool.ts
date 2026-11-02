@@ -47,7 +47,7 @@ export async function getAvailableKey(provider?: string): Promise<PoolKey | null
 /**
  * Get the best key for a specific model.
  */
-export async function getKeyForModel(model: string): Promise<PoolKey | null> {
+async function getKeyForModel(model: string): Promise<PoolKey | null> {
   const keys = await prisma.apiKeyPool.findMany({
     where: { isActive: true, model },
     orderBy: [{ priority: "desc" }, { usageToday: "asc" }],
@@ -76,7 +76,7 @@ export async function getKeyForModel(model: string): Promise<PoolKey | null> {
 /**
  * Increment usage counter for a key.
  */
-export async function incrementKeyUsage(keyId: string): Promise<void> {
+async function incrementKeyUsage(keyId: string): Promise<void> {
   await prisma.apiKeyPool.update({
     where: { id: keyId },
     data: {
@@ -89,7 +89,7 @@ export async function incrementKeyUsage(keyId: string): Promise<void> {
 /**
  * Record a failure for a key. Deactivate after 3 consecutive failures.
  */
-export async function recordKeyFailure(keyId: string): Promise<void> {
+async function recordKeyFailure(keyId: string): Promise<void> {
   const key = await prisma.apiKeyPool.findUnique({ where: { id: keyId } });
   if (!key) return;
 
@@ -106,7 +106,7 @@ export async function recordKeyFailure(keyId: string): Promise<void> {
 /**
  * Reset a key's failure count (on successful use).
  */
-export async function resetKeyFailures(keyId: string): Promise<void> {
+async function resetKeyFailures(keyId: string): Promise<void> {
   await prisma.apiKeyPool.update({
     where: { id: keyId },
     data: { failures: 0 },

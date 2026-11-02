@@ -358,6 +358,6 @@ export async function createCheckpoint(
  * Same mechanism as createCheckpoint (kept for its callers/tests); the alias
  * makes the Layer-2 framing explicit at new call sites.
  */
-export const snapshotLayer2 = createCheckpoint;
+const snapshotLayer2 = createCheckpoint;
 
 export { MAX_PER_RUN, MAX_TOTAL_BYTES };

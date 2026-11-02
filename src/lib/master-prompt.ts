@@ -60,7 +60,7 @@ export function buildMcpToolsSection(): string {
  * Best-effort — a discovery failure leaves the remote listed but with no
  * tools (honest), and mcp_call still works because it calls the server live.
  */
-export async function buildMcpToolsSectionAsync(): Promise<string> {
+async function buildMcpToolsSectionAsync(): Promise<string> {
   try {
     const remotes = loadRemotes();
     const discovered: BuilderTool[] = [];
@@ -178,7 +178,7 @@ const TOOL_DOCTRINE = `## TOOL DOCTRINE
 |---|---|---|
 | Understand code | code_search, read_file, list_files | code_search FIRST — grouped snippets with context + a ready-made read_file offset/limit hint per match; follow its hints to read exactly the matching region. Large files: read_file accepts offset (1-based line) + limit — page natively instead of shelling out to sed |
 | Parallel background research | spawn_subagent | ONE focused, self-contained question per spawn ("find every call site of X", "summarize how auth works"). The helper is read-only (list/read/search only — no writes, no commands, no browser, cannot nest). Findings return as prose for your transcript; keep your own loop moving meanwhile. Not for work you need iteratively refined |
-| Create/modify | write_file, write_file_chunk, edit_file, batch_edit | edit_file for surgical changes; chunk files >200 lines; batch_edit for atomic multi-file changes |
+| Create/modify | write_file, write_file_chunk, edit_file, batch_edit | edit_file for surgical changes; chunk files >200 lines; batch_edit for coordinated edits. apply_edit_ops: ATOMIC multi-op edits — everything rolls back automatically if any op fails; use when a half-applied batch would corrupt the workspace |
 | Plan / update plan | todo_list | Create first, complete items as you go — the plan-first gate blocks writes without it on complex tasks |
 | Need user-only data | ask_question | ONLY for personal data you cannot invent (name, API keys). Everything else: pick the best default and build |
 | Run things | run_command | Run tests, builds, installs, one-shot scripts — anything that EXITS. In the desktop app commands execute on-device in the workspace and every line streams to the Terminal tab — never claim output is invisible |

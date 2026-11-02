@@ -19,7 +19,7 @@ export function MessageSkeleton({ count = 3 }: { count?: number }) {
 }
 
 /** Generic skeleton line for inline use */
-export function SkeletonLine({ width = "100%", height = 14 }: { width?: string | number; height?: number }) {
+function SkeletonLine({ width = "100%", height = 14 }: { width?: string | number; height?: number }) {
   return (
     <div
       className="skeleton"
@@ -29,7 +29,7 @@ export function SkeletonLine({ width = "100%", height = 14 }: { width?: string |
 }
 
 /** Skeleton for panel content (files, queue, etc.) */
-export function PanelSkeleton({ rows = 4 }: { rows?: number }) {
+function PanelSkeleton({ rows = 4 }: { rows?: number }) {
   return (
     <div className="skeleton-list" style={{ padding: 16 }}>
       {Array.from({ length: rows }).map((_, i) => (

@@ -126,7 +126,7 @@ export type ValidationSuccess<T> = { valid: true; data: T };
 export type ValidationFailure = { valid: false; errors: string[] };
 export type ValidationResult<T> = ValidationSuccess<T> | ValidationFailure;
 
-export function validateInput<T>(schema: z.ZodSchema<T>, input: unknown): ValidationResult<T> {
+function validateInput<T>(schema: z.ZodSchema<T>, input: unknown): ValidationResult<T> {
   const result = schema.safeParse(input);
   if (result.success) {
     return { valid: true, data: result.data };
@@ -138,10 +138,10 @@ export function validateInput<T>(schema: z.ZodSchema<T>, input: unknown): Valida
 }
 
 // Type guard for validation results
-export function isValidationSuccess<T>(result: ValidationResult<T>): result is ValidationSuccess<T> {
+function isValidationSuccess<T>(result: ValidationResult<T>): result is ValidationSuccess<T> {
   return result.valid === true;
 }
 
-export function isValidationFailure<T>(result: ValidationResult<T>): result is ValidationFailure {
+function isValidationFailure<T>(result: ValidationResult<T>): result is ValidationFailure {
   return result.valid === false;
 }

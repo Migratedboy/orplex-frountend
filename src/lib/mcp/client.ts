@@ -84,11 +84,6 @@ export function parseRpcPayload(text: string, contentType: string, id: number): 
   }
 }
 
-export interface McpCallOptions {
-  /** AbortSignal from the agent run — honored per request. */
-  signal?: AbortSignal;
-}
-
 export class McpConnection {
   private nextId = 1;
   private sessionId: string | null = null;

@@ -61,7 +61,7 @@ const hooks: PluginHook[] = [
   },
 ];
 
-export function getCacheSize() { return cache.size; }
+function getCacheSize() { return cache.size; }
 export async function activateResponseCache(): Promise<void> {
   await pluginRegistry.registerPlugin(manifest, async () => {
     const h = (pluginRegistry as any).hooks;

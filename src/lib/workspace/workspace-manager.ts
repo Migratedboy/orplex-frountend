@@ -47,7 +47,7 @@ export async function createWorkspace(
 /**
  * Get a workspace by ID
  */
-export async function getWorkspace(id: string): Promise<Workspace | null> {
+ async function getWorkspace(id: string): Promise<Workspace | null> {
   return prisma.workspace.findUnique({ where: { id } }) as Promise<Workspace | null>;
 }
 
@@ -95,24 +95,6 @@ export async function addMember(
   return prisma.workspaceMember.create({
     data: { workspaceId, userId, role },
   }) as Promise<WorkspaceMember>;
-}
-
-/**
- * Remove a member from a workspace
- */
-export async function removeMember(
-  workspaceId: string,
-  userId: string
-): Promise<void> {
-  const member = await prisma.workspaceMember.findUnique({
-    where: { workspaceId_userId: { workspaceId, userId } },
-  });
-  if (!member) throw new Error("User is not a member of this workspace");
-  if (member.role === "owner") throw new Error("Cannot remove the workspace owner");
-
-  await prisma.workspaceMember.delete({
-    where: { workspaceId_userId: { workspaceId, userId } },
-  });
 }
 
 /**

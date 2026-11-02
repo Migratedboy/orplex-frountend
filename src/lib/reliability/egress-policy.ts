@@ -188,7 +188,7 @@ export function classifyEgress(command: string): EgressClassification {
 }
 
 /** Circular-dep helper (capability-policy ↔ egress-policy): see flags.ts. */
-export function egressDenyReason(command: string): string | null {
+function egressDenyReason(command: string): string | null {
   const verdict = classifyEgress(command);
   return verdict.allowed ? null : verdict.reason ?? "egress denied";
 }
@@ -198,7 +198,7 @@ export function egressDenyReason(command: string): string | null {
  * not be able to push egress at all" without importing the whole scanner.
  * Null means no policy hit (scan clean, or read of trusted provenance).
  */
-export function injectionProvenanceFor(text: string): Provenance | null {
+function injectionProvenanceFor(text: string): Provenance | null {
   if (hasBlockingInjection(text)) return "prose_tool";
   return null;
 }

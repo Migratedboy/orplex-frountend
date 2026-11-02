@@ -1,0 +1,14 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "jest.setup.ts",
+    "playwright.config.ts",
+    "tailwind.config.ts",
+    "electron/main.ts",
+    "electron/preload.ts"
+  ],
+  "project": ["src/**/*.ts", "src/**/*.tsx", "electron/**/*.ts"],
+  "ignore": ["cli/**", "logo/**", "vscode-extension/**", "docs-site/**", "e2e/**", "evals/**", "scripts/**"],
+  "ignoreExportsUsedInFile": true,
+  "ignoreBinaries": ["pg_dump", "vercel", "rg", "where.exe", "playwright-core/browsers.json"]
+}

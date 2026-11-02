@@ -394,6 +394,6 @@ function summarizeSkips(skipped: ExtractEntry[]): string {
 }
 
 /** Convenience for callers holding a workspace root + relative archive path. */
-export function describeRelative(root: string, p: string): string {
+function describeRelative(root: string, p: string): string {
   return relative(resolve(root), p) || p;
 }

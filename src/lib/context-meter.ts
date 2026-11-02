@@ -87,7 +87,7 @@ export function readContextMeter(
  * Turn a reading into a one-line directive for the model. Empty string when
  * pressure is ok — no tokens spent when there is nothing to say.
  */
-export function pressureDirective(reading: ContextReading): string {
+function pressureDirective(reading: ContextReading): string {
   if (reading.level === "ok") return "";
   const pct = Math.min(999, Math.round(reading.fraction * 100));
   if (reading.level === "warn")

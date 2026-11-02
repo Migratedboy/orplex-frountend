@@ -19,7 +19,7 @@ export interface ReflectionResult {
  * Run the reflection loop on generated code.
  * Returns improved code with quality issues fixed.
  */
-export async function runReflectionLoop(
+async function runReflectionLoop(
   files: Array<{ path: string; content: string }>,
   modelCall: (messages: Array<{ role: string; content: string }>) => Promise<string>,
   maxIterations: number = 3

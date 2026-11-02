@@ -104,7 +104,7 @@ function persistState(provider: string, state: ProviderState): void {
 /**
  * Record a failure for a provider. Trips the circuit if threshold is reached.
  */
-export async function recordFailure(provider: string): Promise<void> {
+ async function recordFailure(provider: string): Promise<void> {
   const state = await hydrateState(provider);
   state.failures++;
   state.lastFailure = Date.now();
@@ -121,7 +121,7 @@ export async function recordFailure(provider: string): Promise<void> {
 /**
  * Record a success — reset failure count and close the circuit.
  */
-export async function recordSuccess(provider: string): Promise<void> {
+ async function recordSuccess(provider: string): Promise<void> {
   const state = await hydrateState(provider);
   state.failures = 0;
   state.isOpen = false;
@@ -135,7 +135,7 @@ export async function recordSuccess(provider: string): Promise<void> {
 /**
  * Check if a provider is available (circuit is closed or half-open).
  */
-export async function isAvailable(provider: string): Promise<boolean> {
+ async function isAvailable(provider: string): Promise<boolean> {
   const state = await hydrateState(provider);
 
   if (state.isOpen && Date.now() > state.openUntil) {

@@ -37,7 +37,6 @@ export {
 
 // --- Bucket 3: run / failure ledger ---
 export {
-  recordFailure as record_failure,
   getFailures,
   mergeServerFailures,
   buildFailureDoctrineContext,

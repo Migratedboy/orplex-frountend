@@ -191,7 +191,7 @@ export async function incrementUserQuota(userId: string): Promise<void> {
 // Usage Logging (unchanged)
 // ---------------------------------------------------------------------------
 
-export async function logUsage(params: {
+async function logUsage(params: {
   userId: string;
   provider: string;
   model: string;
@@ -384,7 +384,7 @@ export function applyRateLimitHeaders(
 /**
  * Remove expired rate limit windows from the DB. Call periodically.
  */
-export async function cleanupExpiredWindows(): Promise<void> {
+async function cleanupExpiredWindows(): Promise<void> {
   await prisma.rateLimitWindow.deleteMany({
     where: { expiresAt: { lt: new Date() } },
   });

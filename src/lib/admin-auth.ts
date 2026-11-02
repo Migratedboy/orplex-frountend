@@ -34,7 +34,7 @@ export async function requireAdmin() {
   return session.user;
 }
 
-export function isAdmin(userId: string): boolean {
+function isAdmin(userId: string): boolean {
   if (ADMIN_IDS.length === 0) return adminsAllowedWhenUnset();
   return ADMIN_IDS.includes(userId);
 }

@@ -232,7 +232,7 @@ export interface M3CompatResult {
  * reads the workspace from disk per candidate instead of relying on a
  * resident cache.
  */
-export function buildM3Context(
+ function buildM3Context(
   fileTree: any[],
   fileContents: Record<string, string>,
   userMessage: string,

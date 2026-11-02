@@ -125,7 +125,7 @@ export async function readHistory(root: string, since?: number): Promise<History
 }
 
 /** Quota enforcement: rewrite the file keeping only the newest MAX_ENTRIES (and under MAX_FILE_BYTES). */
-export async function compactHistory(root: string): Promise<number> {
+async function compactHistory(root: string): Promise<number> {
   const file = historyPath(root);
   let raw = "";
   try {

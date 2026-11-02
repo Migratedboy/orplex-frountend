@@ -273,7 +273,7 @@ export function hasBlockingInjection(text: string): boolean {
  * the flag is off or nothing blocks — the relay must stay inert unless the
  * master chain (RELIABILITY_GATES=1, RELIABILITY_INJECTION_SCAN=1) is armed.
  */
-export function injectionTaintedProvenance(text: string): Provenance | null {
+function injectionTaintedProvenance(text: string): Provenance | null {
   if (hasBlockingInjection(text)) return "prose_tool";
   return null;
 }

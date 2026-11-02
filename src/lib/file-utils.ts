@@ -43,7 +43,7 @@ export function isArchiveFile(filename: string): boolean {
 }
 
 /** Text, image, or archive — i.e. anything the composer accepts. */
-export function isSupportedFile(filename: string): boolean {
+function isSupportedFile(filename: string): boolean {
   return isImageFile(filename) || isArchiveFile(filename) || isTextFile(filename);
 }
 
