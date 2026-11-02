@@ -1,8 +1,7 @@
 // Serve a locally-stored attachment. Local-only route (see src/proxy.ts), so
 // the bytes come from the user's own disk and survive redeploys/offline.
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import {
   isValidAttachmentId,
@@ -31,14 +30,14 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const session = await getServerSession(jwtOnlyOptions);
-    if (!session?.user) {
+    const userId = await sessionUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Async resolver, not the sync in-memory getter: the registration map is
     // per-process, so a restart would 404 an otherwise-open workspace.
-    const workspace = await resolveWorkspaceCwd(session.user.id);
+    const workspace = await resolveWorkspaceCwd(userId);
     if (!workspace) {
       return NextResponse.json({ error: "No workspace open" }, { status: 404 });
     }
@@ -70,7 +69,7 @@ export async function GET(
     // though the files were still on disk.
     const roots: string[] = [];
     if (workspace) roots.push(workspace);
-    const recorded = await recordedWorkspaceFor(session.user.id);
+    const recorded = await recordedWorkspaceFor(userId);
     if (recorded) roots.push(recorded);
 
     const found = await locateAttachment(roots, match[1], ext);

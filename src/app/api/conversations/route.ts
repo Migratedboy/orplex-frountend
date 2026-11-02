@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions as authOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -25,8 +24,8 @@ function cleanSnippet(content: string | null | undefined): string {
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ conversations: [], conversation: null });
+    const userId = await sessionUserId(request);
+    if (!userId) return NextResponse.json({ conversations: [], conversation: null });
 
     const id = request.nextUrl.searchParams.get("id");
 
@@ -46,7 +45,7 @@ export async function GET(request: NextRequest) {
   // inserted in one nested-create transaction, so every user/assistant pair
   // shares an identical timestamp. `id` breaks the tie deterministically.
   const conversation = await prisma.conversation.findFirst({
-    where: { id, userId: session.user.id },
+    where: { id, userId },
     include: {
       messages: {
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -68,7 +67,7 @@ export async function GET(request: NextRequest) {
     const limit = Math.min(Math.max(Number(limitRaw) || 50, 1), 100);
     const cursor = request.nextUrl.searchParams.get("cursor");
     const conversations = await prisma.conversation.findMany({
-      where: { userId: session.user.id },
+      where: { userId },
       include: { messages: { take: 1, orderBy: { createdAt: "desc" } } },
       orderBy: { updatedAt: "desc" },
       take: limit,
@@ -91,8 +90,8 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const userId = await sessionUserId(request);
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object") {
@@ -145,12 +144,12 @@ export async function POST(request: NextRequest) {
     // user first so Conversation.userId always has a matching row.
     try {
       await prisma.user.upsert({
-        where: { id: session.user.id },
+        where: { id: userId },
         update: {},
         create: {
-          id: session.user.id,
-          email: session.user.email || `${session.user.id}@orplex.local`,
-          name: session.user.name || "User",
+          id: userId,
+          email: `${userId}@orplex.local`,
+          name: "User",
         },
       });
     } catch {
@@ -163,7 +162,7 @@ export async function POST(request: NextRequest) {
       // NOTE: where must be unique — (id, userId) is not. Gate ownership
       // first, then update by id (same pattern as PATCH /conversations/[id]).
       const owned = await prisma.conversation.findFirst({
-        where: { id: conversationId, userId: session.user.id },
+        where: { id: conversationId, userId },
         select: { id: true },
       });
       if (!owned) {
@@ -185,7 +184,7 @@ export async function POST(request: NextRequest) {
       conv = await prisma.conversation.create({
         data: {
           title,
-          userId: session.user.id,
+          userId,
           workspaceName,
           messages: { create: messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })) },
         },

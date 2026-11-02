@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions as authOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { deriveFromRun, mergeOrCreate } from "@/lib/playbook";
 
 export const dynamic = "force-dynamic";
@@ -13,8 +12,8 @@ export const dynamic = "force-dynamic";
  * the DB is never touched from the browser.
  */
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
 
@@ -46,7 +45,7 @@ export async function POST(request: NextRequest) {
 
   let stored = 0;
   for (const entry of derived) {
-    const saved = await mergeOrCreate(session.user.id, entry).catch(() => null);
+    const saved = await mergeOrCreate(userId, entry).catch(() => null);
     if (saved) stored++;
   }
 

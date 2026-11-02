@@ -1,21 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions as authOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { listPlaybooks, searchPlaybooks, mergeOrCreate } from "@/lib/playbook";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    // sessionUserId (NOT getServerSession(authOptions)): the packaged app
+    // ships no NEXTAUTH_SECRET, so importing @/lib/auth kills the whole
+    // route chunk at module evaluation (its prod fail-fast throw → empty
+    // 500 — the "Playbook list failed" bug). sessionUserId verifies the
+    // next-auth JWT when a secret exists and falls back to the Ed25519
+    // app-session cookie otherwise, covering both cookie names too.
+    const userId = await sessionUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Per-user scope: learnings are private to the authenticated user.
     // (The executor passes run.userId for server runs; browser lanes land
     // here scoped by session.)
-    const projectId = session.user.id;
+    const projectId = userId;
     const search = request.nextUrl.searchParams.get("q");
 
     if (search) {
@@ -40,8 +45,8 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    const userId = await sessionUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -52,7 +57,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "title and text are required" }, { status: 400 });
     }
 
-    const entry = await mergeOrCreate(session.user.id, {
+    const entry = await mergeOrCreate(userId, {
       pattern: "skill",
       content: `${title}: ${text}`,
       tags: ["skill", title.toLowerCase().slice(0, 40)],

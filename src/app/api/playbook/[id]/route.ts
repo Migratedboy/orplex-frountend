@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions as authOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { updatePlaybook, deletePlaybook } from "@/lib/playbook";
 
 export const dynamic = "force-dynamic";
@@ -10,8 +9,8 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    const userId = await sessionUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -35,7 +34,7 @@ export async function PATCH(
       return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
     }
 
-    const updated = await updatePlaybook(id, session.user.id, {
+    const updated = await updatePlaybook(id, userId, {
       ...(content !== undefined && { content: content as string }),
       ...(pinned !== undefined && { pinned: pinned as boolean }),
       ...(tags !== undefined && { tags: tags as string[] }),
@@ -59,13 +58,13 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    const userId = await sessionUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
-    const deleted = await deletePlaybook(id, session.user.id);
+    const deleted = await deletePlaybook(id, userId);
 
     if (!deleted) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });

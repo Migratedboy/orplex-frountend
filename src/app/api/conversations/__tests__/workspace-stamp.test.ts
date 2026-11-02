@@ -7,11 +7,9 @@
  */
 import { POST } from "../route";
 
-jest.mock("next-auth", () => ({
-  getServerSession: jest.fn(),
+jest.mock("@/lib/server-session", () => ({
+  sessionUserId: jest.fn(),
 }));
-
-jest.mock("@/lib/auth", () => ({ jwtOnlyOptions: {} }));
 
 // prismaMock is created lazily inside the mock factory and re-exported via
 // jest.requireMock — jest.mock factories are hoisted above const declarations,
@@ -23,14 +21,14 @@ jest.mock("@/lib/prisma", () => ({
   },
 }));
 
-import { getServerSession } from "next-auth";
+import { sessionUserId } from "@/lib/server-session";
 import { prisma } from "@/lib/prisma";
 
 const prismaMock = prisma as unknown as {
   user: { upsert: jest.Mock };
   conversation: { update: jest.Mock; create: jest.Mock; findFirst: jest.Mock };
 };
-const mockedSession = getServerSession as jest.Mock;
+const mockedSessionUserId = sessionUserId as jest.Mock;
 
 function makePost(body: Record<string, unknown>) {
   return {
@@ -40,7 +38,7 @@ function makePost(body: Record<string, unknown>) {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockedSession.mockResolvedValue({ user: { id: "user-1" } });
+  mockedSessionUserId.mockResolvedValue("user-1");
   prismaMock.conversation.create.mockResolvedValue({ id: "new-conv" });
   prismaMock.conversation.update.mockResolvedValue({ id: "existing-conv" });
   prismaMock.conversation.findFirst.mockResolvedValue({ id: "existing-conv" });
@@ -120,7 +118,7 @@ describe("POST /api/conversations — workspaceName stamping", () => {
   });
 
   it("requires authentication", async () => {
-    mockedSession.mockResolvedValue(null);
+    mockedSessionUserId.mockResolvedValue(null);
     const res = await POST(makePost({ messages: [{ role: "user", content: "hi" }] }));
     expect(res.status).toBe(401);
   });

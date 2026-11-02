@@ -1,7 +1,6 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import os from "os";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { RAM_THRESHOLDS } from "@/lib/hardware";
 
 export const dynamic = "force-dynamic";
@@ -19,9 +18,9 @@ export const dynamic = "force-dynamic";
  * It sits on the local-only list precisely so it is served locally, which also
  * means nothing in front of it authenticates the caller.
  */
-export async function GET() {
-  const session = await getServerSession(jwtOnlyOptions).catch(() => null);
-  if (!session?.user) {
+export async function GET(request: NextRequest) {
+  const userId = await sessionUserId(request).catch(() => null);
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

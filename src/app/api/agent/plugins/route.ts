@@ -3,19 +3,18 @@
 // POST /api/agent/plugins           → install: { pluginDir } installs one, no body installs all
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import { discoverPlugins, installPlugin } from "@/lib/plugin-bundles";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(jwtOnlyOptions);
-    if (!session?.user) {
+    const userId = await sessionUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const cwd = await resolveWorkspaceCwd((session.user as { id?: string }).id || "");
+    const cwd = await resolveWorkspaceCwd(userId);
     if (!cwd) {
       return NextResponse.json({ plugins: [] });
     }
@@ -40,12 +39,12 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(jwtOnlyOptions);
-    if (!session?.user) {
+    const userId = await sessionUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const cwd = await resolveWorkspaceCwd((session.user as { id?: string }).id || "");
+    const cwd = await resolveWorkspaceCwd(userId);
     if (!cwd) {
       return NextResponse.json({ error: "No workspace folder is open" }, { status: 400 });
     }

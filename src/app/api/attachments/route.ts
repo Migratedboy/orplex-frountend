@@ -5,8 +5,7 @@
 // the local Next process instead of being proxied to the cloud backend, whose
 // filesystem is ephemeral.
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import {
   MAX_ARCHIVE_ATTACHMENT_BYTES,
@@ -19,15 +18,15 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(jwtOnlyOptions);
-    if (!session?.user) {
+    const userId = await sessionUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // resolveWorkspaceCwd (not the sync in-memory getter): the registration map
     // is per-process, so after a restart a legitimately open workspace would
     // 404 here. The async resolver falls back to the durable User.workspacePath.
-    const workspace = await resolveWorkspaceCwd(session.user.id);
+    const workspace = await resolveWorkspaceCwd(userId);
     if (!workspace) {
       return NextResponse.json(
         { error: "No workspace open — open a project first" },

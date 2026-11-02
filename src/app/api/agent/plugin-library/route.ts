@@ -6,8 +6,7 @@
 // bundles (existing user files always win). No new install machinery.
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import { clearToolHookCache } from "@/lib/tool-hooks";
 import { installPlugin } from "@/lib/plugin-bundles";
@@ -18,11 +17,10 @@ function err(msg: string, status: number) {
   return NextResponse.json({ error: msg }, { status });
 }
 
-export async function GET() {
-  const session = await getServerSession(jwtOnlyOptions);
-  if (!session?.user) return err("Unauthorized", 401);
+export async function GET(request: NextRequest) {
+  const userId = await sessionUserId(request);
+  if (!userId) return err("Unauthorized", 401);
 
-  const userId = (session.user as { id?: string }).id || "";
   const cwd = await resolveWorkspaceCwd(userId);
   if (!cwd) return NextResponse.json({ library: [], workspaceOpen: false });
 
@@ -48,10 +46,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(jwtOnlyOptions);
-  if (!session?.user) return err("Unauthorized", 401);
+  const userId = await sessionUserId(request);
+  if (!userId) return err("Unauthorized", 401);
 
-  const userId = (session.user as { id?: string }).id || "";
   const cwd = await resolveWorkspaceCwd(userId);
   if (!cwd) return err("No workspace folder is open", 400);
 
@@ -76,10 +73,10 @@ export async function POST(request: NextRequest) {
 // PATCH — flip a bundle's hook enforcement on/off without touching its files.
 // Body: { slug, enabled } → new state entry.
 export async function PATCH(request: NextRequest) {
-  const session = await getServerSession(jwtOnlyOptions);
-  if (!session?.user) return err("Unauthorized", 401);
+  const userId = await sessionUserId(request);
+  if (!userId) return err("Unauthorized", 401);
 
-  const cwd = await resolveWorkspaceCwd((session.user as { id?: string }).id || "");
+  const cwd = await resolveWorkspaceCwd(userId);
   if (!cwd) return err("No workspace folder is open", 400);
 
   const body = await request.json().catch(() => ({}));

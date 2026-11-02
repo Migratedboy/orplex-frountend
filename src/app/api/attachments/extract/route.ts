@@ -9,8 +9,7 @@
 //
 // The .zip itself is never uploaded anywhere; it stays on the user's disk.
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import { extractZip } from "@/lib/agent/archive-extract";
 import { attachmentUrl, isValidAttachmentId } from "@/lib/attachment-store";
@@ -34,11 +33,11 @@ const TEXTY = /\.(ts|tsx|js|jsx|mjs|cjs|json|md|markdown|txt|csv|ya?ml|toml|html
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(jwtOnlyOptions);
-    if (!session?.user) {
+    const userId = await sessionUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const workspace = await resolveWorkspaceCwd(session.user.id);
+    const workspace = await resolveWorkspaceCwd(userId);
     if (!workspace) {
       return NextResponse.json({ error: "No workspace open" }, { status: 404 });
     }

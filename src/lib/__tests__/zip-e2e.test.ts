@@ -16,8 +16,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // --- auth/workspace stand-ins (the only things faked) ----------------------
-const session = { user: { id: "u1" } };
-jest.mock("next-auth", () => ({ getServerSession: jest.fn(async () => session) }));
+jest.mock("@/lib/server-session", () => ({
+  sessionUserId: jest.fn(async () => "u1"),
+}));
 
 let WORKSPACE = "";
 jest.mock("@/lib/workspace-cwd", () => ({
@@ -142,8 +143,8 @@ describe("zip attach → store → serve → extract", () => {
   });
 
   it("401s without a session", async () => {
-    const { getServerSession } = await import("next-auth");
-    (getServerSession as jest.Mock).mockResolvedValueOnce(null);
+    const { sessionUserId } = await import("@/lib/server-session");
+    (sessionUserId as jest.Mock).mockResolvedValueOnce(null);
     const res = await post(await zipDataUrl());
     expect(res.status).toBe(401);
   });
