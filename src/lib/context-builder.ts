@@ -47,7 +47,7 @@ const HEAD_CHARS = 16_000;
 // Prompt budget (chars). ~40K tokens — sized for the free-tier models'
 // windows (Minimax M3.1 Flash ≈196K) while staying far above the old
 // full-dump minimum for small repos.
-const CONTEXT_CAP_CHARS = 160_000;
+const CONTEXT_CAP_CHARS = 80_000;
 
 // How many distinct files may contribute content to one prompt.
 const MAX_FILES = 10;

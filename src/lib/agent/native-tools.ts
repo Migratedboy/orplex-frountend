@@ -259,8 +259,8 @@ function previewOf(content: string, maxLines = 5): string {
 // the tool surfaces a head window instead of materializing megabytes into the
 // model context AND the per-task caches. Pagination: offset/limit args let
 // the agent walk the rest natively (no sed workaround).
-const MAX_READ_CHARS = 60_000;
-const MAX_PAGE_CHARS = 60_000; // per-call ceiling for offset/limit pages too
+const MAX_READ_CHARS = 20_000;
+const MAX_PAGE_CHARS = 20_000; // per-call ceiling for offset/limit pages too
 
 // Tool output ceiling: command stdout/stderr that becomes a tool_result is
 // capped head+tail. Without it a single `npm run build` (tens of thousands of
