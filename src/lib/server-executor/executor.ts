@@ -164,6 +164,60 @@ function resolveTranscriptBudget(adapter: AIProviderAdapter): number {
 }
 
 /**
+ * Hard fallback when the model-free compaction tiers cannot free enough room
+ * (or compact() returns null because there is nothing summarizable).
+ *
+ * Drops the OLDEST messages first — tool results and stale turns are what
+ * pushed the transcript over the window — then caps whatever single message
+ * is still too large (one huge tool result). The newest turn is always kept:
+ * it carries the task anchor, so dropping it would make the model forget the
+ * request entirely.
+ */
+function trimTranscriptToBudget(
+  transcript: Array<{ role: "user" | "assistant"; content: string }>,
+  budgetTokens: number
+): Array<{ role: "user" | "assistant"; content: string }> {
+  const out = transcript.map((m) => ({ ...m }));
+  if (out.length === 0) return out;
+  const tokensOf = (msgs: Array<{ role: "user" | "assistant"; content: string }>) =>
+    msgs.reduce((s, m) => s + Math.ceil((m.content?.length || 0) / 4), 0);
+
+  // 1. Cap any single oversized message (a huge tool result).
+  const PER_MESSAGE_CAP = Math.max(2_000, Math.floor(budgetTokens / 4) * 4);
+  for (let i = 0; i < out.length - 1; i++) {
+    if (out[i].content.length > PER_MESSAGE_CAP) {
+      out[i].content =
+        out[i].content.slice(0, PER_MESSAGE_CAP) +
+        "\n…[message truncated to fit the context budget — re-read the file for the full content]";
+    }
+  }
+
+  // 2. Drop oldest messages while over budget. Keep at least the last two
+  //    (the newest turn + the task anchor).
+  while (tokensOf(out) > budgetTokens && out.length > 2) {
+    out.splice(0, 1);
+  }
+
+  // 3. Last resort: the final message alone can still exceed the budget.
+  if (tokensOf(out) > budgetTokens && out.length > 0) {
+    const last = out[out.length - 1];
+    const allow = Math.max(1_000, budgetTokens - tokensOf(out.slice(0, -1)));
+    const maxChars = allow * 4;
+    if (last.content.length > maxChars) {
+      const anchorAt = last.content.lastIndexOf("\n\n---\n[ORIGINAL TASK");
+      const anchor = anchorAt >= 0 ? last.content.slice(anchorAt) : "";
+      const base = anchorAt >= 0 ? last.content.slice(0, anchorAt) : last.content;
+      const room = Math.max(0, maxChars - anchor.length);
+      last.content =
+        base.slice(0, room) +
+        "\n…[truncated to fit the context budget]" +
+        anchor;
+    }
+  }
+  return out;
+}
+
+/**
  * Context windows for families the executor runs on. Deliberately keyed by
  * SUBSTRING rather than exact id: these arrive namespaced (`openai/gpt-4o`,
  * `qwen/…:free`) and an exact map would silently miss every one of them.
@@ -1488,6 +1542,20 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
             transcript.length = 0;
             transcript.push(...(compacted as Array<{ role: "user" | "assistant"; content: string }>));
             await emit(run.id, "compacted", { turns, tokensBefore });
+          } else {
+            // Compaction returned null (nothing to summarize) or threw. Sending
+            // the over-budget transcript anyway is what produced the hard
+            // "context length exceeded" failures: the provider rejected the
+            // request and the run died with no answer. Hard-trim instead —
+            // oldest tool results first, keeping the task anchor (the tail of
+            // the last user message) and the newest turns.
+            const budgetTokens = resolveTranscriptBudget(currentAdapter);
+            const trimmed = trimTranscriptToBudget(transcript, budgetTokens);
+            if (trimmed.length !== transcript.length) {
+              transcript.length = 0;
+              transcript.push(...trimmed);
+              await emit(run.id, "compacted", { turns, tokensBefore, trimmed: true });
+            }
           }
         }
       },
@@ -1681,8 +1749,18 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       },
       postDispatch: (_turn, _out, info) => {
         const scratchBlock = renderScratchpadBlock(scratch);
-        lastToolResults = info.results.join("\n");
-        transcript.push({ role: "user", content: info.results.join("\n") + (scratchBlock ? `\n${scratchBlock}` : "") });
+        // Aggregate cap for one turn's tool results. Individual tools cap
+        // their own output, but a turn that fans out over many tools (a
+        // sweep of read_file/list_files) still summed into tens of thousands
+        // of tokens in a SINGLE transcript message.
+        const TURN_TOOL_CAP = 40_000;
+        const joined = info.results.join("\n");
+        lastToolResults = joined.length > TURN_TOOL_CAP ? joined.slice(0, TURN_TOOL_CAP) : joined;
+        const turnBlock =
+          lastToolResults.length < joined.length
+            ? `${lastToolResults}\n…[${joined.length - lastToolResults.length} more chars of this turn's tool output were dropped to fit the context budget]`
+            : lastToolResults;
+        transcript.push({ role: "user", content: turnBlock + (scratchBlock ? `\n${scratchBlock}` : "") });
         return null;
       },
     });

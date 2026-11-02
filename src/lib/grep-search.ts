@@ -19,7 +19,7 @@ import path from "path";
 
 const execFileAsync = promisify(execFile);
 
-export const MAX_SEARCH_OUTPUT_BYTES = 50_000;
+export const MAX_SEARCH_OUTPUT_BYTES = 25_000;
 export const MAX_SEARCH_MATCHES = 200;
 const SEARCH_TIMEOUT_MS = 8_000;
 const MAX_FILE_SIZE_BYTES = 1_500_000;
@@ -30,7 +30,7 @@ const MAX_FILE_SIZE_BYTES = 1_500_000;
 // which read_file offset/limit covers the match.
 const SNIPPET_CONTEXT_LINES = 3;
 const SNIPPET_MAX_MATCHES = 20;
-const SNIPPET_MAX_OUTPUT_BYTES = 30_000;
+const SNIPPET_MAX_OUTPUT_BYTES = 15_000;
 const SNIPPET_TIMEOUT_MS = 12_000;
 
 export interface SearchResult {

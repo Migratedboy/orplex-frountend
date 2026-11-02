@@ -607,10 +607,18 @@ export async function dispatchToolCall(
         const EMPTY_SENTINEL = "No files found at that path.";
         const isEmpty = listing.trim() === EMPTY_SENTINEL;
         const fileCount = isEmpty ? 0 : listing.split("\n").filter(Boolean).length;
-        const toolBody = isEmpty
+        // A whole-repo listing can be tens of thousands of paths — that is
+        // ~10k+ tokens of pure noise in one tool_result. Cap it and tell the
+        // model to narrow the path instead of re-listing.
+        const LISTING_CAP = 400;
+        const listingLines = listing.split("\n").filter(Boolean);
+        const listingCapped = !isEmpty && listingLines.length > LISTING_CAP;
+        const listingBody = isEmpty
           ? `${EMPTY_SENTINEL}\nThis path is empty. Do NOT call list_files on it again — it will return the same result. If you were looking for a file that is not here, say so to the user instead of searching repeatedly.`
-          : listing;
-        result(`<tool_result name="list_files" path="${call.path || "."}">\n${toolBody}\n</tool_result>\n`);
+          : listingCapped
+            ? `${listingLines.slice(0, LISTING_CAP).join("\n")}\n…[listing truncated at ${LISTING_CAP} of ${listingLines.length} paths — narrow the path argument (e.g. list_files path="src/lib") instead of listing the whole tree again]`
+            : listing;
+        result(`<tool_result name="list_files" path="${call.path || "."}">\n${listingBody}\n</tool_result>\n`);
         ctx.replaceStatus(
           isEmpty
             ? `[EMPTY] No files found in \`${call.path || "."}\``
@@ -1271,7 +1279,7 @@ export async function dispatchToolCall(
           if (started.ok) {
             ctx.stats.commandRun();
             if (started.tail) emitTerminalLine("stdout", started.tail, "agent");
-            result(`<tool_result name="run_command" command="${call.command}">SERVER RUNNING on this device${started.url ? ` at ${started.url}` : ""}\n${started.tail || ""}\n</tool_result>\n`);
+            result(`<tool_result name="run_command" command="${call.command}">SERVER RUNNING on this device${started.url ? ` at ${started.url}` : ""}\n${capToolOutput(started.tail || "")}\n</tool_result>\n`);
             ctx.replaceStatus(`[OK] Server running${started.url ? ` at ${started.url}` : ""} (device)`);
             if (started.url) emitPreview(started.url, "verify_app");
           } else {
@@ -1299,7 +1307,7 @@ export async function dispatchToolCall(
           ctx.stats.commandRun();
           emitTerminalLine("cmd", `$ ${call.command}`, "agent");
           if (serveData.output) emitTerminalLine("stdout", String(serveData.output).slice(0, 4000), "agent");
-          result(`<tool_result name="run_command" command="${call.command}">SERVER RUNNING — ${serveData.message}\n${serveData.output || ""}\n</tool_result>\n`);
+          result(`<tool_result name="run_command" command="${call.command}">SERVER RUNNING — ${serveData.message}\n${capToolOutput(String(serveData.output || ""))}\n</tool_result>\n`);
           ctx.replaceStatus(`[OK] Server running${serveData.port ? ` at http://localhost:${serveData.port}` : ""}`);
           if (serveData.port) emitPreview(`http://localhost:${serveData.port}`, "verify_app");
         } else {
@@ -1401,7 +1409,7 @@ export async function dispatchToolCall(
         const serveData = await serveRes.json();
         if (serveData.ok) {
           ctx.stats.commandRun();
-          result(`<tool_result name="run_in_sandbox" command="${call.command}">SERVER RUNNING — ${serveData.message}\n${serveData.output || ""}\n</tool_result>\n`);
+          result(`<tool_result name="run_in_sandbox" command="${call.command}">SERVER RUNNING — ${serveData.message}\n${capToolOutput(String(serveData.output || ""))}\n</tool_result>\n`);
           ctx.replaceStatus(`[OK] Server running${serveData.port ? ` at http://localhost:${serveData.port}` : ""}`);
           if (serveData.port) emitPreview(`http://localhost:${serveData.port}`, "verify_app");
         } else {
@@ -1471,7 +1479,7 @@ export async function dispatchToolCall(
       }, ctx);
       const execData = await execRes.json();
       const output = (execData.stdout || "") + (execData.stderr ? `\nSTDERR: ${execData.stderr}` : "");
-      result(`<tool_result name="run_in_sandbox" command="${call.command}">\n${output}\n</tool_result>\n`);
+      result(`<tool_result name="run_in_sandbox" command="${call.command}">\n${capToolOutput(output)}\n</tool_result>\n`);
       ctx.replaceStatus(
         execData.exitCode === 0
           ? `[OK] Command completed (local): \`${call.command.slice(0, 50)}\``

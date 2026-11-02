@@ -13,7 +13,7 @@ import { withConnection } from "./client";
 import { apiFetch } from "@/lib/api-base";
 import { getMcpCatalogEntry } from "@/lib/mcp-catalog";
 
-const MAX_RESULT_CHARS = 30_000;
+const MAX_RESULT_CHARS = 20_000;
 
 /** The slice of ToolContext the MCP path needs (keeps native-tools ↔ mcp acyclic). */
 interface McpToolCtx {

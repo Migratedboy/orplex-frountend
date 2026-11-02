@@ -45,7 +45,10 @@ async function readIfPresent(abs: string, rel: string): Promise<ProjectMemoryFil
     if (!existsSync(abs)) return null;
     const raw = await readFile(abs, "utf8");
     if (!raw.trim()) return null;
-    return { source: rel, content: raw };
+    // Cap at READ: the render step only ever emits the first MAX_FULL_CHARS
+    // (or MAX_ESSENTIALS_CHARS), so caching the WHOLE file kept megabytes
+    // resident per workspace for nothing.
+    return { source: rel, content: raw.slice(0, MAX_FULL_CHARS) };
   } catch {
     return null;
   }

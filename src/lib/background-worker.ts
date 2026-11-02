@@ -1118,6 +1118,17 @@ export async function runInBackground(
     }
     return out;
   }
+  /** RAM bound for the contextFiles map: the DIGEST only ever injects the
+   *  first 6k chars, so keeping every full file forever was pure RAM growth
+   *  on a long run. Oldest entries are evicted past the cap. */
+  const CONTEXT_FILES_RAM_CAP = 12;
+  function pruneContextFiles(): void {
+    while (contextFiles.size > CONTEXT_FILES_RAM_CAP) {
+      const oldest = contextFiles.keys().next();
+      if (oldest.done) break;
+      contextFiles.delete(oldest.value);
+    }
+  }
   const toolCounts = new Map<string, number>(); // tool name → count of times called
   const loopStreaks = createLoopStreaks(); // consecutive-repeat state (loop-detect.ts)
   /** Reset the STREAK signals only. loop-detect.ts contract: the hard denylist
@@ -1854,7 +1865,15 @@ export async function runInBackground(
       dispatchCall: async (call) => dispatchOneTurnCall(call),
       postDispatch: (_turn, out, info) => {
         const streamedContent = out.content || "";
-        const toolResults = info.results.join("\n");
+        // Aggregate cap for one turn's tool results. Individual tools cap
+        // their own output, but a turn that fans out over many tools still
+        // summed into tens of thousands of tokens in a SINGLE message.
+        const TURN_TOOL_CAP = 40_000;
+        const rawToolResults = info.results.join("\n");
+        const toolResults =
+          rawToolResults.length > TURN_TOOL_CAP
+            ? `${rawToolResults.slice(0, TURN_TOOL_CAP)}\n…[${rawToolResults.length - TURN_TOOL_CAP} more chars of this turn's tool output were dropped to fit the context budget]`
+            : rawToolResults;
         const skippedDueToDup = info.anyDup;
         const toolCalls = info.calls as unknown as ToolCall[];
 
@@ -1907,6 +1926,7 @@ export async function runInBackground(
           ? "The tool returned NOTHING for this call. Do not call it again with the same or a similar argument — repeating it cannot succeed. Either try a materially different action, or tell the user plainly what you could not find and stop."
           : "You now have all the information you need. Act on it: write files or answer. Do NOT re-read files you've already read.";
 
+        pruneContextFiles();
         apiMessages = [
           ...apiMessages,
           { role: "assistant", content: streamedContent || "" },
@@ -2504,7 +2524,13 @@ export async function runInBackground(
     const reviewProbePromise: Promise<any> = reviewGateOk
       ? runOrchestration("review", {
           task: `Review these files written for: ${userMessage.slice(0, 500)}`,
-          files: [...writtenFiles.entries()].slice(0, 8).map(([path, content]) => ({ path, content })),
+          files: [...writtenFiles.entries()].slice(0, 8).map(([path, content]) => ({
+            path,
+            // A written file can be a generated bundle or a vendored blob —
+            // the reviewer only needs the head to judge it. Sending the whole
+            // content cost tens of thousands of tokens per review round.
+            content: String(content ?? "").slice(0, 8_000),
+          })),
         })
       : Promise.resolve(null);
 
@@ -3324,7 +3350,11 @@ export async function runInBackground(
       try {
         const { captureMemoriesViaApi } = await import("./workspace-memory-client");
         const writtenObj: Record<string, string> = {};
-        for (const [p, c] of writtenFiles) writtenObj[p] = c;
+        // Cap at the source: the server caps too, but shipping 40 files ×
+        // 20k chars over the wire was an 800KB request per completed task.
+        for (const [p, c] of [...writtenFiles.entries()].slice(0, 40)) {
+          writtenObj[p] = String(c ?? "").slice(0, 8_000);
+        }
         captureMemoriesViaApi({
           workspaceKey: getWorkspaceKey(_directoryName),
           task: userMessage,
@@ -3371,7 +3401,12 @@ export async function runInBackground(
         completeTask(finalContent);
         // === PLUGIN HOOK: onTaskComplete ===
         onTaskComplete(userMessage, finalContent, {
-          files: Object.fromEntries(writtenFiles),
+          // Plugin hooks can feed these into a prompt — a generated bundle
+          // must not travel whole. The head of each file is enough to judge
+          // what changed.
+          files: Object.fromEntries(
+            [...writtenFiles.entries()].map(([p, c]) => [p, String(c ?? "").slice(0, 8_000)]),
+          ),
           lanes: getObservationMeta()?.lanes as Record<string, string> | undefined,
           finalStatus,
         }).catch(() => {});
