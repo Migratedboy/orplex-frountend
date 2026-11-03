@@ -122,6 +122,18 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Fixed: the app no longer gives up on a slow start and shows Server failed to start",
     ],
   },
+  "1.0.28": {
+    title: "One agent on every lane — and it proves the work",
+    items: [
+      "Fixed: the Groq and NVIDIA lanes used to get a weaker prompt and a smaller toolset — the agent there could not run the sandbox or verify a page in a browser. Every provider now gets the same full prompt and the same tools",
+      "New: when a provider refuses a request as too large, the app retries once with a lean prompt on its own — no more “send it again in a minute”",
+      "New: Ask mode can now read your project — “summarize this project” is answered from your real files instead of being guessed, and it still cannot write anything",
+      "Fixed: background runs now have the same tools as the chat — sandbox runs, real browser verification, a task plan, web search, atomic multi-file edits, undo and zip extraction",
+      "Fixed: tool calls written in the native param-key/param-value format were dropped in silence — they now run, and the raw markup never shows up in your chat",
+      "Fixed: a file download card now counts as delivered work — the agent no longer claims “no files created” while the file sits on your screen",
+      "Fixed: the agent must actually run a check before saying it is done — tests, builds and browser verification are part of its instructions now, and web search uses one shared engine in every lane",
+    ],
+  },
   "1.1.0": {
     title: "Faster path to your first win",
     items: [
