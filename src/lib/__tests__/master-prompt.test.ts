@@ -17,6 +17,15 @@ describe("buildToolRoster", () => {
   it("contains no hardcoded count other than the live array length", () => {
     expect(buildToolRoster()).toContain(`${M3_TOOL_DEFINITIONS.length} tools`);
   });
+
+  it("renders a lane's real roster when one is passed (server-lane parity)", () => {
+    // The worktree executor cannot dispatch the client belt, so its prompt must
+    // describe its own roster instead of advertising tools it doesn't have.
+    const roster = buildToolRoster(["read_file", "write_file", "verify_app"]);
+    expect(roster.startsWith("3 tools:")).toBe(true);
+    expect(roster).toContain("verify_app");
+    expect(roster).not.toContain("browser_navigate");
+  });
 });
 
 describe("buildSystemPrompt — code mode (full)", () => {
@@ -79,10 +88,15 @@ describe("buildSystemPrompt — plan mode overlay", () => {
 });
 
 describe("buildSystemPrompt — ask mode", () => {
-  it("is lean, toolless, and forbids file creation", async () => {
+  it("is lean, read-only, and answers project questions from real files", async () => {
     const prompt = await buildSystemPrompt({ mode: "ask" });
-    expect(prompt).toContain("no tools, no file writes");
+    // Ask mode used to be toolless, which made "summarize my project"
+    // impossible to ground — the answer was invented, or the model handed back
+    // a fabricated artifact. It is read-only now: reads in, no writes out.
+    expect(prompt).toContain("Read-only");
+    expect(prompt).toContain("cannot write files");
     expect(prompt).toContain("CODE mode");
+    expect(prompt).toContain("summarize this project");
     expect(prompt).not.toContain("## TOOL DOCTRINE");
   });
 });

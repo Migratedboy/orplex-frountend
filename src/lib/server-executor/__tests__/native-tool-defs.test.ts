@@ -13,6 +13,40 @@ describe("buildNativeToolDefs", () => {
     expect(edit.parameters).toMatchObject({ required: ["path", "old_text", "new_text"] });
   });
 
+  it("exposes the sandbox and browser-verification lanes (server parity)", () => {
+    // These two were missing from the server roster entirely, so background
+    // runs could not sandbox a command or verify a page no matter what the
+    // model was told — it got `unknown tool` for both.
+    const defs = buildNativeToolDefs([]);
+    const names = defs.map((d) => d.name);
+    expect(names).toEqual(expect.arrayContaining(["run_in_sandbox", "verify_app"]));
+    expect(defs.find((d) => d.name === "run_in_sandbox")!.parameters).toMatchObject({ required: ["command"] });
+  });
+
+  it("matches the chat belt except for the desktop-only three", () => {
+    // The worktree lane has a workspace, a git repo and a headless browser, so
+    // it can offer everything the chat belt does except the tools that belong
+    // to the desktop UI itself (preview panel, in-app screenshot, and the
+    // no-workspace staging lane).
+    const names = buildNativeToolDefs([]).map((d) => d.name);
+    for (const n of [
+      "write_file_chunk",
+      "batch_edit",
+      "apply_edit_ops",
+      "undo_last_change",
+      "extract_archive",
+      "todo_list",
+      "web_search",
+      "ask_question",
+      "ask_clarification",
+    ]) {
+      expect(names).toContain(n);
+    }
+    for (const desktopOnly of ["preview_browser", "take_screenshot", "create_file"]) {
+      expect(names).not.toContain(desktopOnly);
+    }
+  });
+
   it("exposes scratchpad_update with section enum (server parity)", () => {
     const defs = buildNativeToolDefs([]);
     const names = defs.map((d) => d.name);

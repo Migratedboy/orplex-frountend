@@ -25,6 +25,13 @@ import { runTurnLoop, type TurnLoopExit } from "@/lib/agent/loop-engine";
 import { estimateComplexity, effortForTier, type EffortBudget } from "@/lib/effort";
 import { validateToolArgs } from "@/lib/agent/contract/tools";
 import { isCommandAllowed } from "@/lib/exec-guard";
+import { resolve as resolvePath, dirname as dirnameOf, isAbsolute, relative as relativePath, sep as pathSep } from "path";
+import { webSearch } from "@/lib/web-search";
+import { applyEditOpsAtomic } from "@/lib/reliability/atomic-batch";
+import { gitInRepo } from "./worktree-helpers";
+import { buildSystemPrompt as buildMasterPrompt } from "@/lib/master-prompt";
+import { dispatchSandbox, isSandboxConfigured } from "@/lib/ci-sandbox";
+import { verifyUI } from "@/lib/browser-verification";
 import { createProviderAdapter, createAdapterForProvider, adapterModelId, type AIProviderAdapter, type NativeToolDef, type NativeToolCall } from "@/lib/ai-providers";
 import { resolveRunCredential } from "@/lib/byok-credentials";
 import { isRateLimitError, isTransientError } from "@/lib/retry";
@@ -256,6 +263,17 @@ export function buildNativeToolDefs(mcpTools: McpToolDef[], remoteTools: Builder
     { name: "session_search", description: "Search past conversation messages. Use when the user refers to something discussed before.", parameters: obj({ query: { type: "string", description: "What to search past messages for" } }, ["query"]) },
     { name: "scratchpad_update", description: "Write to your private scratchpad (plan, hypotheses, findings, next move). Re-shown every turn, never a deliverable. Never store secrets.", parameters: obj({ section: { type: "string", description: "plan | hypotheses | findings | next" }, content: { type: "string", description: "New section content" } }, ["section", "content"]) },
     { name: "run_command", description: "Run a shell command in the worktree (screened; dangerous commands are refused).", parameters: obj({ command: { type: "string" } }, ["command"]) },
+    { name: "write_file_chunk", description: "Append content to an existing file. Use after write_file for files too large to send in one call (200-300 lines per chunk).", parameters: obj({ path: { type: "string", description: "Relative path" }, content: { type: "string", description: "Content chunk to append" } }, ["path", "content"]) },
+    { name: "batch_edit", description: "Edit several files in one call (cooperative refactors). All edits are validated before ANY file is written; a failure rolls the whole batch back.", parameters: obj({ edits: { type: "array", items: { type: "object", properties: { path: { type: "string" }, old_text: { type: "string" }, new_text: { type: "string" } }, required: ["path", "old_text", "new_text"] } } }, ["edits"]) },
+    { name: "apply_edit_ops", description: "Apply structured edit ops ATOMICALLY (all-or-nothing with rollback, stale-read detection via expectedHash, exact-one-match replacing). Ops: batch(list), create_file(path, content), replace_text(path, oldText, newText, expectedHash?, occurrence), insert_at(path, line, content, expectedHash?), delete_file(path), move_file(from, to). Prefer this over batch_edit when a partial application would be dangerous.", parameters: obj({ ops: { type: "array", description: "Array of op objects; op: batch|create_file|replace_text|insert_at|delete_file|move_file" } }, ["ops"]) },
+    { name: "undo_last_change", description: "Restore a file to its last committed (HEAD) content — undoes the agent's writes to that path.", parameters: obj({ path: { type: "string", description: "Relative path" } }, ["path"]) },
+    { name: "extract_archive", description: "Extract a .zip into the worktree so its files can be read and edited. Entries that try to escape the workspace are refused.", parameters: obj({ path: { type: "string", description: "Path to the .zip" }, dest: { type: "string", description: "Optional destination directory" } }, ["path"]) },
+    { name: "todo_list", description: "Create or update the task plan. Show the plan before building and mark items done as you go.", parameters: obj({ action: { type: "string", enum: ["create", "update", "complete", "clear"] }, items: { type: "array", items: { type: "string" }, description: "Task items (create/update)" }, completed_index: { type: "number", description: "0-based index to mark complete" } }, ["action"]) },
+    { name: "web_search", description: "Search the web for current information (docs, versions, APIs, error messages).", parameters: obj({ query: { type: "string" } }, ["query"]) },
+    { name: "ask_question", description: "Ask the user a clarifying question. In a background run no user is attached: the question is recorded and you get told to proceed with a stated default.", parameters: obj({ question: { type: "string" }, options: { type: "array", items: { type: "string" } }, allow_free_text: { type: "boolean" } }, ["question"]) },
+    { name: "ask_clarification", description: "Ask ONE focused clarifying question with optional options. In a background run no user is attached: it is recorded and you are told to proceed with a stated default.", parameters: obj({ question: { type: "string" }, context: { type: "string" }, options: { type: "array", items: { type: "string" } } }, ["question"]) },
+    { name: "run_in_sandbox", description: "Run a command in an isolated sandbox — the CI sandbox when configured, otherwise a tightly budgeted run inside the worktree. Same command screening as run_command. Use for installs, builds, tests, and any code you would rather contain.", parameters: obj({ command: { type: "string" }, timeout: { type: "number", description: "Timeout in seconds (default 60)" } }, ["command"]) },
+    { name: "verify_app", description: "Verify a web app for real: starts its dev server, loads it in a headless browser, and reports HTTP status, page title, console errors and a screenshot. Run this after building or changing any UI — never claim a page works without it.", parameters: obj({ dev_command: { type: "string", description: "Server command (default: npm run dev)" }, port: { type: "number", description: "Port to serve on (default 3001)" }, path: { type: "string", description: "URL path to load (default /)" }, interactions: { type: "array", description: "Optional page actions after load" } }, []) },
     { name: "browser_navigate", description: "Open a URL in the agent's SSRF-guarded headless browser. Returns HTTP status, title, and page summary.", parameters: obj({ url: { type: "string", description: "Full URL to load" } }, ["url"]) },
     { name: "browser_read", description: "Read the active tab: URL, title, text, headings, interactive elements with selectors.", parameters: obj({}, []) },
     { name: "browser_find", description: "Find clickable/fillable elements with refs (e1, e2, …). Pass ref to click/type/hover/select instead of a CSS selector.", parameters: obj({ text: { type: "string", description: "Filter by name/label substring" }, role: { type: "string", description: "Filter: link, button, textbox, combobox, heading" } }, []) },
@@ -302,9 +320,18 @@ function parseFailoverChainEnv(): string[] {
   return parseFailoverChain(process.env.AI_FAILOVER, process.env.AI_PROVIDER || "nvidia", process.env);
 }
 
-function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBlock = "", skillRoster = "", playbookBlock = "", mcpServers?: Array<{ name: string; description: string; toolCount: number }>, remoteTools: BuilderTool[] = []): string {
+// ── Worktree addendum ─────────────────────────────────────────────────────
+// The server lane used to own a second, separate identity ("You are the
+// Orplex Server Agent") with its own rules — a different agent for the same
+// product, which drifted from the chat lane (no sandbox/verify doctrine, no
+// output contract, no read-before-write). It now runs on the ONE master
+// prompt and appends only what is genuinely lane-specific: the worktree
+// framing, the XML call format for providers without function calling, the
+// skill roster, project memory, playbook and MCP roster.
+function buildWorktreeAddendum(mcpTools: McpToolDef[], nativeMode: boolean, memoryBlock = "", skillRoster = "", playbookBlock = "", mcpServers?: Array<{ name: string; description: string; toolCount: number }>, remoteTools: BuilderTool[] = []): string {
   const lines = [
-    `You are the Orplex Server Agent, executing a task in an isolated git worktree of the user's workspace.`,
+    `## WORKTREE LANE`,
+    `You are executing this task in an isolated git worktree of the user's workspace. Changes are committed on a branch and merged back; the workspace itself is not edited live.`,
     nativeMode
       ? `Call tools through the provided function-calling interface. Available tools:`
       : `Reply with tool calls in <tool_call>{...}</tool_call> XML format. Available tools:`,
@@ -315,6 +342,8 @@ function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBl
     `- search_code { "name": "search_code", "query": "..." }`,
     `- code_search { "name": "code_search", "query": "..." } (grouped snippets + read_file hints — preferred for locating code)`,
     `- run_command { "name": "run_command", "command": "..." } (screened; dangerous commands are refused)`,
+    `- run_in_sandbox { "name": "run_in_sandbox", "command": "...", "timeout": 60 } (isolated runner for installs, builds, tests — same screening)`,
+    `- verify_app { "name": "verify_app", "dev_command": "npm run dev", "port": 3001, "path": "/" } (starts the server, loads a real headless browser, returns console errors + a screenshot)`,
     `- playbook_search { "name": "playbook_search", "query": "..." } (learnings from past verified runs — check before starting)`,
     `- skill_create { "name": "skill_create", "title": "...", "text": "..." } (save a reusable procedure for future runs)`,
     `- session_search { "name": "session_search", "query": "..." } (search past conversation messages)`,
@@ -342,7 +371,7 @@ function buildSystemPrompt(mcpTools: McpToolDef[], nativeMode: boolean, memoryBl
   }
   lines.push(
     ``,
-    `Rules: complete the task with as few turns as possible. Verify your work (read files back, run quick commands). When the task is done, finish with a plain-text summary and NO further tool calls.`,
+    `Turn economy: complete the task with as few turns as possible. Verify your work for real — read files back, run the tests/build through run_command or run_in_sandbox, and call verify_app for anything with a UI (it reports console errors; never report done on an unverified page). When the task is done, finish with a plain-text summary and NO further tool calls.`,
   );
   if (nativeMode) {
     lines.push(`If function calling is unavailable, fall back to <tool_call>{...}</tool_call> XML.`);
@@ -1007,18 +1036,31 @@ const kept = content.slice(0, 2000);
     }
   }
 
-  if (name === "run_command" && typeof call.command === "string") {
+  // run_command and run_in_sandbox share one screened path. run_in_sandbox
+  // prefers the isolated runner when one is configured and otherwise runs the
+  // same budgeted local exec — the tool always works, and the result says
+  // which lane actually executed.
+  if ((name === "run_command" || name === "run_in_sandbox") && typeof call.command === "string") {
     const verdict = isCommandAllowed(call.command);
     if (!verdict.allowed) return `refused: ${verdict.reason}`;
     // Approval gate (DB-backed for server runs).
     if (requiresApproval) {
-      const decision = await requestUserApproval(runId, `run_command: ${call.command.slice(0, 200)}`, {
+      const decision = await requestUserApproval(runId, `${name}: ${call.command.slice(0, 200)}`, {
         command: call.command,
       });
       if (!decision) return "refused by user";
     }
+    if (name === "run_in_sandbox" && isSandboxConfigured()) {
+      try {
+        const timeoutSec = typeof call.timeout === "number" && Number.isFinite(call.timeout) ? Math.min(Math.max(call.timeout, 1), 300) : 60;
+        const sb = await dispatchSandbox(call.command, { timeoutMs: timeoutSec * 1000 });
+        const body = [sb.stdout, sb.stderr].filter(Boolean).join("\n").trim();
+        return `sandbox (isolated) exit=${sb.exitCode}\n${truncateWithNotice(body || "(no output)", 8000, "sandbox output")}`;
+      } catch (err) {
+        return `error: sandbox dispatch failed: ${(err as Error).message.slice(0, 300)}`;
+      }
+    }
     try {
-      const { execFile } = await import("child_process");
       // Single command string → route through the shell but WITHOUT injecting
       // anything; the exec-guard screened it above.
       const proc = await import("child_process");
@@ -1037,8 +1079,255 @@ const kept = content.slice(0, 2000);
     }
   }
 
+  // verify_app — the real browser verification lane, available to server runs
+  // too. It starts the dev server in the worktree, loads it in headless
+  // Chromium and reports console errors, so "it should work" is never the
+  // verdict.
+  if (name === "verify_app") {
+    const port = typeof call.port === "number" ? call.port : 3001;
+    let res;
+    try {
+      res = await verifyUI({
+        workDir: ctx.worktreeDir,
+        devCommand: typeof call.dev_command === "string" && call.dev_command.trim() ? call.dev_command : "npm run dev",
+        port,
+        path: typeof call.path === "string" && call.path.trim() ? call.path : "/",
+        interactions: Array.isArray(call.interactions) ? (call.interactions as never) : undefined,
+        settleTime: 1500,
+      });
+    } catch (err) {
+      return `infrastructure-failure: the verification harness could not run — this says NOTHING about the app; do not claim pass or fail. ${(err as Error).message.slice(0, 300)}`;
+    }
+    if (res.error) {
+      return `error: ${res.error}`;
+    }
+    const verdict = res.success ? "PASS" : "ISSUES FOUND";
+    return [
+      `Verdict: ${verdict}`,
+      `HTTP status: ${res.httpStatus ?? "?"} | Page: ${res.pageTitle || "?"}`,
+      `Console errors (${res.consoleErrors.length}):${res.consoleErrors.length ? "\n" + res.consoleErrors.slice(0, 5).join("\n") : " none"}`,
+      `Console warnings: ${res.consoleWarnings.length}`,
+      res.screenshotPath ? `Screenshot: ${res.screenshotPath}` : "",
+      res.success ? "" : "Fix the errors above, then call verify_app again until it reports PASS.",
+    ].filter(Boolean).join("\n");
+  }
+
+  // ── write_file_chunk — append lane for files too large for one call ────
+  if (name === "write_file_chunk" && typeof call.path === "string" && typeof call.content === "string") {
+    const target = worktreePath(ctx, call.path);
+    if ("error" in target) return target.error;
+    try {
+      const fs = await import("fs/promises");
+      const existing = await fs.readFile(target.abs, "utf8").catch(() => null);
+      if (existing !== null && requiresApproval && !writtenFiles?.has(target.rel)) {
+        const ok = await requestUserApproval(runId, `write_file_chunk: append to ${target.rel}`, { path: target.rel });
+        if (!ok) return "refused by user";
+      }
+      await fs.mkdir(dirnameOf(target.abs), { recursive: true });
+      await fs.appendFile(target.abs, call.content, "utf8");
+      writtenFiles?.add(target.rel);
+      const totalLines = ((existing ?? "") + call.content).split("\n").length;
+      return `appended ${call.content.split("\n").length} line(s) to ${target.rel} (total: ${totalLines} lines)`;
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
+  }
+
+  // ── batch_edit — multi-file edits, validated before anything is written ─
+  if (name === "batch_edit" && Array.isArray(call.edits)) {
+    const edits = call.edits as Array<Record<string, unknown>>;
+    if (edits.length === 0) return "error: edits[] is empty — nothing to do";
+    const fs = await import("fs/promises");
+    // Validate + build every new content in memory FIRST: a batch that half
+    // applies is worse than one that refuses.
+    const planned = new Map<string, { rel: string; before: string | null; after: string }>();
+    for (const edit of edits) {
+      const p = typeof edit.path === "string" ? edit.path : "";
+      const oldText = typeof edit.old_text === "string" ? edit.old_text : "";
+      const newText = typeof edit.new_text === "string" ? edit.new_text : "";
+      if (!p || !oldText) return "error: every edit needs path and old_text — no files changed";
+      const target = worktreePath(ctx, p);
+      if ("error" in target) return `${target.error} — no files changed`;
+      const current = planned.get(target.abs)?.after ?? (await fs.readFile(target.abs, "utf8").catch(() => null));
+      if (current === null) return `error: ${target.rel} does not exist — no files changed`;
+      if (!current.includes(oldText)) return `error: old_text not found in ${target.rel} — no files changed`;
+      planned.set(target.abs, {
+        rel: target.rel,
+        before: planned.get(target.abs)?.before ?? current,
+        after: current.replace(oldText, newText),
+      });
+    }
+    const written: string[] = [];
+    try {
+      for (const [abs, entry] of planned) {
+        await fs.writeFile(abs, entry.after, "utf8");
+        written.push(abs);
+        writtenFiles?.add(entry.rel);
+      }
+    } catch (err) {
+      for (const abs of written) {
+        const before = planned.get(abs)?.before;
+        if (before !== null && before !== undefined) await fs.writeFile(abs, before, "utf8").catch(() => {});
+      }
+      return `error: ${(err as Error).message} — rolled back, no files changed`;
+    }
+    return `applied ${edits.length} edit(s) across ${planned.size} file(s): ${[...planned.values()].map((e) => e.rel).join(", ")}`;
+  }
+
+  // ── apply_edit_ops — atomic structured edits (reuses the shared engine) ─
+  if (name === "apply_edit_ops" && call.ops !== undefined) {
+    const list = Array.isArray(call.ops) ? call.ops : [call.ops];
+    const fs = await import("fs/promises");
+    const outcome = await applyEditOpsAtomic(list as never, {
+      readFile: async (p) => {
+        const t = worktreePath(ctx, p);
+        if ("error" in t) return null;
+        return fs.readFile(t.abs, "utf8").catch(() => null);
+      },
+      writeFile: async (p, content) => {
+        const t = worktreePath(ctx, p);
+        if ("error" in t) return false;
+        try {
+          await fs.mkdir(dirnameOf(t.abs), { recursive: true });
+          await fs.writeFile(t.abs, content, "utf8");
+          writtenFiles?.add(t.rel);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      deleteFile: async (p) => {
+        const t = worktreePath(ctx, p);
+        if ("error" in t) return false;
+        return fs.unlink(t.abs).then(() => true).catch(() => false);
+      },
+      moveFile: async (from, to) => {
+        const a = worktreePath(ctx, from);
+        const b = worktreePath(ctx, to);
+        if ("error" in a || "error" in b) return false;
+        try {
+          await fs.mkdir(dirnameOf(b.abs), { recursive: true });
+          await fs.rename(a.abs, b.abs);
+          writtenFiles?.add(b.rel);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      fileExists: async (p) => {
+        const t = worktreePath(ctx, p);
+        if ("error" in t) return false;
+        return fs.access(t.abs).then(() => true).catch(() => false);
+      },
+    });
+    if (!outcome.ok) return `error: ${outcome.error} — the batch was rolled back, no files changed. Fix the failing op and resend the whole batch.`;
+    return `success: ${outcome.applied.length} op(s) applied atomically (all-or-nothing): ${outcome.applied.map((a) => a.path).join(", ")}`;
+  }
+
+  // ── undo_last_change — restore one path from HEAD (worktree is a repo) ──
+  if (name === "undo_last_change" && typeof call.path === "string") {
+    const target = worktreePath(ctx, call.path);
+    if ("error" in target) return target.error;
+    if (!ctx.isGitRepo) {
+      return "error: undo_last_change needs a git worktree and this run is not in a repo — restore the previous content explicitly with write_file.";
+    }
+    try {
+      await gitInRepo(ctx.worktreeDir, ["checkout", "--", target.rel]);
+      writtenFiles?.delete(target.rel);
+      return `restored ${target.rel} from HEAD`;
+    } catch (err) {
+      return `error: could not restore ${target.rel} (${(err as Error).message}). If it was never committed, rewrite it with write_file instead.`;
+    }
+  }
+
+  // ── extract_archive — .zip into the worktree (escape-guarded) ───────────
+  if (name === "extract_archive" && typeof call.path === "string") {
+    try {
+      const { extractZip } = await import("@/lib/agent/archive-extract");
+      const out = await extractZip({
+        root: ctx.worktreeDir,
+        archivePath: call.path,
+        destRel: typeof call.dest === "string" ? call.dest : undefined,
+      });
+      if (!out.ok) return `error: ${out.error ?? "extraction failed"}`;
+      for (const w of out.written ?? []) writtenFiles?.add(String(w));
+      return out.summary;
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
+  }
+
+  // ── todo_list — the plan, echoed back so it survives the turn ───────────
+  if (name === "todo_list") {
+    const action = typeof call.action === "string" ? call.action : "";
+    const items = Array.isArray(call.items) ? call.items.map(String) : undefined;
+    const doneIndex = typeof call.completed_index === "number" ? call.completed_index : undefined;
+    const render = (list: string[]) => list.length ? list.map((t, i) => `${i + 1}. ${t}`).join("\n") : "(empty)";
+    if (action === "create" || action === "update") {
+      if (!items || items.length === 0) return `error: action ${action} needs a non-empty items[]`;
+      runTodos.set(ctx, items);
+      return `plan ${action === "create" ? "created" : "updated"} (${items.length} items):\n${render(items)}`;
+    }
+    if (action === "complete") {
+      const list = runTodos.get(ctx) ?? [];
+      if (doneIndex === undefined || doneIndex < 0 || doneIndex >= list.length) {
+        return `error: completed_index must be 0..${Math.max(list.length - 1, 0)} (current plan has ${list.length} items)`;
+      }
+      const updated = list.map((t, i) => (i === doneIndex && !t.startsWith("[done]") ? `[done] ${t}` : t));
+      runTodos.set(ctx, updated);
+      return render(updated);
+    }
+    if (action === "clear") {
+      runTodos.delete(ctx);
+      return "todo list cleared";
+    }
+    return `error: action must be create | update | complete | clear — got "${action || "(missing)"}"`;
+  }
+
+  // ── web_search — the same chain the chat lane uses ──────────────────────
+  if (name === "web_search" && typeof call.query === "string") {
+    const outcome = await webSearch(call.query);
+    if (outcome.results.length === 0) return outcome.error ? `error: ${outcome.error}` : "No results found";
+    return outcome.results
+      .slice(0, 10)
+      .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ""}`)
+      .join("\n\n");
+  }
+
+  // ── ask_question / ask_clarification — honest in an unattended run ──────
+  // A background run has no live user: blocking on a question would stall the
+  // run until timeout. Record it on the run timeline and require a stated
+  // default instead of inventing an answer or hanging.
+  if (name === "ask_question" || name === "ask_clarification") {
+    const question = typeof call.question === "string" ? call.question : "";
+    const options = Array.isArray(call.options) ? call.options.map(String) : [];
+    if (!question.trim()) return `error: question is required`;
+    await emit(runId, "question", { question, options, context: typeof call.context === "string" ? call.context : undefined }).catch(() => {});
+    return `no user is attached to this background run, so "${question}" cannot be answered here${options.length ? ` (options: ${options.join(" | ")})` : ""}. Pick the most reasonable default, state that assumption in your final summary, and continue — do not re-ask.`;
+  }
+
   return `error: unknown tool "${name}"`;
 }
+
+/**
+ * Resolve a tool-supplied path inside the worktree, refusing escapes.
+ * Every filesystem tool below goes through this — a model-supplied absolute
+ * path must never be able to touch anything outside the run's worktree.
+ */
+function worktreePath(ctx: WorktreeContext, p: string): { abs: string; rel: string } | { error: string } {
+  const root = resolvePath(ctx.worktreeDir);
+  const abs = isAbsolute(p) ? resolvePath(p) : resolvePath(root, p);
+  if (abs !== root && !abs.startsWith(root + pathSep)) {
+    return { error: "error: path escapes workspace" };
+  }
+  return { abs, rel: relativePath(root, abs).replace(/\\/g, "/") };
+}
+
+/**
+ * Per-run todo plan. Keyed by the run's WorktreeContext so concurrent runs
+ * never see each other's plans, without widening executeTool's signature.
+ */
+const runTodos = new WeakMap<object, string[]>();
 
 // ── DB-backed approval gate ───────────────────────────────────────────────
 
@@ -1561,8 +1850,12 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
       },
       callModel: async () => {
         const nativeMode = nativeModeNow();
+        // Same prompt as the chat lane, but the roster shown is this lane's
+        // real roster — otherwise the prompt advertises client-only tools the
+        // worktree executor cannot dispatch.
+        const masterPrompt = await buildMasterPrompt({ mode: "code", toolNames: nativeDefs.map((d) => d.name) });
         const messages = [
-          { role: "system", content: buildSystemPrompt(
+          { role: "system", content: `${masterPrompt}\n\n${buildWorktreeAddendum(
             mcpTools,
             nativeMode,
             memoryBlock,
@@ -1578,7 +1871,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
               ...mcpServerSummaries,
             ],
             remoteTools
-          ) },
+          )}` },
           ...(transcript as Array<{ role: "user" | "assistant"; content: string }>),
         ] as never;
         // Global TPM pacing: one account-wide bucket across ALL runs so two

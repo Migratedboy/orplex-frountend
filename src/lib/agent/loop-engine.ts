@@ -27,6 +27,7 @@ import {
   type LoopStreaks,
   type LoopVerdict,
 } from "../loop-detect";
+import { stripParamPairMarkup } from "../tool-text";
 
 /** One model call's parseable output in the engine's dialect. */
 export interface TurnOutput {
@@ -318,11 +319,20 @@ export function parseTurnCalls(
     raw = raw.filter((c) => allowed(String(c.name)));
   }
 
-  // Truncation detection — the intersection both loops shipped:
+  // Truncation detection — the intersection both loops shipped, plus
+  // create_file: a staged call that lost filename/path or content can never
+  // dispatch, and the generic "tool not available" fallthrough would blame
+  // the tool instead of the cut-off arguments.
   const truncated = raw.filter((tc) => {
     if (tc.name === "write_file" && (!tc.path || tc.content === undefined)) return true;
     if (tc.name === "edit_file" && (!tc.path || !tc.old_text || !tc.new_text)) return true;
     if (tc.name === "read_file" && !tc.path) return true;
+    if (
+      tc.name === "create_file" &&
+      ((tc.filename === undefined && tc.path === undefined) || tc.content === undefined)
+    ) {
+      return true;
+    }
     return false;
   });
   const calls = raw.filter((tc) => !truncated.includes(tc));
@@ -333,7 +343,15 @@ const STRIP_XML_RE = /[<]tool_call[\s\S]*?[<]\/tool_call[>]/g;
 
 /** Text-only residue for a turn (calls stripped) — lanes display/branch on it. */
 export function stripToolCallText(content: string): string {
-  return (content || "").replace(STRIP_XML_RE, "").trim();
+  let out = (content || "").replace(STRIP_XML_RE, "");
+  // An UNCLOSED block (output cut off, or the model never closed it) is all
+  // markup — subagent.ts drops the same tail. Left in, it lands verbatim in
+  // the visible message through the no-calls path.
+  out = out.replace(/[<]tool_call[\s\S]*$/, "");
+  // Bare native-template param pairs (no wrapper at all) — parseToolCalls
+  // dispatches them; this residue is display-only noise.
+  out = stripParamPairMarkup(out);
+  return out.trim();
 }
 
 /**

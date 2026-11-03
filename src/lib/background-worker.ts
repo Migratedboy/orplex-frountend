@@ -1707,7 +1707,16 @@ export async function runInBackground(
         const hasTextResponse = textOnly.length > 20;
         // orchestratedWrites is the ACTUAL executed count — a planned batch
         // that fully failed must not suppress the FORCE-TOOLS nudge.
-        const hasWrittenFiles = writtenFiles.size > 0 || totalWrites > 0 || orchestratedWrites > 0;
+        // create_file never touches writtenFiles/totalWrites — it is a
+        // staged deliverable, not a disk write. Its success IS visible work:
+        // the [FILECARD] marker is engine-issued (model-typed markers are
+        // neutralized with an invisible zero-width space before they can
+        // reach display text), so seeing one means a download card is on
+        // screen — without this check the nudge told the model "created no
+        // files" while that card sat right there.
+        const stagedFileCard = fullDisplayContent.includes("[FILECARD]:");
+        const hasWrittenFiles =
+          writtenFiles.size > 0 || totalWrites > 0 || orchestratedWrites > 0 || stagedFileCard;
         const alreadyRetried = apiMessages.some(m => m.role === "user" && m.content?.includes("[FORCE TOOLS]"));
 
         if (userWantsFiles && hasTextResponse && !hasWrittenFiles && !alreadyRetried) {
@@ -1738,7 +1747,16 @@ export async function runInBackground(
           return "continue"; // Retry with forced browser tool usage
         }
 
-        fullDisplayContent += neutralizeModelMarkers(streamedContent || "");
+        // Only the prose residue lands in the transcript. The turn's tool
+        // markup either dispatched (its record is the status lines/tool
+        // results above) or failed honestly — appending RAW streamedContent
+        // (the old fallthrough) is how unparsed param-pair markup became
+        // the visible answer while the prose claimed work had happened.
+        fullDisplayContent +=
+          displayTextOnly ||
+          (streamedContent.trim()
+            ? "*[The model emitted a tool call this app could not parse — nothing was executed. Send the message again or rephrase.]*\n"
+            : "");
         return "break";
       },
       onTurnCalls: (_turn, _out, toolCalls) => {
@@ -1763,6 +1781,9 @@ export async function runInBackground(
             if (!tc.path) missing.push("path");
             if (!tc.old_text) missing.push("old_text");
             if (!tc.new_text) missing.push("new_text");
+          } else if (tc.name === "create_file") {
+            if (tc.filename === undefined && tc.path === undefined) missing.push("filename");
+            if (tc.content === undefined) missing.push("content");
           } else if (!tc.path) {
             missing.push("path");
           }

@@ -156,6 +156,11 @@ describe("tool rosters advertise the advanced browser ops", () => {
     for (const n of ["read_file", "write_file", "run_command", "web_search", "todo_list", "ask_question", "search_code", "code_search"]) {
       expect(names).toContain(n);
     }
+    // Execution and proof lanes must never be amputated by the lean allowlist:
+    // without them the model can only TALK about running and verifying.
+    for (const n of ["run_in_sandbox", "verify_app"]) {
+      expect(names).toContain(n);
+    }
   });
 
   it("code_search is offered (dispatcher handles it; doctrine orders it FIRST)", () => {

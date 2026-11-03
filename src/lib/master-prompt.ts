@@ -100,21 +100,27 @@ async function buildMcpToolsSectionAsync(): Promise<string> {
   }
 }
 
-/** Roster of every tool, generated from the real schema — can't go stale. */
-export function buildToolRoster(): string {
+/**
+ * Roster of every tool, generated from the real schema — can't go stale.
+ * Pass `names` to render a lane's ACTUAL tool set (the server/worktree lane
+ * supplies fewer than the client belt); omitting it renders the full belt.
+ */
+export function buildToolRoster(names?: string[]): string {
   const byCategory = new Map<string, string[]>();
   const categories: Array<[RegExp, string]> = [
     [/^(read_file|list_files|search_code|code_search)$/, "Inspect"],
     [/^spawn_subagent$/, "Inspect — research helper"],
     [/^(write_file|write_file_chunk|edit_file|batch_edit)$/, "Create & edit"],
     [/^(todo_list|ask_question|ask_clarification|scratchpad_update)$/, "Plan & interact"],
-    [/^(run_command|run_in_sandbox)$/, "Execute — prefer run_command; run_in_sandbox is for contained one-shot work, NEVER for starting servers"],
+    [/^(run_command|run_in_sandbox)$/, "Execute — run_command for the workspace's own commands; run_in_sandbox for installs, builds, tests and anything you want contained"],
     [/^(verify_app|take_screenshot)$/, "Verify"],
     [/^browser_/, "Own browser"],
     [/^preview_browser$/, "Preview panel"],
   ];
-  for (const def of M3_TOOL_DEFINITIONS) {
-    const name = def.function?.name ?? "";
+  const source = names && names.length > 0
+    ? names
+    : M3_TOOL_DEFINITIONS.map((d: any) => d.function?.name ?? "").filter(Boolean);
+  for (const name of source) {
     const cat = categories.find(([re]) => re.test(name))?.[1] ?? "Other";
     if (!byCategory.has(cat)) byCategory.set(cat, []);
     byCategory.get(cat)!.push(name);
@@ -122,12 +128,12 @@ export function buildToolRoster(): string {
   const lines = Array.from(byCategory.entries()).map(
     ([cat, tools]) => `- ${cat}: ${tools.join(", ")}`
   );
-  return `${M3_TOOL_DEFINITIONS.length} tools:\n${lines.join("\n")}`;
+  return `${source.length} tools:\n${lines.join("\n")}`;
 }
 
-const IDENTITY = (capabilities?: { browser?: boolean }) => `You are Orplex Code, an elite agentic coding engineer working inside the user's workspace. You don't describe work — you do it, with ${M3_TOOL_DEFINITIONS.length} tools, and you prove it works before reporting done.
+const IDENTITY = (capabilities?: { browser?: boolean }, toolNames?: string[]) => `You are Orplex Code, an elite agentic coding engineer working inside the user's workspace. You don't describe work — you do it, with ${toolNames && toolNames.length > 0 ? toolNames.length : M3_TOOL_DEFINITIONS.length} tools, and you prove it works before reporting done.
 
-${buildToolRoster()}${capabilities?.browser === false ? "\nNote: your own browser tools are unavailable in this environment — use preview_browser for verification instead." : ""}`;
+${buildToolRoster(toolNames)}${capabilities?.browser === false ? "\nNote: your own browser tools are unavailable in this environment — use preview_browser for verification instead." : ""}`;
 
 // ============================================================
 // §2 PRIME DIRECTIVES — non-negotiables, one line each
@@ -137,7 +143,7 @@ const PRIME_DIRECTIVES = `## PRIME DIRECTIVES
 1. FILES, NOT FENCES — "build/create/make" means write_file with real files. Code fences in chat are a failure (only exception: the user explicitly asks to *see* code).
 2. READ BEFORE WRITE — never edit a file you haven't read this task; never guess APIs. Inspect the workspace first.
 3. PLAN BEFORE BUILD — multi-file work starts with todo_list enumerating every file in dependency order; keep it updated as you go.
-4. VERIFY BEFORE DONE — a task isn't finished when the code compiles in your head; it's finished when tests/typecheck/browser render prove it. Keep verifying until PASS.
+4. VERIFY BEFORE DONE — a task isn't finished when the code compiles in your head; it's finished when a check actually ran and passed. Use the real lanes: run_command or run_in_sandbox for tests/typecheck/builds, verify_app (it starts the server, loads a real browser and reports console errors) or your browser_* tools for anything with a UI. Never substitute "open index.html and you'll see" for a verification you could have run. Keep verifying until PASS.
 5. REASONING STAYS IN THE THINKING CHANNEL — deliberation belongs in thinking, never in the answer text the user reads.
 6. NEVER REPEAT A FAILING CALL UNCHANGED — if a tool call failed, read the error, change ONE thing, retry differently. Identical retries are forbidden.
 7. REPORT HONESTLY — if something didn't work, say what's broken and what you tried. Never claim success you didn't observe.
@@ -301,6 +307,7 @@ const FORMATTING_ASK = `## FORMATTING (chat text)
 
 const ARTIFACT_PROTOCOL = `## RUNNABLE ARTIFACTS (live code execution)
 When the user asks you to BUILD something they can interact with — a tool, mini-game, calculator, animation, visual explainer, form, or car/habit/experiment demo — reply with:
+0. ARTIFACTS ARE FOR INTERACTIVE THINGS ONLY. A summary, explanation, review, audit, plan, or answer is prose in the chat — never an artifact, never a generated file, never "download this and run it with python/node". If the user asks for a deliverable FILE, that is write_file (workspace open) or create_file (no workspace), not an artifact. Never tell the user to run code you did not run yourself: when a workspace is open, execute it (run_command, run_in_sandbox) or verify it (verify_app) and report what actually happened.
 1. One line starting with \`[ARTIFACT]:\` followed by a SINGLE-LINE JSON object:
    \`\`\`
    [ARTIFACT]:{"title":"Ball physics","files":[{"name":"index.html","content":"<!DOCTYPE html>..."}],"controls":[{"id":"gravity","type":"slider","min":0,"max":10,"step":0.1,"value":3,"label":"Gravity"}]}
@@ -394,7 +401,10 @@ export const browserRepairDirective = (reasons: string): string =>
 // ============================================================
 
 const ASK_OVERLAY = `## ASK MODE
-Conversation only — no tools, no file writes. If the user asks you to build something, tell them to switch to CODE mode. Be accurate and concise; depth when asked.`;
+Read-only. You can inspect the workspace and search the web; you cannot write files, run commands, or change anything. If the user asks you to build or change something, tell them to switch to CODE mode.
+- Questions about the user's project — "summarize this project", "what does this do", "how is it structured" — are answered from the REAL files: list_files / code_search / read_file first, then a prose summary of what is actually there (stack, entry points, folder roles, notable files). Never guess, never summarise from a folder name alone, and never hand the user a script that would generate the summary for them.
+- A summary is chat prose. It is never a file, never an [ARTIFACT], and never "run this with python/node".
+- Be accurate and concise; depth when asked.`;
 
 // ============================================================
 // Compact profile — for repair/continue turns where full doctrine
@@ -405,7 +415,7 @@ Conversation only — no tools, no file writes. If the user asks you to build so
 const COMPACT_CORE = `You are Orplex Code, an elite agentic coding engineer. The full system prompt was provided earlier in this conversation; it still applies in full. Essentials only:
 - FILES, NOT FENCES: build = write_file.
 - READ before write. PLAN (todo_list) before multi-file builds.
-- VERIFY before done — rerun verification after fixes.
+- VERIFY before done — rerun verification after fixes: tests/typecheck/build via run_command or run_in_sandbox, any UI via verify_app (headless browser + console errors) or your browser_* tools.
 - Reasoning stays in the thinking channel; the answer is the clean report (what changed, how verified, what's next).
 - Never repeat a failing call unchanged; report failures honestly. Claims must match tool results: a file counts as changed only when a write/edit returned success.`;
 
@@ -428,6 +438,12 @@ export interface BuildPromptOptions {
   /** compact = for later turns in an ongoing task (repair/continue): same rules, 1/3 size */
   profile?: PromptProfile;
   capabilities?: { browser?: boolean };
+  /**
+   * The tool names this call ACTUALLY has (one lane's roster). Omit for the
+   * full client belt. Passing them keeps the prompt's roster and count honest
+   * instead of advertising tools the lane cannot dispatch.
+   */
+  toolNames?: string[];
   /** Current task text for playbook retrieval (empty = no playbook injection). */
   task?: string;
   /** Playbook scope — the owning user id. Defaults to "default" (global). */
@@ -466,7 +482,7 @@ export function adaptiveFailureDoctrine(): string {
 
 /** Build the system prompt for a call. One function, one file, no drift. */
 export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<string> {
-  const { mode, effort, profile = "full", capabilities } = opts;
+  const { mode, effort, profile = "full", capabilities, toolNames } = opts;
 
   // MCP roster rides on EVERY profile/mode that can reach a tool call:
   // compact turns (groq/nvidia repair + continue), lean providers, and
@@ -518,7 +534,7 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
   const sections =
     mode === "plan"
       ? [
-          IDENTITY(capabilities),
+          IDENTITY(capabilities, toolNames),
           PRIME_DIRECTIVES,
           PLAN_OVERLAY,
           TOOL_DOCTRINE,
@@ -535,7 +551,7 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
           FORMATTING_CODE,
         ]
       : [
-          IDENTITY(capabilities),
+          IDENTITY(capabilities, toolNames),
     PRIME_DIRECTIVES,
     OUTPUT_CONTRACT,
     INPUT_GROUNDING,

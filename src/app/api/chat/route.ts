@@ -15,7 +15,7 @@ import {
 } from "@/lib/chat-middleware";
 import { sseTransform } from "@/lib/ai-providers";
 import { isMockAiEnabled, createMockProviderStream } from "@/lib/mock-ai";
-import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS, usesCompactTools } from "@/lib/tool-definitions";
+import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS } from "@/lib/tool-definitions";
 import { buildSystemPrompt } from "@/lib/master-prompt";
 import { buildMcpRoster, mcpPromptSection, toOpenAiFunctions, type BuilderTool } from "@/lib/mcp/tool-builder";
 import { listSnapshotToolsByServer } from "@/lib/mcp/tool-snapshot";
@@ -297,55 +297,89 @@ const routedSupportsVision = canSendImageParts(
             : m
         );
 
-    const requestBody = {
+    // ── ONE prompt, ONE roster, EVERY provider ──────────────────────────
+    // This block used to branch on the provider name: Groq/NVIDIA got a
+    // 605-char "compact" prompt AND a trimmed 29-tool roster that did not
+    // include run_in_sandbox or verify_app. Same model, same app, different
+    // agent — so on those lanes the agent literally could not reach the
+    // sandbox or browser verification, and had no doctrine telling it to.
+    // Payload size is now handled where it is real: only AFTER a provider
+    // refuses the request as too large (lean retry below), never pre-emptively
+    // by provider name.
+    const systemPrompt = await buildSystemPrompt({
+      mode,
+      effort,
+      profile: parsed.profile === "compact" ? "compact" : "full",
+      capabilities: { browser: true },
+      task: userPrompt,
+      projectId: userId,
+      mcpSection,
+    });
+
+    // Ask mode is read-only, not tool-less: a summary of the user's project
+    // cannot be written without reading the project. Reads and web search are
+    // the whole surface; every mutating tool stays out (native-tools enforces
+    // the same boundary server-side).
+    const ASK_TOOL_NAMES = ["read_file", "list_files", "search_code", "code_search", "web_search", "extract_archive"];
+    const askTools = M3_TOOL_DEFINITIONS.filter((t: any) => ASK_TOOL_NAMES.includes(t?.function?.name));
+
+    const buildRequestBody = (prompt: string, tools: unknown[]): Record<string, unknown> => ({
       model: provider.model,
       messages: [
-        {
-          role: "system",
-            // The Master Prompt: one composed source of truth per mode —
-            // full doctrine on turn 1, compact on repair/continue turns
-            // (profile arrives from the worker via the request body).
-            content: await buildSystemPrompt({
-              mode,
-              effort,
-              profile: isGroq ? "compact" : parsed.profile === "compact" ? "compact" : "full",
-              capabilities: { browser: true },
-              task: userPrompt,
-              projectId: userId,
-              mcpSection,
-            }),
-          },
-          ...attemptMessages,
-        ],
-        ...(mode === "ask"
-          ? {}
-          : {
-              tools: [
-                ...(usesCompactTools(provider.name) ? GROQ_TOOL_DEFINITIONS : M3_TOOL_DEFINITIONS),
-                // Compact-tools providers (Groq's TPM cap) skip MCP schemas —
-                // the roster still rides in the prompt section for discovery.
-                ...toOpenAiFunctions(
-                  usesCompactTools(provider.name)
-                    ? [...mcpRoster.metaDefs]
-                    : [...mcpRoster.defs, ...mcpRoster.metaDefs]
-                ),
-              ],
-              tool_choice: "auto",
-            }),
-        max_completion_tokens: maxCompletionTokens,
-        // Reasoning-family models (OpenAI o-series/gpt-5) reject a non-default
-        // temperature and Claude 4.7+ rejects anything below 1 — both are hard
-        // 400s. The tier's temperature (0.3/0.7/0.5) is tuned for the default
-        // Groq free model and must not be forced onto a paid pick.
-        ...(rejectsTemperature(provider.model) ? {} : { temperature: routingDecision.model.temperature }),
-        ...(effort && effort !== "medium" && /gpt-oss/i.test(provider.model)
-          ? { reasoning_effort: effort }
-          : {}),
-        stream: true,
-      };
+        { role: "system", content: prompt },
+        ...attemptMessages,
+      ],
+      tools,
+      tool_choice: "auto",
+      max_completion_tokens: maxCompletionTokens,
+      // Reasoning-family models (OpenAI o-series/gpt-5) reject a non-default
+      // temperature and Claude 4.7+ rejects anything below 1 — both are hard
+      // 400s. The tier's temperature (0.3/0.7/0.5) is tuned for the default
+      // free model and must not be forced onto a paid pick.
+      ...(rejectsTemperature(provider.model) ? {} : { temperature: routingDecision.model.temperature }),
+      ...(effort && effort !== "medium" && /gpt-oss/i.test(provider.model)
+        ? { reasoning_effort: effort }
+        : {}),
+      stream: true,
+    });
 
-      const result = await fetchWithProviderRetry(provider, requestBody);
+    const fullTools = mode === "ask"
+      ? askTools
+      : [
+          ...M3_TOOL_DEFINITIONS,
+          ...toOpenAiFunctions([...mcpRoster.defs, ...mcpRoster.metaDefs]),
+        ];
+
+    const requestBody = buildRequestBody(systemPrompt, fullTools);
+
+      let result = await fetchWithProviderRetry(provider, requestBody);
       attemptsMade++;
+
+      // Size recovery, triggered by an actual refusal instead of by provider
+      // name: a hard tokens-per-minute cap answers a full-size request with
+      // HTTP 413 ("request too large", "tokens per minute (TPM)"). Only then
+      // do we retry THIS provider once with the compact prompt + lean roster,
+      // so the identical request shape is the default everywhere.
+      if (!result.ok && /413|too large|tokens per minute|\bTPM\b|reduce your message/i.test(result.error)) {
+        console.log(`[chat] ${provider.name} rejected payload size — retrying lean`);
+        const leanPrompt = await buildSystemPrompt({
+          mode,
+          effort,
+          profile: "compact",
+          capabilities: { browser: true },
+          projectId: userId,
+          mcpSection,
+        });
+        const leanTools = mode === "ask"
+          ? askTools
+          : [
+              ...GROQ_TOOL_DEFINITIONS,
+              ...toOpenAiFunctions([...mcpRoster.metaDefs]),
+            ];
+        result = await fetchWithProviderRetry(provider, buildRequestBody(leanPrompt, leanTools));
+        attemptsMade++;
+      }
+
       if (result.ok) {
         // Uptime telemetry: the provider answered (HTTP ok + healthy peek).
         recordProviderEvent({
@@ -388,7 +422,10 @@ const routedSupportsVision = canSendImageParts(
       // will never "warm up". Telling the user to retry made a deterministic
       // failure read as a transient outage, which is exactly how the
       // temperature/max_tokens bugs above got mis-diagnosed for so long.
-      const permanentRejection = /\bHTTP 4(00|01|03|04|22)\b/.test(lastError);
+      // 413 belongs here: after the lean retry above, a payload the provider
+      // still refuses as too large is permanent for this model — "send again
+      // in a minute" would be a lie.
+      const permanentRejection = /\bHTTP 4(00|01|03|04|13|22)\b/.test(lastError);
       const message = requestedModel
         ? permanentRejection
           ? `The selected model (${requestedModel}) rejected the request — it is not a problem that will fix itself. Try a different model.`

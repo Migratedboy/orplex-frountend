@@ -740,6 +740,12 @@ export const GROQ_TOOL_NAMES = [
   "create_file",
   "edit_file",
   "run_command",
+  // Sandbox execution and browser verification are not optional extras — they
+  // are how work gets PROVEN. They were missing from this lean allowlist, so
+  // on tight-TPM lanes the model literally could not call them and answered
+  // with prose instead. Both are text-light (one command in, capped output out).
+  "run_in_sandbox",
+  "verify_app",
   "todo_list",
   "ask_question",
   "ask_clarification",

@@ -96,16 +96,143 @@ export interface XmlToolCall {
   [key: string]: unknown;
 }
 
+// === Param-pair argument parsing (native-template fallback) ===============
+// Some providers serve models whose chat template teaches arguments as
+// param-key/param-value XML pairs instead of the JSON body the prompt
+// requests (live-observed: a `read` call naming `filePath` for
+// /workspace/terminal.js, streamed three times in one turn). JSON.parse on
+// that shape throws, the call was silently dropped — nothing dispatched, the
+// run ended "Stopped", and the raw markup leaked into the visible chat
+// message while the model's prose claimed work had happened. These helpers
+// parse that shape: as a non-JSON body inside the wrapper, and as bare
+// (unwrapped) runs in prose.
+
+/** One param_key/param_value pair, key first. Module-level regex — every
+ *  caller resets lastIndex (the walks are synchronous, never re-entrant). */
+const PARAM_PAIR_RE =
+  /<param_key>([\s\S]*?)<\/param_key>[ \t\r\n]*<param_value>([\s\S]*?)<\/param_value>/g;
+
+/** Closing-tag fragments and markup keywords are never tool names — a run
+ *  that starts right after an unclosed wrapper has no resolvable name. */
+const NOT_A_NAME_RE =
+  /^(?:\/?param_(?:key|value)|\/?tool_call|\/?tool_result|\/?function_calls|\/?invoke|name)$/i;
+
+/** The name token immediately preceding a param-pair run: a <name>foo</name>
+ *  tag, or a bare identifier (read pairs glued to prose — dispatching under a
+ *  guessed target would be worse than an honest parse failure. */
+function paramNameBefore(before: string): string | null {
+  const tag = before.match(/<name>[ \t]*([A-Za-z_][A-Za-z0-9_]{1,63})[ \t]*<\/name>[ \t\r\n]*$/);
+  if (tag) return tag[1];
+  const token = before.match(/(?:^|[\s>])[ \t]*([A-Za-z_][A-Za-z0-9_]{1,63})[ \t\r\n]*$/);
+  if (!token || NOT_A_NAME_RE.test(token[1])) return null;
+  return token[1];
+}
+
+/** Parse every maximal run of param pairs in `text` into tool calls. A run
+ *  breaks at any non-whitespace gap (typically the next call's name token);
+ *  runs with no resolvable name are skipped — they cannot dispatch. */
+export function parseParamPairToolCalls(text: string): XmlToolCall[] {
+  const calls: XmlToolCall[] = [];
+  if (!text || !text.includes("<param_key>")) return calls;
+  PARAM_PAIR_RE.lastIndex = 0;
+  let pairs: Array<[string, string]> = [];
+  let runStart = -1;
+  let runEnd = -1;
+  const flush = () => {
+    if (runStart >= 0 && pairs.length > 0) {
+      const name = paramNameBefore(text.slice(0, runStart));
+      if (name) {
+        const args: Record<string, string> = {};
+        for (const [k, v] of pairs) {
+          const key = k.trim();
+          if (key) args[key] = v; // last write wins on duplicate keys
+        }
+        calls.push({ name, ...args });
+      }
+    }
+    pairs = [];
+    runStart = -1;
+    runEnd = -1;
+  };
+  let m: RegExpExecArray | null;
+  while ((m = PARAM_PAIR_RE.exec(text)) !== null) {
+    if (runStart >= 0 && !/^[ \t\r\n]*$/.test(text.slice(runEnd, m.index))) flush();
+    if (runStart < 0) runStart = m.index;
+    runEnd = PARAM_PAIR_RE.lastIndex;
+    pairs.push([m[1], m[2]]);
+  }
+  flush();
+  return calls;
+}
+
+/** Remove param-pair markup (name token + pairs) from display text: the call
+ *  either dispatched (its record is the status line / tool_result) or failed
+ *  honestly — raw markup is never a message a user should read. */
+export function stripParamPairMarkup(text: string): string {
+  if (!text || !text.includes("<param_key>")) return text;
+  PARAM_PAIR_RE.lastIndex = 0;
+  const cuts: Array<[number, number]> = [];
+  let runStart = -1;
+  let runEnd = -1;
+  const flush = () => {
+    if (runStart >= 0 && runEnd > runStart) {
+      let cutStart = runStart;
+      const before = text.slice(0, runStart);
+      const token = before.match(/(?:^|[\s>])[ \t]*([A-Za-z_][A-Za-z0-9_]{1,63})[ \t\r\n]*$/);
+      if (token && !NOT_A_NAME_RE.test(token[1])) {
+        const trailingWs = (before.match(/[ \t\r\n]*$/) || [""])[0].length;
+        cutStart = runStart - token[1].length - trailingWs;
+      } else {
+        const tagBefore = before.match(/<name>[ \t]*[A-Za-z_][A-Za-z0-9_]{1,63}[ \t]*<\/name>[ \t\r\n]*$/);
+        if (tagBefore) cutStart = runStart - tagBefore[0].length;
+      }
+      cuts.push([cutStart, runEnd]);
+    }
+    runStart = -1;
+    runEnd = -1;
+  };
+  let m: RegExpExecArray | null;
+  while ((m = PARAM_PAIR_RE.exec(text)) !== null) {
+    if (runStart >= 0 && !/^[ \t\r\n]*$/.test(text.slice(runEnd, m.index))) flush();
+    if (runStart < 0) runStart = m.index;
+    runEnd = PARAM_PAIR_RE.lastIndex;
+  }
+  flush();
+  if (cuts.length === 0) return text;
+  cuts.sort((a, b) => b[0] - a[0]);
+  let out = text;
+  for (const [s, e] of cuts) out = out.slice(0, s) + out.slice(e);
+  return out;
+}
+
 export function parseToolCalls(text: string): XmlToolCall[] {
   const regex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
   const calls: XmlToolCall[] = [];
+  const covered: Array<[number, number]> = [];
   let match;
   while ((match = regex.exec(text)) !== null) {
+    covered.push([match.index, match.index + match[0].length]);
     try {
       calls.push(JSON.parse(match[1].trim()));
-    } catch {
-      // skip malformed tool calls
+      continue;
+    } catch {}
+    // Not JSON: a native-template body of param_key/param_value pairs.
+    // Dropping it silently is what made tools "break" — the call never ran
+    // and the raw markup became the visible answer.
+    const pairCalls = parseParamPairToolCalls(match[1]);
+    if (pairCalls.length > 0) calls.push(...pairCalls);
+    // else: skip malformed tool calls
+  }
+  // Bare (unwrapped) param-pair runs in prose — the same native-template
+  // shape with the wrapper omitted. Closed blocks are masked out first so
+  // their pairs are never parsed twice.
+  if (text.includes("<param_key>")) {
+    let masked = text;
+    for (let i = covered.length - 1; i >= 0; i--) {
+      const [s, e] = covered[i];
+      masked = masked.slice(0, s) + " ".repeat(e - s) + masked.slice(e);
     }
+    calls.push(...parseParamPairToolCalls(masked));
   }
   return calls;
 }
