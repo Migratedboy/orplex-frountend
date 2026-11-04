@@ -14,12 +14,12 @@ import { isDevRuntime } from "./dev-mode";
 import { homedir } from "node:os";
 import { spawn, ChildProcess } from "node:child_process";
 import http from "node:http";
-import net from "node:net";
 import { registerMcpIpc } from "./mcp-bridge";
 import { loopbackUrl, loopbackProbeUrls } from "./loopback";
 import { registerDesktopAuth, handleDesktopAuthArgv } from "./auth-desktop";
 import { registerTerminalIpc, killAllTerminalChildren } from "./terminal";
 import { createConversationStore } from "./conversations-store";
+import { killNextChildren } from "./next-children";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -1792,17 +1792,7 @@ app.on("will-quit", () => {
     killAllTerminalChildren();
   } catch {}
   // Kill both Next.js children so no orphaned node process holds the ports.
-  for (const child of [nextProcess, apiProcess]) {
-    if (child && !child.killed) {
-      try {
-        if (process.platform === "win32") {
-          spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
-        } else {
-          child.kill("SIGTERM");
-        }
-      } catch {}
-    }
-  }
+  killNextChildren(nextProcess, apiProcess);
 });
 
 app.on("window-all-closed", () => {
@@ -1941,17 +1931,7 @@ app.whenReady().then(async () => {
       try {
         killAllTerminalChildren();
       } catch {}
-      for (const child of [nextProcess, apiProcess]) {
-        if (child && !child.killed) {
-          try {
-            if (process.platform === "win32") {
-              spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
-            } else {
-              child.kill("SIGTERM");
-            }
-          } catch {}
-        }
-      }
+      killNextChildren(nextProcess, apiProcess);
       writeSessionState(true);
     } finally {
       app.exit(0);
