@@ -20,11 +20,25 @@
 // Source stays untouched: staging happens in its own tree, never over the
 // repo's own files.
 
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 
 const root = process.cwd();
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
+
+// The allowlist (what may ship) lives in electron/package-allowlist.ts, so it
+// is unit-tested with the rest of the desktop code. It is compiled to
+// electron-dist/ by `npm run electron:build:main`, which runs before this
+// script in the electron:dist chain.
+const require = createRequire(import.meta.url);
+let allowlist;
+try {
+  allowlist = require(path.join(root, "electron-dist", "package-allowlist.js"));
+} catch {
+  console.error("[stage] FATAL: electron-dist/package-allowlist.js missing — run `npm run electron:build:main` first.");
+  process.exit(1);
+}
 
 // Staged INSIDE the repo (not the OS temp dir) so the electron-builder
 // invocation can point at it with a repo-relative --projectDir on every
@@ -55,6 +69,58 @@ if (!existsSync(path.join(standalone, "server.js"))) {
   console.error("[stage] FATAL: .next/standalone/server.js missing — run npm run build.");
   process.exit(1);
 }
+
+// 3a. PRUNE the standalone tree before copying it.
+//
+//     Next's file tracing (Turbopack) copies the WHOLE project into
+//     .next/standalone whenever a route handler touches the filesystem with a
+//     dynamic path — the build prints "Dynamic filesystem access causes tracing
+//     of the whole project" 18 times. Shipping that tree verbatim put into the
+//     installer: the repo's .env (DATABASE_URL + provider API keys — main.ts
+//     documents that a packaged app must NEVER ship one), the PREVIOUS release
+//     installer (1 GB), a duplicate 556 MB Electron runtime (including the
+//     stock electron.exe that poisons the taskbar icon), the coverage report,
+//     the docs site and the source tree. The 3.3 GB payload then broke the
+//     release build outright: "failed creating mmap of ...nsis.7z" — makensis
+//     is a 32-bit process and cannot map a file larger than 2 GB.
+//
+//     The allowlist keeps the server the app runs and the dependencies that
+//     server loads — nothing else.
+function pruneStandaloneTree(dir) {
+  const removed = [];
+
+  const topPlan = allowlist.planStandalonePrune(readdirSync(dir));
+  for (const name of topPlan.drop) {
+    rmSync(path.join(dir, name), { recursive: true, force: true });
+    removed.push(name);
+  }
+
+  const nodeModules = path.join(dir, "node_modules");
+  if (existsSync(nodeModules)) {
+    const nmPlan = allowlist.planNodeModulesPrune(readdirSync(nodeModules));
+    for (const name of nmPlan.drop) {
+      rmSync(path.join(nodeModules, name), { recursive: true, force: true });
+      removed.push(`node_modules/${name}`);
+    }
+
+    // Orphaned `prisma generate` temp files (14 × 18.4 MB were sitting here).
+    const prismaClient = path.join(nodeModules, ".prisma", "client");
+    if (existsSync(prismaClient)) {
+      const prismaPlan = allowlist.planPrismaClientPrune(readdirSync(prismaClient));
+      for (const name of prismaPlan.drop) {
+        rmSync(path.join(prismaClient, name), { recursive: true, force: true });
+        removed.push(`node_modules/.prisma/client/${name}`);
+      }
+    }
+  }
+  return removed;
+}
+
+const pruned = pruneStandaloneTree(standalone);
+if (pruned.length) {
+  console.log(`[stage] pruned ${pruned.length} entr(y/ies) from the standalone tree (${pruned.slice(0, 8).join(", ")}${pruned.length > 8 ? ", …" : ""})`);
+}
+
 cpSync(standalone, path.join(stage, ".next", "standalone"), {
   recursive: true,
   dereference: true,
@@ -77,6 +143,28 @@ const out = {
   build: { ...pkg.build, directories: { ...(pkg.build?.directories || {}), output: path.join(root, pkg.build?.directories?.output || "release") } },
 };
 writeFileSync(path.join(stage, "package.json"), JSON.stringify(out, null, 2));
+
+// 5. HARD GUARD: the staged tree is exactly what electron-builder packages.
+//    If a secret file is in there, the installer ships it to every user — so
+//    fail the build here rather than discover it after the release.
+function collectFiles(dir, base = dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) collectFiles(full, base, out);
+    else out.push(path.relative(base, full));
+  }
+  return out;
+}
+
+const stagedFiles = collectFiles(stage);
+const leaks = allowlist.findLeakFiles(stagedFiles);
+if (leaks.length) {
+  console.error(`[stage] FATAL: ${leaks.length} file(s) that must never ship are in the staged package:`);
+  for (const leak of leaks.slice(0, 20)) console.error(`  ${leak}`);
+  console.error("[stage] A shipped .env exposes the database password and the provider API keys.");
+  process.exit(1);
+}
+console.log(`[stage] guard OK — ${stagedFiles.length} staged files, no secret files`);
 
 console.log(`[stage] staged -> ${stage}`);
 console.log(`[stage] output dir -> ${out.build.directories.output}`);

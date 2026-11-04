@@ -123,6 +123,41 @@ async function cleanTarget(label, target) {
   }
 }
 
+async function cleanPrismaEngineTempFiles() {
+  // `prisma generate` writes query_engine-<platform>.dll.node.tmp<pid> and
+  // renames it into place. An interrupted generate leaves the temp file
+  // behind forever: fourteen of them (14 × 18.4 MB = 257 MB) had piled up in
+  // node_modules/.prisma/client, and the desktop packaging traced them into
+  // the installer (see electron/package-allowlist.ts). The real engine file
+  // has no ".tmp" in its name and is never touched here.
+  const clientDir = join(ROOT, "node_modules", ".prisma", "client");
+  if (!existsSync(clientDir)) return;
+  let entries = [];
+  try {
+    entries = await readdir(clientDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  let removed = 0;
+  let bytes = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!/\.tmp\d+$/.test(entry.name)) continue;
+    const target = join(clientDir, entry.name);
+    try {
+      const { stat } = await import("node:fs/promises");
+      bytes += (await stat(target)).size;
+      await rm(target, { force: true });
+      removed++;
+    } catch {
+      /* locked by a running generate — leave it */
+    }
+  }
+  if (removed > 0) {
+    console.log(`[clean] removed ${removed} orphaned prisma engine temp file(s) (${Math.round(bytes / 1048576)} MB)`);
+  }
+}
+
 async function main() {
   if (!force && (await portHasListener(5000))) {
     console.error("[clean] Dev server appears to be RUNNING on :5000 — stop it first (this script deletes its live state).");
@@ -132,6 +167,7 @@ async function main() {
 
   await cleanTarget(".next/dev", join(ROOT, ".next", "dev"));
   await cleanTarget(".next/cache", join(ROOT, ".next", "cache"));
+  await cleanPrismaEngineTempFiles();
   console.log("[clean] done — next `npm run dev` rebuilds from scratch.");
 }
 

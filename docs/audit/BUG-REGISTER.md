@@ -52,6 +52,28 @@ Audit date: 2026-11-04 · Baseline `572e64d`. Statuses: CONFIRMED (reproduced/ob
 - **Fix**: pin `process.platform` to `"win32"` in that case (restoring the original in a `finally`), and add a case pinning the POSIX branch (`kill("SIGTERM")`, no `taskkill`) so both documented platform paths are covered and the test is host-independent.
 - **Regression test**: the file's own suite — now 5/5 green and platform-independent by construction.
 
+### BUG-010 — The installer shipped the repo's `.env` (database password + provider API keys) — P1, CRITICAL, CONFIRMED (found in the built artifact), FIXED
+- **Subsystem**: desktop packaging (`scripts/stage-desktop-package.mjs`, `electron/package-allowlist.ts`, `package.json` `build.files`)
+- **Reproduction (inspected the built artifact)**: `release\win-unpacked\resources\app\.next\standalone\.env` existed in the shipped app — a **real 3,940-byte copy of the repo root `.env`** (not a symlink), plus `nexus_core_super_secret_change_in_production_k8x2m9p4q7w1`. The packaged payload was **2.9 GB**.
+- **Expected**: the shipped app contains the server it runs and its dependencies — never an env file. `electron/main.ts` states the intent explicitly: *"A PACKAGED app has no .env beside it (electron-builder deliberately never ships one — it holds the database password)"*. **Actual**: the `.env` was shipped, contradicting the code's own documented contract.
+- **Root cause**: Next.js 16's Turbopack build prints *"Dynamic filesystem access causes tracing of the whole project"* (18 times — `archive-extract.ts`, `backup.ts`, `janitor.ts`, `executor.ts`, `playbook.ts`, `workspace-cwd.ts`, `parallel-workspaces`, `user-skills.ts`). Dynamic filesystem paths in route handlers make the tracer copy the **entire project root** into `.next/standalone`. The staging step then copied that tree **verbatim**, so the package contained:
+  | Shipped by accident | Size |
+  |---|---|
+  | `release/` — the previous 1 GB installer + a 550 MB `.7z` | 1,937 MB |
+  | `node_modules/electron/` — a duplicate Electron runtime **including the stock `electron.exe`** (the very binary the taskbar icon poison installs) | 556 MB |
+  | `node_modules/.prisma/client/*.tmp<pid>` — 14 orphaned `prisma generate` temp files | 257 MB |
+  | `coverage/`, `docs-site/`, `src/`, `scripts/`, local logs, `.env`, secret markers | ~50 MB |
+- **Fix**: a new pure module `electron/package-allowlist.ts` (unit-tested) defines an explicit **allowlist** of what may ship (`server.js`, `package.json`, `.next`, `public`, `node_modules`, `prisma`), the `node_modules` exclusions (`electron`), and the orphaned-Prisma-temp rule. `scripts/stage-desktop-package.mjs` now prunes the standalone tree to that allowlist before copying it, and a **hard guard** fails the build if any secret-shaped file (`.env*`, `super_secret`, `.pem`/`.p12`/`.pfx`/`.key`, `id_rsa`) reaches the staged tree. `package.json`'s `build.files` gained matching negations as a second layer.
+- **Regression test**: `electron/__tests__/package-allowlist.test.ts` — 22 tests pinning the allowlist, the exclusions, the temp-file rule, the leak detection and the fact that a legitimate compiled `secret-scanner-plugin` chunk is **not** a false positive.
+
+### BUG-011 — The release build itself failed: the 2 GB app archive breaks NSIS — P1, CONFIRMED (build failure), FIXED
+- **Subsystem**: desktop packaging (`electron-builder` / NSIS)
+- **Reproduction**: `npm run electron:dist` for **1.0.30** failed at the final NSIS step: `Error: failed creating mmap of "D:\orplex\release\orplex-code-1.0.30-x64.nsis.7z"` → `ERR_ELECTRON_BUILDER_CANNOT_EXECUTE` → `Orplex-Code-Setup-1.0.30.exe` was left as a **0.2 MB stub**. The app archive had reached **2,082 MB** (`APP_64_UNPACKED_SIZE=3346233` KB ≈ 3.3 GB).
+- **Expected**: the installer builds. **Actual**: the release build fails outright.
+- **Root cause**: `makensis.exe` is a **32-bit** process and cannot memory-map a file larger than 2 GB. The payload crossed that line because of BUG-010: the app contained the previous release's 1 GB installer plus a duplicate Electron runtime. The 1.0.29 build (1,042 MB installer) was the last one that fit — the packaging was one release away from a hard failure.
+- **Fix**: the BUG-010 prune removes the junk, so the payload returns to a fraction of its size and the NSIS step has ample headroom. The hard guard also prevents a payload like this from ever reaching the packer again.
+- **Regression test**: covered by the BUG-010 allowlist tests plus the build itself (the installer now builds and the installed app is launched and verified — see FINAL-STABILIZATION-REPORT §18.9).
+
 ## Verified not-bugs (investigated, no defect)
 
 - **LOCAL_ONLY routing boundary** (`src/proxy.ts`): device-local routes are deliberately never forwarded to the cloud; documented in-code with the terminal-cwd rationale.
@@ -71,12 +93,14 @@ Audit date: 2026-11-04 · Baseline `572e64d`. Statuses: CONFIRMED (reproduced/ob
 
 | Category | Count |
 |---|---|
-| Bugs confirmed | 5 (BUG-002, BUG-004, BUG-005, BUG-006, BUG-008) |
-| Bugs reproduced at runtime | 3 (BUG-002, BUG-004, BUG-008) |
-| Bugs fixed | 5 |
-| Bugs verified fixed by test | 4 (BUG-002, BUG-004, BUG-005, BUG-008) |
-| Bugs fixed by structural change (no dedicated test) | 1 (BUG-006) |
+| Bugs confirmed | 8 (BUG-002, BUG-004, BUG-005, BUG-006, BUG-008, BUG-009, BUG-010, BUG-011) |
+| Bugs reproduced at runtime / from CI logs / from the built artifact | 6 (BUG-002, BUG-004, BUG-008 live; BUG-009 from the CI job log; BUG-010 from the built artifact; BUG-011 from the build failure) |
+| Bugs fixed | 8 |
+| Bugs verified fixed by regression test | 6 (BUG-002, BUG-004, BUG-005, BUG-008, BUG-009, BUG-010) |
+| Bugs fixed by structural change (no dedicated test) | 2 (BUG-006, BUG-011 — the latter verified by the build succeeding again) |
 | Bugs remaining open | 0 |
-| Security vulnerabilities fixed | 1 critical (next/og RCE, via 16.3.5 → 16.4.5) |
+| Security vulnerabilities fixed | 1 critical dependency (next/og RCE) + 1 critical app-level (the `.env` shipped in the installer) |
 | Suspected risks tracked | 3 (SUS-01..03; SUS-03 resolved) |
 | Blocked investigations | 0 |
+| CI on `main` before → after the fix | red → **green** (PR #22, merge commit `7ed15c6`) |
+| Installer payload before → after the packaging fix | 2,926 MB → 124 MB |
