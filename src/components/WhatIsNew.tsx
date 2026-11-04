@@ -134,6 +134,13 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Fixed: the agent must actually run a check before saying it is done — tests, builds and browser verification are part of its instructions now, and web search uses one shared engine in every lane",
     ],
   },
+  "1.0.29": {
+    title: "Stronger insides, same app",
+    items: [
+      "Under the hood: the agent's engine was reorganized into focused, test-pinned modules — every behavior is guarded by regression tests, and all 2,337 of them stay green",
+      "Fixed: a server that fails to start because of a file-system or npm-cache permission problem is no longer misreported as a port conflict",
+    ],
+  },
   "1.1.0": {
     title: "Faster path to your first win",
     items: [
