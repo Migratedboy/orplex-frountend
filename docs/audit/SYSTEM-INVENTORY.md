@@ -6,7 +6,7 @@ Audit date: 2026-11-04 · Baseline commit: `572e64d` (main, post v1.0.29) · Tre
 
 | Layer | Location | Notes |
 |---|---|---|
-| Electron main | `electron/main.ts` (43k), `preload.ts`, `terminal.ts`, `auth-desktop.ts`, `conversations-store.ts`, `loopback.ts`, `updater.ts`, `tray.ts` | Owns both Next.js child processes (UI :5000, API :5010, env-overridable) |
+| Electron main | `electron/main.ts` (43k), `preload.ts`, `terminal.ts`, `auth-desktop.ts`, `conversations-store.ts`, `loopback.ts`, `updater.ts`, `tray.ts`, `icon-poison.ts`, `preview-views.ts`, `preview-logic.ts`, `dev-mode.ts` | Owns both Next.js child processes (UI :5000, API :5010, env-overridable); `icon-poison.ts` holds the pure Windows taskbar identity-poison logic |
 | Renderer / React | `src/components`, `src/hooks` | Main window holds the preload bridge; preview/agent views are sandboxed with **no** preload |
 | Next.js App Router | `src/app/api/**` route handlers | Served by the API child process; desktop proxy in `src/proxy.ts` |
 | Prisma + hosted PostgreSQL | `prisma/schema.prisma` | Backend-owned; no embedded DB (removed architecture, intentionally not reintroduced) |
@@ -31,6 +31,7 @@ Audit date: 2026-11-04 · Baseline commit: `572e64d` (main, post v1.0.29) · Tre
 |---|---|---|
 | IPC sender validation | `electron/main.ts` `handleAppIpc` (all handlers) | Origin-checked; sandboxed views have no preload bridge |
 | Navigation guards | `electron/main.ts` `setWindowOpenHandler`, `will-navigate`, in-page redirect guard | External URLs go to `shell.openExternal` |
+| Taskbar identity | `electron/main.ts` `setAppDetails` + `electron/icon-poison.ts` sweep | Start Menu shortcuts that shadow the app's AUMID (Electron's toast path) are removed in both dev and packaged lanes; verified live — button reads "Orplex Code" with the correct icon |
 | Local-first store | `electron/conversations-store.ts` | Atomic temp+rename; corrupted store renamed aside (`.corrupt-<ts>`), never deleted |
 | Admin routes | `src/app/api/admin/*` | All call `requireAdmin()`; 401/403 mapped explicitly |
 | Dev session bypass | `src/app/api/dev/session/route.ts` | Hard-gated on `NODE_ENV !== "production"`, `DEV_AUTH_BYPASS` kill switch |

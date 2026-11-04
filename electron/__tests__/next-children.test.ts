@@ -61,9 +61,35 @@ describe("killNextChildren", () => {
   });
 
   it("swallows a missing pid rather than aborting the second child", async () => {
-    const noPid = { pid: undefined, killed: false } as unknown as ChildProcess;
-    killNextChildren(noPid, fakeChild(4));
-    expect(mockedSpawn).toHaveBeenCalledTimes(2);
-    expect(mockedSpawn).toHaveBeenLastCalledWith("taskkill", ["/pid", "4", "/T", "/F"]);
+    // The platform MUST be pinned here: this file asserts the Windows taskkill
+    // behavior, and on a Linux/macOS runner killNextChildren takes the POSIX
+    // branch (child.kill("SIGTERM")) and never spawns taskkill — so without the
+    // stub this test failed on CI while passing on a Windows dev box.
+    const original = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      const noPid = { pid: undefined, killed: false } as unknown as ChildProcess;
+      killNextChildren(noPid, fakeChild(4));
+      expect(mockedSpawn).toHaveBeenCalledTimes(2);
+      expect(mockedSpawn).toHaveBeenLastCalledWith("taskkill", ["/pid", "4", "/T", "/F"]);
+    } finally {
+      Object.defineProperty(process, "platform", { value: original });
+    }
+  });
+
+  it("uses SIGTERM instead of taskkill on non-Windows platforms", () => {
+    // The POSIX half of the documented platform behavior, pinned so a runner
+    // on Linux/macOS exercises the same branch a Windows runner does not.
+    const original = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      const kill = jest.fn();
+      const child = { pid: 7, killed: false, kill } as unknown as ChildProcess;
+      killNextChildren(child, null);
+      expect(mockedSpawn).not.toHaveBeenCalled();
+      expect(kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      Object.defineProperty(process, "platform", { value: original });
+    }
   });
 });

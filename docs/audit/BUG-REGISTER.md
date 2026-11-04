@@ -44,6 +44,14 @@ Audit date: 2026-11-04 · Baseline `572e64d`. Statuses: CONFIRMED (reproduced/ob
 - **Regression test**: `electron/__tests__/icon-poison.test.ts` (15 tests: detection of the stock electron.exe, rejection of the branded dev binary / installed product / unrelated apps, sweep deletes only poison, survives a failing read, keeps sweeping after one failure).
 - **Verification**: after the fix, the live taskbar button reads **"Orplex Code - 1 running window"** (same correct AUMID `tech.orplex.app.dev`) and the captured button pixels are identical to `electron/assets/icon.ico`; the poison shortcut is gone and only the legitimate `Orplex Code.lnk` (installed product) remains.
 
+### BUG-009 — Repository CI was RED on main (modularization regression) — P2, CONFIRMED (reproduced from CI logs), FIXED
+- **Subsystem**: test infrastructure (`electron/__tests__/next-children.test.ts`, extracted by the modularity pass `eae90c2`)
+- **Reproduction**: `CI` on `main` at `572e64d` fails: `FAIL electron/__tests__/next-children.test.ts` — "swallows a missing pid rather than aborting the second child" expected `taskkill` to be spawned 2×, got 0. The previous commit's CI was green, so the regression was introduced by the kill-lane extraction.
+- **Expected**: the suite is green on every runner. **Actual**: green on Windows dev machines, red on the Linux CI runner — the repo's own gate was broken before this audit started.
+- **Root cause**: the extracted test asserted the Windows `taskkill` branch without pinning `process.platform` (its two sibling tests did pin it). On Linux/macOS `killNextChildren` takes the POSIX branch (`child.kill("SIGTERM")`) and never spawns `taskkill`.
+- **Fix**: pin `process.platform` to `"win32"` in that case (restoring the original in a `finally`), and add a case pinning the POSIX branch (`kill("SIGTERM")`, no `taskkill`) so both documented platform paths are covered and the test is host-independent.
+- **Regression test**: the file's own suite — now 5/5 green and platform-independent by construction.
+
 ## Verified not-bugs (investigated, no defect)
 
 - **LOCAL_ONLY routing boundary** (`src/proxy.ts`): device-local routes are deliberately never forwarded to the cloud; documented in-code with the terminal-cwd rationale.
