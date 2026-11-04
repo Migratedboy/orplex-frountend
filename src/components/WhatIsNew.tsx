@@ -141,6 +141,18 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Fixed: a server that fails to start because of a file-system or npm-cache permission problem is no longer misreported as a port conflict",
     ],
   },
+  "1.0.30": {
+    title: "Audited end to end",
+    items: [
+      "Fixed: a run that crashed could stay stuck on “running” forever — it now ends with a clear failure message instead of vanishing",
+      "Fixed: a malformed chat request returned a server error instead of a proper “bad request”",
+      "Fixed: two people deciding on the same request at the same time could both win — the second decision is now rejected instead of overwriting the first",
+      "Fixed: an approval nobody answered no longer stays open forever — it expires on its own",
+      "Fixed: a visitor's IP address could inject markup into the bug-report email — it is escaped now",
+      "Fixed: the taskbar could show the Electron logo instead of the Orplex logo — the junk shortcut that caused it is removed automatically",
+      "Security: updated the web framework to close a critical remote-code-execution hole in image generation",
+    ],
+  },
   "1.1.0": {
     title: "Faster path to your first win",
     items: [

@@ -1,6 +1,6 @@
 {
   "name": "orplex-code",
-  "version": "1.0.29",
+  "version": "1.0.30",
   "private": true,
   "description": "Orplex Code — the AI coding agent for your desktop and cloud.",
   "author": {
@@ -116,7 +116,11 @@
       ".next/standalone/**/*",
       "!.next/standalone/.localpg/**/*",
       "!node_modules/**/*",
-      "package.json"
+      "package.json",
+      "!**/.env",
+      "!**/.env.*",
+      "!.next/standalone/release/**/*",
+      "!.next/standalone/node_modules/electron/**/*"
     ],
     "npmRebuild": false,
     "extraResources": [
