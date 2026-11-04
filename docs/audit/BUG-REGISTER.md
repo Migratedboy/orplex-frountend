@@ -26,7 +26,7 @@ Audit date: 2026-11-04 · Baseline `572e64d`. Statuses: CONFIRMED (reproduced/ob
 - **Expected**: exactly one decision wins; the loser gets 409. **Actual**: both succeed, `decidedBy`/`decidedAt` silently overwritten.
 - **Root cause**: check-then-update without a status condition.
 - **Fix**: `prisma.approvalRequest.updateMany({ where: { id, status: "pending" }, … })`; `count === 0` ⇒ 409 "Already decided". Ownership scoping (`run.userId`) was already correct and is unchanged.
-- **Regression test**: none added — the race is a DB-level concurrency property; the conditional update is the structural guarantee. Honest status: fixed by construction, not by test.
+- **Regression test**: `src/app/api/agent/runs/[id]/approve/__tests__/approve-route.test.ts` (5 tests: conditional-update shape, concurrent-loss 409, non-pending 409, ownership 404, unauthenticated 401). Result: green.
 
 ### BUG-006 — Approval timeout leaves requests "pending" forever — P3, CONFIRMED (by inspection), FIXED
 - **Subsystem**: `executor.ts` `requestUserApproval`
@@ -34,6 +34,15 @@ Audit date: 2026-11-04 · Baseline `572e64d`. Statuses: CONFIRMED (reproduced/ob
 - **Expected**: terminal state on timeout. **Actual**: stale `pending` rows accumulate; a late user decision writes approved/rejected on a decision nothing will ever consume.
 - **Fix**: on timeout, `updateMany({ where: { id, status: "pending" }, data: { status: "expired" } })`, best-effort (`.catch`); the denial stands either way. The approve route already 409s non-pending rows, so late decisions now fail cleanly.
 - **Regression test**: none added (same reasoning as BUG-005; structural fix).
+
+### BUG-008 — Dev taskbar shows the generic Electron logo instead of Orplex Code — P3, CONFIRMED (reproduced live), FIXED, regression-tested
+- **Subsystem**: Electron identity (`electron/main.ts`, `electron/icon-poison.ts`)
+- **Reproduction (live, verified via UI Automation + pixel capture)**: the taskbar button read **"Electron - 1 running window"** and drew the stock Electron atom, even though (a) the branded dev binary `orplex-dev.exe` carried the correct Orplex icon and PE identity (FileDescription/ProductName "Orplex Code"), (b) `BrowserWindow.icon` was set from the multi-size `.ico`, and (c) `mainWindow.setAppDetails({ appId, appIconPath })` was called.
+- **Expected**: the dev taskbar button shows the Orplex logo and the name "Orplex Code". **Actual**: generic Electron logo + name "Electron".
+- **Root cause**: Electron's Windows toast-notification path self-installs a Start Menu shortcut `Electron.lnk` that carries the CURRENT app's AUMID. In dev that AUMID is `tech.orplex.app.dev` — the same one our window declares — and the shortcut targets the **stock** `node_modules/electron/dist/electron.exe` with `IconLocation = ,0`. Windows therefore resolved the taskbar button through that shortcut, which shadowed the branded binary entirely. The self-healing sweep in `main.ts` was gated on `if (!isDev)` — packaged-only — so the dev lane never cleaned it up (the gate was exactly backwards for this defect).
+- **Fix**: new pure module `electron/icon-poison.ts` (no electron import, unit-testable) holding the target detection + the sweep; `main.ts` now runs the sweep in **both** lanes (module scope and again after `app.whenReady()`, because Electron creates the shortcut during toast init) and judges candidates by **TARGET**, not by file name (Electron may name it after the app). An installed `Orplex Code.exe` shortcut is never touched.
+- **Regression test**: `electron/__tests__/icon-poison.test.ts` (15 tests: detection of the stock electron.exe, rejection of the branded dev binary / installed product / unrelated apps, sweep deletes only poison, survives a failing read, keeps sweeping after one failure).
+- **Verification**: after the fix, the live taskbar button reads **"Orplex Code - 1 running window"** (same correct AUMID `tech.orplex.app.dev`) and the captured button pixels are identical to `electron/assets/icon.ico`; the poison shortcut is gone and only the legitimate `Orplex Code.lnk` (installed product) remains.
 
 ## Verified not-bugs (investigated, no defect)
 
@@ -47,18 +56,19 @@ Audit date: 2026-11-04 · Baseline `572e64d`. Statuses: CONFIRMED (reproduced/ob
 ## Suspected risks (not reproduced, tracked)
 
 - **SUS-01 — DNS rebinding** in browser/MCP fetch targets: documented out of scope in `ssrf-guard.ts`. A hostile domain resolving to a private IP after the initial check could bypass the guard. Mitigation would require pinning resolved IPs per request. Severity if real: P2.
-- **SUS-02 — Packaged-app startup**: readiness checks must target the same loopback address the child binds to (Windows IPv4/IPv6 loopback divergence). Not exercised this session (no packaged run). Severity if real: P1.
-- **SUS-03 — Real-provider tool-schema compatibility**: compact/full tool paths verified against mocked fixtures only; live-provider drift (e.g. a provider rejecting a schema) would surface as provider-side errors, not silent capability loss. Severity if real: P3.
+- **SUS-02 — Packaged-app startup**: RESOLVED for the BUILD side — `npm run electron:dist` ran the complete pipeline (Next build → standalone → Electron main compile → staging → NSIS installer → blockmap) and the updater feed verifies for windows/mac/linux. The INSTALLED app was not launched, so runtime startup of the installed binary remains unexercised (recorded in FINAL-STABILIZATION-REPORT §18.9).
+- **SUS-03 — Real-provider tool-schema compatibility**: RESOLVED 2026-11-04 — `scripts/audit-live-tools.mjs` verified live tool-calling against real APIs: **groq (compact tier, qwen/qwen3.8-27b) PASS** and **openrouter (full tier, recursive/flint-v1.0:free) PASS** — both returned a well-formed `read_file` tool call with valid JSON args. Observed provider behavior worth knowing: one Groq model emitted a malformed tool call and Groq's server-side validation hard-failed the whole request with 400 (the app's client-side per-arg error handling never runs in that case); a different Groq model behaved correctly. Mitigation is the existing provider failover. OpenRouter paid models were untestable (402 Insufficient credits — account limitation, not a code issue); a `:free` model was verified instead.
 
 ## Statistics
 
 | Category | Count |
 |---|---|
-| Bugs confirmed | 4 (BUG-002, BUG-004, BUG-005, BUG-006) |
-| Bugs reproduced at runtime | 2 (BUG-002, BUG-004) |
-| Bugs fixed | 4 |
-| Bugs verified fixed by test | 2 (BUG-002, BUG-004) |
-| Bugs fixed by structural change (no dedicated test) | 2 (BUG-005, BUG-006) |
+| Bugs confirmed | 5 (BUG-002, BUG-004, BUG-005, BUG-006, BUG-008) |
+| Bugs reproduced at runtime | 3 (BUG-002, BUG-004, BUG-008) |
+| Bugs fixed | 5 |
+| Bugs verified fixed by test | 4 (BUG-002, BUG-004, BUG-005, BUG-008) |
+| Bugs fixed by structural change (no dedicated test) | 1 (BUG-006) |
 | Bugs remaining open | 0 |
-| Suspected risks tracked | 3 (SUS-01..03) |
+| Security vulnerabilities fixed | 1 critical (next/og RCE, via 16.3.5 → 16.4.5) |
+| Suspected risks tracked | 3 (SUS-01..03; SUS-03 resolved) |
 | Blocked investigations | 0 |

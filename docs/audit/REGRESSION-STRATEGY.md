@@ -44,11 +44,12 @@
 - **Invariant**: watchdog thresholds 70/85/92 % with `CRITICAL_STREAK = 3` hysteresis; subagent budgets enforced in both lanes; loop breakers in both lanes.
 - **Required test**: `hardware.test.ts`, executor/worker suites.
 
-## Automated checks to add (recommended, not yet implemented)
+## Automated checks (status)
 
-1. Roster-count assertion: `buildToolRoster()` contains exactly `M3_TOOL_DEFINITIONS.length` names (guards registry drift into the prompt).
-2. Approval-route integration test with a test DB for the conditional-update behavior.
-3. Packaged-startup smoke check in CI (Mission 15) — currently manual.
+1. ~~Roster-count assertion~~ — **DONE**: `src/lib/__tests__/tool-roster.test.ts` pins that the prompt roster renders every registry name, the headline count matches, the compact tier is a strict subset, and provider classification matches the lists.
+2. ~~Approval-route decision race~~ — **DONE**: `src/app/api/agent/runs/[id]/approve/__tests__/approve-route.test.ts` pins the conditional update, concurrent-loss 409, ownership 404, and auth 401.
+3. Packaged-startup smoke check in CI (Mission 15) — still manual; recommended follow-up.
+4. Live-provider tool-call probe — **DONE** as a manual script: `scripts/audit-live-tools.mjs` (groq + openrouter verified 2026-11-04); wire into a scheduled CI job if keys become available there.
 
 ## What a future change must never do
 

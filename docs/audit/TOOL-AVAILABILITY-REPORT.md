@@ -25,7 +25,8 @@ Audit date: 2026-11-04 · Baseline `572e64d` + fixes. Canonical roster: **42 too
 
 ## Honest limits
 
-- **Mocked, not live**: provider tool-calling was verified against mocked fixtures, not live provider APIs. No real-provider key was exercised this session, so "verified against real providers" count is **0** — recorded as such rather than inferred.
+- **Live verification (2026-11-04)**: `scripts/audit-live-tools.mjs` exercised REAL provider APIs — groq compact tier (qwen/qwen3.8-27b) and openrouter full tier (recursive/flint-v1.0:free) both returned a well-formed `read_file` tool call with valid JSON arguments. **2/2 tested providers PASS.** Other providers remain mock-verified only; no claim is made for them.
+- Observed during live testing: one Groq model emitted a malformed tool call and Groq's server-side schema validation rejected the entire request with HTTP 400 — the app's client-side per-arg error degradation cannot run in that case. Existing provider failover is the mitigation; recorded in BUG-REGISTER SUS-03.
 - **Compact-tier trade-off** is real and intentional: groq/nvidia receive 28 executable schemas, not 42. Awareness (prompt roster) stays at 42 for every provider. This is the documented compatibility strategy, not a silent capability loss.
 - Packaged-app behavior of tool dispatch was not separately exercised (no packaged run this session).
 
@@ -39,6 +40,6 @@ Audit date: 2026-11-04 · Baseline `572e64d` + fixes. Canonical roster: **42 too
 | Tools registered with native schemas — compact tier (groq/nvidia) | 28 |
 | Tools executable through the real dispatcher | 42 |
 | Tools tested (any automated coverage) | 42 (via dispatcher-level suites) |
-| Tools verified against real providers | 0 (mocked verification only) |
+| Tools verified against real providers | 2 providers verified live (groq compact qwen/qwen3.8-27b, openrouter full recursive/flint-v1.0:free — both PASS); remaining providers mock-verified only |
 | Partially supported tools | 14 (browser_* on compact tier: prompt-aware, schema-reduced) |
 | Unavailable tools | 0 |
