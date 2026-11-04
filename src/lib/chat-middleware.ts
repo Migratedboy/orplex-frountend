@@ -156,6 +156,35 @@ export async function enforceDailyQuota(
 // Middleware: Request Validation
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse a request's JSON body with an explicit 400 on malformed input.
+ *
+ * `request.json()` throws on a malformed body, and an unguarded throw inside
+ * a route handler falls into the generic 500 catch — a client bug (bad JSON)
+ * reported as a server bug. Routes that need the body should call this first
+ * and return `result.response` when not ok.
+ */
+export async function parseJsonRequest(
+  request: Request,
+): Promise<{ ok: true; data: unknown } | { ok: false; response: Response }> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          success: false,
+          error: { message: "Invalid request: body is not valid JSON" },
+        },
+        { status: 400 },
+      ),
+    };
+  }
+  return { ok: true, data: body };
+}
+
 export function validateRequestBody(
   body: unknown,
 ):

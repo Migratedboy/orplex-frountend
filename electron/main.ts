@@ -11,6 +11,7 @@
 import { app, BrowserWindow, shell, Menu, dialog, ipcMain, session, nativeImage } from "electron";
 import type { NativeImage } from "electron";
 import { isDevRuntime } from "./dev-mode";
+import { POISON_SHORTCUT_NAME, sweepIconPoison as sweepIconPoisonPure } from "./icon-poison";
 import { homedir } from "node:os";
 import { spawn, ChildProcess } from "node:child_process";
 import http from "node:http";
@@ -248,27 +249,46 @@ try {
 // path self-installs a Start Menu "Electron.lnk" carrying its own AUMID.
 // One pointing at a dev electron.exe propagates the generic icon into the
 // shell caches — delete it on sight from the packaged app.
-try {
-  if (!isDev) {
-    const poisonPath = path.join(
-      app.getPath("appData"),
-      "Microsoft",
-      "Windows",
-      "Start Menu",
-      "Programs",
-      "Electron.lnk"
-    );
-    if (fs.existsSync(poisonPath)) {
-      const poison = shell.readShortcutLink(poisonPath);
-      if (/node_modules[\\/]electron[\\/]dist[\\/]electron\.exe$/i.test(poison.target || "")) {
-        fs.unlinkSync(poisonPath);
-        console.log("[win-icon] removed poisonous Electron.lnk:", poison.target);
-      }
+// Self-healing icon-poison sweep: Electron's Windows toast-notification
+// path self-installs a Start Menu "Electron.lnk" carrying the CURRENT app's
+// AUMID. In a dev run that AUMID is tech.orplex.app.dev — the same one our
+// window declares — and the shortcut targets the STOCK electron.exe, so the
+// shell resolves the taskbar button through it and shows the generic Electron
+// logo and the name "Electron" (the branded dev binary, BrowserWindow.icon
+// and setAppDetails then have no say). This sweep therefore has to run in
+// DEV as well — it used to be packaged-only, which left the dev taskbar
+// poisoned — and again once the app is ready, because Electron creates that
+// shortcut while initializing its toast support.
+// Only an unbranded electron.exe target is ever deleted; an installed
+// "Orplex Code.exe" shortcut is never touched.
+function sweepIconPoison(): void {
+  // Candidates: the known "Electron.lnk" plus EVERY shortcut in the Programs
+  // folder — Electron may name the poison after the app name instead, and a
+  // name-based sweep would miss that variant. Only the TARGET decides.
+  const programs = path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs");
+  let candidates: string[] = [path.join(programs, POISON_SHORTCUT_NAME)];
+  try {
+    for (const entry of fs.readdirSync(programs)) {
+      if (!/\.lnk$/i.test(entry)) continue;
+      candidates.push(path.join(programs, entry));
     }
+  } catch {}
+  const result = sweepIconPoisonPure({
+    candidates,
+    exists: (p) => fs.existsSync(p),
+    readTarget: (p) => shell.readShortcutLink(p).target,
+    remove: (p) => fs.unlinkSync(p),
+  });
+  if (result.removed.length) {
+    console.log("[win-icon] removed poisonous shortcut(s):", result.removed.join(", "));
   }
-} catch (iconPoisonError) {
-  console.log("[win-icon] poison sweep noop:", String(iconPoisonError));
+  for (const err of result.errors) {
+    console.log("[win-icon] poison sweep noop:", err);
+  }
 }
+try {
+  sweepIconPoison();
+} catch {}
 if (!gotTheLock) {
   app.quit();
 } else {
@@ -887,6 +907,12 @@ app.whenReady().then(async () => {
   try {
     app.setAppUserModelId(APP_ID);
   } catch {}
+
+  // Second icon-poison sweep: Electron installs the "Electron.lnk" Start Menu
+  // shortcut while initializing its toast support, which happens AFTER the
+  // module-scope sweep. Without this the dev taskbar button resolves through
+  // that shortcut and shows the generic Electron logo again.
+  sweepIconPoison();
 
   // Desktop sign-in: register the orplex:// protocol handler and the IPC
   // the sign-in page uses to start the browser OAuth flow and receive the

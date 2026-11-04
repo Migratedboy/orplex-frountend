@@ -2,6 +2,7 @@ import {
   validateRequestBody,
   buildMultipartMessages,
   fetchWithProviderRetry,
+  parseJsonRequest,
 } from "../chat-middleware";
 
 describe("chat-middleware", () => {
@@ -226,6 +227,46 @@ describe("chat-middleware", () => {
         expect(text).toContain("c0 ");
         expect(text).toContain("c11 ");
       }
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // parseJsonRequest — malformed bodies must be a 400, not a 500
+  // (BUG-002: request.json() throws on bad JSON; an unguarded throw
+  // fell into the route's generic catch and reported a server error.)
+  // ---------------------------------------------------------------
+  describe("parseJsonRequest", () => {
+    it("returns the parsed body for valid JSON", async () => {
+      const request = new Request("http://localhost/api/chat", {
+        method: "POST",
+        body: JSON.stringify({ messages: [] }),
+        headers: { "Content-Type": "application/json" },
+      });
+      const result = await parseJsonRequest(request);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.data).toEqual({ messages: [] });
+    });
+
+    it("returns a 400 response for malformed JSON", async () => {
+      const request = new Request("http://localhost/api/chat", {
+        method: "POST",
+        body: "{not valid json",
+        headers: { "Content-Type": "application/json" },
+      });
+      const result = await parseJsonRequest(request);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.response.status).toBe(400);
+        const payload = await result.response.json();
+        expect(payload.error.message).toMatch(/not valid JSON/i);
+      }
+    });
+
+    it("returns a 400 response for an empty body", async () => {
+      const request = new Request("http://localhost/api/chat", { method: "POST" });
+      const result = await parseJsonRequest(request);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.response.status).toBe(400);
     });
   });
 });

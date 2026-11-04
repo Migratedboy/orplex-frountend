@@ -81,6 +81,11 @@ export async function POST(request: NextRequest) {
     if (session?.user?.email && isValidEmail(session.user.email)) {
       reporterEmail = session.user.email;
     }
+    // `ip` comes from the X-Forwarded-For header — attacker-controlled. It is
+    // interpolated into the HTML mail body below, so it must be escaped like
+    // the user-supplied fields (title/description go through sanitize()).
+    const safeIp = sanitize(ip);
+    const safeReporterEmail = sanitize(reporterEmail);
 
     const severityEmoji = severity === "high" ? "\uD83D\uDD34" : severity === "medium" ? "\uD83D\uDFE1" : "\uD83D\uDFE2";
     const htmlContent = `
@@ -90,7 +95,7 @@ export async function POST(request: NextRequest) {
           <table style="width: 100%; border-collapse: collapse; color: #e5e2e1;">
             <tr>
               <td style="padding: 8px 12px; font-weight: bold; color: #d8c3ad; border-bottom: 1px solid #353534;">Reporter</td>
-              <td style="padding: 8px 12px; border-bottom: 1px solid #353534;">${reporterEmail}</td>
+              <td style="padding: 8px 12px; border-bottom: 1px solid #353534;">${safeReporterEmail}</td>
             </tr>
             <tr>
               <td style="padding: 8px 12px; font-weight: bold; color: #d8c3ad; border-bottom: 1px solid #353534;">Severity</td>
@@ -106,7 +111,7 @@ export async function POST(request: NextRequest) {
             </tr>
           </table>
           <p style="color: #a08e7a; font-size: 11px; margin-top: 16px; border-top: 1px solid #353534; padding-top: 12px;">
-            Sent from Orplex Tech IDE &bull; ${new Date().toISOString()} &bull; IP: ${ip}
+            Sent from Orplex Tech IDE &bull; ${new Date().toISOString()} &bull; IP: ${safeIp}
           </p>
         </div>
       </div>

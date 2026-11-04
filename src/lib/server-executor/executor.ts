@@ -1361,6 +1361,13 @@ async function requestUserApproval(runId: string, action: string, payload: Recor
     }
     if (row?.status === "rejected" || row?.status === "expired") return false;
   }
+  // Timed out: mark the request expired so it cannot be decided later — the
+  // run has already moved on with the action DENIED, so a late approve would
+  // write a state nothing will ever consume (and the row would stay "pending"
+  // forever, accumulating stale rows). Best-effort; the denial stands either way.
+  await prisma.approvalRequest
+    .updateMany({ where: { id: request.id, status: "pending" }, data: { status: "expired" } })
+    .catch(() => {});
   return false;
 }
 
@@ -2708,9 +2715,15 @@ async function loop(): Promise<void> {
             })
             .catch(() => {});
         })
-        .catch(() => {
+        .catch(async (err) => {
           runtimeState.executor.failed++;
-          recordRuntimeLog("executor", "error", `run ${run.id.slice(-6)} threw unexpectedly`);
+          const message = String((err as Error)?.message ?? err).slice(0, 500);
+          recordRuntimeLog("executor", "error", `run ${run.id.slice(-6)} threw unexpectedly: ${message}`);
+          // A run that throws before executeRun's internal try (credential /
+          // workspace resolution) never produced a result object, so without
+          // this write the AgentRun row stays "executing" forever — a ghost
+          // run the UI shows as active and the lease loop never revisits.
+          await markRunFailed(run.id, message);
         })
         .finally(() => {
           inFlight.delete(p);
@@ -2720,6 +2733,32 @@ async function loop(): Promise<void> {
       await sleep(POLL_INTERVAL_MS);
     }
   }
+}
+
+/**
+ * Durable failure record for a run that crashed outside executeRun's own
+ * error handling. Writes a terminal "failed" status so the ledger, the UI
+ * and the lease loop all see the run as ended; a DB write failure here is
+ * logged, never thrown (the poll loop must keep leasing).
+ */
+export async function markRunFailed(runId: string, message: string): Promise<void> {
+  const safe = String(message ?? "").slice(0, 500);
+  await prisma.agentRun
+    .update({
+      where: { id: runId },
+      data: {
+        status: "failed",
+        result: { summary: `Run crashed before completion: ${safe}` },
+        completedAt: new Date(),
+      },
+    })
+    .catch((dbErr) => {
+      recordRuntimeLog(
+        "executor",
+        "error",
+        `run ${runId.slice(-6)} failure status write failed: ${String((dbErr as Error)?.message ?? dbErr).slice(0, 200)}`,
+      );
+    });
 }
 
 function sleep(ms: number): Promise<void> {
