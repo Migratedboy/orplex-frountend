@@ -6,7 +6,7 @@ import {
   runBrowserTool,
   formatToolResult,
   formatToolError,
-  validateToolArgs,
+  validateRequiredArgs,
   READ_ONLY_TOOLS,
   createLoopStreaks,
   trackToolTurn,
@@ -102,10 +102,10 @@ describe("contract/browser", () => {
 
 describe("contract/tools", () => {
   it("requires path/content for file writes", () => {
-    expect(validateToolArgs("write_file", {})).toMatch(/path/);
-    expect(validateToolArgs("write_file", { path: "a" })).toMatch(/content/);
-    expect(validateToolArgs("write_file", { path: "a", content: "b" })).toBeNull();
-    expect(validateToolArgs("scratchpad_update", { section: "bogus", content: "x" })).toMatch(/section/);
+    expect(validateRequiredArgs("write_file", {})).toMatch(/path/);
+    expect(validateRequiredArgs("write_file", { path: "a" })).toMatch(/content/);
+    expect(validateRequiredArgs("write_file", { path: "a", content: "b" })).toBeNull();
+    expect(validateRequiredArgs("scratchpad_update", { section: "bogus", content: "x" })).toMatch(/section/);
   });
   it("read-only set exempts sensors", () => {
     expect(READ_ONLY_TOOLS.has("browser_read")).toBe(true);

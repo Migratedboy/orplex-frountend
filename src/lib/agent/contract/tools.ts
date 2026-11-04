@@ -28,8 +28,13 @@ export const STATE_CHANGING_TOOLS: ReadonlySet<string> = new Set([
  * Required-argument check shared by both dispatchers. Returns an error
  * string, or null when the call is well-formed. (Deep schema validation stays
  * with the lane schemas; this is the cheap gate before any side effect.)
+ *
+ * Named validateRequiredArgs — NOT validateToolArgs: that name belongs to
+ * reliability/tool-args.ts (the zod-schema validator, { ok } shape). Two
+ * same-named validators with different semantics and return shapes invited
+ * wrong-import bugs; this rename is behavior-free.
  */
-export function validateToolArgs(name: string, call: Record<string, unknown>): string | null {
+export function validateRequiredArgs(name: string, call: Record<string, unknown>): string | null {
   const s = (v: unknown) => (typeof v === "string" ? v : "");
   switch (name) {
     case "read_file":

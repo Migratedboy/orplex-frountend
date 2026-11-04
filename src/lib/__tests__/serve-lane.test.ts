@@ -6,6 +6,7 @@
  * master-prompt doctrine that teaches the model the difference.
  */
 import { isServerCommand, diagnosePortConflict } from "../background-worker";
+import { diagnosePortConflict as serveLaneDiagnose } from "../agent/serve-helpers";
 import { buildSystemPrompt } from "../master-prompt";
 
 describe("isServerCommand — routes long-running servers to the serve lane", () => {
@@ -77,6 +78,24 @@ describe("diagnosePortConflict — actionable hints on EADDRINUSE", () => {
   it("handles a conflict when no port is detectable in the command", () => {
     const hint = diagnosePortConflict("myserver --start", "EADDRINUSE");
     expect(hint).toContain("different port");
+  });
+
+  it("does NOT treat a bare 'permission denied' as a port conflict (the wrong-hint fix)", () => {
+    // Both worker + serve lanes share src/lib/port-conflict.ts now; the old
+    // worker copy matched "permission denied" (often a file-system/npm-cache
+    // problem) and wrongly told the model to kill a process.
+    for (const lane of [diagnosePortConflict]) {
+      expect(lane("npm run dev", "EACCES: permission denied, open '/root/.npm/_cacache'")).toBe("");
+      expect(lane("npm install", "Error: EACCES: permission denied, access '/usr/lib'")).toBe("");
+    }
+  });
+
+  it("matches the listen-eacces phrasing (a genuine bind-permission failure)", () => {
+    expect(diagnosePortConflict("serve -p 80", "listen EACCES: permission denied 0.0.0.0:80")).toContain("[HINT]");
+  });
+
+  it("IS the serve lane's diagnoser (one shared implementation, no divergent twins)", () => {
+    expect(serveLaneDiagnose).toBe(diagnosePortConflict);
   });
 });
 

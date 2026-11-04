@@ -742,23 +742,13 @@ export function isServerCommand(command: string): boolean {
 }
 
 /**
- * Detect EADDRINUSE/EACCES port conflicts in command output and append an
- * actionable hint (find the PID via netstat, or use the serve lane).
+ * The ONE port-conflict diagnoser, shared with the serve lane
+ * (agent/serve-helpers.ts re-exports the same implementation). This lane's
+ * old inline copy still matched bare "permission denied" and produced the
+ * wrong "port is taken" hint for file-system problems — the serve lane's fix
+ * now applies here too (deliberate behavior change, see port-conflict.ts).
  */
-export function diagnosePortConflict(command: string, output: string): string {
-  const o = (output || "").toLowerCase();
-  const portMatch =
-    command.match(/(?:-l|--listen|-p|--port)\s+(\d{2,5})/) ||
-    command.match(/http\.server\s+(\d{2,5})/) ||
-    command.match(/:\s?(\d{4,5})\b/);
-  const port = portMatch ? portMatch[1] : null;
-  const isConflict = /eaddrinuse|address already in use|port is already|listen eacces|permission denied/.test(o);
-  if (!isConflict) return "";
-  if (port) {
-    return `\n\n[HINT] Port ${port} is taken — likely a zombie server from an earlier attempt. Find and kill it: run_command({ command: "netstat -ano | findstr :${port}" }) then run_command({ command: "taskkill /PID <pid> /T /F" }) (Windows) — or serve on another port.`;
-  }
-  return "\n\n[HINT] The port is taken by an older process — pick a different port or stop the old server first.";
-}
+export { diagnosePortConflict } from "./port-conflict";
 
 /**
  * Poll the task store for the user's answer to a pending question (set via
@@ -2210,7 +2200,8 @@ export async function runInBackground(
     }
     // === TOOL ARG VALIDATION (Phase 3) ===
     // The dispatcher previously ran a linear if-chain with no schema check:
-    // `contract/tools.ts validateToolArgs` existed but was only called by the
+    // `contract/tools.ts validateRequiredArgs` existed (named validateToolArgs
+    // back then) but was only called by the
     // server executor, so the client lane validated nothing. Validating here
     // means a malformed call becomes a readable tool_result the model can
     // correct, instead of a `return null` fall-through or a partial write.

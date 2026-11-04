@@ -23,7 +23,7 @@ import {
 } from "@/lib/agent/contract";
 import { runTurnLoop, type TurnLoopExit } from "@/lib/agent/loop-engine";
 import { estimateComplexity, effortForTier, type EffortBudget } from "@/lib/effort";
-import { validateToolArgs } from "@/lib/agent/contract/tools";
+import { validateRequiredArgs } from "@/lib/agent/contract/tools";
 import { isCommandAllowed } from "@/lib/exec-guard";
 import { resolve as resolvePath, dirname as dirnameOf, isAbsolute, relative as relativePath, sep as pathSep } from "path";
 import { webSearch } from "@/lib/web-search";
@@ -625,7 +625,7 @@ async function executeTool(
   // Shared contract gate: malformed core-tool calls fail fast with a precise
   // error instead of falling through to "unknown tool". (Browser/MCP lanes
   // validate through their own contract paths below.)
-  const argError = validateToolArgs(name, call as unknown as Record<string, unknown>);
+  const argError = validateRequiredArgs(name, call as unknown as Record<string, unknown>);
   if (argError) return `error: ${argError}`;
 
   // Plugin beforeToolCall hooks, server lane. Only the secret-scanner is
