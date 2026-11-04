@@ -17,7 +17,7 @@ Do not update this file per-feature; update it when a responsibility **moves**.
 | Tool-call parsing skills (turn output) | `src/lib/tool-text.ts` | XML wrappers, bare JSON, param-pair native templates. |
 | Turn loop / truncation detection | `src/lib/agent/loop-engine.ts` | Dedupes native-template pairs and tool extraction. |
 | Loop/progress detection | `src/lib/loop-detect.ts` | Also `READ_ONLY_TOOLS`. |
-| Client tool dispatch (42 branches) | `src/lib/agent/native-tools.ts` | `ToolContext` contract at segment 143. Split-safety contract: `src/lib/agent/__tests__/dispatch-surface.test.ts` (all 42 tools route; recognition-map sync; fall-through allowlist = `spawn_subagent` only). |
+| Client tool dispatch (42 branches) | `src/lib/agent/native-tools.ts` + `mcp-lane.ts` + `browser-lane.ts` | `ToolContext` contract at segment 143; MCP + browser lanes extracted. Split-safety contract: `src/lib/agent/__tests__/dispatch-surface.test.ts` (all 42 tools route; recognition-map sync; fall-through allowlist = `spawn_subagent` only). |
 | Shared pure contracts (both lanes) | `src/lib/agent/contract/*` | `tools.ts` (`validateRequiredArgs`), `results.ts` (`formatToolResult`/`formatToolError` — adopted by the server executor; text-level guard in `results.test.ts`), `browser.ts`. |
 | Server lane (worktree runs) | `src/lib/server-executor/executor.ts` | Own dispatcher `executeTool`; `buildNativeToolDefs`; DB approvals. |
 | Worktree helpers | `src/lib/server-executor/worktree.ts` | Git worktree primitives, shared. |
@@ -65,11 +65,11 @@ Most other routes are auth + Prisma thin handlers — keep them that way.
 | Responsibility | Lives in |
 |---|---|
 | Chat session state (client) | `src/hooks/useChatSession.ts` + background-chat context |
-| Prompt surface | `src/components/ChatInput.tsx` (composer; catalog engine in `src/hooks/useModelCatalog.ts`), `src/components/PromptBar.tsx` (menus/picker/effort) |
+| Prompt surface | `src/components/ChatInput.tsx` (composer; catalog engine in `src/hooks/useModelCatalog.ts`), `src/components/PromptBar.tsx` (menus/picker/effort; morphing icon in `src/components/send-glyph.tsx`) |
 | Right side panel (tabs) | `src/components/RightPanel.tsx` (shell: tab routing, error boundary, Queue/Files/Scratch tabs) + `src/components/right-panel/` (`changes-tab.tsx`, `preview-tab.tsx`, `terminal-tab.tsx`) |
 | Agent runs UI | `src/components/AgentManager.tsx`, `src/components/RunBoard.tsx` |
 | MCP connectors | `src/components/ConnectorsPanel.tsx` |
-| Settings | `src/app/settings/page.tsx` |
+| Settings | `src/app/settings/page.tsx` (shell: profile/appearance/about markup + tab routing) + `src/components/settings/` (`warm-models-card.tsx`, `api-keys-tab.tsx`, `cost-tab.tsx`, `reset-recovery-tab.tsx`) |
 | Model catalog (client rules) | `src/lib/model-catalog.ts` + `src/lib/catalog-sync.ts`/`catalog-ingest.ts` |
 
 ## Storage / persistence

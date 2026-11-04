@@ -110,11 +110,23 @@ Dispatch-surface contract (the native-tools split prerequisite):
 
 Gates: dispatch-surface 97/97; worker-adjacent suites 82/82 (run-state-isolation, token-budget, auto-verification, orchestration-wiring, live-run hardening ×2, serve-lane); server-executor + contract suites 55/55; full suite **210 suites / 2,337 tests** (baseline 209/2,240 + 97 new); lint + typecheck green.
 
+### Pass 5 evidence (native-tools lane split + settings tabs + send glyph)
+
+- `src/lib/agent/mcp-lane.ts` (260 lines) — the Phase 8 lane gate, the SDK roster snapshot cache, the C6 risk assessment, and the three MCP dispatch branches (`mcp__<server>__<tool>`, `mcp_call`, `mcp_search_tools`/`mcp_describe_tool`) moved verbatim. `tryMcpDispatch` returns null for non-MCP calls so the dispatcher falls through to the built-ins. The lane/roster caches stay module-level state — one instance per bundle, exactly as before.
+- `src/lib/agent/browser-lane.ts` (287 lines) — the `browser_*` lane (Electron IPC bridge, server Playwright fallback, screenshot attach) plus `attachScreenshot` moved verbatim; `attachScreenshot` is exported because `take_screenshot` shares it.
+- `native-tools.ts`: **2,141 → 1,676 lines**. Routing order is unchanged (MCP checked first, browser before `session_search`); the dispatch-surface contract (97 tests) passed unchanged after the split — that was the point of writing it first.
+- `src/components/settings/{warm-models-card,api-keys-tab,cost-tab,reset-recovery-tab}.tsx` — the four self-contained settings components moved verbatim out of `app/settings/page.tsx` (**1,089 → 256 lines**), following the right-panel tab pattern. `WarmModelsCard` is exported (api-keys-tab renders it); `ReliabilityCard` and `tierBadge` stay private.
+- `src/components/send-glyph.tsx` (82 lines) — the paper-plane→stop-square morphing SVG icon moved verbatim out of `PromptBar.tsx` (**1,180 → 1,113 lines**) with its path constants and interpolation helpers. `LINE`/`EDGE` stay in the bar (menu geometry uses them).
+
+Gates: agent suites 146/146; full suite **210 suites / 2,337 tests** after every extraction; lint + typecheck green. Commits: `2f74d2b`, `c8d8474`, `6d5d99e`, `e67d7a7`.
+
 ## 9. Remaining oversized files — why they stay intact for now
 
 - `src/lib/background-worker.ts` (3,239 after this pass's three extractions) — the most-tested file in the repo; several suites are **source-level regression tests that read its raw text** (e.g. `run-state-isolation.test.ts`). Decomposition requires reading those as contracts first; target design is already in the audit (run-state / verification / gates / finalize). The pure-contract blocks (token budget, auto-verify, orchestration client) are now extracted; the bulk is the `runInBackground` closure itself — deep-refactor territory.
 - `src/lib/server-executor/executor.ts` (2,727) — the ~700-line `executeTool` mirrors ≥24 client-lane tools. The shared `formatToolResult`/`formatToolError` envelope is now adopted across all 14 result sites (text-level guard forbids regression); per-tool extraction can proceed against `dispatch-surface.test.ts` + the parity map. Its `executeRun` has no direct unit test today.
-- `src/lib/agent/native-tools.ts` (2,141) — single 42-branch dispatcher; **the split-safety contract now exists**: `src/lib/agent/__tests__/dispatch-surface.test.ts` (97 tests) proves every one of the 42 roster tools routes, the incomplete-args recognition map stays roster-synced (write-family gates on the workspace before args; `apply_edit_ops` routes to the no-folder refusal; `spawn_subagent` is the only roster fall-through), and no roster tool silently lands on the unknown-tool refusal. Capability-group extraction (MCP lanes, browser lane, file ops) can now proceed test-first.
+- `src/lib/agent/native-tools.ts` (now 1,676) — the 42-branch dispatcher after the MCP + browser lane extraction. The split-safety contract (`dispatch-surface.test.ts`, 97 tests) proved every roster tool still routes. Remaining branches are file ops, exec, and chat-meta tools — each extractable the same way (capability module + null fall-through) now that the contract exists.
+- `src/lib/skills.ts` (1,132) — a pure data catalog (SKILL_CATEGORIES) + three tiny functions. Splitting a static dataset adds indirection without a cohesion gain; left intact deliberately.
+- `src/hooks/useChatSession.ts` (1,043) — one hook whose ~30 refs interlock (queue, stall watchdog, retry, reload recovery). Same deep-refactor class as the worker's `runInBackground` closure; needs a behavioral test harness before any cut.
 - `electron/main.ts` (now 1,016) — preview/agent-browser extracted; the remainder is lifecycle/window/port logic that is deliberately cohesive.
 - UI hotspots — `RightPanel` (356) and `ChatInput` (606) are done for this pass; `settings/page.tsx` (1,089) and `PromptBar.tsx` (1,180) remain mapped in the audit.
 
