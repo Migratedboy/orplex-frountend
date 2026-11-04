@@ -6,7 +6,7 @@
  * master-prompt doctrine that teaches the model the difference.
  */
 import { isServerCommand, diagnosePortConflict } from "../background-worker";
-import { diagnosePortConflict as serveLaneDiagnose } from "../agent/serve-helpers";
+import { isServerCommand as serveLaneIsServer, diagnosePortConflict as serveLaneDiagnose } from "../agent/serve-helpers";
 import { buildSystemPrompt } from "../master-prompt";
 
 describe("isServerCommand — routes long-running servers to the serve lane", () => {
@@ -96,6 +96,12 @@ describe("diagnosePortConflict — actionable hints on EADDRINUSE", () => {
 
   it("IS the serve lane's diagnoser (one shared implementation, no divergent twins)", () => {
     expect(serveLaneDiagnose).toBe(diagnosePortConflict);
+  });
+});
+
+describe("isServerCommand — one shared router for both lanes", () => {
+  it("IS the serve lane's router (verbatim twin unified, no divergent copies)", () => {
+    expect(serveLaneIsServer).toBe(isServerCommand);
   });
 });
 

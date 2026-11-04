@@ -736,10 +736,12 @@ export function buildVerificationRepairPrompt(findings: string, files: string[])
  * Commands that start long-running servers. These must go through the
  * detached serve lane (/api/agent/serve), never blocking exec — a server
  * never exits, so exec would kill it at the timeout and orphan the child.
+ *
+ * The implementation lives in agent/serve-helpers.ts; this lane re-exports
+ * the same function so the two lanes can never drift apart again (same
+ * pattern as diagnosePortConflict below).
  */
-export function isServerCommand(command: string): boolean {
-  return /(^|\s)(npx\s+serve|serve\s|npm\s+run\s+dev|npm\s+run\s+start|npm\s+start\b|next\s+dev|next\s+start|vite(\s|$)|python3?\s+(-\w+\s+)*-?m\s+http\.server|flask\s+run|uvicorn(\s|$)|php\s+-S|http-server(\s|$)|json-server(\s|$)|live-server(\s|$))/.test(command);
-}
+export { isServerCommand } from "./agent/serve-helpers";
 
 /**
  * The ONE port-conflict diagnoser, shared with the serve lane
