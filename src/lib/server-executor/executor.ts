@@ -24,6 +24,7 @@ import {
 import { runTurnLoop, type TurnLoopExit } from "@/lib/agent/loop-engine";
 import { estimateComplexity, effortForTier, type EffortBudget } from "@/lib/effort";
 import { validateRequiredArgs } from "@/lib/agent/contract/tools";
+import { formatToolError, formatToolResult } from "@/lib/agent/contract/results";
 import { isCommandAllowed } from "@/lib/exec-guard";
 import { resolve as resolvePath, dirname as dirnameOf, isAbsolute, relative as relativePath, sep as pathSep } from "path";
 import { webSearch } from "@/lib/web-search";
@@ -1734,9 +1735,9 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
           let resultXml: string;
           try {
             const toolOut = await executeTool(c as never, ctx!, run.autonomyPolicy !== "auto", run.id, dagWritten, hooks, undefined, undefined, undefined, undefined, { userId: run.userId, remoteTools });
-            resultXml = `<tool_result name="${name}">${toolOut}</tool_result>`;
+            resultXml = formatToolResult(name, {}, toolOut);
           } catch (err) {
-            resultXml = `<tool_result name="${name}">error: ${String((err as Error).message).slice(0, 300)}</tool_result>`;
+            resultXml = formatToolError(name, {}, String((err as Error).message).slice(0, 300));
           }
           dagTranscript.push({ role: "user", content: resultXml.slice(0, 6000) });
           return { resultXml };
@@ -1771,7 +1772,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         const names = filtered.map((c) => String(c.name)).join(", ");
         transcript.push({
           role: "user",
-          content: `<tool_result name="unavailable">error — the tool(s) ${names} are not available in this environment. Use one of: read_file, list_files, write_file, edit_file, run_command, search_code. Do not retry an unavailable tool.</tool_result>`,
+          content: formatToolResult("unavailable", {}, `error — the tool(s) ${names} are not available in this environment. Use one of: read_file, list_files, write_file, edit_file, run_command, search_code. Do not retry an unavailable tool.`),
         });
       },
       shouldAbort: () => false,
@@ -1948,7 +1949,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
           const { planBatchVariants, runBatchExecute } = await import("./batch");
           const variants = planBatchVariants(rec.variants ?? rec.batch ?? rec.subtasks);
           if (!variants) {
-            return { resultXml: `<tool_result name="batch_execute">error: batch_execute requires "variants" — an array of 2-3 objects { label, prompt }. The prompt must be self-contained (the worker starts from an empty context).</tool_result>` };
+            return { resultXml: formatToolError("batch_execute", {}, `batch_execute requires "variants" — an array of 2-3 objects { label, prompt }. The prompt must be self-contained (the worker starts from an empty context).`) };
           }
           await emit(run.id, "batch-started", { workers: variants.length }).catch(() => {});
           const autonomy = run.autonomyPolicy !== "auto";
@@ -1978,11 +1979,11 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
               for (const f of winnerResult?.files ?? []) writtenFiles.add(String(f).replace(/\\/g, "/"));
               await emit(run.id, "batch-consensus", { winner: outcome.consensus.winner, files: winnerResult?.files ?? [] }).catch(() => {});
               return {
-                resultXml: `<tool_result name="batch_execute">\n${outcome.consensus.verdict}\nMerged files: ${(winnerResult?.files ?? []).join(", ") || "(none)"}\n</tool_result>`,
+                resultXml: formatToolResult("batch_execute", {}, `\n${outcome.consensus.verdict}\nMerged files: ${(winnerResult?.files ?? []).join(", ") || "(none)"}\n`),
               };
             }
             return {
-              resultXml: `<tool_result name="batch_execute">consensus found, but the merge FAILED${merge.conflict ? `: ${String(merge.conflict).slice(0, 300)}` : ""}. Nothing was merged. Either resolve the conflict manually or write the change yourself with write_file/edit_file.</tool_result>`,
+              resultXml: formatToolResult("batch_execute", {}, `consensus found, but the merge FAILED${merge.conflict ? `: ${String(merge.conflict).slice(0, 300)}` : ""}. Nothing was merged. Either resolve the conflict manually or write the change yourself with write_file/edit_file.`),
             };
           }
           await cleanupAll();
@@ -1990,7 +1991,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
           const report = outcome.consensus.verdict +
             "\n" +
             outcome.results.map((r) => `- variant "${r.label}": ${r.ok ? `wrote ${r.files.join(", ") || "(no files)"}` : r.error ?? "failed"}`).join("\n");
-          return { resultXml: `<tool_result name="batch_execute">\n${report.slice(0, 4000)}\n</tool_result>` };
+          return { resultXml: formatToolResult("batch_execute", {}, `\n${report.slice(0, 4000)}\n`) };
         }
         // === SPAWN_SUBAGENT (read-only parallel research, server lane) ===
         // Run BEFORE the generic executeTool path: the subagent mini loop
@@ -2002,7 +2003,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         if (toolName === "spawn_subagent") {
           // Budget gate FIRST — a refused spawn doesn't consume the turn.
           if (subagentsSpawned >= effortBudget.subagentLimit) {
-            return { resultXml: `<tool_result name="spawn_subagent">Refused: subagent budget exhausted (limit ${effortBudget.subagentLimit} for this task's effort tier).</tool_result>` };
+            return { resultXml: formatToolResult("spawn_subagent", {}, `Refused: subagent budget exhausted (limit ${effortBudget.subagentLimit} for this task's effort tier).`) };
           }
           const { runSubagent, SUBAGENT_ALLOWED_TOOLS } = await import("@/lib/agent/subagent");
           const rec = call as unknown as Record<string, unknown>;
@@ -2014,10 +2015,10 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
             }),
             dispatch: async (sub: { name: string }) => {
               if (!SUBAGENT_ALLOWED_TOOLS.has(String(sub.name))) {
-                return `<tool_result name="${sub.name}">refused: subagents may only use discovery tools</tool_result>`;
+                return formatToolResult(String(sub.name), {}, "refused: subagents may only use discovery tools");
               }
               const out = await executeTool(sub as never, ctx!, autonomy, runId, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, undefined, { userId: run.userId, remoteTools });
-              return `<tool_result name="${sub.name}">${out}</tool_result>`;
+              return formatToolResult(String(sub.name), {}, out);
             },
           };
           const outcome = await runSubagent(subDeps, {
@@ -2026,7 +2027,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
             maxTurns: 15,
           });
           subagentsSpawned++;
-          return { resultXml: `<tool_result name="${toolName}">\n${String(outcome).slice(0, 6000)}\n</tool_result>` };
+          return { resultXml: formatToolResult(toolName, {}, `\n${String(outcome).slice(0, 6000)}\n`) };
         }
         // use_skill resolves against the discovered skill list before dispatch.
         if (toolName === "use_skill") {
@@ -2038,7 +2039,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
             scratch = updateScratchpadSection(scratch, section, content, turns);
           },
         }, { userId: run.userId, remoteTools });
-        return { resultXml: `<tool_result name="${toolName}">${out}</tool_result>` };
+        return { resultXml: formatToolResult(toolName, {}, out) };
       },
       postDispatch: (_turn, _out, info) => {
         const scratchBlock = renderScratchpadBlock(scratch);
@@ -2233,7 +2234,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
           const repairResults: string[] = [];
           for (const call of repairCalls) {
             const out = await executeTool(call as never, ctx!, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, undefined, { userId: run.userId, remoteTools });
-            repairResults.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
+            repairResults.push(formatToolResult(String(call.name), {}, out));
           }
           if (repairCalls.length === 0) {
             summary += `\n\nBrowser verification failed (console errors) — see the verification artifact for review.`;
@@ -2287,7 +2288,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
               const repairResults: string[] = [];
               for (const call of repairCalls) {
                 const out = await executeTool(call as never, ctx!, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, undefined, { userId: run.userId, remoteTools });
-                repairResults.push(`<tool_result name="${String(call.name)}">${out}</tool_result>`);
+                repairResults.push(formatToolResult(String(call.name), {}, out));
               }
               if (repairResults.length > 0) {
                 transcript.push({ role: "user", content: repairResults.join("\n") });

@@ -7,6 +7,9 @@
 // so the migration can proceed call-site by call-site with a safety net:
 // any future adoption that changes model-visible bytes fails here loudly.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { formatToolError, formatToolResult } from "../results";
 
 describe("formatToolResult — the shared envelope", () => {
@@ -47,7 +50,7 @@ describe("formatToolError — the error shorthand", () => {
   });
 });
 
-describe("lane parity map — what each lane hand-builds today (migration deltas)", () => {
+describe("lane parity map — dialect deltas that the migration reconciled", () => {
   const out = "tool output";
 
   it("client worker generic envelope (native-tools.ts) === shared formatter with a \\n-wrapped body", () => {
@@ -56,24 +59,24 @@ describe("lane parity map — what each lane hand-builds today (migration deltas
     expect(clientInline).toBe(formatToolResult("edit_file", {}, `\n${out}\n`));
   });
 
-  it("server executor plain envelope (executor.ts) === shared formatter MINUS the trailing newline", () => {
-    // executor.ts:1737: `<tool_result name="${name}">${toolOut}</tool_result>`
+  it("server executor sites NOW use the shared formatter (migration done)", () => {
+    // The executor's 14 inline templates were adopted onto formatToolResult /
+    // formatToolError. Two deliberate model-visible byte changes came with it,
+    // exactly as this map predicted: every result gained the trailing "\n",
+    // and the "error: " prefix became the shared "error - " dialect.
     const executorInline = `<tool_result name="edit_file">${out}</tool_result>`;
-    // The dialect delta is exactly the trailing "\n" — migrating this call
-    // site adds a byte the model will see, which is why adoption is a
-    // deliberate per-lane change, not a mechanical swap.
     expect(executorInline + "\n").toBe(formatToolResult("edit_file", {}, out));
-    expect(executorInline).not.toBe(formatToolResult("edit_file", {}, out));
-  });
-
-  it("both lanes' error dialects ('error: msg') map onto formatToolError with a prefix delta", () => {
-    // executor.ts:1739: `<tool_result name="${name}">error: ${msg}</tool_result>`
-    // The shared formatter emits "error - msg" — the client dialect. The
-    // executor's "error: " prefix is the remaining delta to reconcile.
-    const executorError = `<tool_result name="edit_file">error: exploded</tool_result>`;
-    expect(executorError).toBe(`<tool_result name="edit_file">error: exploded</tool_result>`);
     expect(formatToolError("edit_file", {}, "exploded")).toBe(
       `<tool_result name="edit_file">error - exploded</tool_result>\n`
     );
+  });
+
+  it("GUARD: executor.ts must not hand-build tool_result envelopes anymore", () => {
+    // Text-level regression guard (same technique as run-state-isolation):
+    // a new inline `<tool_result ...>` template in the executor would silently
+    // reintroduce the two-dialect problem this migration removed.
+    const src = readFileSync(join(__dirname, "..", "..", "..", "server-executor", "executor.ts"), "utf8");
+    expect(src).not.toMatch(/<tool_result/);
+    expect(src).toMatch(/formatToolResult/);
   });
 });
