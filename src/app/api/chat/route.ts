@@ -23,43 +23,18 @@ import { refreshMissingSnapshots as refreshMissingMcpSnapshots } from "@/lib/mcp
 import { getMcpCatalogEntry } from "@/lib/mcp-catalog";
 import { routeToModel } from "@/lib/model-router";
 import { resolveMaxOutputTokens, rejectsTemperature } from "@/lib/model-output-caps";
-import { getVerifiedModels } from "@/lib/model-catalog";
+
 import { preprocessMessages } from "@/lib/vision-preprocessor";
 import { canSendImageParts } from "@/lib/vision-models";
 import { recordProviderEvent } from "@/lib/provider-uptime";
-
-/** Strip an OpenRouter-style namespace: "openai/gpt-4o" -> "gpt-4o". */
-function bareModelId(id: string): string {
-  const s = (id || "").trim();
-  const i = s.lastIndexOf("/");
-  return i >= 0 ? s.slice(i + 1) : s;
-}
-
-/**
- * Model id -> context window, from the (cached) verified catalog.
- *
- * Best-effort by design: the catalog answers from memory/disk cache instantly
- * and a cold cache simply yields an empty map, which makes
- * resolveMaxOutputTokens fall back to its safe default. This must never throw
- * — it runs on the hot chat path.
- */
-async function loadContextWindows(): Promise<Map<string, number>> {
-  const map = new Map<string, number>();
-  try {
-    const { models } = await getVerifiedModels({ background: true });
-    for (const m of models) {
-      const ctx = (m as { contextWindow?: number }).contextWindow;
-      if (typeof ctx === "number" && ctx > 0) {
-        map.set(m.id, ctx);
-        const bare = bareModelId(m.id);
-        if (bare && !map.has(bare)) map.set(bare, ctx);
-      }
-    }
-  } catch {
-    /* catalog unavailable — safe default applies */
-  }
-  return map;
-}
+import {
+  contextWindowForModel,
+  loadContextWindows,
+} from "@/lib/model-context-windows";
+import {
+  isPayloadTooLargeError,
+  providerFailureMessage,
+} from "@/lib/provider-failure-policy";
 
 export async function POST(request: NextRequest) {
   try {
@@ -246,8 +221,8 @@ const routedSupportsVision = canSendImageParts(
     // be clamped to something the model can actually hold. Any failure here is
     // non-fatal: resolveMaxOutputTokens just falls back to its safe default.
     const contextWindows = await loadContextWindows();
-    const contextWindowForModel = (id: string): number | undefined =>
-      contextWindows.get((id || "").trim()) ?? contextWindows.get(bareModelId(id));
+    const contextWindowFor = (id: string): number | undefined =>
+      contextWindowForModel(contextWindows, id);
 
     for (const provider of providerConfigs) {
       if (effort && effort !== "medium") {
@@ -276,7 +251,7 @@ const routedSupportsVision = canSendImageParts(
       const maxCompletionTokens = resolveMaxOutputTokens(
         provider.model,
         onPlatformGroqBudget ? Math.min(2048, tierMaxTokens) : effort === "low" ? Math.min(4096, tierMaxTokens) : tierMaxTokens,
-        contextWindowForModel(provider.model)
+        contextWindowFor(provider.model)
       );
     // Per-attempt image gating. Routing picked ONE vision-capable provider, but
     // a failure can fall through the ladder to a text-only one (Groq), which
@@ -360,7 +335,7 @@ const routedSupportsVision = canSendImageParts(
       // HTTP 413 ("request too large", "tokens per minute (TPM)"). Only then
       // do we retry THIS provider once with the compact prompt + lean roster,
       // so the identical request shape is the default everywhere.
-      if (!result.ok && /413|too large|tokens per minute|\bTPM\b|reduce your message/i.test(result.error)) {
+      if (!result.ok && isPayloadTooLargeError(result.error)) {
         console.log(`[chat] ${provider.name} rejected payload size — retrying lean`);
         const leanPrompt = await buildSystemPrompt({
           mode,
@@ -425,12 +400,7 @@ const routedSupportsVision = canSendImageParts(
       // 413 belongs here: after the lean retry above, a payload the provider
       // still refuses as too large is permanent for this model — "send again
       // in a minute" would be a lie.
-      const permanentRejection = /\bHTTP 4(00|01|03|04|13|22)\b/.test(lastError);
-      const message = requestedModel
-        ? permanentRejection
-          ? `The selected model (${requestedModel}) rejected the request — it is not a problem that will fix itself. Try a different model.`
-          : `The selected model (${requestedModel}) is not responding right now - it may still be warming up on its provider. Send again in a minute or pick another model.`
-        : "All AI providers are currently unavailable. Please try again.";
+      const message = providerFailureMessage(requestedModel ?? undefined, lastError);
       if (attemptsMade > 0) {
         console.warn(`[chat] all providers failed for "${requestedModel || "auto"}" — returning notice stream: ${lastError}`);
         const enc = new TextEncoder();

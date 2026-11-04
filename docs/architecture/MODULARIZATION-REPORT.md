@@ -18,6 +18,8 @@ Top oversized files with line counts are in `MODULARIZATION-AUDIT.md` §1/§3: `
 |---|---|---|
 | `electron/main.ts` — two verbatim-twin child-kill loops (`will-quit` at ~1795, `shutdownMain` at ~1944) + dead `node:net` import | Killing logic moves to `electron/next-children.ts` (`killNextChildren`); `main.ts` calls it from both paths; dead import removed. `main.ts` keeps child-ownership and shutdown ordering. | pure extraction + dead-code removal |
 | `src/app/api/agent/ledger/route.ts` (276 lines: normalization + Prisma transaction + HTTP in one file) | Business core extracted to `src/lib/task-ledger.ts` (`normalizeLedgerPayload`, `persistRunOutcome`, `listOpenFailures`, `workspaceKeyFrom`); route is now a thin coordinator: auth → normalize → persist → HTTP error mapping. Route went 276 → 96 lines. | service extraction |
+| `src/app/api/chat/route.ts` — inline failure regexes, message ternary, and model-id/ctx-window helpers | `src/lib/provider-failure-policy.ts` (`isPayloadTooLargeError`, `isPermanentRejection`, `providerFailureMessage`) + `src/lib/model-context-windows.ts` (`bareModelId`, `loadContextWindows`, `contextWindowForModel`). Route keeps the retry loop; policy is now tested in isolation (17 tests). The TPM regex behavior was pinned as-is (a 429 naming the TPM cap IS the lean-retry trigger). | policy/service extraction |
+| `src/app/api/agent/serve/route.ts` — inline `detectPort`/`waitUntilListening`/`treeKill` | `src/lib/serve-process.ts`, identical implementations; the serve registry, auth and spawn orchestration stay in the route. Spawn options deliberately NOT centralized (they are per-attempt business rules). | helper extraction |
 
 ## 4. Responsibilities extracted
 
@@ -49,9 +51,21 @@ Command run | Result
 `npm run typecheck` | pass (both tsconfigs)
 `npm test -- --silent` (full suite) | **203 suites passed (1 skipped), 2176 tests passed, 2177 total** — up from the 201/2160 baseline, i.e. existing behavior intact plus 16 new regression tests
 
+Second modularization pass (provider-failure policy + context-window helpers + serve process helpers) added 25 more tests:
+
+Command run | Result
+--- | ---
+`npx jest src/lib/__tests__/provider-failure-policy.test.ts src/lib/__tests__/model-context-windows.test.ts --forceExit` | **17 tests passed**
+`npx jest src/lib/__tests__/serve-process.test.ts --forceExit` | **8 tests passed** (incl. a real TCP bind for `waitUntilListening`)
+`npm run typecheck` / `npm run lint` | pass
+`npm test -- --silent` (full suite) | **206 suites passed (1 skipped), 2201 tests passed, 2202 total**
+
 New regression tests:
 - `src/lib/__tests__/task-ledger.test.ts` — pins fail-closed rejection, dual-shape normalization, field caps, `resolveKinds` mapping/dedupe, sha256 upsert identity, one-transaction persistence, GET row shaping (incl. non-array `files` survival).
 - `electron/__tests__/next-children.test.ts` — pins win32 taskkill (`/T /F`), skip-killed, both-attempt swallow behavior.
+- `src/lib/__tests__/provider-failure-policy.test.ts` — pins lean-retry trigger regex, permanent-rejection class (incl. 413, and NOT 429/5xx), and the exact shipping user copy.
+- `src/lib/__tests__/model-context-windows.test.ts` — pins bare-id fallback, never-throw catalog contract, cap/skip rules.
+- `src/lib/__tests__/serve-process.test.ts` — pins port-declaration detection, real-TCP readiness probe, win32/POSIX treeKill split (incl. group-kill fallback and already-dead pid survival).
 
 ## 9. Remaining oversized files — why they stay intact for now
 
@@ -66,6 +80,6 @@ New regression tests:
 1. `diagnosePortConflict` divergence — the worker copy still matches `permission denied` (the exact wrong-hint case `serve-helpers` fixed); one of them must win. Needs a product decision, then a lane-parity test.
 2. `validateToolArgs` name collision across two modules with different semantics — rename in a behavior-free pass.
 3. `formatToolResult` exists but is not used by either lane (both inline the XML template) — the key to dispatcher unification; needs a parity snapshot test before adoption.
-4. No direct tests: `executor.executeRun`, `main.ts` lifecycle, three UI hotspots, `api/chat`, `api/agent/exec`, `api/agent/serve`. Test-first plan required before their extraction (order specified in the audit's migration list).
+4. No direct tests: `executor.executeRun`, `main.ts` lifecycle, three UI hotspots, `api/chat` HTTP surface (policy layer now tested; the route's request plumbing still isn't), `api/agent/exec`. Test-first plan required before their extraction (order specified in the audit's migration list).
 5. Dep-cruiser (or equivalent) automated circular/forbidden-import check is not yet configured; boundary rules are currently enforced by `eslint`, `tsc`, code review and `npm run audit`.
 6. Stale documentation: "41 tools" references elsewhere in the repo should be reconciled to the real 42.

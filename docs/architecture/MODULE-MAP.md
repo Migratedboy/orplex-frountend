@@ -51,9 +51,9 @@ Do not update this file per-feature; update it when a responsibility **moves**.
 
 | Route | What to know |
 |---|---|
-| `/api/chat/route.ts` | Model call pipeline: routing → one prompt/one roster → provider retry loop with lean-on-413. |
+| `/api/chat/route.ts` | Model call pipeline: routing → one prompt/one roster → provider retry loop with lean-on-413. Failure classification + user-copy live in `src/lib/provider-failure-policy.ts`; model-id/ctx-window helpers in `src/lib/model-context-windows.ts`. |
 | `/api/agent/exec/route.ts` | Three exec lanes: Vercel sandbox → CI sandbox → local spawn. |
-| `/api/agent/serve/route.ts` | Detached serve lane (`detectPort`, `treeKill`, secret-stripped env). |
+| `/api/agent/serve/route.ts` | Detached serve lane: registry + auth/ownership in the route; pure process helpers (`detectPort`, `waitUntilListening`, `treeKill`) in `src/lib/serve-process.ts`. |
 | `/api/agent/ledger/route.ts` | Thin coordinator; payload rules + persistence live in `src/lib/task-ledger.ts`. |
 | `/api/search/route.ts` | Thin wrapper over `src/lib/web-search.ts`. |
 
