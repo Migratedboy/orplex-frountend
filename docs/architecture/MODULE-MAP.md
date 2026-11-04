@@ -17,12 +17,12 @@ Do not update this file per-feature; update it when a responsibility **moves**.
 | Tool-call parsing skills (turn output) | `src/lib/tool-text.ts` | XML wrappers, bare JSON, param-pair native templates. |
 | Turn loop / truncation detection | `src/lib/agent/loop-engine.ts` | Dedupes native-template pairs and tool extraction. |
 | Loop/progress detection | `src/lib/loop-detect.ts` | Also `READ_ONLY_TOOLS`. |
-| Client tool dispatch (42 branches) | `src/lib/agent/native-tools.ts` | `ToolContext` contract at segment 143. |
-| Shared pure contracts (both lanes) | `src/lib/agent/contract/*` | `tools.ts` (validation), `results.ts` (formatter — currently unused by lanes), `browser.ts`. |
+| Client tool dispatch (42 branches) | `src/lib/agent/native-tools.ts` | `ToolContext` contract at segment 143. Split-safety contract: `src/lib/agent/__tests__/dispatch-surface.test.ts` (all 42 tools route; recognition-map sync; fall-through allowlist = `spawn_subagent` only). |
+| Shared pure contracts (both lanes) | `src/lib/agent/contract/*` | `tools.ts` (`validateRequiredArgs`), `results.ts` (`formatToolResult`/`formatToolError` — adopted by the server executor; text-level guard in `results.test.ts`), `browser.ts`. |
 | Server lane (worktree runs) | `src/lib/server-executor/executor.ts` | Own dispatcher `executeTool`; `buildNativeToolDefs`; DB approvals. |
 | Worktree helpers | `src/lib/server-executor/worktree.ts` | Git worktree primitives, shared. |
 | Server-worker runtime | `src/lib/agent/runtime/` | Scheduler, types, instance state. |
-| Client chat lane | `src/lib/background-worker.ts` | Token budget, gates, verification lanes, ledger. Chat session struct + run phases in `src/lib/background-chat.ts`. |
+| Client chat lane | `src/lib/background-worker.ts` | Gates, verification lanes, ledger. Extracted pure contracts: `src/lib/token-budget.ts`, `src/lib/auto-verify.ts`, `src/lib/orchestration-client.ts`. Chat session struct + run phases in `src/lib/background-chat.ts`. |
 | Compaction | `src/lib/compaction.ts` | ONE hierarchical compactor used by both lanes. |
 | Verification (real browser) | `src/lib/browser-verification/` | Shared by the `verify_app` tool and the browser-verification lane. |
 | Role-classifier / jail | `src/lib/risk-classifier.ts`, `src/lib/reliability/` | Approval gating + incident drivers. |
