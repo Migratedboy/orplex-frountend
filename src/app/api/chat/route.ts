@@ -12,6 +12,7 @@ import {
   modelVariants,
   watchMidStreamFailure,
   sseNoticeChunk,
+  parseJsonRequest,
 } from "@/lib/chat-middleware";
 import { sseTransform } from "@/lib/ai-providers";
 import { isMockAiEnabled, createMockProviderStream } from "@/lib/mock-ai";
@@ -65,8 +66,11 @@ export async function POST(request: NextRequest) {
     // A malformed body (400) must never consume the user's daily request:
     // the quota increment happens inside enforceDailyQuota, so validating
     // first means only requests that actually reach a provider count.
-    const body = await request.json();
-    const validated = validateRequestBody(body);
+    // parseJsonRequest turns a malformed body into an explicit 400 — an
+    // unguarded request.json() throw would land in the generic 500 catch.
+    const parsedBody = await parseJsonRequest(request);
+    if (!parsedBody.ok) return parsedBody.response;
+    const validated = validateRequestBody(parsedBody.data);
     if (!validated.ok) return validated.response;
     // Sanitize user messages + log prompt-injection attempts (never blocks).
     const sanitized = sanitizeAndValidateInput(validated.data);

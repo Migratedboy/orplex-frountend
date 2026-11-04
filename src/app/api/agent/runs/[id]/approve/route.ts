@@ -40,15 +40,21 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
     return NextResponse.json({ success: false, error: `Already ${approval.status}` }, { status: 409 });
   }
 
-  const updated = await prisma.approvalRequest.update({
-    where: { id: approval.id },
+  // Conditional update: only a still-pending row can transition. Two concurrent
+  // decisions (double-click, two tabs) otherwise both pass the check above and
+  // last-write-wins — e.g. an approve overwritten by a racing reject while the
+  // executor polls. updateMany + count makes exactly one decision win.
+  const updated = await prisma.approvalRequest.updateMany({
+    where: { id: approval.id, status: "pending" },
     data: {
       status: action === "approve" ? "approved" : "rejected",
       decidedBy: session.user.id,
       decidedAt: new Date(),
     },
-    select: { id: true, status: true },
   });
+  if (updated.count === 0) {
+    return NextResponse.json({ success: false, error: "Already decided" }, { status: 409 });
+  }
 
-  return NextResponse.json({ success: true, approval: updated });
+  return NextResponse.json({ success: true, approval: { id: approval.id, status: action === "approve" ? "approved" : "rejected" } });
 }
