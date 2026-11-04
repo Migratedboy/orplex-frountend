@@ -67,19 +67,47 @@ New regression tests:
 - `src/lib/__tests__/model-context-windows.test.ts` — pins bare-id fallback, never-throw catalog contract, cap/skip rules.
 - `src/lib/__tests__/serve-process.test.ts` — pins port-declaration detection, real-TCP readiness probe, win32/POSIX treeKill split (incl. group-kill fallback and already-dead pid survival).
 
+Third modularization pass (native preview/agent browser + UI catalog hook + behavior-decision items) added 33 more tests:
+
+Command run | Result
+--- | ---
+`npx jest electron/__tests__/preview-logic.test.ts --forceExit` | **20 tests passed** (URL normalization, bounds clamping, ref resolution, console formatting, find filtering, wait clamps)
+`npx jest src/lib/agent/contract src/lib/__tests__/tool-args.test.ts src/lib/__tests__/serve-lane.test.ts --forceExit` | **61 tests passed** (incl. the new lane-parity identity check and the permission-denied wrong-hint fix)
+`npx jest src/lib/agent/contract/__tests__/results.test.ts --forceExit` | **9 tests passed** (envelope bytes + lane dialect delta map)
+`npx jest src/hooks/__tests__/useModelCatalog.test.tsx --forceExit` | **5 tests passed** (defaults-always-listed, upgrade-in-place, BYOK dedupe, cold-hide + wake un-hide, spinner reality)
+`npm run typecheck` / `npm run lint` | pass
+`npm test -- --silent` (full suite) | **209 suites passed (1 skipped), 2239 tests passed, 2240 total**
+
+Extractions in this pass:
+- `electron/preview-logic.ts` — pure decision helpers of the preview/agent browser (verbatim moves; 20 tests pin them). Pinned-as-is quirks: scheme-less localhost input can never reach the inline `http://localhost` branch (dead code in the original) and bare `localhost` becomes a Google search.
+- `electron/preview-views.ts` — all view state (view map, console/network rings, agent tab bookkeeping) + all 28 `preview:*`/`agent-browser:*` IPC handlers, registered via `registerPreviewBrowser({ handleAppIpc, getMainWindow })` at the original module scope (registration order unchanged); `preparePreviewPartition()` replaces the inline session call in startup. `electron/main.ts`: **1,942 → 1,016 lines**; keeps window ownership, the origin guard, and the `orplex:` workspace handlers.
+- `src/lib/port-conflict.ts` — THE shared `diagnosePortConflict` (see behavior change below); both lanes re-export the same function.
+- `src/hooks/useModelCatalog.ts` — the verified-model catalog engine (retry loop, P1 coalescing, StrictMode cancellation, serverless rescue, BYOK merge, wake promotions, recents, curated-defaults merge) moved verbatim out of `ChatInput.tsx` (**1,128 → 606 lines**). ChatInput keeps picker state and the composer; its own `toastRef` stays for paste/attachment errors.
+- `src/components/right-panel/{changes-tab,preview-tab,terminal-tab}.tsx` — the three self-contained tabs moved verbatim out of `RightPanel.tsx` (**1,301 → 356 lines**); `mountedBrowserRef` is exported from the preview module because the panel shell reads it while routing tabs.
+
+Deliberate behavior changes (signed off under "do it all"):
+1. **Worker lane adopts the serve lane's port-conflict fix** (`src/lib/port-conflict.ts`): bare "permission denied" output no longer produces the wrong "port is taken" hint (it is usually a file-system/npm-cache problem). `listen EACCES` still matches. Pinned by `serve-lane.test.ts` in both lanes + an identity check that the two lanes share ONE implementation.
+2. **`validateToolArgs` collision resolved (behavior-free)**: `agent/contract/tools.ts`'s required-arg gate is now `validateRequiredArgs`; the zod validator in `reliability/tool-args.ts` keeps the `validateToolArgs` name. All consumers updated.
+
+New regression tests (this pass):
+- `electron/__tests__/preview-logic.test.ts` — address-bar semantics, bounds clamping, find-ref staleness/unknown errors, console line formatting, find filter pipeline, wait clamps.
+- `src/lib/agent/contract/__tests__/results.test.ts` — `formatToolResult`/`formatToolError` exact bytes + the lane dialect delta map (client `\n`-wraps bodies; executor omits the trailing newline; error prefix `": "` vs `" - "`). This is the safety net for per-call-site adoption of the shared envelope.
+- `src/hooks/__tests__/useModelCatalog.test.tsx` — picker contract via `renderHook` + mocked `apiFetch`.
+
 ## 9. Remaining oversized files — why they stay intact for now
 
 - `src/lib/background-worker.ts` (3,502) — the most-tested file in the repo; several suites are **source-level regression tests that read its raw text** (e.g. `run-state-isolation.test.ts`). Decomposition requires reading those as contracts first; target design is already in the audit (run-state / verification / gates / finalize). Not touched to avoid bundling a multi-module move with any behavior risk in one pass.
-- `src/lib/server-executor/executor.ts` (2,727) — the ~700-line `executeTool` mirrors ≥24 client-lane tools. Unification is the big win but depends on adopting the unused `formatToolResult` (`agent/contract/results.ts`) with snapshot parity first. Its `executeRun` has no direct unit test today.
+- `src/lib/server-executor/executor.ts` (2,727) — the ~700-line `executeTool` mirrors ≥24 client-lane tools. Unification is the big win but depends on adopting the shared `formatToolResult` (`agent/contract/results.ts`) call-site by call-site — the parity map in `results.test.ts` is the safety net. Its `executeRun` has no direct unit test today.
 - `src/lib/agent/native-tools.ts` (2,141) — single 42-branch dispatcher; splitting risks tool coverage breaking silently. Requires dispatch-surface tests per capability group before extraction.
-- `electron/main.ts` (now ~1,910) — preview/agent-browser views (~50% of the file, 281–538 + 999–1746) are the next extraction, gated by the fact that `main.ts` has no direct test file; needs a lifecycle test plan before the views move.
-- UI hotspots (`RightPanel`, `ChatInput`, `settings/page`) — tab/hook extraction candidates mapped in the audit; behavior lives in business rules, so tests-first extraction is mandatory.
+- `electron/main.ts` (now 1,016) — preview/agent-browser extracted; the remainder is lifecycle/window/port logic that is deliberately cohesive.
+- UI hotspots — `RightPanel` (356) and `ChatInput` (606) are done for this pass; `settings/page.tsx` (1,089) and `PromptBar.tsx` (1,180) remain mapped in the audit.
 
 ## 10. Unresolved problems
 
-1. `diagnosePortConflict` divergence — the worker copy still matches `permission denied` (the exact wrong-hint case `serve-helpers` fixed); one of them must win. Needs a product decision, then a lane-parity test.
-2. `validateToolArgs` name collision across two modules with different semantics — rename in a behavior-free pass.
-3. `formatToolResult` exists but is not used by either lane (both inline the XML template) — the key to dispatcher unification; needs a parity snapshot test before adoption.
-4. No direct tests: `executor.executeRun`, `main.ts` lifecycle, three UI hotspots, `api/chat` HTTP surface (policy layer now tested; the route's request plumbing still isn't), `api/agent/exec`. Test-first plan required before their extraction (order specified in the audit's migration list).
+1. ~~`diagnosePortConflict` divergence~~ **RESOLVED** — `src/lib/port-conflict.ts` is the single implementation; the worker lane adopted the serve lane's fix (deliberate behavior change, pinned by tests).
+2. ~~`validateToolArgs` name collision~~ **RESOLVED** — contract lane renamed to `validateRequiredArgs` (behavior-free).
+3. `formatToolResult` is pinned by `results.test.ts` but still not used by either lane's call sites (both inline the XML template). Adoption is a per-call-site migration with model-visible byte deltas (documented in the parity map) — not a mechanical swap.
+4. No direct tests: `executor.executeRun`, `main.ts` lifecycle, `api/chat` HTTP surface (policy layer now tested; the route's request plumbing still isn't), `api/agent/exec`. Test-first plan required before their extraction (order specified in the audit's migration list).
 5. Dep-cruiser (or equivalent) automated circular/forbidden-import check is not yet configured; boundary rules are currently enforced by `eslint`, `tsc`, code review and `npm run audit`.
 6. Stale documentation: "41 tools" references elsewhere in the repo should be reconciled to the real 42.
+7. Observed quirk pinned as-is: `showBlockingSpinner` in `useModelCatalog` can never be true (`models.length === 0` is unreachable because the curated defaults are permanent). Fixing it would be a product decision, not a refactor.

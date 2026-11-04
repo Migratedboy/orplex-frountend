@@ -35,7 +35,8 @@ Do not update this file per-feature; update it when a responsibility **moves**.
 
 | Responsibility | Lives in |
 |---|---|
-| App entry / lifecycle / window / port takeover / crash recovery | `electron/main.ts` |
+| App entry / lifecycle / window / port takeover / crash recovery | `electron/main.ts` (window ownership + origin guard + `orplex:` workspace handlers; 1,016 lines after extraction) |
+| Native preview + agent browser (Electron side) | `electron/preview-views.ts` (state + all `preview:*`/`agent-browser:*` IPC), `electron/preview-logic.ts` (pure, unit-tested decisions) |
 | Next-children kill lane (shared by will-quit + SIGTERM/SIGINT) | `electron/next-children.ts` |
 | IPC bridge surface (renderer-side) | `electron/preload.ts` |
 | Terminal / exec / serve children + safe env / toolchain | `electron/terminal.ts` |
@@ -64,8 +65,8 @@ Most other routes are auth + Prisma thin handlers — keep them that way.
 | Responsibility | Lives in |
 |---|---|
 | Chat session state (client) | `src/hooks/useChatSession.ts` + background-chat context |
-| Prompt surface | `src/components/ChatInput.tsx` (model catalog engine), `src/components/PromptBar.tsx` (menus/picker/effort) |
-| Right side panel (tabs) | `src/components/RightPanel.tsx` — Changes / Files / Browser preview / Terminal / Scratch tabs |
+| Prompt surface | `src/components/ChatInput.tsx` (composer; catalog engine in `src/hooks/useModelCatalog.ts`), `src/components/PromptBar.tsx` (menus/picker/effort) |
+| Right side panel (tabs) | `src/components/RightPanel.tsx` (shell: tab routing, error boundary, Queue/Files/Scratch tabs) + `src/components/right-panel/` (`changes-tab.tsx`, `preview-tab.tsx`, `terminal-tab.tsx`) |
 | Agent runs UI | `src/components/AgentManager.tsx`, `src/components/RunBoard.tsx` |
 | MCP connectors | `src/components/ConnectorsPanel.tsx` |
 | Settings | `src/app/settings/page.tsx` |
