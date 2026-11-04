@@ -14,12 +14,7 @@ import { classifyRisk } from "../risk-classifier";
 import { requestApproval, requestApprovalDetailed } from "../approval-store";
 import { computeDiff } from "../file-history";
 import { virtualFS } from "../virtual-fs";
-import {
-  searchCodeInContents,
-  listFilesUnderPath,
-  screenshotMarkdown,
-  downscaleDataUrl,
-} from "../tool-text";
+import { searchCodeInContents, listFilesUnderPath } from "../tool-text";
 import { recordFailure } from "../failure-memory";
 import { emitActivity, emitPreview } from "../agent-events";
 import { CLARIFICATION_SKIP } from "../background-chat";
@@ -31,6 +26,8 @@ import { reliabilityEditOpsEnabled, reliabilityPathJailEnabled } from "../reliab
 import { applyEditOpsAtomic } from "../reliability/atomic-batch";
 import { parseEditOp, EDIT_OPS_TOOL_NAME } from "../reliability/edit-ops";
 import { assertSafeWrite } from "../reliability/path-jail";
+import { tryMcpDispatch } from "./mcp-lane";
+import { runBrowserLane, attachScreenshot } from "./browser-lane";
 
 // NOTE: this file runs on BOTH lanes — the browser worker and the server
 // executor — so origin resolution cannot be a single constant. It previously
@@ -56,89 +53,6 @@ function resolveApiUrl(path: string): string {
   return `${origin}${path}`;
 }
 
-// === Phase 8 lane gate (ORPLEX_MCP, default "sdk") ===========================
-// Server env isn't visible here, so ask GET /api/agent/mcp once per session
-// (static until restart). A fetch failure falls back to "sdk" — the
-// server-side lane, whose dispatch errors surface honestly in the result.
-type McpLane = "sdk" | "legacy";
-let lanePromise: Promise<McpLane> | null = null;
-function getMcpLane(): Promise<McpLane> {
-  if (!lanePromise) {
-    lanePromise = (async (): Promise<McpLane> => {
-      try {
-        const r = await apiFetch("/api/agent/mcp");
-        const j = (await r.json()) as { success?: boolean; lane?: string };
-        if (j?.success && (j.lane === "sdk" || j.lane === "legacy")) return j.lane;
-      } catch {}
-      return "sdk";
-    })();
-  }
-  return lanePromise;
-}
-
-// SDK-lane roster (snapshot + toggles) for the C6 risk gate and the meta
-// tools — fetched on demand, cached for a minute so a long run doesn't
-// refetch per call.
-interface SdkRosterTool {
-  server: string;
-  name: string;
-  description: string;
-  inputSchema: unknown;
-  annotations?: import("../mcp/registry").McpToolAnnotations;
-}
-type RawSdkRosterTool = Omit<SdkRosterTool, "description"> & { description?: string | null; annotations?: import("../mcp/registry").McpToolAnnotations | null };
-let sdkRoster: { at: number; tools: SdkRosterTool[]; serverPrefs: Record<string, { autoApproveReadOnly: boolean }> } | null = null;
-const SDK_ROSTER_TTL_MS = 60_000;
-async function getSdkRoster(): Promise<{ tools: SdkRosterTool[]; serverPrefs: Record<string, { autoApproveReadOnly: boolean }> }> {
-  // Reuse a fresh successful cache — avoids a per-call refetch during long runs.
-  if (sdkRoster && Date.now() - sdkRoster.at < SDK_ROSTER_TTL_MS) {
-    return { tools: sdkRoster.tools, serverPrefs: sdkRoster.serverPrefs };
-  }
-
-  let fetched: { tools: SdkRosterTool[]; serverPrefs: Record<string, { autoApproveReadOnly: boolean }> } | null = null;
-  try {
-    const r = await apiFetch("/api/agent/mcp/tools");
-    const j = (await r.json()) as { success?: boolean; tools?: RawSdkRosterTool[]; serverPrefs?: Record<string, { autoApproveReadOnly: boolean }> };
-    if (j?.success && Array.isArray(j.tools)) {
-      const tools: SdkRosterTool[] = j.tools.map((t) => ({
-        ...t,
-        description: t.description ?? "",
-        annotations: t.annotations ?? undefined,
-      }));
-      fetched = { tools, serverPrefs: j.serverPrefs ?? {} };
-    }
-  } catch {
-    // Network/timeout — leave fetched null.
-  }
-
-  // A successful fetch always wins (and is cached).
-  if (fetched) {
-    sdkRoster = { at: Date.now(), ...fetched };
-    return fetched;
-  }
-
-  // Fetch failed or returned no tools. Keep a still-fresh successful cache if we
-  // have one — the model's MCP section is built server-side from the snapshot
-  // (a separate path), so a transient client-side fetch failure must not mask tools
-  // the model can already see and call. Only fall through to empty when there's no
-  // usable cache at all.
-  if (sdkRoster && Date.now() - sdkRoster.at < SDK_ROSTER_TTL_MS) {
-    return { tools: sdkRoster.tools, serverPrefs: sdkRoster.serverPrefs };
-  }
-  return { tools: [], serverPrefs: {} };
-}
-
-/** C6 in the SDK lane: snapshot ToolAnnotations + Prisma toggle → classifyRisk (fail closed). */
-async function assessSdkMcpRisk(fullName: string): Promise<{ level: "low" | "medium" | "high"; reason: string; autoApprovable: boolean }> {
-  const { mcpRiskHintFrom } = await import("../risk-classifier");
-  const { parseMcpToolName } = await import("../mcp/registry");
-  const parsed = parseMcpToolName(fullName);
-  if (!parsed) return classifyRisk(fullName, {});
-  const { tools, serverPrefs } = await getSdkRoster();
-  const tool = tools.find((t) => t.server === parsed.serverId && t.name === parsed.toolName);
-  const autoApprove = serverPrefs[parsed.serverId]?.autoApproveReadOnly ?? false;
-  return classifyRisk(fullName, {}, mcpRiskHintFrom(tool?.annotations, autoApprove));
-}
 
 export interface ToolContext {
   mode: string;
@@ -216,29 +130,6 @@ export interface DispatchOutcome {
   imageDataUrl?: string;
 }
 
-/**
- * Shared screenshot landing: embed the capture inline in the chat transcript
- * (the markdown renderer turns it into an <img>) and return the pixels so
- * the caller can forward them to the vision channel. Never throws — worst
- * case it returns undefined and the chat shows text only, exactly like
- * before. NOTE: resultXml stays text-only on purpose — pixels travel via
- * the return value (vision) + the display transcript (chat <img>).
- */
-async function attachScreenshot(
-  ctx: ToolContext,
-  rawDataUrl: unknown,
-  label: string
-): Promise<string | undefined> {
-  try {
-    if (typeof rawDataUrl === "string" && rawDataUrl.startsWith("data:image/")) {
-      const shot = await downscaleDataUrl(rawDataUrl);
-      ctx.appendDisplay(screenshotMarkdown(shot, label));
-      ctx.syncDisplay();
-      return shot;
-    }
-  } catch {}
-  return undefined;
-}
 
 /** fetch helper that aborts when the task aborts or the timeout fires */
 function ctxFetch(url: string, init: RequestInit, ctx: ToolContext, timeoutMs?: number): Promise<Response> {
@@ -311,145 +202,13 @@ export async function dispatchToolCall(
     toolResults += xml;
   };
 
-  // ── MCP connector tools (mcp__<server>__<tool>) ─────────────────────
-  // OAuth-authenticated remote servers connected in MCP connectors. Checked
-  // FIRST so their names never collide with built-ins. Risk-tiered approval
-  // runs BEFORE dispatch (C6): unknown third-party tools default to medium,
-  // only server-declared read-only + the user's per-server toggle go silent.
-  // The lane decides where the call executes (Phase 8): legacy = the
-  // in-process renderer client; sdk = POST /api/agent/mcp/call → hub.
-  if (call.name.startsWith("mcp__")) {
-    const lane = await getMcpLane();
-    let mcpRisk: { level: "low" | "medium" | "high"; reason: string; autoApprovable: boolean };
-    if (lane === "legacy") {
-      const { assessMcpToolRisk } = await import("../mcp/risk-hint");
-      mcpRisk = assessMcpToolRisk(call.name);
-    } else {
-      mcpRisk = await assessSdkMcpRisk(call.name);
-    }
-    if (!mcpRisk.autoApprovable) {
-      if (mcpRisk.level === "high") {
-        emitActivity({ type: "tool", message: `High-risk MCP tool requires approval: ${call.name}`, agent: "coder" });
-      }
-      ctx.setStatus("awaiting_approval", `Waiting for approval: ${call.name}`);
-      ctx.appendDisplay(`${call.name} — awaiting approval\n`);
-      ctx.syncDisplay();
-      const approved = await requestApproval(
-        "mcp_tool",
-        `MCP tool ${call.name} — ${mcpRisk.reason}`,
-        { tool: call.name },
-        undefined,
-        mcpRisk.level
-      , ctx.abortSignal);
-      if (!approved) {
-        ctx.stats.rejectedAction();
-        result(`<tool_result name="${call.name}">rejected by user</tool_result>\n`);
-        ctx.replaceStatus(`[FAIL] Rejected: ${call.name}`);
-        ctx.syncDisplay();
-        return { resultXml: toolResults, blocked: false };
-      }
-    }
-    const { dispatchMcpToolCall, dispatchMcpToolCallSdk } = await import("../mcp/dispatch");
-    const impl = lane === "legacy" ? dispatchMcpToolCall : dispatchMcpToolCallSdk;
-    return impl(call as { name: string } & Record<string, unknown>, {
-      setStatus: ctx.setStatus,
-      appendDisplay: ctx.appendDisplay,
-      syncDisplay: ctx.syncDisplay,
-    });
-  }
 
-  // ── Universal MCP caller (mcp_call) — available on EVERY provider. ───────
-  // A lean/unknown provider (groq, nvidia, any BYOK endpoint) doesn't get the
-  // server's per-tool MCP definitions in its function-calling array, so the
-  // model can't emit a direct mcp__ call — but it CAN emit mcp_call with the
-  // server id + tool name + args it learned from the prompt section /
-  // mcp_search_tools. This dispatches through the SAME risk gate + lane as a
-  // direct mcp__ call, so MCP works on every provider, not just full-set ones.
-  if (call.name === "mcp_call") {
-    const serverId = (call as unknown as Record<string, unknown>).serverId as string | undefined;
-    const tool = (call as unknown as Record<string, unknown>).tool as string | undefined;
-    const args = (call as unknown as Record<string, unknown>).arguments as Record<string, unknown> ?? {};
-    if (!serverId || !tool) {
-      result(`<tool_result name="mcp_call">\nerror: mcp_call requires serverId and tool (e.g. mcp_call({serverId: "supabase", tool: "list_tables", arguments: {}}). Use mcp_search_tools to list connected servers and their tools.\n</tool_result>\n`);
-      return { resultXml: toolResults, blocked: false };
-    }
-    const mcpName = `mcp__${serverId}__${tool}`;
-    const lane = await getMcpLane();
-    let mcpRisk: { level: "low" | "medium" | "high"; reason: string; autoApprovable: boolean };
-    if (lane === "legacy") {
-      const { assessMcpToolRisk } = await import("../mcp/risk-hint");
-      mcpRisk = assessMcpToolRisk(mcpName);
-    } else {
-      mcpRisk = await assessSdkMcpRisk(mcpName);
-    }
-    if (!mcpRisk.autoApprovable) {
-      if (mcpRisk.level === "high") {
-        emitActivity({ type: "tool", message: `High-risk MCP tool requires approval: ${mcpName}`, agent: "coder" });
-      }
-      ctx.setStatus("awaiting_approval", `Waiting for approval: ${mcpName}`);
-      ctx.appendDisplay(`${mcpName} — awaiting approval\n`);
-      ctx.syncDisplay();
-      const approved = await requestApproval(
-        "mcp_tool",
-        `MCP tool ${mcpName} — ${mcpRisk.reason}`,
-        { tool: mcpName },
-        undefined,
-        mcpRisk.level
-      , ctx.abortSignal);
-      if (!approved) {
-        ctx.stats.rejectedAction();
-        result(`<tool_result name="mcp_call">rejected by user</tool_result>\n`);
-        ctx.replaceStatus(`[FAIL] Rejected: ${mcpName}`);
-        ctx.syncDisplay();
-        return { resultXml: toolResults, blocked: false };
-      }
-    }
-    const { dispatchMcpToolCall, dispatchMcpToolCallSdk } = await import("../mcp/dispatch");
-    const impl = lane === "legacy" ? dispatchMcpToolCall : dispatchMcpToolCallSdk;
-    // NOTE: a model-supplied parameter literally named "name" must never
-    // clobber the mcp__<server>__<tool> dispatch target (the server lane
-    // already strips it the same way).
-    const restArgs = { ...args };
-    delete restArgs.name;
-    return impl(
-      { ...restArgs, name: mcpName } as { name: string } & Record<string, unknown>,
-      {
-        setStatus: ctx.setStatus,
-        appendDisplay: ctx.appendDisplay,
-        syncDisplay: ctx.syncDisplay,
-      }
-    );
-  }
-
-  // ── over-cap MCP meta tools (C10) ─────────────────────────────────────
-  // Read-only discovery (no approval): search/describe run against the same
-  // roster the prompt section was built from — localStorage in the legacy
-  // lane, the Phase 5 snapshot (GET /api/agent/mcp/tools) in the sdk lane.
-  if (call.name === "mcp_search_tools" || call.name === "mcp_describe_tool") {
-    const { executeMcpMetaTool } = await import("../mcp/tool-builder");
-    const lane = await getMcpLane();
-    let tools: SdkRosterTool[];
-    if (lane === "legacy") {
-      const { loadRemotes } = await import("../mcp/registry");
-      tools = loadRemotes().flatMap((r) =>
-        (r.tools ?? []).map((t) => ({
-          server: r.id,
-          name: t.name,
-          description: t.description ?? "",
-          inputSchema: t.inputSchema,
-          annotations: t.annotations,
-        }))
-      );
-    } else {
-      tools = (await getSdkRoster()).tools;
-    }
-    ctx.setStatus("tool_executing", `${call.name}…`);
-    const out = executeMcpMetaTool(call.name, call as unknown as Record<string, unknown>, tools);
-    ctx.appendDisplay(`[OK] ${call.name}\n`);
-    ctx.syncDisplay();
-    result(`<tool_result name="${call.name}">\n${out}\n</tool_result>\n`);
-    return { resultXml: toolResults, blocked: false };
-  }
+  // ── MCP lanes (mcp__*, mcp_call, mcp_search_tools, mcp_describe_tool) ──
+  // Extracted verbatim to mcp-lane.ts (Operation Modularity); the Phase 8
+  // lane gate, the SDK roster cache and the C6 risk assessment moved with
+  // them. Returns null when the call is not an MCP tool.
+  const mcpOutcome = await tryMcpDispatch(call, ctx);
+  if (mcpOutcome) return mcpOutcome;
 
   // ── extract_archive ───────────────────────────────────────────────────
   // Available on EVERY lane (M3 + the lean Groq/NVIDIA set, and therefore
@@ -1789,237 +1548,13 @@ export async function dispatchToolCall(
   // agent view when present (visible to the user), else the server-side
   // Playwright session (/api/agent/browser — SSRF-guarded, ephemeral profile,
   // per-user session with caps). The model sees identical result shapes.
+
   if (call.name?.startsWith("browser_")) {
-    const bridge = (typeof window !== "undefined" ? (window as any).orplexDesktop?.agentBrowser : null) as any;
-    if (!bridge) {
-      // SERVER FALLBACK — one contract, Playwright-via-API backend. Op mapping,
-      // arg validation, and result formatting live in agent/contract/browser.ts
-      // (shared with the server executor); only transport (HTTP POST) + the
-      // screenshot inline-attach stay lane-specific.
-      try {
-        const { browserOpOf, validateBrowserArgs, formatBrowserResult } = await import("./contract/browser");
-        const toolName = String(call.name);
-        const op = browserOpOf(toolName);
-        if (!op) {
-          result(`<tool_result name="${call.name}">error - browser op "${call.name}" is not available in server browser mode.</tool_result>\n`);
-          ctx.replaceStatus(`[WARN] ${call.name} unsupported in server browser mode`);
-          ctx.syncDisplay();
-          return { resultXml: toolResults, blocked: false };
-        }
-        const argError = validateBrowserArgs(op, call as unknown as Record<string, unknown>);
-        if (argError) {
-          result(`<tool_result name="${call.name}">error - ${argError}</tool_result>\n`);
-          ctx.replaceStatus(`[FAIL] ${call.name}: ${argError.slice(0, 60)}`);
-          ctx.syncDisplay();
-          return { resultXml: toolResults, blocked: false };
-        }
-        ctx.setStatus("tool_executing", `Browser ${op}…`);
-        ctx.syncDisplay();
-        const { url, selector, ref, text, value, key, dx, dy, amount, time, timeoutMs, role, action, index, fullPage, viewpoint, code } = call as unknown as Record<string, unknown>;
-        const res = await apiFetch("/api/agent/browser", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ op, url, selector, ref, text, value, key, dx, dy: (dy as number) ?? (amount as number), time, timeoutMs, role, tabAction: action, index, fullPage, viewpoint, code }),
-          signal: ctx.abortSignal ? AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000),
-        });
-        const r = await res.json().catch(() => ({ ok: false, error: "bad response from browser API" }));
-        if (!r.ok) {
-          result(`<tool_result name="${call.name}">error - ${r.error || "browser op failed"}</tool_result>\n`);
-          ctx.replaceStatus(`[FAIL] ${call.name}: ${String(r.error || "failed").slice(0, 60)}`);
-          ctx.syncDisplay();
-          return { resultXml: toolResults, blocked: false };
-        }
-        const d = r.data || {};
-        // Screenshot bytes ride out-of-band (inline attach); the text contract
-        // still comes from the single formatter. The API lane returns raw
-        // base64 (screenshotBase64); the bridge returns a data: URL — accept both.
-        if (op === "screenshot") {
-          const dd = d as Record<string, unknown>;
-          const rawShot =
-            typeof dd.screenshot === "string"
-              ? dd.screenshot
-              : typeof dd.screenshotBase64 === "string" && dd.screenshotBase64.length > 0
-                ? `data:image/png;base64,${dd.screenshotBase64}`
-                : undefined;
-          const shot = await attachScreenshot(ctx, rawShot, `browser screenshot — ${String(dd.url || "page")}`);
-          result(formatBrowserResult(toolName, op, { ok: true, data: d }));
-          ctx.replaceStatus(`[OK] Screenshot captured`);
-          if (shot) return { resultXml: toolResults, blocked: false, imageDataUrl: shot };
-          ctx.syncDisplay();
-          return { resultXml: toolResults, blocked: false };
-        }
-        result(formatBrowserResult(toolName, op, { ok: true, data: d }));
-        ctx.replaceStatus(`[OK] Browser: ${String((d as Record<string, unknown>).title || (d as Record<string, unknown>).url || op)}`);
-        ctx.syncDisplay();
-        return { resultXml: toolResults, blocked: false };
-      } catch (err) {
-        result(`<tool_result name="${call.name}">error - server browser: ${(err as Error).message}</tool_result>\n`);
-        ctx.replaceStatus(`[FAIL] ${call.name}`);
-        ctx.syncDisplay();
-        return { resultXml: toolResults, blocked: false };
-      }
-    }
-    // Electron lane: transport is the IPC bridge (see electronBackend() in
-    // contract/browser.ts for the backend adapter); arg validation is the
-    // shared contract so all three browser lanes reject bad args identically.
-    try {
-      const { browserOpOf, validateBrowserArgs } = await import("./contract/browser");
-      const { formatToolError } = await import("./contract/results");
-      const laneOp = browserOpOf(String(call.name));
-      const laneArgError = laneOp ? validateBrowserArgs(laneOp, call as unknown as Record<string, unknown>) : null;
-      if (laneOp && laneArgError) {
-        result(formatToolError(String(call.name), {}, laneArgError));
-        ctx.replaceStatus(`[FAIL] ${call.name}: ${laneArgError.slice(0, 60)}`);
-        ctx.syncDisplay();
-        return { resultXml: toolResults, blocked: false };
-      }
-      if (call.name === "browser_navigate" && call.url) {
-        ctx.setStatus("tool_executing", `Browsing to ${call.url}…`);
-        ctx.appendDisplay(`browsing [${String(call.url).slice(0, 60)}]\n`);
-        ctx.syncDisplay();
-        // No floating overlay: bridge.show() lifted the agent's WebContentsView
-        // over the whole app (stale bounds = a window floating on the chat).
-        // Open the right panel on Preview and hand the URL to that panel's
-        // EXISTING webview through the preview bus instead — the panel's own
-        // URL bar, tabs, loading state and nav buttons drive it from there.
-        window.dispatchEvent(new CustomEvent("orplex:open-panel", { detail: { tab: "preview" } }));
-        emitPreview(String(call.url), "preview_browser");
-        // The agent's own view still loads the page (headless — never shown)
-        // so browser_read / browser_click keep working against it.
-        const r = await bridge.navigate(String(call.url));
-        if (r.ok) {
-          result(`<tool_result name="browser_navigate" url="${r.url}">success — now on "${r.title || r.url}". Use browser_read to see the page content.</tool_result>\n`);
-          ctx.replaceStatus(`[OK] Browser: ${r.title || r.url}`);
-        } else {
-          result(`<tool_result name="browser_navigate" url="${call.url}">error - ${r.error || "load failed"}</tool_result>\n`);
-          ctx.replaceStatus(`[FAIL] Browser navigation failed`);
-        }
-      } else if (call.name === "browser_read") {
-        ctx.setStatus("tool_executing", "Reading page…");
-        const r = await bridge.read();
-        if (r.ok) {
-          const elements = await bridge.elements().catch(() => ({ ok: false }));
-          const el = elements.ok ? elements : { links: [], buttons: [], inputs: [] };
-          const linkList = (el.links || []).slice(0, 25).map((l: any) => `- "${l.text}" → ${l.href}`).join("\n");
-          const buttonList = (el.buttons || []).slice(0, 15).map((b: any) => `- "${b.text}"`).join("\n");
-          const inputList = (el.inputs || []).slice(0, 15).map((i: any) => `- ${i.tag}${i.name ? `[name=${i.name}]` : ""}${i.placeholder ? ` ("${i.placeholder}")` : ""}`).join("\n");
-          result(`<tool_result name="browser_read">\nURL: ${r.url}\nTitle: ${r.title}\n\nPAGE TEXT (first 4000 chars):\n${String(r.text || "").slice(0, 4000)}\n\nHEADINGS:\n${(r.headings || []).join("\n")}\n\nLINKS:\n${linkList}\n\nBUTTONS:\n${buttonList}\n\nINPUTS:\n${inputList}\n</tool_result>\n`);
-          ctx.replaceStatus(`[OK] Read "${r.title}" (${String(r.text || "").length} chars)`);
-        } else {
-          result(`<tool_result name="browser_read">error - ${r.error || "nothing loaded yet — navigate first"}</tool_result>\n`);
-        }
-      } else if (call.name === "browser_click" && (call.selector || call.ref)) {
-        const target = String(call.ref || call.selector);
-        ctx.setStatus("tool_executing", `Clicking ${target}…`);
-        ctx.appendDisplay(`clicking [${target}]\n`);
-        ctx.syncDisplay();
-        const r = await bridge.interact({ kind: "click", selector: call.selector ? String(call.selector) : undefined, ref: call.ref ? String(call.ref) : undefined });
-        result(r.ok
-          ? `<tool_result name="browser_click" selector="${target}">success — clicked "${r.clicked ?? target}". Use browser_read to see the result.</tool_result>\n`
-          : `<tool_result name="browser_click" selector="${target}">error - ${r.error}</tool_result>\n`);
-        ctx.replaceStatus(r.ok ? `[OK] Clicked ${target}` : `[FAIL] Click: ${r.error}`);
-      } else if (call.name === "browser_type" && (call.selector || call.ref) && call.text !== undefined) {
-        const target = String(call.ref || call.selector);
-        const r = await bridge.interact({ kind: "type", selector: call.selector ? String(call.selector) : undefined, ref: call.ref ? String(call.ref) : undefined, text: String(call.text) });
-        result(r.ok
-          ? `<tool_result name="browser_type" selector="${target}">success — typed "${String(call.text).slice(0, 50)}" into "${r.typed ?? target}"</tool_result>\n`
-          : `<tool_result name="browser_type" selector="${target}">error - ${r.error}</tool_result>\n`);
-        ctx.replaceStatus(r.ok ? `[OK] Typed ${String(call.text).length} chars` : `[FAIL] Type: ${r.error}`);
-      } else if (call.name === "browser_press" && call.key) {
-        const r = await bridge.interact({ kind: "press", key: String(call.key) });
-        result(r.ok
-          ? `<tool_result name="browser_press" key="${call.key}">success — key sent</tool_result>\n`
-          : `<tool_result name="browser_press">error - ${r.error}</tool_result>\n`);
-      } else if (call.name === "browser_scroll") {
-        const r = await bridge.interact({ kind: "scroll", amount: typeof call.amount === "number" ? call.amount : 600 });
-        result(`<tool_result name="browser_scroll">success — scrolled ${r.scrolled}px. Use browser_read to see the new content.</tool_result>\n`);
-      } else if (call.name === "browser_console") {
-        const r = await bridge.console();
-        const msgs = (r.messages || []).map((m: any) => `[${m.level}] ${m.text}`).join("\n");
-        result(`<tool_result name="browser_console">${msgs.length ? msgs : "No console messages since last navigation — no JS errors."}</tool_result>\n`);
-        ctx.replaceStatus(`[OK] Console: ${(r.messages || []).length} message(s)`);
-      } else if (call.name === "browser_screenshot") {
-        ctx.setStatus("tool_executing", "Capturing browser…");
-        ctx.syncDisplay();
-        // Never bridge.show() — that attached the agent view above the app.
-        // Ask the panel to display it as a tab instead (in-panel only).
-        window.dispatchEvent(new CustomEvent("orplex:agent-browser-tab"));
-        const d = await bridge.screenshot({ fullPage: !!call.fullPage, viewpoint: call.viewpoint });
-        const vp = d?.viewport ? ` at ${d.viewport.width}x${d.viewport.height}` : "";
-        const shot = await attachScreenshot(ctx, (d as any)?.screenshot, `browser screenshot — ${d?.url ?? "page"}`);
-        result(`<tool_result name="browser_screenshot">success — screenshot captured${d?.fullPage ? " (full page)" : ""}${vp} (${d?.url ?? ""}) and attached inline in the chat below. The live view is shown in the preview panel; use browser_read for the text content.</tool_result>\n`);
-        ctx.replaceStatus(`[OK] Screenshot captured`);
-        ctx.syncDisplay();
-        if (shot) return { resultXml: toolResults, blocked: false, imageDataUrl: shot };
-      } else if (call.name === "browser_evaluate" && call.code) {
-        const r = await bridge.evaluate(String(call.code));
-        result(r.ok
-          ? `<tool_result name="browser_evaluate">result: ${JSON.stringify(r.result)?.slice(0, 2000)}</tool_result>\n`
-          : `<tool_result name="browser_evaluate">error - ${r.error}</tool_result>\n`);
-        ctx.replaceStatus(r.ok ? `[OK] Evaluated` : `[FAIL] Evaluate: ${r.error}`);
-      } else if (call.name === "browser_find") {
-        ctx.setStatus("tool_executing", "Finding elements…");
-        ctx.syncDisplay();
-        const r = await bridge.find({ text: call.text, role: call.role });
-        if (!r.ok) {
-          result(`<tool_result name="browser_find">error - ${r.error}</tool_result>\n`);
-          ctx.replaceStatus(`[FAIL] Find: ${r.error}`);
-        } else {
-          const list = (r.matches || []).slice(0, 25).map((m: any) => `${m.ref}: ${m.role} "${m.name}" [${m.selector}]${m.enabled ? "" : " (disabled)"}`).join("\n");
-          result(`<tool_result name="browser_find">\nMATCHES (${r.matches?.length ?? 0} of ${r.total} actionable elements):\n${list || "none"}\n\n${r.hint || ""}\n</tool_result>\n`);
-          ctx.replaceStatus(`[OK] Find: ${r.matches?.length ?? 0} match(es)`);
-        }
-      } else if (call.name === "browser_wait_for" && (call.text !== undefined || call.selector || call.time !== undefined)) {
-        ctx.setStatus("tool_executing", "Waiting…");
-        ctx.syncDisplay();
-        const r = await bridge.waitFor({ text: call.text, selector: call.selector, time: call.time, timeoutMs: call.timeoutMs });
-        result(r.ok
-          ? `<tool_result name="browser_wait_for">success — condition met after ${r.waitedMs}ms. Now on "${r.title || r.url}".</tool_result>\n`
-          : `<tool_result name="browser_wait_for">error - ${r.error}</tool_result>\n`);
-        ctx.replaceStatus(r.ok ? `[OK] Wait ${r.waitedMs}ms` : `[FAIL] Wait: ${r.error}`);
-      } else if (call.name === "browser_hover" && (call.selector || call.ref)) {
-        const r = await bridge.hover({ selector: call.selector ? String(call.selector) : undefined, ref: call.ref ? String(call.ref) : undefined });
-        result(r.ok
-          ? `<tool_result name="browser_hover" selector="${r.hovered ?? (call.ref || call.selector)}">success — hovered. Check browser_screenshot/browser_read for what appeared.</tool_result>\n`
-          : `<tool_result name="browser_hover">error - ${r.error}</tool_result>\n`);
-        ctx.replaceStatus(r.ok ? `[OK] Hovered` : `[FAIL] Hover: ${r.error}`);
-      } else if (call.name === "browser_select" && call.value !== undefined && (call.selector || call.ref)) {
-        const r = await bridge.select({ selector: call.selector ? String(call.selector) : undefined, ref: call.ref ? String(call.ref) : undefined, value: String(call.value) });
-        result(r.ok
-          ? `<tool_result name="browser_select" selector="${call.ref || call.selector}">success — selected "${r.selected}"${r.label ? ` (${r.label})` : ""}</tool_result>\n`
-          : `<tool_result name="browser_select">error - ${r.error}</tool_result>\n`);
-        ctx.replaceStatus(r.ok ? `[OK] Selected` : `[FAIL] Select: ${r.error}`);
-      } else if (call.name === "browser_tabs") {
-        ctx.setStatus("tool_executing", "Tabs…");
-        ctx.syncDisplay();
-        const r = await bridge.tabs({ action: call.action, url: call.url, index: call.index });
-        if (!r.ok) {
-          result(`<tool_result name="browser_tabs">error - ${r.error}</tool_result>\n`);
-          ctx.replaceStatus(`[FAIL] Tabs: ${r.error}`);
-        } else {
-          const tabs = (r.tabs || []).map((t: any) => `${t.active ? "→" : " "} [${t.index}] ${t.title || "(untitled)"} — ${t.url}`).join("\n");
-          const head = r.opened !== undefined ? `opened tab [${r.opened}] ${r.url}` : r.switchedTo !== undefined ? `switched to tab [${r.switchedTo}]` : r.closed !== undefined ? `closed tab [${r.closed}]` : `${(r.tabs || []).length} tab(s) open`;
-          result(`<tool_result name="browser_tabs">${head}\n${tabs}</tool_result>\n`);
-          ctx.replaceStatus(`[OK] Tabs: ${(r.tabs || []).length} open`);
-          if (r.opened !== undefined || r.switchedTo !== undefined) {
-            // In-panel display only — never lift the view over the app.
-            window.dispatchEvent(new CustomEvent("orplex:agent-browser-tab"));
-          }
-        }
-      } else if (call.name === "browser_network") {
-        const r = await bridge.network();
-        const events = (r.events || []).map((e: any) => `${e.status ? `HTTP ${e.status}` : "ABORTED"} ${e.method} ${e.url}${e.error ? ` (${e.error})` : ""}`).join("\n");
-        result(`<tool_result name="browser_network">${events || "No failed requests (no 4xx/5xx responses, no aborted requests)."}</tool_result>\n`);
-        ctx.replaceStatus(`[OK] Network: ${r.failedRequests ?? 0} failed`);
-      } else {
-        result(`<tool_result name="${call.name}">error - missing required argument (url/selector/ref/key/code/value)</tool_result>\n`);
-      }
-    } catch (err) {
-      result(`<tool_result name="${call.name}">error - ${(err as Error).message}</tool_result>\n`);
-      ctx.replaceStatus(`[FAIL] ${call.name}: ${(err as Error).message.slice(0, 60)}`);
-    }
-    ctx.syncDisplay();
-    return { resultXml: toolResults, blocked: false };
+    // Extracted verbatim to browser-lane.ts (Operation Modularity) — the
+    // Electron bridge, the server Playwright fallback and the screenshot
+    // attach all moved with the lane.
+    const browserOutcome = await runBrowserLane(call, ctx);
+    if (browserOutcome) return browserOutcome;
   }
 
   // ── session_search ───────────────────────────────────────────────────
