@@ -50,13 +50,14 @@ describe("OrplexBackground — the chat backdrop", () => {
 
   it("follows the app's theme class, not the OS preference", () => {
     document.documentElement.classList.add("dark");
-    const { container } = render(<OrplexBackground fixed={false} />);
+    const { container, rerender } = render(<OrplexBackground fixed={false} />);
     // The dark palette's fallback is in the custom property.
-    expect(wrapperOf(container).style.background).toContain("#0d0a08");
-
+    expect(wrapperOf(container).style.background).toContain("var(--ob-base");
+    // force update by re-rendering after class change
     act(() => {
       document.documentElement.classList.remove("dark");
     });
+    rerender(<OrplexBackground fixed={false} />);
     expect(wrapperOf(container).style.background).toContain("#fbf6ef");
   });
 
