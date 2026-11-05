@@ -153,6 +153,16 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Security: updated the web framework to close a critical remote-code-execution hole in image generation",
     ],
   },
+  "1.0.31": {
+    title: "A loader you can actually see",
+    items: [
+      "The chat now shows a 3x3 dot-grid loader under the last message while the agent works",
+      "New: the dot grid also appears while the model is thinking — you always see that the run is still going",
+      "The dot grid stands on its own during thinking, so it never repeats the Thinking label",
+      "When the turn ends it turns into the result icon (done, failed, stopped) — no more spinning forever",
+      "The loader respects your system's reduced-motion setting",
+    ],
+  },
   "1.1.0": {
     title: "Faster path to your first win",
     items: [
@@ -160,6 +170,16 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Run health strip — stuck runs and waiting approvals surface themselves",
       "Command palette now describes every capability (Ctrl+K)",
       "Errors now come with a fix, not just a stack trace",
+    ],
+  },
+  "1.2.0": {
+    title: "MCP OAuth everywhere, clean UI",
+    items: [
+      "MCP connectors now use real OAuth where vendors support it — click Connect, sign in with browser, done",
+      "Figma, GitHub, GitLab, Airtable, Google Workspace and 20+ remote MCP servers are zero-config or need only a one-time vendor client ID",
+      "Token UI is removed for OAuth providers — no more false token fields for Figma / GitHub",
+      "Thought / tool list no longer uses backdrop blur — light mode matches dark mode and the list is crisp",
+      "Catalog audit passes: 32/32 remote endpoints verified, catalog version bumped to 1.2.0",
     ],
   },
 };

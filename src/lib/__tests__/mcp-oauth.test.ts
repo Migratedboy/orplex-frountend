@@ -331,6 +331,18 @@ describe("DbMcpOAuthProvider", () => {
     expect(await provider().clientInformation({ issuer: "https://auth.example.com" })).toBeUndefined();
   });
 
+  it("seeds discoveryState from the pinned authority until real discovery lands", async () => {
+    pend.findUnique.mockResolvedValue(null as never); // no pending discovery row
+    expect(await provider().discoveryState()).toBeUndefined();
+    const pinned = provider({ authority: "https://auth.atlassian.com" });
+    expect(await pinned.discoveryState()).toEqual({ authorizationServerUrl: "https://auth.atlassian.com" });
+    // Real discovery (the SDK saves it mid-flow) always wins over the seed.
+    pend.findUnique.mockResolvedValue({
+      discoveryState: { authorizationServerUrl: "https://auth.acme.dev", resourceMetadata: null },
+    } as never);
+    expect(await pinned.discoveryState()).toEqual({ authorizationServerUrl: "https://auth.acme.dev", resourceMetadata: null });
+  });
+
   it("prefers the catalog static client id when DCR is unavailable", async () => {
     conn.findUnique.mockResolvedValue(connectionRow() as never);
     const info = await provider({ staticClientId: "static_client_9" }).clientInformation({ issuer: "https://auth.example.com" });

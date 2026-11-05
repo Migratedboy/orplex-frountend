@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import ThinkingCard from "./ThinkingCard";
+import ThinkingPill from "./ThinkingPill";
 import { ErrorInline } from "./StateViews";
-import type { ChainItem, ToolKind, ToolRow, ToolRowState } from "@/lib/tool-chain";
+import { KIND_GLYPH, type ChainItem, type ToolRow, type ToolRowState } from "@/lib/tool-chain";
 
 /**
  * Tool-call chain: every tool of a run is one borderless row hanging off a
@@ -11,16 +11,10 @@ import type { ChainItem, ToolKind, ToolRow, ToolRowState } from "@/lib/tool-chai
  * original ThinkingCard rides the same line so reasoning + calls read as one
  * continuous run. Rows are collapsed by default; clicking expands the full
  * args/output inline (150ms height transition, chevron rotates 90°).
+ *
+ * The per-kind glyph lives in @/lib/tool-chain so the reasoning thread and
+ * this chain show the SAME icon for the SAME tool.
  */
-
-const KIND_GLYPH: Record<ToolKind, string> = {
-  run: "smart_display",
-  read: "description",
-  write: "edit",
-  browser: "public",
-  search: "search",
-  other: "extension",
-};
 
 const STATE_LABEL: Record<ToolRowState, string> = {
   running: "Running...",
@@ -128,7 +122,7 @@ export default function ToolChain({
           <div className="tool-chain__row tool-chain__row--thinking" key={`t${i}`}>
             <div className="tool-chain__gutter" aria-hidden="true" />
             <div className="tool-chain__body">
-              <ThinkingCard content={item.segment.content} isThinking={item.live} />
+              <ThinkingPill reasoning={item.segment.content} done={!item.live} />
             </div>
           </div>
         ) : (

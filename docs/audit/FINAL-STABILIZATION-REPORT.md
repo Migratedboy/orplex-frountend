@@ -12,6 +12,10 @@ This audit found and fixed **8 real bugs** — a high-impact reliability bug (gh
 
 **Delivery**: the work was merged to `main` through **PR #22** (`https://github.com/Migratedboy/orplex-frountend/pull/22`, merge commit `7ed15c6`) because the repository ruleset rejects direct pushes to `main`. The PR's CI was **fully green** — `Lint & TypeCheck` ✓, `Tests` ✓, `Build` ✓ — and the previously-red `main` is green again.
 
+**Release**: the packaging fix (BUG-010 / BUG-011) was merged through **PR #24** (`https://github.com/Migratedboy/orplex-frountend/pull/24`, head `878d99d`, merge commit `d9a4d76`, CI green: Build ✓ / Tests ✓ / Lint ✓), and released as **v1.0.30** (tag `v1.0.30` → `d9a4d76`). The tag-triggered **Release App** workflow (`https://github.com/Migratedboy/orplex-frountend/actions/runs/41819867474`) built all three platform installers and published the release. See §18.11 for the published evidence.
+
+**Post-release change**: the chat run-tail loader was replaced with the 3×3 `DotGridLoader` (the user's own component), `framer-motion` was promoted to a declared dependency, and the loader was extended to the **thinking** phase so a live run is always visibly alive. Shipped as **v1.0.31**. See §18.12.
+
 ## 18.2 Bug statistics
 
 | Metric | Count |
@@ -140,3 +144,57 @@ All "passed" claims above are from actually executed commands. The `Exited with 
 Evidence for: the full suite is green on the upgraded runtime, typecheck and lint are clean, the production build and the complete packaging pipeline succeed, the updater feed verifies across all three platforms, the critical Next.js CVE is patched, **eight confirmed bugs are fixed** (six with regression tests), the live desktop app was observed behaving correctly (memory watchdog pause/resume, corrected taskbar identity), the 42-tool arsenal is registry-generated with no drift, two providers were verified end-to-end against live APIs, the repository's CI gate is green again, and the **installed application was launched and verified** — startup, the local server on 127.0.0.1, the taskbar identity, the absence of the icon-poison shortcut and the absence of any `.env` in the installed tree.
 
 This report does not claim bug-free. It claims the known defects are fixed and regression-tested, and that the remaining uncertainty is enumerated rather than hidden.
+
+## 18.11 Published release — v1.0.30
+
+The release was cut by pushing the tag `v1.0.30` (pointing at the merge commit `d9a4d76`); the tag-triggered **Release App** workflow then built and published all three platform installers.
+
+| Item | Value |
+|---|---|
+| Tag | `v1.0.30` → `d9a4d760741108e7d200de4a04b3f5bbb296e399` |
+| Release App run | [`41819867474`](https://github.com/Migratedboy/orplex-frountend/actions/runs/41819867474) — **completed / success** (Windows, macOS and Linux jobs) |
+| Release | `https://github.com/Migratedboy/orplex-frountend/releases/tag/v1.0.30` — published, **not a draft**, not a prerelease |
+| Windows installer | `Orplex-Code-Setup-1.0.30.exe` — **152,143,471 bytes (145.1 MB)**, HTTP 200 |
+| macOS installer | `Orplex-Code-1.0.30.dmg` — 165,710,167 bytes (158.0 MB), HTTP 200 |
+| Linux installer | `Orplex-Code-1.0.30.AppImage` — 172,204,761 bytes (164.2 MB), HTTP 200 |
+| Blockmaps | `.exe.blockmap` and `.dmg.blockmap` — both HTTP 200 |
+| Feed manifests | `latest.yml`, `latest-mac.yml`, `latest-linux.yml`, `builder-debug.yml` — all HTTP 200 |
+
+Every one of the 9 published assets was HEAD-checked independently: **all returned HTTP 200**.
+
+`node scripts/check-updater-feed.mjs` — the repository's own updater-feed gate — reports:
+
+```
+OK latest.yml:      version=1.0.30 asset=Orplex-Code-Setup-1.0.30.exe (152143471 bytes, HTTP 200) blockmap=HTTP 200
+OK latest-mac.yml:  version=1.0.30 asset=Orplex-Code-1.0.30.dmg (165710167 bytes, HTTP 200) blockmap=HTTP 200
+OK latest-linux.yml:version=1.0.30 asset=Orplex-Code-1.0.30.AppImage (172204761 bytes, HTTP 200) blockmap=HTTP 404
+feed OK
+```
+
+The published Windows installer is **145.1 MB** — 13.9 % of the 1,042 MB v1.0.29 artifact that was published before BUG-010 was fixed. The `.env` that shipped inside v1.0.29 is **not** in v1.0.30.
+
+Two caveats, recorded honestly:
+
+1. **`latest-linux.yml` has no blockmap (HTTP 404).** The Linux AppImage has no `.blockmap` asset — the same shape as the v1.0.29 release. electron-builder only emits a blockmap for targets that support differential download; the feed check treats the missing Linux blockmap as non-fatal and the release still verifies. This is pre-existing behaviour, not a regression introduced by this release.
+2. **The v1.0.29 artifact remains public and still carries the leaked `.env`.** Publishing v1.0.30 does not remove the older asset. The credential rotation recommended in §18.9 item 8 is therefore still outstanding — the report does not claim it has happened.
+
+## 18.12 Post-release change — the dot-grid chat loader
+
+After the release was published, the chat run-tail loader was replaced with the 3×3 **`DotGridLoader`** supplied by the user (`C:\Users\Hey!\Downloads\DotGridLoader.tsx`, copied verbatim into `src/components/DotGridLoader.tsx` — verified byte-identical by SHA-256).
+
+**Where it landed:** `RunTail` in `src/components/MessageList.tsx` — the indicator under the last message during a live turn (the spinning orange circle the user pointed at). While the phase is live (`running_tool`, `streaming`, **and `thinking`**) the tail now renders the dot grid; on a terminal phase (`done`, `error`, `stopped`) it keeps the plain outcome glyph (`check` / `error` / `stop_circle`), because a pulsing loader during "done" would claim a run that has already ended.
+
+**The thinking phase.** The tail used to be suppressed entirely during `thinking`, because the "Thinking Xs" block (`ThinkingCard`, which has its own elapsed-time animation) was assumed to own that state. The user asked for the loader to be visible there too — "it will show the user that process is running". The two do not actually compete: the `ThinkingCard` renders **inside** the last bubble, the tail renders **below** the bubbles, so both can be on screen. `RunTail` now renders for every phase except `idle`, and during `thinking` it shows the dot grid **alone** — the generic "Thinking…" label is suppressed (the Thinking block already says it, with its timer), while a *real* detail ("Reading src/app/page.tsx…") is still shown. This matches the reference the user supplied.
+
+**Dependency:** the component needs `framer-motion`. It was present in `node_modules` only as a **transitive** dependency of `motion@13.4.0`, so `package.json` did not declare it. `framer-motion@^13.4.0` is now a **direct dependency**, and `npm ls framer-motion` shows a single deduplicated copy (`motion@13.4.0 → framer-motion@13.4.0 deduped`) — no second copy in the tree.
+
+**Accessibility:** the dot grid is decorative. The `.run-tail` element is already the live region (`role="status" aria-live="polite"`) and the label beside the grid carries the meaning, so the grid is wrapped in `aria-hidden="true"`. Without that, the grid's own `role="status"` + `aria-label="Loading"` would announce a second, redundant loading status on every turn. The component's own `useReducedMotion()` (framer-motion) slows the pulse under `prefers-reduced-motion: reduce`, which replaced the now-dead `.run-tail .ms-spin` rule in the reduced-motion media query.
+
+**Regression coverage** (2 new suites, 16 tests, `src/components/__tests__/`):
+
+- `DotGridLoader.test.tsx` — 3×3 grid of 9 cells; size honoured; the hairline gap derived from the size (~7 %, rounded); an explicit gap honoured; an accessible name when the loader stands alone (`status` / `Loading`) and when it is labelled; the `className` lands on the grid when bare and on the wrapper when labelled; renders under `prefers-reduced-motion`.
+- `run-tail-loader.test.tsx` — the live phase renders the dot grid (9 cells) and **no** `ms-spin` glyph; the decorative grid is `aria-hidden` while the tail stays `aria-live="polite"`; a terminal phase renders the outcome glyph and **no** loader; the loader also renders during **thinking**; during thinking the grid stands **alone** (no repeated "Thinking…" label) but a real status detail is still shown; nothing renders for `idle`.
+
+**Visual verification.** A temporary preview route rendered the exact run-tail markup for each phase in the running dev app and was screenshotted: the thinking phase shows the dot grid standing alone; `running_tool` / `streaming` show the grid plus the status text; the terminal phase shows the outcome glyph with no loader; the 44 px wave and 44 px original variants match the reference geometry (9 cells, hairline gap, diagonal pulse, orange → white flash). The preview route was deleted afterwards — it is not part of the delivery.
+
+**Gates at the time of writing:** `npm run typecheck` clean, eslint clean on all touched files, and the full suite green (see §18.6).

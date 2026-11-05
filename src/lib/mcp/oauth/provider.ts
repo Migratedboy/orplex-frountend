@@ -62,6 +62,20 @@ export interface DbMcpOAuthProviderOptions {
   scopes?: string[];
   /** Catalog oauth.clientId for providers without DCR. */
   staticClientId?: string;
+  /** Catalog/env oauth.clientSecret for confidential static clients. */
+  staticClientSecret?: string;
+  /**
+   * Client-ID Metadata Document URL (RFC: client_id_metadata_document_supported).
+   * When set, the SDK uses this HTTPS URL as the client_id and skips
+   * registration entirely — zero-config for ASes advertising CIMD (ElevenLabs).
+   */
+  clientMetadataUrl?: string;
+  /**
+   * Pinned authorization-server issuer (catalog oauth.authority) for servers
+   * that don't advertise RFC 9728 metadata on their 401. Seeds the SDK's
+   * discoveryState so the OAuth flow still bootstraps.
+   */
+  authority?: string;
   /** false → known no-DCR provider: throw typed error instead of attempting DCR. */
   allowDynamicRegistration?: boolean;
 }
@@ -78,6 +92,10 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
 
   get redirectUrl(): string {
     return this.opts.redirectUrl;
+  }
+
+  get clientMetadataUrl(): string | undefined {
+    return this.opts.clientMetadataUrl;
   }
 
   get clientMetadata(): OAuthClientMetadata {
@@ -100,6 +118,7 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
     if (stored) return stored;
     if (this.opts.staticClientId) {
       const info: StoredOAuthClientInformation = { client_id: this.opts.staticClientId };
+      if (this.opts.staticClientSecret) info.client_secret = this.opts.staticClientSecret;
       if (ctx?.issuer) info.issuer = ctx.issuer;
       return info;
     }
@@ -172,7 +191,16 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
 
   async discoveryState(): Promise<OAuthDiscoveryState | undefined> {
     const row = await getPendingByState(this.opts.pendingState);
-    return (row?.discoveryState as OAuthDiscoveryState | null | undefined) ?? undefined;
+    // Seed a PINNED authorization server when the flow has no discovery of
+    // its own yet: the SDK resolves the metadata itself (fetch) from this
+    // URL — exactly what it does after normal RFC 9728 discovery. This is
+    // the only way servers without advertised metadata (Atlassian, Entra)
+    // can run the browser leg.
+    return (row?.discoveryState as OAuthDiscoveryState | null | undefined) ?? this.pinnedDiscoveryState();
+  }
+
+  private pinnedDiscoveryState(): OAuthDiscoveryState | undefined {
+    return this.opts.authority ? { authorizationServerUrl: this.opts.authority } : undefined;
   }
 
   /**

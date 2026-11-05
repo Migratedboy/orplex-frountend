@@ -29,6 +29,10 @@ jest.mock("@/lib/mcp-catalog", () => {
   return { ...actual, getMcpCatalogEntry: jest.fn() };
 });
 
+jest.mock("@/lib/mcp/custom-remote", () => ({
+  loadCustomRemote: jest.fn(),
+}));
+
 jest.mock("@modelcontextprotocol/client", () => {
   const actual = jest.requireActual("@modelcontextprotocol/client");
   return {
@@ -40,6 +44,7 @@ jest.mock("@modelcontextprotocol/client", () => {
 });
 
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { loadCustomRemote } from "@/lib/mcp/custom-remote";
 import {
   completeAuthorization,
   hostedCallbackUrl,
@@ -52,6 +57,7 @@ import { PENDING_TTL_MS } from "@/lib/mcp/oauth/pending";
 const conn = prisma.mcpConnection as jest.Mocked<typeof prisma.mcpConnection>;
 const pend = prisma.mcpOAuthPending as jest.Mocked<typeof prisma.mcpOAuthPending>;
 const catalogEntry = getMcpCatalogEntry as jest.MockedFunction<typeof getMcpCatalogEntry>;
+const loadCustomRemoteMock = loadCustomRemote as jest.MockedFunction<typeof loadCustomRemote>;
 const ClientMock = Client as unknown as jest.Mock;
 const TransportMock = StreamableHTTPClientTransport as unknown as jest.Mock;
 
@@ -108,14 +114,16 @@ function pendingRow(overrides: Record<string, unknown> = {}) {
 
 let connectMock: jest.Mock;
 let closeMock: jest.Mock;
+let listToolsMock: jest.Mock;
 let finishAuthMock: jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
   connectMock = jest.fn().mockResolvedValue(undefined);
   closeMock = jest.fn().mockResolvedValue(undefined);
+  listToolsMock = jest.fn().mockResolvedValue({ tools: [] });
   finishAuthMock = jest.fn().mockResolvedValue(undefined);
-  ClientMock.mockImplementation(() => ({ connect: connectMock, close: closeMock }));
+  ClientMock.mockImplementation(() => ({ connect: connectMock, close: closeMock, listTools: listToolsMock }));
   TransportMock.mockImplementation((_url: URL, opts: { authProvider: unknown }) => ({
     finishAuth: finishAuthMock,
     authProvider: opts.authProvider,
@@ -127,6 +135,46 @@ beforeEach(() => {
     if (id === REMOTE_ENTRY.id) return REMOTE_ENTRY;
     if (id === TOKEN_ENTRY.id) return TOKEN_ENTRY;
     return null;
+  });
+  loadCustomRemoteMock.mockResolvedValue(null);
+});
+
+// ── custom remote entries (user-added servers, remote-<hash> ids) ───────────
+
+const CUSTOM_ENTRY = {
+  id: "remote-a1b2c3d4e5f6",
+  name: "mcp.myserver.dev",
+  description: "User-added remote MCP server.",
+  category: "cloud" as const,
+  auth: "oauth" as const,
+  remote: { url: "https://mcp.myserver.dev/mcp", transport: "streamable-http" as const },
+};
+
+describe("custom remote entries", () => {
+  it("startAuthorization resolves a user-added remote like a catalog entry", async () => {
+    pend.create.mockResolvedValue({ id: "p1" } as never);
+    loadCustomRemoteMock.mockResolvedValue(CUSTOM_ENTRY);
+
+    const res = await startAuthorization({ userId: USER, serverId: CUSTOM_ENTRY.id, redirectUri: HOSTED });
+    expect(res.status).toBe("connected");
+    expect(listToolsMock).toHaveBeenCalledTimes(1);
+    expect(loadCustomRemoteMock).toHaveBeenCalledWith(USER, CUSTOM_ENTRY.id);
+  });
+
+  it("completeAuthorization runs the token exchange + verify against the stored entry", async () => {
+    loadCustomRemoteMock.mockResolvedValue(CUSTOM_ENTRY);
+    pend.updateMany.mockResolvedValueOnce({ count: 1 } as never); // claim
+    pend.findUnique.mockResolvedValueOnce(pendingRow({ serverId: CUSTOM_ENTRY.id }) as never);
+
+    const params = new URLSearchParams({ code: "c1", state: "s".repeat(43) });
+    const res = await completeAuthorization({ userId: USER, state: "s".repeat(43), params });
+    expect(res).toEqual({ status: "connected", serverId: CUSTOM_ENTRY.id });
+  });
+
+  it("still reports no_remote when neither the catalog nor the custom store has the id", async () => {
+    const res = await startAuthorization({ userId: USER, serverId: "remote-nonexistent", redirectUri: HOSTED });
+    expect(res).toMatchObject({ status: "error", code: "no_remote" });
+    expect(pend.create).not.toHaveBeenCalled();
   });
 });
 
@@ -197,6 +245,28 @@ describe("startAuthorization", () => {
     pend.create.mockResolvedValue({ id: "p1" } as never);
     const res = await startAuthorization({ userId: USER, serverId: "acme-cloud", redirectUri: HOSTED });
     expect(res).toEqual({ status: "connected" });
+    expect(listToolsMock).toHaveBeenCalledTimes(1); // verify leg really ran
+  });
+
+  it("opens the browser leg when connect passes but tools/list is auth-gated", async () => {
+    pend.create.mockResolvedValue({ id: "p1" } as never);
+    pend.update.mockResolvedValue(pendingRow({ status: "pending", consumedAt: null }) as never);
+    // Server accepts initialize with (stale/no) tokens, but gates the real
+    // endpoint — connect() resolves, the SDK never surfaces 401, yet every
+    // actual call would fail. The verify probe must catch it.
+    connectMock.mockImplementation(async () => {
+      const transport = TransportMock.mock.results[TransportMock.mock.calls.length - 1].value as {
+        authProvider: { redirectToAuthorization(url: URL): Promise<void> };
+      };
+      await transport.authProvider.redirectToAuthorization(new URL("https://auth.acme.dev/authorize?client_id=c1"));
+    });
+    listToolsMock.mockRejectedValue(new UnauthorizedError());
+
+    const res = await startAuthorization({ userId: USER, serverId: "acme-cloud", redirectUri: HOSTED });
+    expect(res.status).toBe("awaiting_browser");
+    if (res.status !== "awaiting_browser") throw new Error("unreachable");
+    expect(res.authUrl).toContain("auth.acme.dev");
+    expect(closeMock).toHaveBeenCalledTimes(1);
   });
 
   it("maps DCR rejection to the typed static-client error", async () => {
@@ -325,5 +395,22 @@ describe("completeAuthorization", () => {
     expect(res).toMatchObject({ status: "error", code: "verify_failed" });
     if (res.status !== "error") throw new Error("unreachable");
     expect(res.error).toContain("rejected the session");
+  });
+
+  it("flags verify_failed when the grant only passes initialize, not tools/list", async () => {
+    pend.updateMany.mockResolvedValueOnce({ count: 1 } as never);
+    pend.findUnique.mockResolvedValueOnce(pendingRow() as never);
+    connectMock.mockResolvedValue(undefined); // transport setup OK
+    listToolsMock.mockRejectedValueOnce(new UnauthorizedError()); // real endpoint gated
+
+    const res = await completeAuthorization({
+      userId: USER,
+      state: "s".repeat(43),
+      params: new URLSearchParams({ code: "c", state: "s".repeat(43) }),
+    });
+    expect(res).toMatchObject({ status: "error", code: "verify_failed" });
+    if (res.status !== "error") throw new Error("unreachable");
+    expect(res.error).toContain("rejected the session");
+    expect(closeMock).toHaveBeenCalledTimes(1);
   });
 });

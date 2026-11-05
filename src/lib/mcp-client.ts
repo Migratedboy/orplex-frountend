@@ -130,8 +130,15 @@ class StdioMcpServer implements McpServerHandle {
     // Absolute .exe paths skip the shim. On POSIX the direct spawn is right.
     // Defense in depth for rows saved before the connect-time gate: refuse
     // shell metacharacters here too (fail closed with a re-save hint).
+    // Exception: `${VAR}` spans are mcp-remote's sanctioned env
+    // interpolation channel (its header secrets MUST arrive this way —
+    // e.g. "Authorization:${ELEVENLABS_API_KEY}"). cmd.exe leaves `${}`
+    // literal and the POSIX spawn is array-based here, so every occurrence
+    // is inert in both real spawn modes; `$(…)`, bare `$`, `%VAR%`, and
+    // backticks are still refused.
+    const varTemplate = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/g;
     for (const a of cfg.args ?? []) {
-      if (typeof a !== "string" || a.length > 2048 || /[";&|$`()\n\r<>^%!]/.test(a)) {
+      if (typeof a !== "string" || a.length > 2048 || /[";&|$`()\n\r<>^%!]/.test(a.replace(varTemplate, ""))) {
         throw new Error(
           `MCP server "${this.server}" has unsafe stored arguments — re-save the connector to pass the safety check`
         );
@@ -156,13 +163,26 @@ class StdioMcpServer implements McpServerHandle {
     this.exited = false;
 
     // Spawn failures (command not found, permission denied) arrive as an
-    // 'error' event — unhandled, it would crash the server process.
-    this.proc.on("error", () => {
+    // 'error' event — unhandled, it would crash the server process. Name the
+    // failing command and give a per-runner install hint: "failed to start"
+    // with no detail leaves the user staring at a dead connector (the exact
+    // blender-style report).
+    this.proc.on("error", (err: NodeJS.ErrnoException) => {
       this.exited = true;
       this.proc = null;
+      const enoent = err.code === "ENOENT";
+      // npx/uvx ride cmd.exe on Windows, so ENOENT here most often means the
+      // RUNNER is missing — tell the user how to install that runner.
+      const hint = enoent
+        ? cfg.command === "uvx"
+          ? ` — the "uvx" runner was not found: install uv first (pip install uv, or see https://docs.astral.sh/uv/), then retry`
+          : cfg.command === "npx"
+            ? ` — "npx" was not found: install Node.js (https://nodejs.org) so npx is on PATH, then retry`
+            : ` — ENOENT: the command "${cfg.command}" is not installed or not on PATH`
+        : `: ${err.message}`;
       for (const [, p] of this.pending) {
         clearTimeout(p.timer);
-        p.reject(new Error(`MCP server "${this.server}" failed to start (is the command installed and on PATH?)`));
+        p.reject(new Error(`MCP server "${this.server}" failed to start${hint}${enoent ? ` (launching: ${cfg.command})` : ""}`));
       }
       this.pending.clear();
     });

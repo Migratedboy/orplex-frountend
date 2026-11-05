@@ -3,10 +3,11 @@
 import { useRef, useEffect, useState } from "react";
 import { VirtualList } from "./VirtualList";
 import MessageContent from "./MessageContent";
-import ThinkingCard from "./ThinkingCard";
+import ThinkingPill from "./ThinkingPill";
 import ToolCallDisplay from "./ToolCallDisplay";
 import { MessageSkeleton } from "./Skeleton";
 import ClarificationCard from "./ClarificationCard";
+import DotGridLoader from "./DotGridLoader";
 import { Message } from "@/hooks/useMessages";
 import { AgentEvent, isToolCallEvent, isToolResultEvent, isCompactionEvent } from "@/lib/types";
 import ContextCompactedDivider from "./ContextCompactedDivider";
@@ -16,6 +17,7 @@ import { isFailedMessage } from "@/lib/message-retry";
 import { downloadAsMarkdown } from "@/lib/file-download";
 import { formatFileSize, getFileIcon } from "@/lib/file-utils";
 import { IconDownload } from "./Icons";
+import MascotLogo from "./MascotLogo";
 
 /** Strip workspace context from user message for display */
 function stripWorkspaceContext(content: string): string {
@@ -47,7 +49,7 @@ type RenderableItem = {
  *
  * The key deliberately excludes the content LENGTH. Including it meant every
  * streamed delta produced a brand-new key, so React unmounted and remounted the
- * entire row on every token — which reset ThinkingCard's elapsed timer, its
+ * entire row on every token — which reset ThinkingPill's elapsed timer, its
  * expanded state, CollapsibleText's expansion, and re-fired the VirtualList
  * measuring ref (a forced getBoundingClientRect) per token. `time` + `role` +
  * `index` are stable for the life of a message: the timestamp is fixed at
@@ -146,7 +148,7 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
     />
   ) : (
     <RunTail
-      phase={liveThinking ? "idle" : runPhase}
+      phase={runPhase}
       label={runLabel || agentStatus}
     />
   );
@@ -260,8 +262,10 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
 }) {
   const pending = agentRunning && isLast;
   // The Thinking block counts only while the model is actually thinking; once
-  // a tool runs or text streams it settles to its "Thought for Xs" done state
-  // and the tail indicator takes over — never both.
+  // a tool runs or text streams it settles to its "Thought for Xs" done state.
+  // The run tail below the bubbles carries its own dot-grid loader for EVERY
+  // live phase (thinking included), so the reader always sees that something
+  // is still running.
   const thinkingLive = pending && liveThinking;
   // One-shot: play the footer's fade-in exactly when THIS turn resolves, not
   // every time an already-finished message re-renders.
@@ -307,8 +311,7 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
         )}
         {msg.role === "assistant" ? (
           <div className="msg-content msg-content-assistant">
-            {/* eslint-disable-next-line @next/next/no-img-element -- SVG logo: next/image cannot optimize SVG without dangerouslyAllowSVG, which Next.js advises against */}
-            <img src="/logo.svg" alt="Orplex" className="msg-avatar" width={28} height={28} />
+            <MascotLogo className="msg-avatar" size={28} alt="Orplex" />
             <div className="msg-content-text">
               {msg.content ? (
                 <MessageContent
@@ -323,7 +326,7 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
                   retrying={retryingIdx === index}
                 />
               ) : thinkingLive ? (
-                <ThinkingCard content="" isThinking={true} />
+                <ThinkingPill done={false} />
               ) : null}
               {/* Footer stays reserved (height held) but hidden until the turn
                   resolves — timestamps + Save are only meaningful once the
@@ -341,7 +344,8 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
         ) : (
           <div className="msg-content msg-content-user">
             {msg.role === "user" ? (
-              <MessageContent content={stripWorkspaceContext(msg.content)} />
+              // No reasoning thread on a user turn — it is the agent's thread.
+              <MessageContent content={stripWorkspaceContext(msg.content)} showThread={false} />
             ) : msg.content}
           </div>
         )}
@@ -402,7 +406,8 @@ function RenderableItem({ item, agentRunning, liveThinking = false, isLast, onRe
 }
 
 /** Fallback labels when a phase carries no status detail of its own.
- *  ("thinking" has none — RunTail never renders it, see above.) */
+ *  ("thinking" has none on purpose — the Thinking block inside the bubble
+ *  already spells that out, so the tail shows the grid alone.) */
 const RUN_LABEL: Partial<Record<RunPhase, string>> = {
   running_tool: "Working…",
   streaming: "Responding…",
@@ -417,18 +422,31 @@ const RUN_LABEL: Partial<Record<RunPhase, string>> = {
  * unmounts. Height is reserved while visible so the answer landing never
  * shoves the scroll position around.
  *
- * Never renders for "thinking": the original "Thinking Xs" block already owns
- * that state (elapsed time + animation), so the two can't both be on screen.
+ * While the turn is live the indicator is the 3x3 DotGridLoader pulse (the
+ * brand's dot-grid loader). It is shown for EVERY live phase — including
+ * "thinking" — so the reader always has a visible "this is still running"
+ * signal under the last message. On a terminal phase it becomes the plain
+ * outcome glyph (check / error / stop), because the run is over and a pulsing
+ * loader would lie about it.
+ *
+ * The "Thinking Xs" block (ThinkingPill) lives INSIDE the last bubble and
+ * keeps its own elapsed-time animation; the tail is a separate line below the
+ * bubbles, so the two no longer compete for the same spot.
  */
 function RunTail({ phase, label }: { phase: RunPhase; label?: string }) {
-  if (phase === "idle" || phase === "thinking") return null;
+  if (phase === "idle") return null;
   const terminal = phase === "done" || phase === "error" || phase === "stopped";
   const icon =
     phase === "done" ? "check"
       : phase === "error" ? "error"
         : phase === "stopped" ? "stop_circle"
-          : "progress_activity";
+          : "";
   const text = (label ?? "").trim() || RUN_LABEL[phase] || "";
+  // "Thinking" is already spelled out by the Thinking block inside the last
+  // bubble (with its elapsed timer), so repeating it next to the grid is
+  // noise — the grid stands alone for that phase, exactly as in the reference.
+  // A REAL detail ("Reading src/app/page.tsx…") is still worth showing.
+  const genericThinking = phase === "thinking" && /^(thinking|processing)\b/i.test(text);
 
   return (
     <div
@@ -438,8 +456,17 @@ function RunTail({ phase, label }: { phase: RunPhase; label?: string }) {
       role="status"
       aria-live="polite"
     >
-      <span className={`run-tail-icon ms ${terminal ? "" : "ms-spin"}`} aria-hidden="true">{icon}</span>
-      <span className="run-tail-label">{text}</span>
+      {terminal ? (
+        <span className="run-tail-icon ms" aria-hidden="true">{icon}</span>
+      ) : (
+        // The grid is decorative: the run-tail itself is the live region and
+        // the label beside it carries the meaning, so the grid is hidden from
+        // assistive tech instead of announcing a second "Loading".
+        <span className="run-tail-dot" aria-hidden="true">
+          <DotGridLoader size={16} />
+        </span>
+      )}
+      {text && !genericThinking ? <span className="run-tail-label">{text}</span> : null}
     </div>
   );
 }

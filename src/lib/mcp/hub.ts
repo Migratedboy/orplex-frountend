@@ -38,6 +38,7 @@ import {
   type StoredOAuthTokens,
 } from "@modelcontextprotocol/client";
 import { getMcpCatalogEntry, type McpCatalogEntry } from "@/lib/mcp-catalog";
+import { loadCustomRemote } from "./custom-remote";
 import {
   loadConnectionCredentials,
   loadConnectionTokens,
@@ -189,6 +190,9 @@ export interface RuntimeProviderOptions {
   clientName?: string;
   scopes?: string[];
   staticClientId?: string;
+  staticClientSecret?: string;
+  /** Pinned authorization-server issuer (catalog oauth.authority). */
+  authority?: string;
 }
 
 /**
@@ -236,6 +240,7 @@ export class RuntimeMcpOAuthProvider implements OAuthClientProvider {
     if (stored) return stored;
     if (this.opts.staticClientId) {
       const info: StoredOAuthClientInformation = { client_id: this.opts.staticClientId };
+      if (this.opts.staticClientSecret) info.client_secret = this.opts.staticClientSecret;
       if (ctx?.issuer) info.issuer = ctx.issuer;
       return info;
     }
@@ -284,7 +289,18 @@ export class RuntimeMcpOAuthProvider implements OAuthClientProvider {
   }
 
   async discoveryState(): Promise<OAuthDiscoveryState | undefined> {
-    return this.discovery;
+    // Seed a PINNED authorization server (catalog oauth.authority) when this
+    // session has no discovery yet — see DbMcpOAuthProvider.discoveryState.
+    return this.discovery ?? this.seedDiscovery();
+  }
+
+  async saveAuthorizationServerUrl(_issuer: string): Promise<void> {
+    // First-stamper note: the runtime provider is per-session; discovery
+    // persists through saveDiscoveryState above.
+  }
+
+  private seedDiscovery(): OAuthDiscoveryState | undefined {
+    return this.opts.authority ? { authorizationServerUrl: this.opts.authority } : undefined;
   }
 
   async invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery"): Promise<void> {
@@ -309,12 +325,21 @@ function buildTransport(entry: McpCatalogEntry, s: HubSession) {
           clientName: entry.name,
           scopes: entry.oauth?.scopes,
           staticClientId: entry.oauth?.clientId,
+          staticClientSecret: entry.oauth?.clientSecret,
+          authority: entry.oauth?.authority,
         })
       : undefined;
+  // skipIssuerMetadataValidation ONLY when the catalog pins a trusted AS —
+  // see flow.ts makeTransport for the rationale (Entra placeholder issuer).
+  const opts = {
+    fetch: ssrfFetch,
+    ...(provider ? { authProvider: provider } : {}),
+    ...(entry.oauth?.authority ? { skipIssuerMetadataValidation: true } : {}),
+  } as const;
   if (remote.transport === "sse") {
-    return new SSEClientTransport(url, { fetch: ssrfFetch, ...(provider ? { authProvider: provider } : {}) });
+    return new SSEClientTransport(url, opts);
   }
-  return new StreamableHTTPClientTransport(url, { fetch: ssrfFetch, ...(provider ? { authProvider: provider } : {}) });
+  return new StreamableHTTPClientTransport(url, opts);
 }
 
 class McpHubTimeoutError extends Error {
@@ -385,6 +410,18 @@ async function failConnect(s: HubSession, e: unknown): Promise<never> {
   s.lastError = msg;
   s.nextRetryAt = Date.now() + hubBackoffMs(s.failures);
   throw new McpHubError("connect_failed", `connection failed: ${msg}`, s.nextRetryAt);
+}
+
+/**
+ * Entry resolution for catalog connectors AND user-added remote servers
+ * (custom-remote.ts): remote-<hash> ids resolve from their McpConnection
+ * row, so a custom OAuth remote dispatches through the hub like any
+ * shipped connector.
+ */
+async function resolveHubEntry(userId: string, serverId: string): Promise<McpCatalogEntry | null> {
+  const catalog = getMcpCatalogEntry(serverId);
+  if (catalog) return catalog.remote ? catalog : null;
+  return loadCustomRemote(userId, serverId);
 }
 
 function precheck(entry: McpCatalogEntry | null, serverId: string): asserts entry is McpCatalogEntry & { remote: NonNullable<McpCatalogEntry["remote"]> } {
@@ -557,7 +594,7 @@ export async function hubListTools(
   serverId: string,
   opts?: { refresh?: boolean; timeoutMs?: number }
 ): Promise<HubTool[]> {
-  const entry = getMcpCatalogEntry(serverId);
+  const entry = await resolveHubEntry(userId, serverId);
   precheck(entry, serverId);
   const s = sessionFor(userId, serverId);
   await ensureConnected(s, entry);
@@ -566,7 +603,13 @@ export async function hubListTools(
 
   await acquire(s, opts?.timeoutMs ?? HUB_LIST_TIMEOUT_MS);
   try {
-    const client = s.client!;
+    const client = s.client;
+    if (!client) {
+      // Raced with a disconnect (the user hit Disconnect while this call was
+      // waiting for its slot): a deliberate typed failure, NOT a raw
+      // "Cannot read properties of null" TypeError from client.listTools.
+      throw new McpHubError("call_failed", `"${s.serverId}" disconnected while tools/list was starting`);
+    }
     let raw: unknown;
     try {
       raw = await withTimeout(client.listTools({}), opts?.timeoutMs ?? HUB_LIST_TIMEOUT_MS, "tools/list");
@@ -617,7 +660,7 @@ export async function hubCallTool(
   args: Record<string, unknown> = {},
   opts?: { timeoutMs?: number }
 ): Promise<{ text: string; isError: boolean }> {
-  const entry = getMcpCatalogEntry(serverId);
+  const entry = await resolveHubEntry(userId, serverId);
   precheck(entry, serverId);
   const s = sessionFor(userId, serverId);
   await ensureConnected(s, entry);
@@ -625,7 +668,11 @@ export async function hubCallTool(
   const timeoutMs = opts?.timeoutMs ?? HUB_CALL_TIMEOUT_MS;
   await acquire(s, timeoutMs);
   try {
-    const client = s.client!;
+    const client = s.client;
+    if (!client) {
+      // Same disconnect race as hubListTools: typed failure over TypeError.
+      throw new McpHubError("call_failed", `"${s.serverId}" disconnected while tools/call was starting`);
+    }
     let result: unknown;
     try {
       result = await withTimeout(client.callTool({ name: toolName, arguments: args }), timeoutMs, "tools/call");

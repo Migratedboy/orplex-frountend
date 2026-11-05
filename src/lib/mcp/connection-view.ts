@@ -5,6 +5,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { getMcpCatalogEntry, type McpAuthType } from "@/lib/mcp-catalog";
+import { isCustomRemoteId } from "./custom-remote";
 import { listConnections, type SafeConnection } from "./oauth/store";
 
 export interface ConnectionView extends SafeConnection {
@@ -27,12 +28,25 @@ export async function listConnectionViews(userId: string): Promise<ConnectionVie
   const toolCounts = new Map(counts.map((c) => [c.serverId, c._count._all]));
   return rows.map((r) => {
     const entry = getMcpCatalogEntry(r.serverId);
+    // Custom remotes (remote-<hash> ids) have no catalog row to read — show
+    // the endpoint host as the name; the row's url/transport carry the rest.
+    const customRemote = !entry && isCustomRemoteId(r.serverId);
+    const name = entry?.name ?? (customRemote ? hostOf(r.url) : r.serverId);
+    const auth: McpAuthType = customRemote ? "oauth" : (entry?.auth ?? "none");
     return {
       ...r,
-      name: entry?.name ?? r.serverId,
+      name,
       description: entry?.description ?? r.url,
-      auth: entry?.auth ?? "none",
+      auth,
       toolCount: toolCounts.get(r.serverId) ?? 0,
     };
   });
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }

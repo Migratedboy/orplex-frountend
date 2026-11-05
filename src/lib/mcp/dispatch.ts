@@ -103,6 +103,10 @@ export async function dispatchMcpToolCallSdk(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ serverId: parsed.serverId, tool: parsed.toolName, args }),
+      // Bounded exactly like the legacy renderer lane (client.ts: 30s): the
+      // hub caps connect (15s) and the tool call (30s) server-side, but a
+      // stalled route/prisma would otherwise hang the agent turn forever.
+      signal: AbortSignal.timeout(60_000),
     });
     const j = (await r.json().catch(() => ({}))) as {
       success?: boolean;

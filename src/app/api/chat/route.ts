@@ -228,6 +228,21 @@ const routedSupportsVision = canSendImageParts(
     const contextWindowFor = (id: string): number | undefined =>
       contextWindowForModel(contextWindows, id);
 
+    // GLOBAL wall-clock budget for the whole provider retry ladder. Each
+    // provider's attempt rung may spend up to fetchWithProviderRetry's own
+    // deadline (default 180s @ 20 attempts with exponential backoff), but a
+    // fallback sweep runs several providers + a lean retry each — the SUM has
+    // to fit inside the route's ~300s function budget WITH room for the
+    // streamed answer, or the function dies mid-flight and the response
+    // breaks. Earlier providers get the most patience; late ones get quick
+    // probes (deadlineMs floors at 5s), so the last fallback can still answer
+    // on a fast key instead of being skipped entirely.
+    const LADDER_BUDGET_MS = 150_000;
+    const ladderBudgetEnd = Date.now() + LADDER_BUDGET_MS;
+    const retryBudget = () => ({
+      deadlineMs: Math.max(5_000, ladderBudgetEnd - Date.now()),
+    });
+
     for (const provider of providerConfigs) {
       if (effort && effort !== "medium") {
         console.log(`[chat] effort=${effort} → ${provider.model}`);
@@ -331,7 +346,7 @@ const routedSupportsVision = canSendImageParts(
 
     const requestBody = buildRequestBody(systemPrompt, fullTools);
 
-      let result = await fetchWithProviderRetry(provider, requestBody);
+      let result = await fetchWithProviderRetry(provider, requestBody, retryBudget());
       attemptsMade++;
 
       // Size recovery, triggered by an actual refusal instead of by provider
@@ -355,7 +370,7 @@ const routedSupportsVision = canSendImageParts(
               ...GROQ_TOOL_DEFINITIONS,
               ...toOpenAiFunctions([...mcpRoster.metaDefs]),
             ];
-        result = await fetchWithProviderRetry(provider, buildRequestBody(leanPrompt, leanTools));
+        result = await fetchWithProviderRetry(provider, buildRequestBody(leanPrompt, leanTools), retryBudget());
         attemptsMade++;
       }
 

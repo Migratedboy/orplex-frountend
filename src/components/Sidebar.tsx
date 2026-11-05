@@ -15,6 +15,7 @@ import { useWorkspace } from "./WorkspaceProvider";
 import { ProjectContextMenu } from "./ProjectSidebarParts";
 import ProjectBranchedMenu from "./ProjectBranchedMenu";
 import BranchedMenu, { MsIcon } from "./BranchedMenu";
+import MascotLogo from "./MascotLogo";
 import type { ProjectEntry } from "@/lib/project-registry";
 
 export default function Sidebar() {
@@ -154,8 +155,7 @@ export default function Sidebar() {
   const navContent = (
     <>
       <div className="sidebar-brand">
-        {/* eslint-disable-next-line @next/next/no-img-element -- SVG logo: next/image cannot optimize SVG without dangerouslyAllowSVG, which Next.js advises against */}
-        <img src="/logo.svg" alt="Orplex Code" className="sidebar-brand-logo" />
+        <MascotLogo className="sidebar-brand-logo" size={40} />
         <div className="sidebar-brand-text">
           <h1>Orplex Code</h1>
           <span>Vivid Catalyst</span>

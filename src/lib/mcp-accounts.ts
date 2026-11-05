@@ -13,7 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { decryptKey, encryptKey, maskKey } from "@/lib/key-encryption";
 import { getMcpCatalogEntry, type McpCatalogEntry } from "@/lib/mcp-catalog";
 import { checkMcpUrl } from "@/lib/mcp/ssrf-fetch";
-import { withConnectionLock } from "@/lib/mcp/oauth/store";
+import { withConnectionLock, saveConnectionCredentials, type McpTransport } from "@/lib/mcp/oauth/store";
 import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
 import type { McpServerConfig } from "@/lib/mcp-client";
 
@@ -32,6 +32,18 @@ const MAX_ENV_VALUE_CHARS = 8192;
 // key=value, URLs) never need these.
 const ARG_UNSAFE = /[";&|$`()\n\r<>^%!]/;
 
+/**
+ * `${VAR_NAME}` spans are mcp-remote's sanctioned env-interpolation channel:
+ * it interpolates ${VAR} anywhere in args AND header values, and refuses
+ * static secrets in headers by design, so its docs route secrets this way.
+ * They are NOT shell injection: cmd.exe leaves `${}` literal (only %VAR%
+ * expands) and the POSIX spawn here is array-based with no shell, so every
+ * occurrence is inert in both real spawn modes — mcp-remote interpolates the
+ * value itself. `$(…)`, bare `$`, `%VAR%`, and backticks keep failing the
+ * metachar test.
+ */
+const VAR_TEMPLATE = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/g;
+
 /** True for `scheme://…` values (URLs), as opposed to paths/flags. */
 function looksLikeUrl(value: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value);
@@ -45,7 +57,7 @@ function looksLikeUrl(value: string): boolean {
  */
 export function connectorArgError(arg: string, catalogUrls: Set<string>): string | null {
   if (arg.length > MAX_ARG_CHARS) return `argument too long (max ${MAX_ARG_CHARS} chars)`;
-  if (ARG_UNSAFE.test(arg)) return `argument contains shell metacharacters: ${arg.slice(0, 60)}`;
+  if (ARG_UNSAFE.test(arg.replace(VAR_TEMPLATE, ""))) return `argument contains shell metacharacters: ${arg.slice(0, 60)}`;
   if (looksLikeUrl(arg)) {
     if (/^https?:\/\//i.test(arg)) {
       if (!catalogUrls.has(arg)) {
@@ -289,6 +301,50 @@ export async function recordTestResult(userId: string, serverId: string, ok: boo
   await prisma.mcpServerConfig.updateMany({
     where: { userId, serverId },
     data: { lastTestAt: new Date(), lastTestOk: ok },
+  });
+}
+
+// ── Static OAuth clients (no dynamic registration) ─────────────────────────
+
+/**
+ * Store the USER's own vendor-registered OAuth client for a connector whose
+ * authorization server has no open dynamic registration (RFC 7591) — render,
+ * slack, jira, one-drive, figma, … The provider's clientInformation() reads
+ * these stored credentials FIRST, so the next connect leg skips DCR entirely
+ * and goes straight to the browser. Works for catalog AND custom remote ids.
+ */
+export async function setConnectionClientCredentials(
+  userId: string,
+  serverId: string,
+  clientId: string,
+  clientSecret?: string
+): Promise<void> {
+  const trimmedId = (clientId ?? "").trim();
+  if (!trimmedId) throw new Error("a client id is required");
+  const trimmedSecret = (clientSecret ?? "").trim() || undefined;
+  const entry = getMcpCatalogEntry(serverId);
+  let url = entry?.remote?.url;
+  let transport: McpTransport | undefined = entry?.remote?.transport;
+  if (!url) {
+    // Not a catalog remote (custom `remote-<hash>` id, or a catalog stdio
+    // entry that cannot OAuth) → resolve from the existing connection row.
+    const row = await prisma.mcpConnection.findUnique({
+      where: { userId_serverId: { userId, serverId } },
+      select: { url: true, transport: true },
+    });
+    if (!row?.url) {
+      throw new Error(`"${serverId}" has no OAuth (remote) endpoint — only remote MCP servers accept a client id`);
+    }
+    url = row.url;
+    transport = transport ?? (row.transport as McpTransport | undefined);
+  }
+  await saveConnectionCredentials({
+    userId,
+    serverId,
+    url,
+    transport: transport ?? "streamable-http",
+    clientId: trimmedId,
+    clientSecret: trimmedSecret,
   });
 }
 

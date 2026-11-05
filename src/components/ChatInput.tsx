@@ -12,6 +12,7 @@ import { IconMcp } from "./Icons";
 import type { AttachedFile } from "@/hooks/useFileProcessor";
 import { Attachment01Icon, SparklesIcon } from "@hugeicons/core-free-icons";
 import QuotaIndicator from "./QuotaIndicator";
+import WalkingMascot from "./WalkingMascot";
 import WorkspaceSwitcher from "./WorkspaceSwitcher";
 import { QuickActions } from "./ui";
 import type { AgentMode } from "./ModeSelector";
@@ -478,7 +479,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
           isRunning={isWorking}
           suggestions={aiSuggestions}
         />
-        <div className="chat-input-wrapper prompt-bar-wrapper">
+        <div className="chat-input-wrapper prompt-bar-wrapper" style={{ position: "relative" }}>
           <input
             ref={fileInputRef}
             type="file"
@@ -549,6 +550,9 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             onRegisterControls={(c) => { controlsRef.current = c; }}
             className="prompt-bar--chat"
           />
+          {/* Fresh-chat patrol: until the first user message lands, the mascot
+              walks the border of the prompt bar (WalkingMascot.tsx). */}
+          {!lastUserMessage && <WalkingMascot />}
         </div>
         {stopped && !isWorking && (
           <div className="chat-stop-note" role="status">

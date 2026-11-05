@@ -12,6 +12,20 @@
 import type { ContentSegment } from "./message-content";
 
 export type ToolKind = "run" | "read" | "write" | "browser" | "search" | "other";
+
+/**
+ * Material Symbols ligature per tool kind — the icon the tool row shows.
+ * Shared by the inline chain (ToolChain.tsx) and the reasoning thread
+ * (thought-line.ts) so the SAME tool always carries the SAME glyph.
+ */
+export const KIND_GLYPH: Record<ToolKind, string> = {
+  run: "smart_display",
+  read: "description",
+  write: "edit",
+  browser: "public",
+  search: "search",
+  other: "extension",
+};
 export type ToolRowState = "running" | "success" | "error" | "stopped";
 
 export interface ToolRow {

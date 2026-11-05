@@ -44,6 +44,39 @@
   --danger-soft: #d64545;
   --ring-brand: rgba(160, 65, 0, 0.1);
 
+  /* ThoughtLine — the agent reasoning thread above an assistant turn.
+     The component reads these vars (it ships its own stylesheet), so the app
+     owns the palette: Orplex orange, a red that cannot be mistaken for it,
+     and a translucent glass that reads cleanly on the app's flat canvas. */
+  --tl-accent: #f97316;
+  --tl-error: var(--danger-soft);
+  --tl-glass: rgba(255, 255, 255, 0.6);
+  --tl-edge: rgba(249, 115, 22, 0.3);
+
+  /* Chat canvas backdrop (gradient ASCII). `--ob-base` is the surface the
+     artwork sits on — it must match the app canvas exactly, otherwise the
+     chat column shows a seam against the sidebar and the top bar.
+     `--ob-wash-*` is the readability veil painted OVER the artwork. It is a
+     light scrim, not a cover: the ASCII field must read as a field across the
+     WHOLE chat column (that is the look), so the veil only takes the edge off
+     the pattern under text and thins out further toward the composer, where
+     the frosted glass turns the artwork into a warm horizon.
+     Raise these alphas if messages ever fight the pattern; 0.96/0.88 (the old
+     values) erased the artwork above the fold entirely. */
+  /* The backdrop is theme-independent on purpose: light mode keeps the same
+     dark surface and veil as dark mode, so the artwork never changes colour
+     when the theme does. Only the backdrop tokens are shared — every other
+     light-mode surface is untouched. */
+  --ob-base: #0b0b0d;
+  --ob-wash-1: rgba(11, 11, 13, 0.26);
+  --ob-wash-2: rgba(11, 11, 13, 0.18);
+  --ob-wash-3: rgba(11, 11, 13, 0.1);
+  --ob-wash-4: rgba(11, 11, 13, 0.03);
+  /* Frosting radius (px) of the patch behind the conversation. Keep it under a
+     quarter of the glyph cell (--cellSize 16px in page.tsx) or the field reads
+     as a smear instead of softened text; 0 disables it. */
+  --ob-blur: 7px;
+
   /* Floating composer. The bar is taken out of the flow and overlaid on the
      bottom of the chat column, so everything that used to sit above it in
      flow has to reserve its height: `--composer-h` is that height. It starts
@@ -54,8 +87,11 @@
      needs a matching fully-transparent stop of the SAME colour so the ramp
      never greys out mid-way. */
   --composer-h: 156px;
-  --composer-bg: rgba(255, 255, 255, 0.65);
-  --composer-bg-solid: rgba(255, 255, 255, 0.94);
+  /* No full-width band: the transcript must not show through, but the fix is
+     each composer CONTROL carrying its own opaque surface (the prompt-bar
+     rectangle, the chips), not a slab across the bottom of the column. */
+  --composer-bg: rgba(11, 11, 13, 0);
+  --composer-bg-solid: rgba(11, 11, 13, 0);
   --composer-fade-from: rgba(255, 255, 255, 0);
 }
 
@@ -85,8 +121,25 @@
   --danger-soft: #e2555f;
   --ring-brand: rgba(255, 107, 0, 0.3);
 
-  --composer-bg: rgba(11, 11, 13, 0.65);
-  --composer-bg-solid: rgba(11, 11, 13, 0.94);
+  /* ThoughtLine (dark) — the accent stays orange; the glass goes nearly
+     clear and the edge goes neutral white, matching the black theme. */
+  --tl-accent: #f97316;
+  --tl-error: var(--danger-soft);
+  --tl-glass: rgba(255, 255, 255, 0.06);
+  --tl-edge: rgba(255, 255, 255, 0.14);
+
+  /* Chat canvas backdrop (dark) — same surface as the app canvas. Same light
+     scrim as light mode so the glyph field stays visible across the whole
+     column instead of vanishing under a near-opaque wash. */
+  --ob-base: #0b0b0d;
+  --ob-wash-1: rgba(11, 11, 13, 0.26);
+  --ob-wash-2: rgba(11, 11, 13, 0.18);
+  --ob-wash-3: rgba(11, 11, 13, 0.1);
+  --ob-wash-4: rgba(11, 11, 13, 0.03);
+
+  /* Same as light: no band, controls carry their own surfaces. */
+  --composer-bg: rgba(11, 11, 13, 0);
+  --composer-bg-solid: rgba(11, 11, 13, 0);
   --composer-fade-from: rgba(11, 11, 13, 0);
 }
 
@@ -181,8 +234,16 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .conv-section-label { font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:0.15em; color:#6b6a6a; text-transform:uppercase; margin-bottom:8px; padding:0 16px; }
 
 /* ===== TOPBAR ===== */
-.topbar-header { position:fixed; top:0; left:256px; right:0; height:64px; background:#fff; display:flex; align-items:center; justify-content:space-between; padding:0 24px; z-index:40; border-bottom:1px solid rgba(255,255,255,0.08); box-shadow:0 1px 3px rgba(0,0,0,0.04); }
-.topbar-header { border-bottom-color:#ECECEF; }
+/* Glass, not a slab: the backdrop now runs up underneath this bar
+   (.orplex-chat-bg starts 64px above the chat column), so the tint + blur let
+   the glyph field read through it. Without that overlap a translucent bar
+   would only ever show the flat body colour. */
+.topbar-header { position:fixed; top:0; left:256px; right:0; height:64px; background:transparent; display:flex; align-items:center; justify-content:space-between; padding:0 24px;  z-index:40; border-bottom:none; box-shadow:none; --tb-tint:11,11,13; --tb-a1:.32; --tb-a2:.16; }
+/* The glass is a FEATHERED layer, not a slab. Tint and blur both fade to
+   nothing at the bottom edge, so the bar dissolves into the chat instead of
+   drawing a line where blurred glyphs meet crisp ones. A border or shadow here
+   would put the seam back — this bar must have neither. */
+.topbar-header::before { content:""; position:absolute; inset:0; z-index:-1; pointer-events:none; background:linear-gradient(to bottom, rgba(var(--tb-tint),var(--tb-a1)) 0%, rgba(var(--tb-tint),var(--tb-a2)) 55%, rgba(var(--tb-tint),0) 100%); -webkit-backdrop-filter:blur(14px) saturate(1.15); backdrop-filter:blur(14px) saturate(1.15); -webkit-mask-image:linear-gradient(to bottom,#000 0%,#000 40%,transparent 100%); mask-image:linear-gradient(to bottom,#000 0%,#000 40%,transparent 100%); }
 @media(max-width:767px){ .topbar-header{left:0; padding-left:56px} }
 /* Narrow chrome: tighten padding + let the search field shrink so the icon
    cluster never wraps or overflows. */
@@ -195,13 +256,13 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   .topbar-title{ font-size:16px; }
 }
 .topbar-left { display:flex; align-items:center; gap:8px; }
-.topbar-title { font-size:18px; font-weight:700; color:#a04100; margin:0; }
+.topbar-title { font-size:18px; font-weight:700; color:#ffb693; margin:0; }
 .topbar-actions { display:flex; align-items:center; gap:10px; min-width:0; }
 .topbar-search { position:relative; flex:0 1 auto; min-width:0; max-width:320px; width:100%; }
-.topbar-search input { width:100%; padding:8px 16px 8px 36px; background:transparent; border:1px solid #E4E4E7; border-radius:6px; font-size:14px; color:#1a1c1d; outline:none; font-family:'Fraunces',serif; transition:border-color 160ms ease-out, box-shadow 160ms ease-out, background-color 160ms ease-out; }
-.topbar-search input:hover { border-color:#d8d8dc; }
-.topbar-search input:focus-visible { border-color:rgba(255,107,0,0.5); box-shadow:0 0 0 3px rgba(255,107,0,0.12); background:#fff; }
-.topbar-search-icon { position:absolute; left:12px; top:50%; transform:translateY(-50%); color:#5f5e5e; font-size:14px; pointer-events:none; }
+.topbar-search input { width:100%; padding:8px 18px 8px 36px; background:rgba(255,255,255,0.08); -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); border:1px solid transparent; border-radius:999px; font-size:14px; color:#ffffff; outline:none; font-family:'Fraunces',serif; transition:border-color 160ms ease-out, box-shadow 160ms ease-out, background-color 160ms ease-out; }
+.topbar-search input:hover { border-color:transparent; background:rgba(255,255,255,0.12); }
+.topbar-search input:focus-visible { border-color:rgba(255,107,0,0.5); box-shadow:0 0 0 3px rgba(255,107,0,0.12); background:rgba(255,255,255,0.14); }
+.topbar-search-icon { position:absolute; left:12px; top:50%; transform:translateY(-50%); color:#ffffff; font-size:14px; pointer-events:none; }
 .topbar-search-results { position:absolute; top:100%; left:0; right:0; margin-top:4px; background:#fff; border:1px solid #E4E4E7; border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.1); max-height:256px; overflow-y:auto; z-index:60; }
 .topbar-search-result-item { padding:8px 16px; cursor:pointer; border-bottom:1px solid #E4E4E7; transition:background 0.15s; }
 .topbar-search-result-item:last-child { border-bottom:none; }
@@ -256,6 +317,20 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   background:radial-gradient(closest-side, rgba(255,107,0,0.17), rgba(255,107,0,0.07) 45%, transparent 72%);
   filter:blur(6px); animation:welcome-glow-breathe 7s ease-in-out infinite; }
 @keyframes welcome-glow-breathe { 0%,100%{opacity:.75; transform:translate(-50%,-58%) scale(.97)} 50%{opacity:1; transform:translate(-50%,-58%) scale(1.04)} }
+/* ===== PROMPT BAR WALKING MASCOT ===== */
+/* In a fresh chat (no user message yet) the Orplex mascot patrols the
+   bar's border on its own pixel legs. WalkingMascot.tsx inlines the logo's
+   creature (so the real legs animate) and drives positions imperatively;
+   this CSS supplies the shell. The layer is pointer-transparent and paints
+   above the bar purely by DOM order — interactive elements stay clickable. */
+.walking-mascot-layer { position:absolute; inset:0; pointer-events:none; }
+.walking-mascot { position:absolute; left:0; top:0; width:0; height:0; }
+/* flip carries translate(-50%,-86.25%) so the walker's feet line (the SVG's
+   86.25% height mark) sits on the border point; scaleX(±1) is rewritten
+   per-frame for the travel direction (moonwalk flips it upside-down-face). */
+.walking-mascot__flip { position:absolute; left:0; top:0; width:30px; height:30px; transform:translate(-50%,-86.25%); }
+.walking-mascot__svg { display:block; }
+
 @keyframes welcome-fade-up { from{opacity:0; transform:translateY(12px)} to{opacity:1; transform:translateY(0)} }
 @keyframes welcome-float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
 /* Staggered fade-up: 70ms steps, runs once on mount. */
@@ -295,7 +370,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
    background (transparent → bg) instead of a border. The scroll box has no
    background of its own, so one mask covers light and dark; it just reveals
    .app-root's color. */
-.messages-scroll { flex:1; overflow-y:auto; padding:24px 16px;
+.messages-scroll { flex:1; overflow-y:auto; padding:32px 28px;
   -webkit-mask-image:linear-gradient(to bottom, #000 calc(100% - 24px), rgba(0,0,0,0));
   mask-image:linear-gradient(to bottom, #000 calc(100% - 24px), rgba(0,0,0,0)); }
 @media(min-width:768px){ .messages-scroll{padding:24px 24px} }
@@ -310,7 +385,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .msg-assistant { display:flex; justify-content:flex-start; margin-bottom:24px; }
 .msg-bubble { max-width:80%; padding:12px 20px; font-size:14px; line-height:1.6; border-radius:12px; }
 .msg-bubble-user { background:#a04100; color:#fff; border-radius:12px 12px 4px 12px; }
-.msg-bubble-assistant { background:transparent; border:none; color:#1a1c1d; border-radius:12px; padding:12px 0; }
+.msg-bubble-assistant { background:transparent; border:none; color:#ffffff; border-radius:12px; padding:12px 0; }
 .msg-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
 .msg-header-logo-inline { display:none; }
 .msg-assistant .msg-bubble-assistant .msg-header { margin-bottom:0; }
@@ -332,15 +407,14 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .msg-content-assistant { display:flex; align-items:center; gap:12px; }
 .msg-avatar { border-radius:50%; flex-shrink:0; }
 .msg-content-text { flex:1; min-width:0; }
-.msg-time-actions { display:flex; align-items:center; gap:8px; margin-top:6px; opacity:0; transition:opacity 0.15s; }
-.msg-assistant:hover .msg-time-actions { opacity:1; }
+/* The timestamp + Save footer is always visible — no hover required. It used
+   to sit at opacity:0 and only appear on :hover, which also meant a settled
+   footer faded back out and read as dim text on the artwork. */
+.msg-time-actions { display:flex; align-items:center; gap:8px; margin-top:6px; opacity:1; transition:opacity 0.15s; }
 /* Turn still running: the footer keeps its height (so the answer landing
-   never shifts the layout) but stays invisible and unclickable. Once the run
-   resolves it fades in once, then goes back to hover-reveal. */
-.msg-time-actions--pending,
-.msg-assistant:hover .msg-time-actions--pending { opacity:0; pointer-events:none; }
-.msg-time-actions--settled { animation: msg-footer-reveal 900ms ease-out; }
-@keyframes msg-footer-reveal { 0%{opacity:0} 25%{opacity:1} 100%{opacity:0} }
+   never shifts the layout) but stays invisible and unclickable until the
+   run resolves, then fades in and stays. */
+.msg-time-actions--pending { opacity:0; pointer-events:none; }
 
 /* ===== END-OF-STREAM RUN TAIL =====
    Sits under the last message for the length of a turn. Height is reserved
@@ -353,6 +427,9 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   letter-spacing:.02em; color:var(--text-secondary);
 }
 .run-tail-icon { display:inline-flex; font-size:16px; color:var(--brand); }
+/* Live-phase loader: the 3x3 dot grid (DotGridLoader). Sized to the 16px
+   glyph it replaces so the tail keeps its line height. */
+.run-tail-dot { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; flex:none; }
 .run-tail[data-phase="done"] .run-tail-icon { color:#16a34a; }
 .run-tail[data-phase="error"] .run-tail-icon { color:var(--danger); }
 .run-tail[data-phase="stopped"] .run-tail-icon { color:var(--text-tertiary); }
@@ -364,12 +441,99 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .dark .run-tail { color:var(--text-secondary); }
 @media(prefers-reduced-motion:reduce){
   .run-tail[data-terminal],
-  .run-tail:not([data-terminal]) .run-tail-label,
-  .run-tail .ms-spin { animation:none; }
-  .msg-time-actions--settled { animation:none; }
+  .run-tail:not([data-terminal]) .run-tail-label { animation:none; }
+  /* The dot grid slows itself down via framer-motion's useReducedMotion. */
 }
 .msg-time-actions .code-block-btn { font-size:10px; padding:2px 6px; color:#999; }
 .msg-time-actions .code-block-btn:hover { color:#a04100; background:#FFF7ED; }
+
+/* ===== AGENT REASONING THREAD (ThoughtLine) =====
+   The thread renders above an assistant turn. The rows are translucent glass
+   with a hairline edge; on the app's flat canvas the glass reads cleanly on
+   its own, so there is NO glow behind it — a tinted backdrop made the block
+   look like a coloured slab instead of a thread. */
+.tl-thread {
+  position:relative;
+  isolation:isolate;
+  margin:0 0 10px;
+  padding:2px 0;
+  font-family:var(--font-sans);
+  /* A tool row carries a real glyph now, so the node column grows to fit it. */
+  --_node:16px;
+}
+/* A rehydrated history step has no real duration (the transcript carries no
+   per-step timestamps), so its "0.0s" badge is hidden instead of lying. */
+.tl-thread--history .tl-meta { display:none; }
+/* The thread owns its own typography; the app's 14px body copy would make
+   the rows too heavy next to the message below. */
+.tl-thread .tl-body { font-size:13.5px; }
+.tl-thread .tl-text { line-height:1.4; }
+
+/* --- tool rows: the tool-call language -----------------------------------
+   The node stops being a diamond and becomes the SAME icon the tool row
+   shows (KIND_GLYPH), and the head carries the SAME status tick: a green
+   circle with a check for a success, a red one with a cross for a failure,
+   a spinner while the call is still running. */
+.tl-thread .tl-item[data-kind="tool"] .tl-node {
+  width:16px;
+  height:16px;
+  margin-top:calc(var(--_nt) - 2px);
+  border:0;
+  border-radius:50%;
+  background:transparent;
+  transform:none;
+  color:var(--text-secondary);
+}
+.tl-thread .tl-item[data-kind="tool"] .tl-node .ms { font-size:15px; }
+/* The glyph stays neutral; the TICK carries the outcome (as in ToolChain). */
+.tl-thread .tl-item[data-status="error"] .tl-node {
+  background:transparent;
+  border-color:transparent;
+  color:var(--text-secondary);
+}
+.tl-thread .tl-item[data-kind="tool"] .tl-head { gap:8px; align-items:center; }
+.tl-thread .tl-item[data-kind="tool"] .tl-head::before {
+  content:"check";
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  flex:none;
+  width:15px;
+  height:15px;
+  border-radius:50%;
+  background:var(--chain-ok, #22c55e);
+  color:#fff;
+  font-family:'Material Symbols Outlined';
+  font-size:10px;
+  font-weight:normal;
+  line-height:1;
+  text-transform:none;
+  white-space:nowrap;
+  word-wrap:normal;
+  direction:ltr;
+  letter-spacing:normal;
+  font-feature-settings:'liga';
+}
+.tl-thread .tl-item[data-kind="tool"][data-status="error"] .tl-head::before {
+  content:"close";
+  background:var(--chain-err, #ef4444);
+}
+.tl-thread .tl-item[data-kind="tool"][data-status="active"] .tl-head::before {
+  content:"";
+  width:13px;
+  height:13px;
+  background:transparent;
+  border:2px solid color-mix(in srgb, var(--brand) 30%, transparent);
+  border-top-color:var(--brand);
+  animation:tool-chain-spin 0.7s linear infinite;
+}
+/* The active row's own accent circle would double up with the tick. */
+.tl-thread .tl-item[data-kind="tool"][data-status="active"] .tl-node {
+  background:transparent;
+  border-color:transparent;
+  animation:none;
+}
+.tl-thread .tl-head:hover:not(:disabled) { color:color-mix(in srgb, currentColor 82%, transparent); }
 .msg-loading { display:flex; align-items:center; gap:8px; }
 .loading-dots { display:flex; gap:4px; }
 .loading-dot { width:8px; height:8px; border-radius:50%; background:#a04100; animation:bounce 0.6s infinite alternate; }
@@ -811,7 +975,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .chat-queue-btn { display:flex; align-items:center; justify-content:center; width:28px; height:28px; background:#FFF7ED; border:1px solid #FDBA74; border-radius:4px; color:#a04100; cursor:pointer; transition:all 0.15s; }
 .chat-queue-btn:hover { background:#FED7AA; border-color:#F97316; }
 
-.msg-time { font-size:10px; margin-top:4px; font-family:'JetBrains Mono',monospace; color:#999; }
+.msg-time { font-size:11px; margin-top:6px; font-family:'JetBrains Mono',monospace; color:#999; }
 .msg-time-user { color:rgba(255,255,255,0.6); }
 .msg-time-user { color:rgba(255,255,255,0.7); }
 
@@ -831,9 +995,14 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   position: absolute; left: 0; right: 0; bottom: 0;
   padding: 12px 16px;
   background: var(--composer-bg);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  /* The bar itself is not a surface (no black slab). It only needs a stacking
+     context so its menus stay inside and paint under the panels/modals. */
+  isolation: isolate;
 }
+/* Footer copy inside the bar is light now that the bar is dark. */
+.chat-input-bar .quota-text { color: rgba(255, 255, 255, 0.72); }
+.chat-input-bar .quota-bar { background: rgba(255, 255, 255, 0.18); }
+.chat-input-bar .chat-disclaimer { color: rgba(255, 255, 255, 0.55); }
 /* Ramp from transparent into the glass tint so text fades toward the bar
    instead of being sliced by a hard edge. Stays out of the way of clicks —
    it hangs 48px above the bar, over the message list. Geometry only: the
@@ -910,7 +1079,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .chat-stop-note-hint { color: var(--text-tertiary); }
 .dark .chat-stop-note { background: rgba(255,255,255,0.04); }
 
-.chat-disclaimer { text-align:center; font-family:var(--font-sans); font-size:11px; line-height:1.5; letter-spacing:0; color:var(--text-dim); margin-top:20px; }
+.chat-disclaimer { text-align:center; font-family:var(--font-sans); font-size:12px; line-height:1.55; letter-spacing:0; color:var(--text-dim); margin-top:20px; }
 .chat-disclaimer * { color:inherit; }
 .quota-indicator { display:flex; align-items:center; gap:8px; justify-content:flex-end; margin-top:6px; padding:0 4px; }
 .quota-bar { width:72px; height:3px; background:#e4e4e7; border-radius:999px; overflow:hidden; }
@@ -1142,7 +1311,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .md-blockquote { border-left:4px solid #a04100; padding-left:16px; font-style:italic; color:#5f5e5e; margin:12px 0; }
 .md-table-wrap { overflow-x:auto; margin:12px 0; }
 .md-table { width:100%; border-collapse:collapse; font-size:14px; }
-.md-th { border:1px solid #E4E4E7; padding:8px 12px; background:#f3f3f4; text-align:left; font-weight:700; }
+.md-th { border:1px solid #E4E4E7; padding:8px 12px; background:#f3f3f4; text-align:left; font-weight:700; color:#09090b; }
 .md-td { border:1px solid #E4E4E7; padding:8px 12px; }
 /* Markdown rule: app hairline instead of the unstyled UA default. */
 .md-hr { border:none; border-top:1px solid var(--border); margin:16px 0; }
@@ -1150,8 +1319,90 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
    divider chopping the card off — spacing alone separates them now. */
 hr:has(+ .prompt-meter) { display:none; }
 
-/* ===== PROMPT METER STRIP ===== */
-/* Designed rendering of the per-task meter summary the worker appends to
+/* ===== THINKING PILL (ThinkingPill.tsx) ===== */
+/* The pill is self-styled; the chat canvas keeps the dark artwork in BOTH
+   themes, so wherever the pill rides the chat it gets the same dark-glass
+   treatment as the prompt bar (rgba(11,11,13,.92) field) — never a stark
+   white chip floating on the artwork. Outside the chat (raw .tp) the
+   component's own light theme still applies. */
+.msg-content .tp,
+.tool-chain__row--thinking .tp {
+  --tp-surface: rgba(17, 17, 22, 0.78);
+  --tp-surface-hover: rgba(24, 24, 30, 0.88);
+  --tp-text: #f1eee9;
+  --tp-muted: #a0968c;
+  --tp-border: rgba(255,255,255,.12);
+  --tp-rule: rgba(255,255,255,.12);
+}
+.msg-content .tp-pill,
+.tool-chain__row--thinking .tp-pill {
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  backdrop-filter: blur(14px) saturate(1.2);
+}
+/* Thread layout: the reasoning pill sits tidy above the tool rows with a
+   consistent gap, and both slip in with the app's standard fade-up. */
+.thought-thread {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+  min-width: 0;
+}
+.thought-thread .tp,
+.msg-content .tp {
+  animation: welcome-fade-up 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* The open reasoning panel: its own glass slab that continues the pill,
+   instead of muted text floating directly on the artwork. */
+.msg-content .tp-reason,
+.tool-chain__row--thinking .tp-reason {
+  background: rgba(15, 15, 20, 0.62);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+  backdrop-filter: blur(10px) saturate(1.15);
+  border: 1px solid rgba(255,255,255,.08);
+  border-left: 2px solid color-mix(in srgb, var(--tp-accent) 55%, transparent);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+/* The ThoughtLine THREAD rows (glass steps under the pill) ride the same
+   dark canvas in both themes — bright white ink there too. The node glyphs
+   on the rail (the tool-type icons the user circles) go SUPER WHITE with a
+   soft white halo so they are unmistakable; node shapes (dots/diamonds/rings)
+   follow currentColor, so they brighten along. */
+.thought-thread .tl {
+  color: #fdfbf7;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+.thought-thread .tl-node {
+  color: #ffffff;
+}
+.thought-thread .tl-node .ms {
+  color: #ffffff;
+  font-size: 13px;
+  filter: drop-shadow(0 0 7px rgba(255, 255, 255, 0.6));
+}
+.thought-thread .tl-thread--history .tl-text,
+.thought-thread .tl-item[data-status="done"] .tl-text { color: #ece6dc; }
+.thought-thread .tl-item[data-kind="result"][data-status="done"] .tl-text { color: #ffffff; font-weight: 700; }
+.thought-thread .tl-detail-text { color: #e8e2d8; }
+/* Error rows keep their red verdict — brightening would lie. */
+.thought-thread .tl-item[data-status="error"] .tl-text { color: #ff6b71; }
+
+/* Completed step cards: the base glass is only ~8% white, so finished rows
+   washed into the dark canvas behind them and stopped reading as cards. A
+   denser overlay + a defined edge lifts them just above the background —
+   subtle, not shouty; active rows keep their stronger accent tint and error
+   rows their red treatment from ThoughtLine. */
+.thought-thread .tl-item[data-status="done"] .tl-body {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.075)),
+    var(--_glass);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+/* ===== PROMPT METER STRIP ===== *//* Designed rendering of the per-task meter summary the worker appends to
    agent messages ("Prompt meter: …"). Compact, single-row strip with chips;
    stacks on narrow screens; never grows the page. */
 .prompt-meter {
@@ -1164,7 +1415,7 @@ hr:has(+ .prompt-meter) { display:none; }
 }
 .prompt-meter-head { display:inline-flex; align-items:center; gap:5px; color:#5f5e5e; }
 .prompt-meter-icon { flex:0 0 auto; color:#a04100; }
-.prompt-meter-label { font-size:10px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#5f5e5e; }
+.prompt-meter-label { font-size:11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#5f5e5e; }
 .prompt-meter-chip {
   display:inline-flex; align-items:center; padding:2px 8px;
   border-radius:999px; border:1px solid #E4E4E7; background:#fff;
@@ -1284,6 +1535,65 @@ hr:has(+ .prompt-meter) { display:none; }
 
 /* ===== DRAG & DROP ===== */
 .drag-drop-zone { position:relative; flex:0 0 auto; display:flex; flex-direction:column; height:calc(100vh - 64px); min-height:0; }
+
+/* ===== CHAT CANVAS BACKDROP (gradient ASCII) ==============================
+   A WebGL gradient-ASCII field behind the conversation, visible across the
+   whole column — that IS the design. Two things keep the text on top of it:
+   a light scrim (--ob-wash-*) over the whole column, and a FROSTED PATCH:
+   a feathered ellipse of `backdrop-filter` that sits only behind the
+   conversation, so the glyphs blur into soft texture around the words and
+   stay crisp everywhere else — top, sides, and the composer horizon. */
+.orplex-chat-bg {
+  position:absolute;
+  /* Pulled 64px up over the column's padding so the artwork continues behind
+     the fixed .topbar-header — that is what makes the glass bar show it. */
+  inset:-64px 0 0 0;
+  z-index:0;
+  pointer-events:none;
+  overflow:hidden;
+}
+.orplex-chat-bg::after {
+  content:"";
+  position:absolute;
+  inset:0;
+  z-index:1;
+  pointer-events:none;
+  background:linear-gradient(to bottom,
+    var(--ob-wash-1) 0%,
+    var(--ob-wash-2) 42%,
+    var(--ob-wash-3) 78%,
+    var(--ob-wash-4) 100%);
+}
+/* The frost is its own layer, and it is a PATCH, not a wash: an ellipse over
+   the conversation column only, feathered out at the rim. It cannot live on
+   the message bubbles themselves — `.messages-scroll` carries a mask-image,
+   which makes it a backdrop root, so a backdrop-filter in there samples
+   nothing and silently does nothing. */
+.orplex-chat-bg::before {
+  content:"";
+  position:absolute;
+  inset:0;
+  z-index:1;
+  pointer-events:none;
+  -webkit-backdrop-filter:blur(var(--ob-blur, 4px));
+  backdrop-filter:blur(var(--ob-blur, 4px));
+  -webkit-mask-image:radial-gradient(ellipse 36% 28% at 50% 45%, #000 0%, #000 35%, transparent 100%);
+  mask-image:radial-gradient(ellipse 36% 28% at 50% 45%, #000 0%, #000 35%, transparent 100%);
+}
+/* No frost to sample — drop the layer rather than leave it sampling nothing. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .orplex-chat-bg::before { -webkit-backdrop-filter:none; backdrop-filter:none; }
+}
+/* The backdrop is the first child of the chat column; everything else in the
+   column is lifted above it. z-index applies to flex items even when they
+   are not positioned, so the static message list is raised without a single
+   layout change. Overlays (the drop zone, the insights popup) keep their own
+   z-index and are deliberately NOT listed here. */
+.drag-drop-zone > .messages-scroll,
+.drag-drop-zone > .empty-hero,
+.drag-drop-zone > .todo-bar,
+.drag-drop-zone > .question-card,
+.drag-drop-zone > .chat-input-bar { z-index:1; }
 .drag-drop-overlay { position:fixed; inset:0; z-index:90; background:rgba(160,65,0,0.08); border:3px dashed #a04100; display:flex; align-items:center; justify-content:center; pointer-events:none; }
 .drag-drop-content { text-align:center; padding:48px; background:#fff; border-radius:16px; box-shadow:0 8px 32px rgba(160,65,0,0.15); }
 .drag-drop-icon { font-size:48px; margin-bottom:12px; }
@@ -1364,8 +1674,8 @@ hr:has(+ .prompt-meter) { display:none; }
 /* ===== WORKSPACE SWITCHER (prompt-bar chip, Freebuff-style) ===== */
 .ws-switcher-row { display:flex; justify-content:flex-start; margin-bottom:8px; }
 .ws-switcher { position:relative; display:inline-block; }
-.ws-chip { display:flex; align-items:center; gap:6px; background:none; border:none; border-radius:6px; padding:5px 8px; cursor:pointer; font-size:12px; color:#5f5e5e; font-family:inherit; transition:background 0.15s, color 0.15s; }
-.ws-chip:hover { background:#f3f3f4; color:#1a1c1d; }
+.ws-chip { display:flex; align-items:center; gap:6px; background:rgba(11,11,13,0.92); border:1px solid rgba(255,255,255,0.14); border-radius:999px; padding:5px 12px; cursor:pointer; font-size:12px; color:#ffffff; font-family:inherit; transition:background 0.15s, color 0.15s, border-color 0.15s; }
+.ws-chip:hover { background:rgba(24,24,27,0.95); border-color:rgba(255,255,255,0.26); color:#ffffff; }
 .ws-chip-label { max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
 .ws-menu { position:absolute; bottom:calc(100% + 6px); left:0; min-width:260px; max-height:320px; overflow-y:auto; background:#fff; border:1px solid #e4e4e7; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.14); padding:4px; z-index:80; display:flex; flex-direction:column; }
 .ws-menu-item { display:flex; align-items:center; gap:8px; width:100%; text-align:left; font-size:12px; color:#1a1c1d; background:none; border:none; border-radius:6px; padding:7px 9px; cursor:pointer; font-family:inherit; }
@@ -1375,8 +1685,8 @@ hr:has(+ .prompt-meter) { display:none; }
 .ws-menu-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
 .ws-menu-check { color:#a04100; font-weight:700; }
 .ws-menu-ghost .ws-menu-name { color:#a1a1aa; font-weight:400; }
-.dark .ws-chip { color:#9d9d9d; }
-.dark .ws-chip:hover { background:#1f1f1f; color:#cccccc; }
+.dark .ws-chip { color:#ffffff; }
+.dark .ws-chip:hover { background:rgba(255,255,255,0.1); color:#ffffff; }
 .dark .ws-menu { background:#1a1a1a; border-color:#2f2f2f; box-shadow:0 8px 24px rgba(0,0,0,0.5); }
 .dark .ws-menu-item { color:#cccccc; }
 .dark .ws-menu-item:hover { background:#2e3032; }
@@ -1401,18 +1711,18 @@ hr:has(+ .prompt-meter) { display:none; }
 
 /* TopBar enhancements */
 .topbar-search-icon { display:flex; align-items:center; }
-.topbar-search-input { width:100%; padding:8px 16px 8px 36px; background:transparent; border:1px solid #E4E4E7; border-radius:8px; font-size:14px; color:#1a1c1d; outline:none; font-family:'Fraunces',serif; transition:border-color 160ms ease-out, box-shadow 160ms ease-out, background-color 160ms ease-out; }
-.topbar-search-input:hover { border-color:#d8d8dc; background:#fafafa; }
-.topbar-search-input:focus-visible { border-color:rgba(255,107,0,0.45); box-shadow:0 0 0 3px rgba(255,107,0,0.12); background:#fff; }
-.topbar-btn { display:flex; align-items:center; gap:7px; padding:7px 13px; border-radius:999px; font-family:'JetBrains Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.1em; cursor:pointer; transition:color 160ms ease-out, background-color 160ms ease-out, border-color 160ms ease-out, box-shadow 160ms ease-out; white-space:nowrap; background:none; border:1px solid #E4E4E7; color:#6b6a6a; }
-.topbar-btn:hover { background:#f6f6f7; color:#1a1c1d; border-color:#d8d8dc; }
+.topbar-search-input { width:100%; padding:8px 18px 8px 36px; background:rgba(255,255,255,0.08); -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); border:1px solid transparent; border-radius:999px; font-size:14px; color:#ffffff; outline:none; font-family:'Fraunces',serif; transition:border-color 160ms ease-out, box-shadow 160ms ease-out, background-color 160ms ease-out; }
+.topbar-search-input:hover { border-color:transparent; background:rgba(255,255,255,0.12); }
+.topbar-search-input:focus-visible { border-color:rgba(255,107,0,0.45); box-shadow:0 0 0 3px rgba(255,107,0,0.12); background:rgba(255,255,255,0.14); }
+.topbar-btn { display:flex; align-items:center; gap:7px; padding:7px 13px; border-radius:999px; font-family:'JetBrains Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:0.1em; cursor:pointer; transition:color 160ms ease-out, background-color 160ms ease-out, border-color 160ms ease-out, box-shadow 160ms ease-out; white-space:nowrap; background:none; border:1px solid transparent; color:#ffffff; }
+.topbar-btn:hover { background:rgba(255,255,255,0.1); color:#ffffff; border-color:transparent; }
 /* Report Bug is a ghost action: neutral by default, danger only on hover. */
-.topbar-bug-btn { border-color:transparent; color:#6b6a6a; }
-.topbar-bug-btn:hover { background:rgba(186,26,26,0.08); color:#ba1a1a; border-color:rgba(186,26,26,0.25); }
+.topbar-bug-btn { border-color:transparent; color:#ffffff; }
+.topbar-bug-btn:hover { background:rgba(186,26,26,0.18); color:#ff9b9b; border-color:transparent; }
 .topbar-btn-label { display:none; }
 @media(min-width:768px){ .topbar-btn-label{display:inline} }
-.topbar-icon-btn { position:relative; display:flex; align-items:center; justify-content:center; width:36px; height:36px; color:#6b6a6a; background:none; border:none; border-radius:8px; cursor:pointer; transition:color 160ms ease-out, background-color 160ms ease-out, box-shadow 160ms ease-out; }
-.topbar-icon-btn:hover { color:#a04100; background:#f3f3f4; }
+.topbar-icon-btn { position:relative; display:flex; align-items:center; justify-content:center; width:36px; height:36px; color:#ffffff; background:none; border:none; border-radius:8px; cursor:pointer; transition:color 160ms ease-out, background-color 160ms ease-out, box-shadow 160ms ease-out; }
+.topbar-icon-btn:hover { color:#ffb693; background:rgba(255,255,255,0.1); }
 .topbar-icon-btn:focus-visible { outline:none; box-shadow:0 0 0 3px rgba(255,107,0,0.18); }
 /* Unread badge: smaller + desaturated so it informs without shouting. */
 /* Unread badge (later definition wins — kept identical to the base rule). */
@@ -1542,25 +1852,27 @@ hr:has(+ .prompt-meter) { display:none; }
 .dark .app-root { background:#0b0b0d; }
 /* The composer is NOT in this group any more: it draws its own tint from
    --composer-bg (swapped by `.dark`), and a solid fill would kill the glass. */
-.dark .sidebar-nav, .dark .topbar-header, .dark .modal-card { background:#0b0b0d; border-color:#2f2f2f; }
+.dark .sidebar-nav, .dark .modal-card { background:#0b0b0d; border-color:#2f2f2f; }
+.dark .topbar-header { --tb-tint:11,11,13; --tb-a1:.32; --tb-a2:.16; }
 .dark .sidebar-brand-text h1 { color:#ffb693; }
 .dark .sidebar-nav-item { color:#9d9d9d; }
 .dark .sidebar-nav-item:hover, .dark .sidebar-nav-item.active { color:#ffb693; background:#241a10; }
 .dark .sidebar-signout { color:var(--text-secondary); }
 .dark .sidebar-user-info:hover { background:var(--well); }
-.dark .topbar-search input { background:#1f1f1f; border-color:#2f2f2f; color:#cccccc; }
+.dark .topbar-search input { background:rgba(255,255,255,0.06); border-color:transparent; color:#ffffff; }
 .dark .topbar-search-results { background:#1f1f1f; border-color:#2f2f2f; }
-.dark .topbar-btn { border-color:#2f2f2f; color:#9d9d9d; }
-.dark .topbar-icon-btn { color:#9d9d9d; }
+.dark .topbar-btn { border-color:transparent; color:#ffffff; }
+.dark .topbar-icon-btn { color:#ffffff; }
 .dark .topbar-icon-btn:hover { color:#ffb693; background:#1f1f1f; }
 .dark .topbar-title { color:#ffb693; }
 .dark .chat-input-wrapper { background:#1f1f1f; border-color:#2f2f2f; }
 .dark .chat-input-wrapper.prompt-bar-wrapper { background:transparent; border:none; box-shadow:none; }
 .dark .chat-input-field { color:#cccccc; }
 .dark .chat-input-field::placeholder { color:#9d9d9d; }
-.dark .msg-bubble-assistant { background:transparent; border:none; color:#cccccc; }
-.dark .msg-time { color:#666; }
-.dark .msg-time-actions .code-block-btn { color:#666; }
+.dark .msg-bubble-assistant { background:transparent; border:none; color:#ffffff; }
+.dark .msg-time { color:#ffffff; }
+.dark .msg-time-user { color:#ffffff; }
+.dark .msg-time-actions .code-block-btn { color:#ffffff; }
 .dark .msg-time-actions .code-block-btn:hover { color:#ffb693; background:#241a10; }
 .dark .file-chip { background:#241a10; border-color:#2f2f2f; }
 .dark .file-chip-preview-btn { background:#241a10; border-color:#2f2f2f; }
@@ -1824,7 +2136,7 @@ hr:has(+ .prompt-meter) { display:none; }
 .dark .topbar-search-result-item:hover { background:#262626; }
 .dark .topbar-search-result-title { color:#cccccc; }
 .dark .form-input { background:#1f1f1f; border-color:#2f2f2f; color:#cccccc; }
-.dark .msg-bubble-assistant { background:transparent; border:none; color:#cccccc; }
+.dark .msg-bubble-assistant { background:transparent; border:none; color:#ffffff; }
 .dark .chat-input-wrapper { background:#1f1f1f; border-color:#2f2f2f; }
 .dark .chat-input-wrapper.prompt-bar-wrapper { background:transparent; border:none; box-shadow:none; }
 .dark .chat-input-field { color:#cccccc; }
@@ -1865,18 +2177,16 @@ hr:has(+ .prompt-meter) { display:none; }
 .dark .error-page-home { background:#262626; color:#9d9d9d; }
 
 /* Dark mode - new professional components */
-.dark .topbar-search-input { background:transparent; border-color:#2f2f2f; color:#cccccc; }
-.dark .topbar-search-input:hover { background:#1f1f1f; border-color:#4d4d4d; }
-.dark .topbar-search-input:focus-visible { border-color:rgba(255,107,0,0.5); box-shadow:0 0 0 3px rgba(255,107,0,0.2); background:#1f1f1f; }
-.dark .topbar-btn { background:none; border-color:#2f2f2f; color:#9d9d9d; }
-.dark .topbar-btn:hover { background:#1f1f1f; color:#cccccc; border-color:#4d4d4d; }
+.dark .topbar-search-input { background:rgba(255,255,255,0.06); border-color:transparent; color:#ffffff; }
+.dark .topbar-search-input:hover { background:rgba(255,255,255,0.1); border-color:transparent; }
+.dark .topbar-search-input:focus-visible { border-color:rgba(255,107,0,0.5); box-shadow:0 0 0 3px rgba(255,107,0,0.2); background:rgba(255,255,255,0.14); }
+.dark .topbar-btn { background:none; border-color:transparent; color:#ffffff; }
+.dark .topbar-btn:hover { background:rgba(255,255,255,0.1); color:#ffffff; border-color:transparent; }
 .dark .topbar-bug-btn { border-color:transparent; color:#9d9d9d; }
 .dark .topbar-bug-btn:hover { background:rgba(252,165,165,0.12); color:#fca5a5; border-color:rgba(252,165,165,0.3); }
-.dark .topbar-icon-btn { color:#9d9d9d; }
+.dark .topbar-icon-btn { color:#ffffff; }
 .dark .topbar-icon-btn:hover { color:#ffb693; background:#1f1f1f; }
 .dark .topbar-icon-btn:focus-visible { box-shadow:0 0 0 3px rgba(255,107,0,0.28); }
-/* Hairline header separation must read on the near-black chrome too. */
-.dark .topbar-header { border-bottom-color:rgba(255,255,255,0.08); box-shadow:0 1px 3px rgba(0,0,0,0.35); }
 .dark .conv-action-btn:hover { color:#ffb693; background:#241a10; }
 .dark .search-box-input { background:#1f1f1f; border-color:#2f2f2f; color:#cccccc; }
 .dark .search-box-clear:hover { color:#fca5a5; background:rgba(252,165,165,0.1); }
@@ -2260,8 +2570,8 @@ hr:has(+ .prompt-meter) { display:none; }
 .thinking-card__reasoning-text {
   margin: 0;
   font-family: inherit;
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
   opacity: 0.75;
@@ -2363,6 +2673,50 @@ hr:has(+ .prompt-meter) { display:none; }
   --chain-line: rgba(255, 255, 255, 0.15);
   --chain-err: #f87171;
 }
+
+/* === BRIGHT CHAIN ROWS ===
+   The tool rows always ride the dark chat artwork (timeline + message
+   canvas), but the text tokens followed the page theme — in light mode the
+   dark ink washed out to unreadable ghosts over the dark glass. The chain
+   speaks bright ink on the canvas in BOTH themes, and the tool type icons
+   carry an orange glow so every tool is instantly recognizable. */
+.tool-chain {
+  --chain-line: rgba(255, 255, 255, 0.24);
+}
+.tool-chain__gutter {
+  color: #ff9a4d;
+}
+.tool-chain__gutter .ms {
+  filter: drop-shadow(0 0 6px rgba(249, 115, 22, 0.6));
+}
+.tool-chain__name {
+  color: #fdfbf7;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+.tool-chain__args {
+  color: #ece6dc;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.tool-chain__state {
+  color: #dcd6cc;
+  font-weight: 500;
+}
+.tool-chain__chevron { color: rgba(255, 255, 255, 0.6); }
+.tool-chain__row.is-open .tool-chain__chevron,
+.tool-chain__main:hover:not(:disabled) .tool-chain__chevron {
+  color: rgba(255, 255, 255, 0.9);
+}
+.tool-chain__output { color: #d8d2c8; }
+/* Status dots: full-strength with a soft halo, white glyph stays crisp. */
+.tool-chain__dot--ok {
+  background: #2ee06e;
+  box-shadow: 0 0 8px rgba(46, 224, 110, 0.42);
+}
+.tool-chain__dot--err {
+  background: #ff5d5d;
+  box-shadow: 0 0 8px rgba(255, 93, 93, 0.42);
+}
+.tool-chain__dot--stopped { border-color: rgba(255, 255, 255, 0.35); }
 
 .tool-chain__row {
   position: relative;
@@ -3412,8 +3766,8 @@ hr:has(+ .prompt-meter) { display:none; }
 }
 
 /* ===== MCP CONNECTORS (prompt-bar plug chip + browser panel) ===== */
-.mcp-chip { display:flex; align-items:center; gap:5px; background:none; border:none; border-radius:6px; padding:5px 8px; margin-left:8px; cursor:pointer; font-size:12px; color:#5f5e5e; font-family:inherit; transition:background 0.15s, color 0.15s; }
-.mcp-chip:hover { background:#f3f3f4; color:#a04100; }
+.mcp-chip { display:flex; align-items:center; gap:5px; background:rgba(11,11,13,0.92); border:1px solid rgba(255,255,255,0.14); border-radius:999px; padding:5px 12px; margin-left:8px; cursor:pointer; font-size:12px; color:#ffffff; font-family:inherit; transition:background 0.15s, color 0.15s, border-color 0.15s; }
+.mcp-chip:hover { background:rgba(24,24,27,0.95); border-color:rgba(255,255,255,0.26); color:#ffb693; }
 .mcp-chip-label { font-weight:600; }
 .dark .mcp-chip { color:#9d9d9d; }
 .dark .mcp-chip:hover { background:#1f1f1f; color:#f59e0b; }
@@ -3590,7 +3944,7 @@ hr:has(+ .prompt-meter) { display:none; }
 .dark .sidebar-user-name { color:var(--text-primary); }
 .dark .sidebar-user-email { color:var(--text-secondary); }
 .dark .conv-section-label { color:#9d9d9d; }
-.dark .topbar-search-icon { color:#9d9d9d; }
+.dark .topbar-search-icon { color:#ffffff; }
 .dark .topbar-search-result-snippet { color:#9d9d9d; }
 .dark .notif-dropdown-header { color:#9d9d9d; }
 .dark .notif-dropdown-empty { color:#9d9d9d; }
@@ -3856,7 +4210,7 @@ hr:has(+ .prompt-meter) { display:none; }
 .empty-hero { display:flex; align-items:center; justify-content:center; min-height:calc(100vh - 64px - var(--composer-h)); padding:24px; }
 .empty-hero-center { display:flex; flex-direction:column; align-items:center; text-align:center; gap:0; }
 .empty-hero-logo { width:44px; height:44px; opacity:0.9; margin-bottom:14px; }
-.empty-hero-title { font-size:20px; font-weight:600; color:#f4f4f5; margin:0 0 18px; letter-spacing:-0.01em; }
+.empty-hero-title { font-size:20px; font-weight:600; color:#ffffff; margin:0 0 18px; letter-spacing:-0.01em; }
 .empty-hero-pill { display:inline-flex; align-items:center; gap:7px; padding:6px 14px; border-radius:999px; border:1px solid #3f3f46; background:#26282b; color:#d4d4d8; font-size:12px; font-weight:500; cursor:pointer; transition:border-color .15s, color .15s, background .15s; }
 .empty-hero-pill:hover { border-color:#ff6b00; color:#ffb693; background:#2c2e31; }
 .empty-hero-pill--project { color:#f4f4f5; border-color:#52525b; }
@@ -3864,20 +4218,48 @@ hr:has(+ .prompt-meter) { display:none; }
 .empty-hero-pill .ms { font-size:14px; line-height:1; }
 .empty-hero-kbd { font-size:9px; font-weight:600; padding:1px 6px; border-radius:5px; border:1px solid #52525b; background:#1f2124; color:#a1a1aa; font-family:inherit; }
 .empty-hero-advanced { margin-top:26px; display:flex; flex-direction:column; align-items:center; }
-.empty-hero-advanced-toggle { font-size:11px; color:#71717a; background:none; border:none; cursor:pointer; display:inline-flex; align-items:center; gap:3px; padding:4px 8px; border-radius:7px; }
-.empty-hero-advanced-toggle:hover { color:#d4d4d8; background:rgba(255,255,255,0.05); }
+.empty-hero-advanced-toggle { font-size:11px; color:#ffffff; background:none; border:none; cursor:pointer; display:inline-flex; align-items:center; gap:3px; padding:4px 8px; border-radius:7px; }
+.empty-hero-advanced-toggle:hover { color:#ffffff; background:rgba(255,255,255,0.12); }
 .empty-hero-advanced-grid { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; justify-content:center; }
 .empty-hero-advanced-item { display:flex; gap:8px; align-items:center; padding:8px 12px; border-radius:10px; border:1px solid #3f3f46; background:#1f2124; text-decoration:none; }
 .empty-hero-advanced-item:hover { border-color:#ff6b00; }
 .empty-hero-advanced-item .ms { color:#ff6b00; }
 .empty-hero-advanced-item strong { display:block; font-size:11px; color:#f4f4f5; font-weight:600; text-align:left; }
-.empty-hero-advanced-item em { display:block; font-style:normal; font-size:10px; color:#a1a1aa; text-align:left; }
+.empty-hero-advanced-item em { display:block; font-style:normal; font-size:11px; color:#a1a1aa; text-align:left; }
+
+/* ── Empty state: a welcome that moves, and one click to start ───────────
+   A short staggered rise so the hero assembles instead of appearing, plus a
+   slow glow on the mark. The starter chips hand their text to the composer
+   (orplex:prefill-prompt), so the first action is a click, not a blank box. */
+.empty-hero-logo { animation: hero-rise 520ms cubic-bezier(.23,1,.32,1) both, hero-glow 3.6s ease-in-out 600ms infinite; }
+.empty-hero-title { animation: hero-rise 520ms cubic-bezier(.23,1,.32,1) 60ms both; }
+.empty-hero-pill { animation: hero-rise 520ms cubic-bezier(.23,1,.32,1) 120ms both; }
+.empty-hero-starters { animation: hero-rise 520ms cubic-bezier(.23,1,.32,1) 180ms both; }
+.empty-hero-advanced { animation: hero-rise 520ms cubic-bezier(.23,1,.32,1) 240ms both; }
+@keyframes hero-rise { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+@keyframes hero-glow {
+  0%, 100% { filter: drop-shadow(0 0 0 rgba(255,107,0,0)); }
+  50% { filter: drop-shadow(0 0 14px rgba(255,107,0,0.35)); }
+}
+.empty-hero-starters { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-top:18px; max-width:560px; }
+.empty-hero-starter { display:inline-flex; align-items:center; gap:6px; padding:7px 12px; border-radius:999px; border:1px solid rgba(255,255,255,0.14); background:rgba(11,11,13,0.55); color:rgba(255,255,255,0.9); font-size:12px; font-family:inherit; cursor:pointer; transition:border-color .16s, background .16s, color .16s, transform .16s; }
+.empty-hero-starter .ms { font-size:14px; line-height:1; color:#ffb693; }
+.empty-hero-starter:hover { border-color:rgba(255,107,0,0.6); background:rgba(20,20,23,0.82); color:#ffffff; transform:translateY(-1px); }
+.empty-hero-starter:active { transform:translateY(0); }
+@media (prefers-reduced-motion: reduce) {
+  .empty-hero-logo,
+  .empty-hero-title,
+  .empty-hero-pill,
+  .empty-hero-starters,
+  .empty-hero-advanced { animation:none; }
+}
 /* Light mode: same layout, light surfaces */
 html:not(.dark) .empty-hero-title { color:#18181b; }
 html:not(.dark) .empty-hero-pill { background:#f4f4f5; border-color:#e4e4e7; color:#3f3f46; }
 html:not(.dark) .empty-hero-pill:hover { border-color:#ff6b00; color:#c2410c; background:#fff7ed; }
 html:not(.dark) .empty-hero-kbd { background:#fff; color:#71717a; }
 html:not(.dark) .empty-hero-advanced-item { background:#fff; border-color:#e4e4e7; }
+html:not(.dark) .empty-hero-advanced-toggle { color:#3f3f46; }
 html:not(.dark) .empty-hero-advanced-toggle:hover { background:rgba(0,0,0,0.04); }
 
 /* === Left sidebar collapse (AppLayout sb-collapsed) ===================== */
@@ -3940,8 +4322,8 @@ html:not(.dark) .sb-expand-fab:hover { color:#a04100; border-color:#fdba74; }
 
 /* Search placeholder: quiet in light, readable in dark (UA default is too
    dim against #2a2a2a). */
-.topbar-search-input::placeholder { color:#5f5e5e; opacity:0.7; }
-.dark .topbar-search-input::placeholder { color:#9d9d9d; opacity:1; }
+.topbar-search-input::placeholder { color:#ffffff; opacity:0.85; }
+.dark .topbar-search-input::placeholder { color:#ffffff; opacity:0.85; }
 
 /* Focus ring: orange border + soft brand tint ring in both themes. */
 .topbar-search-input:focus-visible { border-color:rgba(255,107,0,0.5); box-shadow:0 0 0 3px rgba(255,107,0,0.15); }
@@ -4181,15 +4563,17 @@ html:not(.dark) .sb-expand-fab:hover { color:#a04100; border-color:#fdba74; }
    Was hand-rolled Tailwind gray utilities, which ignored both palettes and
    rendered as near-black pills on the white composer. Same pill vocabulary as
    .empty-hero-pill / .topbar-btn. */
-.qa-bar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
-.qa-chip { display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:999px; background:#f4f4f5; border:1px solid #e4e4e7; color:#3f3f46; font-size:11px; font-weight:500; cursor:pointer; transition:border-color .15s, color .15s, background .15s; }
-.qa-chip:hover { border-color:#ff6b00; color:#a04100; }
-.qa-chip:disabled { opacity:.4; cursor:not-allowed; }
-.qa-chip:disabled:hover { border-color:#e4e4e7; color:#3f3f46; }
-.qa-chip-badge { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border-radius:4px; background:#e4e4e7; color:#5f5e5e; font-size:9px; font-weight:700; }
-.dark .qa-chip { background:#26282b; border-color:#2f2f2f; color:#c5c5c5; }
-.dark .qa-chip:hover { border-color:#ff6b00; color:#ffb693; }
-.dark .qa-chip-badge { background:#2f2f2f; color:#9d9d9d; }
+.qa-bar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+/* Opaque pills: each chip carries its own surface so transcript text scrolling
+   behind the composer can never show through it. */
+.qa-chip { display:inline-flex; align-items:center; gap:7px; height:28px; padding:0 13px; border-radius:999px; background:rgba(11,11,13,0.92); border:1px solid rgba(255,255,255,0.14); color:#ffffff; font-size:12px; font-weight:500; cursor:pointer; transition:border-color .15s, color .15s, background .15s; }
+.qa-chip:hover { border-color:rgba(255,255,255,0.26); color:#ffb693; background:rgba(24,24,27,0.95); }
+.qa-chip:disabled { opacity:.45; cursor:not-allowed; }
+.qa-chip:disabled:hover { border-color:rgba(255,255,255,0.14); color:#ffffff; background:rgba(11,11,13,0.92); }
+.qa-chip-badge { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:5px; background:rgba(255,255,255,0.16); color:#ffffff; font-size:9px; font-weight:700; }
+.dark .qa-chip { background:rgba(11,11,13,0.92); border-color:rgba(255,255,255,0.14); color:#ffffff; }
+.dark .qa-chip:hover { border-color:rgba(255,255,255,0.26); color:#ffb693; background:rgba(24,24,27,0.95); }
+.dark .qa-chip-badge { background:rgba(255,255,255,0.16); color:#ffffff; }
 /* AI-generated variants: same pill, brand-tinted badge marks them as live
    suggestions rather than fixed utilities. */
 .qa-chip--smart .qa-chip-badge { background:#ff6b0020; color:#a04100; }

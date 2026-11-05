@@ -151,6 +151,12 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
   const [sdkBusy, setSdkBusy] = useState<string | null>(null);
   const [sdkToggle, setSdkToggle] = useState<string | null>(null);
   const [sdkError, setSdkError] = useState<string | null>(null);
+  // Vendor-client form (providers with no dynamic OAuth registration): the
+  // user pastes their own client id (+ optional secret), we store it
+  // encrypted, and retry the browser sign-in with DCR skipped.
+  const [clientFormFor, setClientFormFor] = useState<string | null>(null);
+  const [clientValues, setClientValues] = useState<{ clientId: string; clientSecret: string }>({ clientId: "", clientSecret: "" });
+  const [clientSaving, setClientSaving] = useState(false);
   const oauthOffRef = useRef<(() => void) | null>(null);
 
   const connectedIds = useMemo(
@@ -227,11 +233,14 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
 
   const openConnect = (server: CatalogServer) => {
     const existing = connected.find((c) => c.serverId === server.id);
+    const isOAuthRemote = server.auth === "oauth" && !!server.remote;
     const initial: Record<string, string> = {};
     // Pre-fill plain (non-secret) values from an existing connection; secrets
     // stay blank and the backend keeps the stored value when left empty.
-    for (const spec of server.stdio?.env ?? []) {
-      if (!spec.secret && existing?.env[spec.name]) initial[spec.name] = existing.env[spec.name];
+    if (!isOAuthRemote) {
+      for (const spec of server.stdio?.env ?? []) {
+        if (!spec.secret && existing?.env[spec.name]) initial[spec.name] = existing.env[spec.name];
+      }
     }
     setEnvValues(initial);
     setConnectTarget(server);
@@ -331,6 +340,17 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
       });
       const j = await r.json();
       if (!j?.success) {
+        if (j?.code === "mcp_static_client_required") {
+          // This provider's authorization server has no open dynamic
+          // registration — the user's own vendor-registered client id makes
+          // it click-to-connect. Open the inline form; retry after saving.
+          setClientFormFor(serverId);
+          setClientValues({ clientId: "", clientSecret: "" });
+          setSdkError(
+            "This provider doesn't allow apps to register themselves — it needs a one-time client ID from your developer account. Paste it below and sign in again."
+          );
+          return;
+        }
         setSdkError(j?.error ?? `HTTP ${r.status}`);
         return;
       }
@@ -370,6 +390,30 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
     }
   };
 
+  const saveClientCredentials = async (serverId: string) => {
+    setClientSaving(true);
+    try {
+      const r = await apiFetch(`/api/mcp/connections/${encodeURIComponent(serverId)}/client`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId: clientValues.clientId, clientSecret: clientValues.clientSecret || undefined }),
+      });
+      const j = await r.json();
+      if (!j?.success) {
+        setSdkError(j?.error ?? `Could not save the client id (HTTP ${r.status})`);
+        return;
+      }
+      setClientFormFor(null);
+      setSdkError(null);
+      // Credentials stored — straight back into the browser sign-in leg.
+      await startOauth(serverId);
+    } catch (err) {
+      setSdkError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClientSaving(false);
+    }
+  };
+
   const toggleAutoApprove = async (serverId: string, value: boolean) => {
     setSdkToggle(serverId);
     setSdk((rows) => rows.map((c) => (c.serverId === serverId ? { ...c, autoApproveReadOnly: value } : c)));
@@ -403,46 +447,26 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
     setRemoteBusy(true);
     setRemoteError(null);
     try {
-      const bridge = window.orplexDesktop?.mcp;
-      if (!bridge) {
-        setRemoteError("OAuth needs the desktop app — the browser sign-in and token exchange run in its main process.");
+      // SDK lane: register the endpoint server-side (an McpConnection row
+      // with no tokens), then run the standard OAuth connect flow for it —
+      // the same browser sign-in catalog connectors use. This works in the
+      // plain browser AND the desktop app (the Electron loopback relay is
+      // optional, not required), and the server's tools reach the agent
+      // roster — the old main-process-only path could never do that.
+      const reg = await apiFetch("/api/mcp/remote-servers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const regj = (await reg.json().catch(() => null)) as { success?: boolean; serverId?: string; error?: string } | null;
+      if (!regj?.success || typeof regj.serverId !== "string") {
+        setRemoteError(regj?.error ?? `Could not register the server (HTTP ${reg.status}).`);
         return;
       }
-      const oauth = await bridge.oauthAuthorize({ serverUrl: url, label: remoteLabel.trim() });
-      if (!oauth.ok || !oauth.accessToken) {
-        setRemoteError(oauth.error ?? "OAuth sign-in failed");
-        return;
-      }
-      const base: McpRemoteServer = {
-        id: remoteIdFor(url),
-        label: remoteLabel.trim() || new URL(url).host,
-        url,
-        auth: "oauth",
-        tokens: {
-          accessToken: oauth.accessToken,
-          refreshToken: oauth.refreshToken,
-          tokenType: oauth.tokenType ?? "Bearer",
-          clientId: oauth.clientId ?? "",
-          clientSecret: oauth.clientSecret,
-          tokenEndpoint: oauth.tokenEndpoint,
-          obtainedAt: Date.now(),
-          expiresAt: oauth.expiresIn ? Date.now() + oauth.expiresIn * 1000 : undefined,
-        },
-      };
-      let tools: McpRemoteServer["tools"] = [];
-      let lastError: string | undefined;
-      try {
-        await withConnection(base, async (conn) => {
-          tools = await conn.listTools();
-        });
-      } catch (err) {
-        // Authenticated, but tool discovery failed — keep the server listed.
-        lastError = `Connected, but tools/list failed: ${(err as Error).message}`;
-      }
-      upsertRemote({ ...base, tools, lastConnectedAt: Date.now(), lastError });
-      setRemotes(loadRemotes());
       setRemoteUrl("");
       setRemoteLabel("");
+      await startOauth(regj.serverId);
+      await loadSdk();
     } catch (err) {
       setRemoteError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -630,9 +654,10 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
                     </button>
                   </div>
                   {remoteError && <div className="mcp-test mcp-test--fail">✕ {remoteError}</div>}
-                  {!window.orplexDesktop?.mcp && (
-                    <div className="mcp-env-note">OAuth sign-in runs in the desktop app&apos;s main process — it is unavailable in a plain browser tab.</div>
-                  )}
+                  <div className="mcp-env-note">
+                    The browser opens for OAuth sign-in; tokens are stored encrypted server-side and the server&apos;s
+                    tools join the agent roster like any catalog connector.
+                  </div>
                 </div>
               </div>
 
@@ -702,7 +727,9 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
                   </div>
                   <div className="mcp-row-actions">
                     <button className="mcp-btn mcp-btn--primary" onClick={() => openConnect(s)}>
-                      {connectedIds.has(s.id) ? "Configure" : "Connect"}
+                      {connectedIds.has(s.id)
+                        ? (s.auth === "oauth" && s.remote ? "Re-authorize" : "Configure")
+                        : (s.auth === "oauth" && s.remote ? "Sign in" : "Connect")}
                     </button>
                   </div>
                 </div>
@@ -726,13 +753,13 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
                 <code>{connectTarget.remote.url}</code>
               </div>
             )}
-            {connectTarget.stdio && (
+            {connectTarget.stdio && connectTarget.auth !== "oauth" && (
               <div className="mcp-detail-cmd">
                 <code>{connectTarget.stdio.command} {connectTarget.stdio.args.join(" ")}</code>
               </div>
             )}
 
-            {connectTarget.remote && connectTarget.auth === "oauth" && (
+            {connectTarget.auth === "oauth" && (
               <div className="mcp-detail-oauth">
                 <div className="mcp-section-label">Sign in</div>
                 <p className="mcp-env-note">
@@ -749,10 +776,56 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
                         : "Sign in with browser"}
                   </button>
                 </div>
+                {clientFormFor === connectTarget.id && (
+                  <div className="mcp-env-form">
+                    <div className="mcp-section-label">Your {connectTarget.name} OAuth app</div>
+                    <p className="mcp-env-note">
+                      Create one app at {connectTarget.name}&apos;s developer console with these redirect URIs:
+                      <code>http://127.0.0.1:49431/callback</code> (desktop) and <code>&lt;this-app-origin&gt;/api/mcp/oauth/callback</code>.
+                      Paste its client ID here — it is stored encrypted, used on the next sign-in, and never sent anywhere else.
+                    </p>
+                    <label className="mcp-env-field">
+                      <span className="mcp-env-key">Client ID<em className="mcp-env-req">required</em></span>
+                      <input
+                        type="text"
+                        value={clientValues.clientId}
+                        onChange={(e) => setClientValues((v) => ({ ...v, clientId: e.target.value }))}
+                        autoComplete="off"
+                        placeholder="e.g. abc123…"
+                      />
+                      <span className="mcp-env-help">{connectTarget.docsUrl ? "Developer console docs" : "Vendor developer console"}</span>
+                    </label>
+                    <label className="mcp-env-field">
+                      <span className="mcp-env-key">Client secret<em className="mcp-env-secret">secret</em></span>
+                      <input
+                        type="password"
+                        value={clientValues.clientSecret}
+                        onChange={(e) => setClientValues((v) => ({ ...v, clientSecret: e.target.value }))}
+                        autoComplete="off"
+                        placeholder="only if the vendor requires one"
+                      />
+                      <span className="mcp-env-help">Optional — leave blank for public clients</span>
+                    </label>
+                    {connectTarget.docsUrl && (
+                      <p className="mcp-env-note">
+                        <a href={connectTarget.docsUrl} target="_blank" rel="noreferrer noopener">Open {connectTarget.name} docs</a>
+                      </p>
+                    )}
+                    <div className="mcp-detail-actions">
+                      <button
+                        className="mcp-btn mcp-btn--primary"
+                        disabled={clientSaving || !clientValues.clientId.trim()}
+                        onClick={() => saveClientCredentials(connectTarget.id)}
+                      >
+                        {clientSaving ? "Saving…" : "Save & sign in"}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
-            {!(connectTarget.remote && connectTarget.auth === "oauth") && (connectTarget.stdio?.env.length ?? 0) > 0 && (
+            {connectTarget.auth !== "oauth" && (connectTarget.stdio?.env.length ?? 0) > 0 && (
               <div className="mcp-env-form">
                 <div className="mcp-section-label">Credentials & settings</div>
                 {connectTarget.stdio!.env.map((spec) => (
@@ -780,8 +853,8 @@ export default function ConnectorsPanel({ open, onClose }: { open: boolean; onCl
             {sdkError && <div className="mcp-test mcp-test--fail">✕ {sdkError}</div>}
 
             <div className="mcp-detail-actions">
-              <button className="mcp-btn" onClick={() => { setView("browse"); setConnectTarget(null); }}>Cancel</button>
-              {!(connectTarget.remote && connectTarget.auth === "oauth") && (
+              <button className="mcp-btn" onClick={() => { setView("browse"); setConnectTarget(null); setClientFormFor(null); }}>Cancel</button>
+              {connectTarget.auth !== "oauth" && (
                 <button className="mcp-btn mcp-btn--primary" disabled={saving} onClick={saveConnect}>
                   {saving ? "Saving…" : connectedIds.has(connectTarget.id) ? "Save changes" : "Connect server"}
                 </button>

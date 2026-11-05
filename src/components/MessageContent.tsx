@@ -2,8 +2,8 @@
 
 import { useMemo, useState } from "react";
 import MarkdownRenderer from "./MarkdownRenderer";
-import ThinkingCard from "./ThinkingCard";
-import ToolChain from "./ToolChain";
+import ThinkingPill from "./ThinkingPill";
+import ThoughtThread from "./ThoughtThread";
 import ClarificationCard from "./ClarificationCard";
 import FileCard from "./FileCard";
 import SandboxArtifact from "./SandboxArtifact";
@@ -23,7 +23,10 @@ function CollapsibleText({ content }: { content: string }) {
   const words = useMemo(() => content.split(/\s+/), [content]);
   const wordCount = words.length;
   const needsCollapse = wordCount > COLLAPSE_THRESHOLD;
-  const [expanded, setExpanded] = useState(false);
+  // Long answers start fully expanded — the reader should never have to reveal
+  // the reply that was already written for them. The control still lets them
+  // fold a long message back down to its preview.
+  const [expanded, setExpanded] = useState(true);
   // Unconditional: a hook after the early return below would be a
   // rules-of-hooks violation.
   const preview = useMemo(() => words.slice(0, 100).join(" "), [words]);
@@ -95,6 +98,7 @@ export default function MessageContent({
   runLive = false,
   onRetry,
   retrying = false,
+  showThread = true,
 }: {
   content: string;
   isThinking?: boolean;
@@ -102,6 +106,8 @@ export default function MessageContent({
   runLive?: boolean;
   onRetry?: () => void;
   retrying?: boolean;
+  /** The agent's reasoning thread above the message (off for user turns). */
+  showThread?: boolean;
 }) {
   // Parsed once per content change, not once per render. These ran on every
   // one of the 8 store notifications per second while streaming.
@@ -113,13 +119,23 @@ export default function MessageContent({
   // If no segments but thinking is active, show empty thinking pill
   if (segments.length === 0) {
     if (isThinking) {
-      return <ThinkingCard content="" isThinking={true} />;
+      return (
+        <>
+          {showThread && <ThoughtThread segments={segments} runLive={runLive} />}
+          <ThinkingPill done={false} />
+        </>
+      );
     }
     return null;
   }
 
   if (segments.length === 1 && segments[0].type === "text") {
-    return <MarkdownRenderer content={segments[0].content} />;
+    return (
+      <>
+        {showThread && <ThoughtThread segments={segments} runLive={runLive} />}
+        <MarkdownRenderer content={segments[0].content} />
+      </>
+    );
   }
 
   // Check if any thinking segment exists
@@ -128,26 +144,27 @@ export default function MessageContent({
 
   return (
     <div className="message-content-mixed">
+      {/* The agent's reasoning thread: reasoning, tool steps, gates and stops,
+          above the message body. One hook per turn (see ThoughtThread). */}
+      {showThread && <ThoughtThread segments={segments} runLive={runLive} />}
       {/* Show active thinking pill even before thinking content arrives */}
       {isThinking && !hasThinking && (
-        <ThinkingCard content="" isThinking={true} />
+        <ThinkingPill done={false} />
       )}
       {groups.map((group, i) => {
-        if (group.type === "chain") {
-          return <ToolChain key={`chain-${i}`} items={group.items} runLive={runLive} />;
-        }
+        // The thread above owns the run's STEPS: the tool calls, the
+        // reasoning blocks and the gate markers. Rendering the inline chain
+        // as well would list every tool TWICE (the collision that made the
+        // two UIs fight). What is left in the body is the agent's PROSE and
+        // the notices (a clarification card, an artifact, an interruption).
+        if (group.type === "chain") return null;
         const segment: ContentSegment = group.segment;
         switch (segment.type) {
           case "text":
             return <CollapsibleText key={i} content={segment.content} />;
           case "thinking":
-            return (
-              <ThinkingCard
-                key={i}
-                content={segment.content}
-                isThinking={Boolean(group.live)}
-              />
-            );
+            // The reasoning is a thread row too — keep it out of the body.
+            return null;
           case "interrupted":
             return <InterruptedNotice key={i} />;
           case "clarified":

@@ -28,7 +28,7 @@ jest.mock("@/lib/api-base", () => ({ apiFetch: jest.fn() }));
 // `import.meta.url`, which ts-jest cannot emit as CommonJS. Mocking them keeps
 // the test focused on the routing decision.
 jest.mock("../MessageContent", () => ({ __esModule: true, default: () => null }));
-jest.mock("../ThinkingCard", () => ({ __esModule: true, default: () => null }));
+jest.mock("../ThinkingPill", () => ({ __esModule: true, default: () => null }));
 jest.mock("../ToolCallDisplay", () => ({ __esModule: true, default: () => null }));
 
 const compaction: AgentEvent = {

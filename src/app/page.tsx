@@ -19,6 +19,10 @@ const FilePreviewModal = dynamic(() => import("@/components/FilePreviewModal"), 
 const TodoBar = dynamic(() => import("@/components/TodoBar"), { ssr: false });
 const QuestionCard = dynamic(() => import("@/components/QuestionCard"), { ssr: false });
 const FirstRunExperience = dynamic(() => import("@/components/FirstRunExperience"), { ssr: false, loading: () => <WelcomeSkeleton /> });
+// The chat canvas backdrop (a WebGL gradient-ASCII field). Client-only — it
+// reads the document's theme class — and dynamically imported so the GL
+// bundle never lands in the first paint of the app.
+const OrplexBackground = dynamic(() => import("@/components/OrplexBackground"), { ssr: false });
 
 function LoadingMessages() {
   return (
@@ -207,6 +211,23 @@ export default function ChatPage() {
           }
         }}
       >
+        {/* The chat canvas backdrop. It sits UNDER the message stream and the
+            composer, and the veil over it keeps every line of chat text
+            perfectly readable — the artwork is a texture, not a surface. */}
+        <div className="orplex-chat-bg">
+          <OrplexBackground
+            fixed={false}
+            mode="dark"
+            shape="horizon"
+            veil={0}
+            cellSize={16}
+            density={0.7}
+            intensity={0.7}
+            speed={0.55}
+            dpr={1}
+          />
+        </div>
+
         {session.isEmpty ? (
           <FirstRunExperience />
         ) : (

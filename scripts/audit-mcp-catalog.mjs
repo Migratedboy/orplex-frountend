@@ -183,9 +183,18 @@ function staticChecks(mod, entries, candidates) {
       for (const s of all) {
         // Strip `<placeholder>` spans first: template text (e.g. supabase's
         // --project-ref=<project-ref>) is legal in the catalog because
-        // connectServer rejects unsupplied placeholders at save time — the
+        // connectServer rejects unsupplied placeholders at save time - the
         // spawn layer must never see them literally.
-        const deTemplated = String(s).replace(/<[^>]{1,60}>/g, "");
+        let deTemplated = String(s).replace(/<[^>]{1,60}>/g, "");
+        // Also strip mcp-remote's env-interpolation slots: `${VAR_NAME}`
+        // spans are its sanctioned secret channel (it interpolates ${VAR}
+        // anywhere in args AND header values, and refuses static secrets in
+        // headers by design). They are not shell injection: cmd.exe leaves
+        // ${} literal (only %VAR% expands) and the chromiumless POSIX spawn
+        // is array-based (no shell) — every occurrence is inert in both real
+        // spawn modes. `$(...)`, bare `$`, `%VAR%`, and backticks remain
+        // banned by the metachar test below.
+        deTemplated = deTemplated.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, "");
         if (SHELL_META.test(deTemplated)) {
           errors.push(`${label}: shell metacharacter in stdio command/args: ${JSON.stringify(s)}`);
         }

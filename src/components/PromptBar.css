@@ -530,6 +530,30 @@
   text-overflow: ellipsis;
 }
 
+/* Chat composer runs on the artwork now (no bar surface in either theme), so
+   its own text is pure white: placeholder, mode pick, model name, and the +
+   tool. The effort adjuster is deliberately NOT included — it keeps its own
+   accent so the level still reads as a setting, not body text. */
+.prompt-bar--chat .prompt-bar__input,
+.prompt-bar--chat .prompt-bar__input::placeholder,
+.prompt-bar--chat .prompt-bar__pick--mode,
+.prompt-bar--chat .prompt-bar__pick--model,
+.prompt-bar--chat .prompt-bar__pick--model .prompt-bar__provider {
+  color: #ffffff;
+}
+.prompt-bar--chat .prompt-bar__input::placeholder { opacity: 0.85; }
+.prompt-bar--chat .prompt-bar__tool { color: #ffffff; }
+
+/* Effort adjuster by level: white while the setting is low or medium, bright
+   red once it is High, so a costly level cannot be mistaken for body text. */
+.prompt-bar--chat .prompt-bar__pick[data-level='low'],
+.prompt-bar--chat .prompt-bar__pick[data-level='medium'] {
+  color: #ffffff;
+}
+.prompt-bar--chat .prompt-bar__pick[data-level='high'] {
+  color: #ff2d2d;
+}
+
 .prompt-bar__menu[data-kind='effort'] {
   right: auto;
   width: 248px;
@@ -708,18 +732,25 @@
   --pb-ink: #1a1c1d;
   --pb-menu: #ffffff;
   --pb-spark: #a04100;
-  --pb-radius: 12px;
+  --pb-radius: 14px;
   flex: 1;
   min-width: 0;
 }
 
-/* Chat composer shell: hairline border, rounded-xl, soft resting shadow.
-   The border is a neutral tint in light mode and a 8%-white tint in dark. */
+/* Chat composer shell: its OWN opaque surface, not a shared slab behind the
+   whole column. The rectangle has to hide the transcript scrolling under it,
+   so it is near-solid with a hairline edge of its own; the blur kills the last
+   ghosts. Same fill in both themes — the artwork behind is the same. */
 .prompt-bar--chat .prompt-bar__field {
-  background: #fff;
-  border: 1px solid rgba(0, 0, 0, 0.09);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-  padding: 11px 12px;
+  background-color: rgba(11, 11, 13, 0.92);
+  /* Command-palette sheen: a hairline highlight along the top edge, the way an
+     IDE input reads as a raised surface rather than a flat rectangle. */
+  background-image: linear-gradient(180deg, rgba(255,255,255,0.055) 0%, rgba(255,255,255,0) 42%);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  backdrop-filter: blur(14px) saturate(1.2);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+  padding: 12px 14px;
   gap: 10px;
   transition:
     border-color 180ms ease-out,
@@ -727,30 +758,21 @@
     background-color 180ms ease-out;
 }
 
-.prompt-bar--chat .prompt-bar__field:hover {
-  border-color: rgba(0, 0, 0, 0.14);
-}
-
-/* Focus ring: 1px orange ring at ~40% + a 20px blurred halo at 15%. */
+/* Focus ring: 1px orange ring at ~40% + a 20px blurred halo at 15%.
+   Drawn with box-shadow so it still shows with no border to tint. */
 .prompt-bar--chat .prompt-bar__field:focus-within {
-  border-color: rgba(255, 107, 0, 0.55);
   box-shadow:
     0 0 0 1px rgba(255, 107, 0, 0.4),
     0 0 20px 0 rgba(255, 107, 0, 0.15);
 }
 
 .dark .prompt-bar--chat .prompt-bar__field {
-  background: var(--pb-bg);
-  border-color: rgba(255, 255, 255, 0.08);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-}
-
-.dark .prompt-bar--chat .prompt-bar__field:hover {
-  border-color: rgba(255, 255, 255, 0.14);
+  background-color: rgba(11, 11, 13, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
 }
 
 .dark .prompt-bar--chat .prompt-bar__field:focus-within {
-  border-color: rgba(255, 107, 0, 0.55);
   box-shadow:
     0 0 0 1px rgba(255, 107, 0, 0.4),
     0 0 20px 0 rgba(255, 107, 0, 0.15);

@@ -262,6 +262,26 @@ export default function PromptBar({
   const reduce = useReducedMotion();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // The empty-state starter prompts hand their text over through this event.
+  // The textarea is CONTROLLED by `draft`, so writing the DOM value directly
+  // would be wiped on the next render — the draft state is the only path.
+  useEffect(() => {
+    const onPrefill = (event: Event) => {
+      const text = (event as CustomEvent<{ text?: string }>).detail?.text;
+      if (!text) return;
+      setDraft(text);
+      setDismissed(false);
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(text.length, text.length);
+      });
+    };
+    window.addEventListener("orplex:prefill-prompt", onPrefill);
+    return () => window.removeEventListener("orplex:prefill-prompt", onPrefill);
+  }, []);
   const glowRef = useRef<HTMLSpanElement | null>(null);
   const sparkRef = useRef<HTMLCanvasElement | null>(null);
   const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -1047,6 +1067,7 @@ export default function PromptBar({
               type="button"
               className="prompt-bar__pick"
               aria-label="Choose effort"
+              data-level={level.toLowerCase()}
               aria-expanded={effortOpen}
               data-on={effortOpen ? "" : undefined}
               data-max={maxed ? "" : undefined}

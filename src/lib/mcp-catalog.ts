@@ -72,8 +72,25 @@ export interface McpRemoteSpec {
 
 export interface McpOAuthSpec {
   scopes?: string[];
+  /**
+   * Pinned authorization-server issuer for servers that do NOT advertise
+   * resource metadata on their 401 (RFC 9728): the SDK seeds its discovery
+   * from the provider's discoveryState, so OAuth bootstrap (DCR → authorize)
+   * still works. Only set for vendors whose AS identity is documented and
+   * stable (auth.atlassian.com, login.microsoftonline.com/…).
+   */
+  authority?: string;
   /** Only for providers without dynamic registration (filled from the Phase 6 audit). */
   clientId?: string;
+  /** Confidential clients need the secret — see the env-injection block below. */
+  clientSecret?: string;
+  /**
+   * Client-ID Metadata Document (CIMD): the AS advertises
+   * client_id_metadata_document_supported and the SDK uses our
+   * clientMetadataUrl as the client_id, skipping registration entirely.
+   * Only set when the AS actually supports CIMD (probe-verified).
+   */
+  cimd?: boolean;
 }
 
 export interface McpCatalogEntry {
@@ -138,6 +155,9 @@ export const mcpCatalogEntrySchema = z.object({
     .object({
       scopes: z.array(z.string()).min(1).optional(),
       clientId: z.string().min(1).optional(),
+      clientSecret: z.string().min(1).optional(),
+      authority: z.string().url().optional(),
+      cimd: z.boolean().optional(),
     })
     .optional(),
   docsUrl: z
@@ -285,7 +305,10 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
   entry("vercel", "Vercel", "Manage deployments, projects, DNS, and logs on Vercel.", "cloud",
     npx("@vercel/mcp-adapter", "vercel"), // npx wrapper probes the official endpoint
     [KEY_ENV("VERCEL_API_TOKEN", "Token from vercel.com/account/tokens")],
-    { docsUrl: "https://vercel.com/docs/mcp", popular: true }),
+    { docsUrl: "https://vercel.com/docs/mcp", popular: true,
+      // Live probe 2026-11: Vercel also exposes a remote OAuth MCP endpoint
+      // (mcp.vercel.com) with open DCR + CIMD — verified working end-to-end.
+      remote: { url: "https://mcp.vercel.com", transport: "streamable-http" }, oauth: {} }),
   entry("netlify", "Netlify", "Create sites, deploy builds, and read deploy logs.", "cloud",
     npx("@netlify/mcp"),
     [KEY_ENV("NETLIFY_ACCESS_TOKEN", "Personal access token")]),
@@ -318,12 +341,16 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
 
   // ── Dev tools & repos ──
   entry("github", "GitHub", "Repos, issues, PRs, actions, code search — act on GitHub from chat.", "devtools",
-    npx("github-mcp-custom", "stdio"), // wraps the official GitHub MCP server; PAT in env
-    [KEY_ENV("GITHUB_PERSONAL_ACCESS_TOKEN", "PAT with repo scope", "ghp_…")],
-    { popular: true }),
+    npx("mcp-remote", "https://api.githubcopilot.com/mcp"),
+    [], { popular: true,
+      // Live probe 2026-11: GitHub also exposes a remote OAuth MCP endpoint
+      // (api.githubcopilot.com/mcp) — needs a pre-registered GitHub OAuth App
+      // (no DCR/CIMD). Paste client id + secret via the Connectors panel.
+      remote: { url: "https://api.githubcopilot.com/mcp", transport: "streamable-http" }, oauth: {} }),
   entry("gitlab", "GitLab", "Manage GitLab projects, MRs, pipelines, and issues.", "devtools",
     npx("@zereight/mcp-gitlab"),
-    [PLAIN_ENV("GITLAB_API_URL", "API base", "https://gitlab.com/api/v4", true), KEY_ENV("GITLAB_PERSONAL_ACCESS_TOKEN", "PAT")]),
+    [PLAIN_ENV("GITLAB_API_URL", "API base", "https://gitlab.com/api/v4", true), KEY_ENV("GITLAB_PERSONAL_ACCESS_TOKEN", "PAT")],
+    { remote: { url: "https://gitlab.com/api/v4/mcp", transport: "streamable-http" }, oauth: {} }),
   entry("git", "Git (local)", "Read and operate on a local git repository: diff, log, commit, branch.", "devtools",
     uvx("mcp-server-git", "--repository", ".")),
   entry("bitbucket", "Bitbucket", "Manage Bitbucket repos and pull requests.", "devtools",
@@ -337,7 +364,13 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
   entry("jira", "Jira", "Search and update Jira issues, sprints, and boards.", "devtools",
     npx("mcp-remote", "https://mcp.atlassian.com/v1/mcp"), // Atlassian-hosted, OAuth
     [], { docsUrl: "https://www.atlassian.com/platform/remote-mcp-server", popular: true,
-      remote: { url: "https://mcp.atlassian.com/v1/mcp", transport: "streamable-http" }, oauth: {} }),
+      // Live probe 2026-11: mcp.atlassian.com 401s WITHOUT resource metadata
+      // (RFC 9728 unadvertised), so discovery must be pinned. Atlassian's AS
+      // (auth.atlassian.com) is OIDC but /oidc/register is 404 for open
+      // registration — register a 3LO app in the Atlassian developer console
+      // and set ORPLEX_MCP_CLIENT_ID_JIRA (confidential: +_CLIENT_SECRET).
+      remote: { url: "https://mcp.atlassian.com/v1/mcp", transport: "streamable-http" },
+      oauth: { authority: "https://auth.atlassian.com", scopes: ["read:jira-work", "read:jira-user", "write:jira-work", "offline_access"] } }),
   entry("grafana", "Grafana", "Query dashboards and datasources; investigate incidents.", "devtools",
     uvx("mcp-grafana"),
     [KEY_ENV("GRAFANA_URL", "Grafana URL", "https://grafana.example.com"), KEY_ENV("GRAFANA_SERVICE_ACCOUNT_TOKEN", "Service account token")]),
@@ -367,12 +400,8 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
 
   // ── Design ──
   entry("figma", "Figma", "Read designs, components, and dev-mode metadata from Figma files.", "design",
-    npx("figma-developer-mcp", "--stdio"),
-    [KEY_ENV("FIGMA_API_KEY", "Figma personal access token")],
-    { popular: true }),
-  entry("figma-remote", "Figma (official remote)", "Figma's hosted MCP endpoint with OAuth.", "design",
     npx("mcp-remote", "https://mcp.figma.com/mcp"),
-    [], { docsUrl: "https://developers.figma.com/docs/figma-mcp-server/",
+    [], { popular: true, docsUrl: "https://developers.figma.com/docs/figma-mcp-server/",
       remote: { url: "https://mcp.figma.com/mcp", transport: "streamable-http" }, oauth: {} }),
   entry("blender", "Blender", "Create and manipulate 3D scenes in a running Blender instance.", "design",
     uvx("blender-mcp")),
@@ -406,12 +435,28 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
   entry("gmail", "Gmail", "Draft, search, and send email.", "productivity",
     npx("mcp-remote", "https://gmailmcp.googleapis.com/mcp/v1"), [],
     { remote: { url: "https://gmailmcp.googleapis.com/mcp/v1", transport: "streamable-http" }, oauth: {} }),
+  entry("google-drive-remote", "Google Drive (remote)", "Search and read files from Google Drive via Google's hosted MCP.", "productivity",
+    npx("mcp-remote", "https://drivemcp.googleapis.com/mcp/v1"), [],
+    { remote: { url: "https://drivemcp.googleapis.com/mcp/v1", transport: "streamable-http" }, oauth: {} }),
+  entry("google-docs-remote", "Google Docs (remote)", "Read and edit Google Docs via Google's hosted MCP.", "productivity",
+    npx("mcp-remote", "https://docsmcp.googleapis.com/mcp/v1"), [],
+    { remote: { url: "https://docsmcp.googleapis.com/mcp/v1", transport: "streamable-http" }, oauth: {} }),
+  entry("google-sheets-remote", "Google Sheets (remote)", "Read and write Google Sheets via Google's hosted MCP.", "productivity",
+    npx("mcp-remote", "https://sheetsmcp.googleapis.com/mcp/v1"), [],
+    { remote: { url: "https://sheetsmcp.googleapis.com/mcp/v1", transport: "streamable-http" }, oauth: {} }),
+  entry("google-slides-remote", "Google Slides (remote)", "Read and edit Google Slides via Google's hosted MCP.", "productivity",
+    npx("mcp-remote", "https://slidesmcp.googleapis.com/mcp/v1"), [],
+    { remote: { url: "https://slidesmcp.googleapis.com/mcp/v1", transport: "streamable-http" }, oauth: {} }),
+  entry("google-calendar-remote", "Google Calendar (remote)", "List events and manage meetings via Google's hosted MCP.", "productivity",
+    npx("mcp-remote", "https://calendarmcp.googleapis.com/mcp/v1"), [],
+    { remote: { url: "https://calendarmcp.googleapis.com/mcp/v1", transport: "streamable-http" }, oauth: {} }),
   entry("confluence", "Confluence", "Search and edit Confluence spaces and pages.", "productivity",
     npx("confluence-mcp-server"),
     [KEY_ENV("CONFLUENCE_URL", "Site URL"), KEY_ENV("CONFLUENCE_EMAIL", "Email"), KEY_ENV("CONFLUENCE_API_TOKEN", "API token", "••••")]),
   entry("airtable", "Airtable", "Create, read, and update records in Airtable bases.", "productivity",
     npx("airtable-mcp-server"),
-    [KEY_ENV("AIRTABLE_API_KEY", "Personal access token")], { popular: true }),
+    [KEY_ENV("AIRTABLE_API_KEY", "Personal access token")], { popular: true,
+      remote: { url: "https://mcp.airtable.com/mcp", transport: "streamable-http" }, oauth: {} }),
   entry("obsidian", "Obsidian", "Read and edit notes in your Obsidian vault (Local REST API plugin).", "productivity",
     npx("mcp-obsidian"),
     [KEY_ENV("OBSIDIAN_API_KEY", "REST API key from the plugin")]),
@@ -491,8 +536,15 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     npx("mcp-remote", "https://huggingface.co/mcp"), [],
     { remote: { url: "https://huggingface.co/mcp", transport: "streamable-http" }, oauth: {} }),
   entry("elevenlabs", "ElevenLabs", "Text-to-speech and voice cloning.", "ai",
-    npx("mcp-remote", "https://api.elevenlabs.io/v1/mcp"),
-    [KEY_ENV("ELEVENLABS_API_KEY", "API key")]),
+    // Live probe 2026-11: the hosted endpoint (api.elevenlabs.io/v1/mcp) is a
+    // valid OAuth MCP server whose AS (api.us.elevenlabs.io) advertises CIMD
+    // (client_id_metadata_document_supported) — zero-config via our client
+    // metadata document. The API-key stdio lane below remains the fallback.
+    npx("mcp-remote", "https://api.elevenlabs.io/v1/mcp", "--transport", "http",
+      "--header", "Authorization:${ELEVENLABS_API_KEY}"),
+    [KEY_ENV("ELEVENLABS_API_KEY", "Full header value — 'Bearer' + your API key", "Bearer …")],
+    { remote: { url: "https://api.elevenlabs.io/v1/mcp", transport: "streamable-http" },
+      oauth: { cimd: true } }),
   entry("memory", "Persistent memory", "Knowledge-graph memory the agent can read/write across runs.", "ai",
     npx("@modelcontextprotocol/server-memory"), [], { popular: true }),
   entry("sequential-thinking", "Sequential thinking", "Structured step-by-step reasoning scaffold for hard problems.", "ai",
@@ -527,13 +579,46 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     npx("excel-mcp-server")),
   entry("one-drive", "OneDrive / SharePoint", "Search and read files from Microsoft 365.", "files",
     npx("mcp-remote", "https://graph.microsoft.com/mcp/v1"), [],
-    { remote: { url: "https://graph.microsoft.com/mcp/v1", transport: "streamable-http" }, oauth: {} }),
+    // Live probe 2026-11: graph.microsoft.com/mcp/v1 401s with Entra's
+    // authorization_uri hint but NO RFC 9728 metadata, and Entra publishes
+    // the {tenantid} placeholder issuer — so this needs BOTH a pinned
+    // authority (the SDK skips issuer validation only when the catalog
+    // pins a trusted one) AND a vendor-registered static client; Entra has
+    // no open DCR. Set ORPLEX_MCP_CLIENT_ID_ONE_DRIVE (+secret).
+    { remote: { url: "https://graph.microsoft.com/mcp/v1", transport: "streamable-http" },
+      oauth: { authority: "https://login.microsoftonline.com/common", scopes: ["User.Read", "Files.Read.All", "Sites.Read.All", "offline_access"] } }),
   entry("shell", "Shell (sandboxed)", "Run allow-listed shell commands as tools.", "shell",
     npx("mcp-shell"),
     [PLAIN_ENV("SHELL_ALLOWLIST", "Comma-separated commands", "ls,grep,wc")]),
   entry("terminal-control", "Terminal", "Persistent terminal sessions the agent can drive.", "shell",
     npx("@wonderwhy-er/desktop-commander")),
 ];
+
+// ── Static OAuth clients from the environment ──────────────────────────────
+// Proportionalized 2026-11 probe: several hosted connectors' authorization
+// servers do NOT support dynamic client registration (DCR) — Slack, Render,
+// ElevenLabs, Microsoft Graph, and any vendor an operator pins. The SDK's
+// silent sign-in dies there and the browser leg never opens, which is EXACTLY
+// the "this connector doesn't work" report class. Those providers work the
+// moment the operator registers ONE app with the vendor and injects here:
+//   ORPLEX_MCP_CLIENT_ID_<ID>            (confidential clients also:)
+//   ORPLEX_MCP_CLIENT_SECRET_<ID>
+// (id dashed→uppercase-underscored: SLACK, GOOGLE_DRIVE, ONE_DRIVE, …).
+// An env value overrides whatever the catalog entry carries.
+
+const envClientKey = (id: string, kind: "CLIENT_ID" | "CLIENT_SECRET"): string | undefined => {
+  if (typeof process === "undefined") return undefined;
+  const key = `ORPLEX_MCP_${kind}_${id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+  const raw = process.env?.[key];
+  return raw && raw.trim() ? raw.trim() : undefined;
+};
+
+for (const e of MCP_CATALOG) {
+  const clientId = envClientKey(e.id, "CLIENT_ID");
+  const clientSecret = envClientKey(e.id, "CLIENT_SECRET");
+  if (!clientId && !clientSecret) continue;
+  e.oauth = { ...(e.oauth ?? {}), ...(clientId ? { clientId } : {}), ...(clientSecret ? { clientSecret } : {}) };
+}
 
 // Fail fast: a malformed entry would otherwise surface as a broken Connectors
 // form at runtime. Throws in dev/test, logs in production (the UI degrades to

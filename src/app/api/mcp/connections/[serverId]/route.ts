@@ -4,10 +4,13 @@
 //
 // DELETE — disconnect: tokens + client registration are wiped in place, the
 // row and its auto-approve preference survive for the next connect.
+// EXCEPTION: custom remote registrations (remote-<hash> ids) are removed
+// entirely — there is no catalog entry to re-connect them from.
 
 import { NextRequest, NextResponse } from "next/server";
 import { getMcpSession } from "@/lib/mcp-auth";
 import { disconnectConnection, setConnectionAutoApprove } from "@/lib/mcp/oauth/store";
+import { deleteCustomRemote, isCustomRemoteId } from "@/lib/mcp/custom-remote";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +44,10 @@ export async function DELETE(_request: NextRequest, { params }: RouteContext) {
   }
   const { serverId } = await params;
   try {
+    if (isCustomRemoteId(serverId)) {
+      const removed = await deleteCustomRemote(session.user.id, serverId);
+      return NextResponse.json({ success: true, existed: removed });
+    }
     const existed = await disconnectConnection(session.user.id, serverId);
     return NextResponse.json({ success: true, existed });
   } catch (e) {

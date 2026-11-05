@@ -31,7 +31,7 @@ export interface McpHttpResult {
   text: string;
 }
 
-async function httpPost(url: string, headers: Record<string, string>, body: string): Promise<McpHttpResult> {
+async function httpPost(url: string, headers: Record<string, string>, body: string, signal?: AbortSignal): Promise<McpHttpResult> {
   // SSRF gate on BOTH branches: server.url is registry/localStorage input
   // (user-pasted), and the Electron bridge no longer re-checks per call.
   const { checkMcpUrl } = await import("./ssrf-fetch");
@@ -52,11 +52,35 @@ async function httpPost(url: string, headers: Record<string, string>, body: stri
     method: "POST",
     headers,
     body,
-    signal: AbortSignal.timeout(30_000),
+    // ALWAYS bounded: a raw fetch here would hang the agent turn forever on
+    // a dead server. A caller signal is composed on top when supported; the
+    // Electron bridge cannot interrupt mid-flight — rpc() post-checks cover it.
+    signal: composeWithCeiling(signal),
   });
   const responseHeaders: Record<string, string> = {};
   res.headers.forEach((v, k) => { responseHeaders[k] = v; });
   return { status: res.status, headers: responseHeaders, text: await res.text() };
+}
+
+/** Fallback when AbortSignal.any is unavailable in the runtime. */
+function relayAbort(from: AbortSignal, to: AbortSignal): void {
+  const fire = () => {
+    try { to.dispatchEvent(new Event("abort")); } catch { /* best effort */ }
+  };
+  from.addEventListener("abort", fire, { once: true });
+  if (from.aborted) fire();
+}
+
+/** The hard 30s ceiling, composed with an optional caller abort signal. */
+function composeWithCeiling(caller?: AbortSignal): AbortSignal {
+  const ceiling = AbortSignal.timeout(30_000);
+  if (caller) {
+    if (typeof (AbortSignal as { any?: (s: AbortSignal[]) => AbortSignal }).any === "function") {
+      return AbortSignal.any([ceiling, caller]);
+    }
+    relayAbort(caller, ceiling);
+  }
+  return ceiling;
 }
 
 /** Extract the JSON-RPC payload from a JSON or SSE response body. */
@@ -173,10 +197,18 @@ export async function withConnection<T>(server: McpRemoteServer, fn: (conn: McpC
     // 401/403 with a refresh token → one refresh + retry.
     const msg = (err as Error)?.message ?? "";
     if (fresh.auth === "oauth" && fresh.tokens?.refreshToken && /\b(401|403)\b/.test(msg)) {
-      const refreshed = await ensureFreshTokens({ ...fresh, tokens: { ...fresh.tokens!, expiresAt: Date.now() - 1000 } });
-      const conn2 = new McpConnection(refreshed);
-      await conn2.initialize();
-      return await fn(conn2);
+      let reconnected: McpConnection;
+      try {
+        const refreshed = await ensureFreshTokens({ ...fresh, tokens: { ...fresh.tokens!, expiresAt: Date.now() - 1000 } });
+        reconnected = new McpConnection(refreshed);
+        await reconnected.initialize();
+      } catch {
+        // The refresh or its reconnect failed — that failure must NOT mask
+        // WHY this call failed in the first place. The original 401/403 is
+        // the honest verdict.
+        throw err;
+      }
+      return await fn(reconnected);
     }
     throw err;
   }

@@ -12,6 +12,15 @@ import { useFileSystemContext } from "./FileSystemProvider";
 // The prompt bar, MCP controls, and the project control beside it are
 // untouched — this component only owns the empty state above them.
 
+// One-click openers for the empty state. Each drops its text straight into the
+// composer (see the orplex:prefill-prompt listener in PromptBar) so the first
+// action is a click, not a blank box to stare at.
+const STARTERS = [
+  { icon: "bolt", label: "Build a Pomodoro timer", text: "Build a Pomodoro timer with adjustable focus and break lengths." },
+  { icon: "account_tree", label: "Map this repo", text: "Map this repository: entry points, the main modules, and how data flows between them." },
+  { icon: "bug_report", label: "Find a bug to fix", text: "Look through this project for the highest-impact bug and show me the fix." },
+];
+
 const ADVANCED_ITEMS = [
   { id: "manager", icon: "dashboard", label: "Agent Manager", hint: "Run parallel agents on a board", href: "/manager" },
   { id: "preview", icon: "language", label: "Built-in browser", hint: "Real Chromium the agent can drive", panel: "preview" },
@@ -52,6 +61,20 @@ export default function FirstRunExperience() {
           <span className="empty-hero-pill-label">{hasWorkspace ? directoryName : "Open folder"}</span>
           {!hasWorkspace && <kbd className="empty-hero-kbd">Ctrl+O</kbd>}
         </button>
+
+        <div className="empty-hero-starters">
+          {STARTERS.map((s) => (
+            <button
+              key={s.label}
+              type="button"
+              className="empty-hero-starter"
+              onClick={() => window.dispatchEvent(new CustomEvent("orplex:prefill-prompt", { detail: { text: s.text } }))}
+            >
+              <span className="ms ms-sm">{s.icon}</span>
+              <span>{s.label}</span>
+            </button>
+          ))}
+        </div>
 
         <div className="empty-hero-advanced">
           <button className="empty-hero-advanced-toggle" onClick={() => setShowAdvanced(s => !s)}>

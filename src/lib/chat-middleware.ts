@@ -409,15 +409,64 @@ export function modelVariants(id: string, opts: { allowPaidUpgrade?: boolean } =
 // Provider Fetch with Retry
 // ---------------------------------------------------------------------------
 
+/** Retry ladder knobs — overridable for tests; these are the production values. */
+export interface ProviderRetryOptions {
+  attempts?: number;
+  /** Base backoff in ms — doubles every attempt (exponential ladder). */
+  baseDelayMs?: number;
+  /** Per-attempt delay ceiling. */
+  maxDelayMs?: number;
+  /** Wall-clock ceiling for the WHOLE ladder. */
+  deadlineMs?: number;
+}
+
+const DEFAULT_ATTEMPTS = 20;
+const DEFAULT_BASE_DELAY_MS = 1_000;
+const DEFAULT_MAX_DELAY_MS = 30_000;
+/**
+ * Wall-clock ceiling for one provider's attempt ladder. 20 attempts at a
+ * 1s→30s exponential ladder can eat minutes under a hard rate limit, so the
+ * deadline is what actually bounds the failure window: it keeps the whole
+ * floor under the 300s serverless function budget while leaving ~2min of
+ * the turn for the streamed response itself (desktop builds have no limit).
+ */
+const DEFAULT_DEADLINE_MS = 180_000;
+
+/**
+ * One rung of the exponential ladder for attempt N (1-based). STRICTLY
+ * increasing per attempt — each retry waits LONGER than the one before it —
+ * and a server Retry-After hint is honored when it asks for more patience
+ * (never less: a short hint never shrinks a later rung below an earlier one).
+ */
+/** (exported for tests/reliability tooling) */
+export function ladderDelayMs(
+  attempt: number,
+  baseDelayMs: number,
+  maxDelayMs: number,
+  retryAfterSeconds?: number
+): number {
+  // Exponential doubling, capped, plus a little jitter so a fleet of retries
+  // (parallel runs) doesn't synchronize into another rate-limit wall.
+  const doubling = Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs);
+  const jitter = Math.floor(Math.random() * 250);
+  const hint =
+    retryAfterSeconds != null && Number.isFinite(retryAfterSeconds)
+      ? Math.min(Math.max(retryAfterSeconds, 1), 60) * 1000
+      : 0;
+  // max(): a Retry-After can push a rung LONGER, never shorter — the ladder
+  // stays monotonic even with hints flying around.
+  return Math.min(Math.max(doubling, hint) + jitter, 60_000);
+}
+
 export async function fetchWithProviderRetry(
   provider: ProviderConfig,
   requestBody: Record<string, unknown>,
+  opts: ProviderRetryOptions = {},
 ): Promise<{ ok: true; stream: ReadableStream } | { ok: false; error: string }> {
-  const maxAttempts = 4;
-  // Global ceiling for this provider's attempt-ladder: even with retries and
-  // backoff, one provider must never eat more than ~75s — the next provider
-  // (or the 503 to the client) has to stay reachable.
-  const deadline = Date.now() + 75_000;
+  const maxAttempts = Math.max(1, opts.attempts ?? DEFAULT_ATTEMPTS);
+  const baseDelayMs = Math.max(0, opts.baseDelayMs ?? DEFAULT_BASE_DELAY_MS);
+  const maxDelayMs = Math.max(1_000, opts.maxDelayMs ?? DEFAULT_MAX_DELAY_MS);
+  const deadline = Date.now() + Math.max(5_000, opts.deadlineMs ?? DEFAULT_DEADLINE_MS);
   let lastError = "";
   let body = requestBody;
   // How many times we have lowered the output budget to match a provider's
@@ -460,20 +509,27 @@ export async function fetchWithProviderRetry(
         break;
       }
 
-      // 429: rate limit (backoff). 5xx: upstream/up-provider failure — the
-      // next attempt (or auto-router upstream) usually succeeds, so retry.
-      if ((res.status === 429 || res.status >= 500) && attempt < maxAttempts) {
-        // Free-tier providers send retry-after up to 60s; honoring it fully
-        // can stall a chat for minutes. Cap the wait and fail over quickly.
-        // NOTE: a garbage header parses to NaN, and Math.min(NaN, 10) is NaN
-        // → setTimeout(NaN) fires immediately (hot retry loop). Guard it.
-        const retryAfterRaw = parseInt(res.headers.get("retry-after") || "3", 10);
-        const retryAfter = Math.min(Number.isFinite(retryAfterRaw) ? Math.max(retryAfterRaw, 1) : 3, 10);
+      // 429: rate limit (exponential backoff grows every attempt). 408: the
+      // provider timed the request out before reading it. 5xx: upstream
+      // failure — the next attempt usually succeeds, so retry.
+      if ((res.status === 429 || res.status === 408 || res.status >= 500) && attempt < maxAttempts) {
+        // Free-tier providers send retry-after up to 60s; the ladder honors it
+        // but never shrinks below its own exponential rung, and both are
+        // capped so a garbage/hostile header can't stall a chat for minutes.
+        // NOTE: a garbage header parses to NaN — ladderDelayMs drops it to the
+        // doubling rung so setTimeout(NaN) (instant, hot loop) can't happen.
+        const retryAfterRaw = parseInt(res.headers.get("retry-after") || "", 10);
+        const waitMs = ladderDelayMs(
+          attempt,
+          baseDelayMs,
+          maxDelayMs,
+          Number.isFinite(retryAfterRaw) ? retryAfterRaw : undefined,
+        );
         // Drain the body before retrying: `continue` skips the res.text() below,
         // so the socket/FD stays open. Across a long ladder (providers x model
-        // variants x 4 attempts) that leaks descriptors under a retry storm.
+        // variants x attempts) that leaks descriptors under a retry storm.
         await res.body?.cancel().catch(() => {});
-        await new Promise((r) => setTimeout(r, retryAfter * 1000));
+        await new Promise((r) => setTimeout(r, waitMs));
         continue;
       }
 
@@ -506,8 +562,10 @@ export async function fetchWithProviderRetry(
       return okStreamPeeked(provider.name, res.body);
     } catch (err) {
       lastError = `${provider.name}: ${(err as Error).message}`;
+      // Network blips (ECONNRESET, DNS, hung-request timeout) climb the SAME
+      // exponential ladder as 429/5xx responses instead of a flat 2s.
       if (attempt < maxAttempts) {
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, ladderDelayMs(attempt, baseDelayMs, maxDelayMs)));
       }
     }
   }
