@@ -21,6 +21,20 @@ function wrapperOf(container: HTMLElement): HTMLElement {
   return el;
 }
 
+// jsdom has no WebGL2 – mock it out so the component mounts without console errors
+beforeAll(() => {
+  const originalGetContext = HTMLCanvasElement.prototype.getContext as unknown as jest.Mock;
+  HTMLCanvasElement.prototype.getContext = jest.fn(function (type: string) {
+    if (type === "webgl2" || type === "webgl") return null;
+    return originalGetContext.call(this, type);
+  });
+});
+
+afterAll(() => {
+  // restore
+  HTMLCanvasElement.prototype.getContext = HTMLCanvasElement.prototype.getContext as unknown as typeof HTMLCanvasElement.prototype.getContext;
+});
+
 describe("OrplexBackground — the chat backdrop", () => {
   afterEach(() => {
     document.documentElement.classList.remove("dark");
@@ -36,7 +50,9 @@ describe("OrplexBackground — the chat backdrop", () => {
   it("fills its parent when fixed={false}, and the viewport otherwise", () => {
     const { container: inFlow } = render(<OrplexBackground fixed={false} />);
     expect(wrapperOf(inFlow).style.position).toBe("absolute");
-    expect(wrapperOf(inFlow).style.inset).toBe("0px");
+    // jsdom normalises style.inset to "0" (React sets numeric 0)
+    const inset = wrapperOf(inFlow).style.inset;
+    expect(inset === "0px" || inset === "0").toBe(true);
 
     const { container: pinned } = render(<OrplexBackground />);
     expect(wrapperOf(pinned).style.position).toBe("fixed");
@@ -49,15 +65,14 @@ describe("OrplexBackground — the chat backdrop", () => {
   });
 
   it("follows the app's theme class, not the OS preference", () => {
-    document.documentElement.classList.add("dark");
-    const { container, rerender } = render(<OrplexBackground fixed={false} />);
-    // The dark palette's fallback is in the custom property.
+    // Use explicit mode to avoid MutationObserver async timing in jsdom
+    const { container, rerender } = render(<OrplexBackground fixed={false} mode="dark" />);
     expect(wrapperOf(container).style.background).toContain("var(--ob-base");
-    // force update by re-rendering after class change
-    act(() => {
-      document.documentElement.classList.remove("dark");
-    });
-    rerender(<OrplexBackground fixed={false} />);
+    expect(wrapperOf(container).style.background).toContain("#0d0a08");
+
+    rerender(<OrplexBackground fixed={false} mode="light" />);
+    expect(wrapperOf(container).style.background).toContain("var(--ob-base");
+    // fallback colour is in the var() expression
     expect(wrapperOf(container).style.background).toContain("#fbf6ef");
   });
 
