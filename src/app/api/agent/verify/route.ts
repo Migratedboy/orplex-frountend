@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
     // SECOND Orplex instance and "verify" the wrong app (LIVE failure class
     // 2026-11-06: DB down + fresh process ⇒ registration lookup dead).
     return NextResponse.json(
-      { success: false, error: "No workspace is registered, so there is nothing to verify. Open your project folder again (sidebar → Open), then call verify_app once more." },
+      { success: false, error: "No workspace is registered, so there is nothing to verify. Have the user open the project folder again (workspace chip → \"Open project…\", or Ctrl+O), then call verify_app once more." },
       { status: 422 }
     );
   }
@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
   // registration. Refuse those too rather than verifying "." (Orplex).
   if (!workDir) {
     return NextResponse.json(
-      { success: false, error: "No workspace is registered, so there is nothing to verify. Open your project folder again (sidebar → Open), then call verify_app once more." },
+      { success: false, error: "No workspace is registered, so there is nothing to verify. Have the user open the project folder again (workspace chip → \"Open project…\", or Ctrl+O), then call verify_app once more." },
       { status: 422 }
     );
   }

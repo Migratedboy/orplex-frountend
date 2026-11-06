@@ -103,7 +103,7 @@ const GUIDANCE: Array<{ id: string; match: RegExp; guidance: ErrorGuidance }> = 
     guidance: {
       title: "No workspace open",
       what: "The agent can only read and edit files once you open a project folder.",
-      fix: "Open a folder (sidebar → Open, or Ctrl+O) and re-run the task.",
+      fix: "Open a folder (workspace chip → \"Open project…\", or Ctrl+O) and re-run the task.",
       actions: ["check-workspace"],
     },
   },

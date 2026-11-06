@@ -407,7 +407,7 @@ export async function dispatchToolCall(
   // Server lanes always pass fs.writeFile, so they are unaffected; ask mode is
   // already refused above.
   if (!ctx.fs.writeFile && ["write_file", "write_file_chunk", "edit_file", "batch_edit", "apply_edit_ops", "undo_last_change", "undo_file"].includes(call.name)) {
-    result(`<tool_result name="${call.name}">error — no folder is open, so there is nowhere to write. Nothing was written. Ask the user to open a folder (sidebar → Open, or Ctrl+O), then retry the same call.</tool_result>\n`);
+    result(`<tool_result name="${call.name}">error — no folder is open, so there is nowhere to write. Nothing was written. Ask the user to open a folder (workspace chip → "Open project…", or Ctrl+O), then retry the same call.</tool_result>\n`);
     ctx.replaceStatus(`[BLOCKED] ${call.name} — no folder open`);
     ctx.syncDisplay();
     return { resultXml: toolResults, blocked: true };
@@ -1490,7 +1490,7 @@ export async function dispatchToolCall(
   // ── verify_app ────────────────────────────────────────────────────────
   if (call.name === "verify_app") {
     if (!ctx.fs.directoryName) {
-      result(`<tool_result name="verify_app">error — no local folder is open, so there is no dev server to start. Open a folder (sidebar → Open) and retry, or use preview_browser with an explicit URL.</tool_result>\n`);
+      result(`<tool_result name="verify_app">error — no local folder is open, so there is no dev server to start. Have the user open a folder (workspace chip → "Open project…", or Ctrl+O) and retry, or use preview_browser with an explicit URL.</tool_result>\n`);
       ctx.replaceStatus(`[WARN] verify_app needs an open folder`);
       ctx.syncDisplay();
       return { resultXml: toolResults, blocked: false };
