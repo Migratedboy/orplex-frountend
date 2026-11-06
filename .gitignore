@@ -116,3 +116,4 @@ service-account*.json
 .env*
 # Negation must come AFTER the .env* rule (last-match-wins).
 !.env.example
+.orplex/db/

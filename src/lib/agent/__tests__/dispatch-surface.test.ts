@@ -83,8 +83,8 @@ function makeCtx(): ToolContext {
 const emptyCall = (name: string): ToolCall => ({ name } as ToolCall);
 
 describe("dispatch surface — every defined tool routes (the split-safety contract)", () => {
-  it("M3_TOOL_DEFINITIONS still exposes 42 tools (the source of truth)", () => {
-    expect(TOOL_NAMES).toHaveLength(42);
+  it("M3_TOOL_DEFINITIONS still exposes 48 tools (the source of truth)", () => {
+    expect(TOOL_NAMES).toHaveLength(48);
   });
 
   it.each(TOOL_NAMES)("routes %s without throwing and names it in the envelope", async (name) => {

@@ -884,43 +884,71 @@ const kept = content.slice(0, 2000);
 
   // ── memory_* (persistent markdown memory store) ────────────────────────
   if (name === "memory_list") {
-    const { memoryList } = await import("../memory-store");
-    const prefix = typeof call.path_prefix === "string" ? call.path_prefix : undefined;
-    const files = await memoryList(prefix);
-    return files.length ? files.map((f) => `- ${f.path} — ${f.description}${f.aliases.length ? ` (aliases: ${f.aliases.join(", ")})` : ""}`).join("\n") : "No memory files yet.";
+    try {
+      const { memoryList } = await import("../memory-store");
+      const prefix = typeof call.path_prefix === "string" ? call.path_prefix : undefined;
+      const files = await memoryList(prefix);
+      return files.length ? files.map((f) => `- ${f.path} - ${f.description}${f.aliases.length ? ` (aliases: ${f.aliases.join(", ")})` : ""}`).join("\n") : "No memory files yet.";
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
   }
   if (name === "memory_read") {
-    const { memoryRead } = await import("../memory-store");
-    const paths = Array.isArray(call.paths) ? (call.paths as string[]) : (typeof call.path === "string" ? [call.path] : []);
-    const files = await memoryRead(paths);
-    if (!files.length) return "No matching memory files.";
-    return files.map((f) => `### ${f.path} (version ${f.version})\n${f.content}`).join("\n\n");
+    try {
+      const { memoryRead } = await import("../memory-store");
+      const paths = Array.isArray(call.paths) ? (call.paths as string[]) : (typeof call.path === "string" ? [call.path] : []);
+      const files = await memoryRead(paths);
+      if (!files.length) return "No matching memory files.";
+      return files.map((f) => `### ${f.path} (version ${f.version})\n${f.content}`).join("\n\n");
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
   }
   if (name === "memory_write") {
-    const { memoryWrite } = await import("../memory-store");
-    const r = await memoryWrite(String(call.path), String(call.content), call.if_version as any);
-    if (r.conflict) return `conflict: file changed. Current (v${r.current?.version}):\n${r.current?.content}\nMerge and retry with if_version=${r.current?.version}.`;
-    return `saved ${call.path} (version ${r.version})`;
+    try {
+      const { memoryWrite } = await import("../memory-store");
+      if (typeof call.path !== "string" || typeof call.content !== "string") return "error: path and content are required";
+      const r = await memoryWrite(call.path, call.content, call.if_version as any);
+      if (r.conflict) return `conflict: file changed. Current (v${r.current?.version}):\n${r.current?.content}\nMerge and retry with if_version=${r.current?.version}.`;
+      return `saved ${call.path} (version ${r.version})`;
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
   }
   if (name === "memory_str_replace") {
-    const { memoryStrReplace } = await import("../memory-store");
-    const r = await memoryStrReplace(String(call.path), String(call.old_str), String(call.new_str), call.if_version as any);
-    if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
-    if (!r.ok) return `error: ${r.reason}`;
-    return `updated ${call.path} (version ${r.version})`;
+    try {
+      const { memoryStrReplace } = await import("../memory-store");
+      if (typeof call.path !== "string" || typeof call.old_str !== "string" || typeof call.new_str !== "string") return "error: path, old_str, new_str are required";
+      const r = await memoryStrReplace(call.path, call.old_str, call.new_str, call.if_version as any);
+      if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
+      if (!r.ok) return `error: ${r.reason}`;
+      return `updated ${call.path} (version ${r.version})`;
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
   }
   if (name === "memory_append") {
-    const { memoryAppend } = await import("../memory-store");
-    const r = await memoryAppend(String(call.path), String(call.content), call.if_version as any);
-    if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
-    return `appended to ${call.path} (version ${r.version})`;
+    try {
+      const { memoryAppend } = await import("../memory-store");
+      if (typeof call.path !== "string" || typeof call.content !== "string") return "error: path and content are required";
+      const r = await memoryAppend(call.path, call.content, call.if_version as any);
+      if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
+      return `appended to ${call.path} (version ${r.version})`;
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
   }
   if (name === "memory_delete") {
-    const { memoryDelete } = await import("../memory-store");
-    const r = await memoryDelete(String(call.path), call.if_version as any);
-    if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
-    if (!r.ok) return `error: ${(r as any).reason || "failed"}`;
-    return `deleted ${call.path}`;
+    try {
+      const { memoryDelete } = await import("../memory-store");
+      if (typeof call.path !== "string") return "error: path is required";
+      const r = await memoryDelete(call.path, call.if_version as any);
+      if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
+      if (!r.ok) return `error: ${(r as any).reason || "failed"}`;
+      return `deleted ${call.path}`;
+    } catch (err) {
+      return `error: ${(err as Error).message}`;
+    }
   }
 
   if (name === "skill_create") {
