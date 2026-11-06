@@ -47,11 +47,15 @@
   /* ThoughtLine — the agent reasoning thread above an assistant turn.
      The component reads these vars (it ships its own stylesheet), so the app
      owns the palette: Orplex orange, a red that cannot be mistaken for it,
-     and a translucent glass that reads cleanly on the app's flat canvas. */
+     and a translucent glass that reads cleanly on the app's flat canvas.
+     THEME-INDEPENDENT: the thread always sits on the dark backdrop artwork
+     (even in light mode — the canvas never changes), so light mode ships the
+     SAME glass/edge/error tokens as dark, making the tool-call UI identical
+     in both themes. */
   --tl-accent: #f97316;
-  --tl-error: var(--danger-soft);
-  --tl-glass: rgba(255, 255, 255, 0.6);
-  --tl-edge: rgba(249, 115, 22, 0.3);
+  --tl-error: #e2555f;
+  --tl-glass: rgba(255, 255, 255, 0.06);
+  --tl-edge: rgba(255, 255, 255, 0.14);
 
   /* Chat canvas backdrop (gradient ASCII). `--ob-base` is the surface the
      artwork sits on — it must match the app canvas exactly, otherwise the
@@ -123,8 +127,8 @@
   --danger-soft: #e2555f;
   --ring-brand: rgba(255, 107, 0, 0.3);
 
-  /* ThoughtLine (dark) — the accent stays orange; the glass goes nearly
-     clear and the edge goes neutral white, matching the black theme. */
+  /* ThoughtLine (dark) — identical to light: the thread tokens are
+     theme-independent above (they always sit on the dark backdrop artwork). */
   --tl-accent: #f97316;
   --tl-error: var(--danger-soft);
   --tl-glass: rgba(255, 255, 255, 0.06);
