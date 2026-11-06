@@ -2919,10 +2919,24 @@ export async function runInBackground(
 
     // === CODE BLOCK EXTRACTION ===
     // If AI output markdown code blocks instead of using write_file,
-    // extract them and write as files automatically. CODE/PLAN modes only —
-    // in ASK mode the code blocks are the answer, not files to create.
+    // extract them and write as files automatically. Two gates:
+    //   1. CODE/PLAN modes only — in ASK mode the code blocks are the answer.
+    //   2. BUILD INTENT — analysis and review answers ("rate my project",
+    //      "explain this function", "audit the auth flow") routinely quote
+    //      project code in fenced blocks to illustrate findings. Extracting
+    //      those dumped generated files into the user's OPEN repo and REPLACED
+    //      the answer with an extraction notice (live report 2026-11-06).
+    //      No build verb in the prompt → the fences are part of the answer
+    //      and stay in the answer.
+    const BUILD_INTENT_RE =
+      /\b(build\w*|creat\w*|mak\w*|writ\w*|generat\w*|implement\w*|scaffold\w*|design\w*|add(?:s|ed|ing)?|fix(?:es|ed|ing)?|refactor\w*|updat\w*|develo\w*|convert\w*|migrat\w*|recreat\w*|set ?up|program\w*|apps?|websites?|web ?sites?|pages?|components?|widgets?|games?|scripts?|librar\w*|boilerplates?)\b/i;
     let extractedFiles = 0;
-    if (mode !== "ask" && totalWrites === 0 && virtualFS.getFileCount() === 0) {
+    if (
+      mode !== "ask" &&
+      totalWrites === 0 &&
+      virtualFS.getFileCount() === 0 &&
+      BUILD_INTENT_RE.test(userMessage)
+    ) {
       // No files were created via tools — check for code blocks in output
       const codeBlockRegex = /```(\w+)?\s*(?:\w+)?\s*\n([\s\S]*?)```/g;
       let codeMatch;
