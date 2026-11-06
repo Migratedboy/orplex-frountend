@@ -34,8 +34,9 @@ export const DEFAULT_MODELS: DefaultModelRow[] = [
   { key: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B", tag: "Groq", detail: "free · 1M", group: "Default Models" },
 
   // --- OpenRouter free tier: the strongest free models available ---
-  { key: "thinkingmachines/inkling:free", name: "Inkling", tag: "OpenRouter", detail: "free · 1M · tools · vision", group: "Default Models" },
-  { key: "thinkingmachines/inkling-small:free", name: "Inkling Small", tag: "OpenRouter", detail: "free · 1M · tools · vision", group: "Default Models" },
+  // The `:free` Inkling variants were retired by Thinking Machines (their
+  // endpoints dropped to 0 upstream); replaced with Crouton Alpha 2026-11.
+  { key: "stealth/crouton-alpha", name: "Crouton Alpha", tag: "OpenRouter", detail: "free · 1M · tools · vision", group: "Default Models" },
   { key: "nvidia/nemotron-3-ultra-550b-a55b:free", name: "Nemotron 3 Ultra", tag: "OpenRouter", detail: "free · 1M", group: "Default Models" },
   { key: "nvidia/nemotron-3.5-super-vl:free", name: "Nemotron 3.5 Super VL", tag: "OpenRouter", detail: "free · 1M · vision · video", group: "Default Models" },
   { key: "nvidia/nemotron-3.5-lightning:free", name: "Nemotron 3.5 Lightning", tag: "OpenRouter", detail: "free · 1M", group: "Default Models" },

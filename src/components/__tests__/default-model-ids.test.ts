@@ -55,6 +55,9 @@ const DEFAULT_KEYS = DEFAULT_MODELS.map((m) => m.key);
 /** The two ids that are served by Groq rather than OpenRouter. */
 const GROQ_KEYS = new Set(["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]);
 
+/** Free ids that carry no `:free` suffix but are still priced 0/0 upstream. */
+const FREE_NO_SUFFIX = new Set(["openrouter/free", "stealth/crouton-alpha"]);
+
 describe("default model ids exist upstream", () => {
   it("every DEFAULT_MODELS key is in the live OpenRouter catalogue", () => {
     if (skipped || !ids) {
@@ -93,7 +96,7 @@ describe("default model ids exist upstream", () => {
     for (const k of DEFAULT_KEYS) {
       if (GROQ_KEYS.has(k)) continue;
       if (skipped || !prices) {
-        expect(k.endsWith(":free") || k === "openrouter/free").toBe(true);
+        expect(k.endsWith(":free") || FREE_NO_SUFFIX.has(k)).toBe(true);
         continue;
       }
       const p = prices!.get(k);

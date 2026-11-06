@@ -22,17 +22,25 @@ function wrapperOf(container: HTMLElement): HTMLElement {
 }
 
 // jsdom has no WebGL2 – mock it out so the component mounts without console errors
+const originalGetContext = HTMLCanvasElement.prototype.getContext;
+
 beforeAll(() => {
-  const originalGetContext = HTMLCanvasElement.prototype.getContext as unknown as jest.Mock;
-  HTMLCanvasElement.prototype.getContext = jest.fn(function (type: string) {
-    if (type === "webgl2" || type === "webgl") return null;
-    return originalGetContext.call(this, type);
-  });
+  HTMLCanvasElement.prototype.getContext = function getContext(
+    this: HTMLCanvasElement,
+    contextId: string,
+    options?: unknown
+  ) {
+    if (contextId === "webgl2" || contextId === "webgl") return null;
+    return (originalGetContext as unknown as (...args: unknown[]) => unknown).call(
+      this,
+      contextId,
+      options
+    );
+  } as typeof HTMLCanvasElement.prototype.getContext;
 });
 
 afterAll(() => {
-  // restore
-  HTMLCanvasElement.prototype.getContext = HTMLCanvasElement.prototype.getContext as unknown as typeof HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = originalGetContext;
 });
 
 describe("OrplexBackground — the chat backdrop", () => {
