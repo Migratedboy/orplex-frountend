@@ -1,4 +1,18 @@
-import { checkUserQuota, applyRateLimitHeaders, quotaDayKey, FREE_TIER_DAILY_LIMIT } from "../rate-limiter";
+import { checkUserQuota, applyRateLimitHeaders, quotaDayKey, FREE_TIER_DAILY_LIMIT, checkBurstLimit } from "../rate-limiter";
+import { prisma } from "../prisma";
+
+// Burst-limit tests need a controlled DB. upsert succeeds by default; each
+// test sets its own behavior. User ids are unique per test so the module's
+// in-memory window cache always starts cold exactly when a test needs it.
+jest.mock("../prisma", () => ({
+  prisma: {
+    rateLimitWindow: {
+      upsert: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+  },
+}));
+
+const upsert = prisma.rateLimitWindow.upsert as jest.Mock;
 
 describe("rate-limiter", () => {
   // ---------------------------------------------------------------
@@ -115,5 +129,45 @@ describe("quotaDayKey", () => {
     });
     expect(stale.remaining).toBe(1000);
     expect(stale.allowed).toBe(true);
+  });
+});
+
+describe("checkBurstLimit — DB-outage fallback", () => {
+  beforeEach(() => {
+    upsert.mockReset();
+    // Pin the clock INSIDE one 60s window so the module's per-window cache
+    // can't expire between the warm-up and the assertion.
+    jest.useFakeTimers().setSystemTime(new Date("2026-11-06T12:00:30.000Z"));
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("cold cache + DB error admits the request (in-memory window takes over)", async () => {
+    // LIVE-VALIDATED failure (2026-11-06): DB down + cold cache returned
+    // false → 429 on EVERY server-lane browser op, so during a database
+    // outage the agent's browser tools read as "broken" instead of merely
+    // degraded. The per-process window (below) is still enforced.
+    upsert.mockRejectedValue(new Error("Can't reach database server"));
+    await expect(checkBurstLimit("burst-cold-outage")).resolves.toBe(true);
+  });
+
+  it("DB working → in-window admission, and the count is enforced", async () => {
+    upsert.mockResolvedValue({ count: 1 });
+    await expect(checkBurstLimit("burst-db-ok")).resolves.toBe(true);
+  });
+
+  it("DB error with warm cache consumption still honors the cap", async () => {
+    upsert.mockResolvedValue({ count: 1 });
+    // Warm the window to the cap with a live DB, then cut the DB.
+    for (let i = 0; i < 10; i++) {
+      upsert.mockResolvedValue({ count: i + 1 });
+      await checkBurstLimit("burst-warm-cap");
+    }
+    upsert.mockRejectedValue(new Error("Can't reach database server"));
+    // cache was set by the DB path (count reset to row counts 1..10) — at the
+    // cap the next call must be denied even with the DB down.
+    await expect(checkBurstLimit("burst-warm-cap")).resolves.toBe(false);
   });
 });

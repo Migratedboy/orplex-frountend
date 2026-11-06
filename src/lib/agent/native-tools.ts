@@ -28,6 +28,7 @@ import { parseEditOp, EDIT_OPS_TOOL_NAME } from "../reliability/edit-ops";
 import { assertSafeWrite } from "../reliability/path-jail";
 import { tryMcpDispatch } from "./mcp-lane";
 import { runBrowserLane, attachScreenshot } from "./browser-lane";
+import { BROWSER_VERIFY_PORT } from "../ui-paths";
 
 // NOTE: this file runs on BOTH lanes — the browser worker and the server
 // executor — so origin resolution cannot be a single constant. It previously
@@ -1505,7 +1506,13 @@ export async function dispatchToolCall(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           devCommand: call.dev_command,
-          port: call.port,
+          // DEFAULT: the dedicated verification port (4310), never 5000 — 5000
+          // is Orplex's OWN UI server in the desktop app, so the spawned dev
+          // server either died with EADDRINUSE or waitForServer "succeeded"
+          // instantly against Orplex itself. The auto-verify lane already
+          // used 4310 via ui-paths.BROWSER_VERIFY_PORT (uncommon; skipped if
+          // occupied); the model-facing tool must land on the same port.
+          port: typeof call.port === "number" ? call.port : BROWSER_VERIFY_PORT,
           path: call.path || "/",
           interactions: Array.isArray(call.interactions) ? call.interactions : [],
         }),

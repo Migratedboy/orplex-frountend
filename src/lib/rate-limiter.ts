@@ -98,19 +98,20 @@ export async function checkBurstLimit(userId: string): Promise<boolean> {
     cache.set(key, { count: row.count, expiresAt: expiresAt.getTime() });
     return row.count <= BURST_LIMIT;
   } catch {
-    // Fail closed on DB error: burst protection must not evaporate exactly
-    // when the DB is stressed. Fall back to the in-memory count if present,
-    // otherwise deny (429) so abuse can't ride an outage.
-    console.error("[rate-limiter] DB error in checkBurstLimit — failing closed");
+    // DB error fallback: keep burst protection alive but stop hard-denying
+    // on a cold cache. Previously a cold cache on DB error returned false →
+    // 429 on EVERY op (e.g. the server browser fallback during a DB outage),
+    // so the agent read a dead database as "browser tools don't work".
+    // The per-process in-memory window is still incremented, so abuse
+    // protection survives the outage — it just loses cross-process accuracy.
+    console.error("[rate-limiter] DB error in checkBurstLimit — falling back to in-memory window");
     const cachedFallback = cache.get(key);
     if (cachedFallback && now <= cachedFallback.expiresAt) {
-      // Must CONSUME the slot, not just read it: returning the cached count
-      // without incrementing let every request in the window through during a
-      // DB outage — the limiter was fully open precisely when it was needed.
       cachedFallback.count += 1;
       return cachedFallback.count <= BURST_LIMIT;
     }
-    return false;
+    cache.set(key, { count: 1, expiresAt: expiresAt.getTime() });
+    return true;
   }
 }
 

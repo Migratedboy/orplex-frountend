@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
 import { withVerifySlot } from "@/lib/server-executor/verify-gate";
 import { publicErrorMessage } from "@/lib/errors";
+import { BROWSER_VERIFY_PORT } from "@/lib/ui-paths";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +33,11 @@ export async function POST(request: NextRequest) {
     // caller's own workspace when one is registered (see containment check).
     workDir: requestedWorkDir,
     devCommand = "npm run dev",
-    port = 5000,
+    // Dedicated verification port (4310) — NOT 5000, which is Orplex's own UI
+    // server in the desktop app (a spawned dev server there dies with
+    // EADDRINUSE, or the readiness probe silently "passes" against Orplex
+    // itself and verifies the wrong app).
+    port = BROWSER_VERIFY_PORT,
     path: pagePath = "/",
     width = 1280,
     height = 720,
@@ -95,97 +100,114 @@ export async function POST(request: NextRequest) {
     // under an "ad-hoc" run + browser task so screenshots/timelines land in
     // the ArtifactPanel (which renders task-level artifacts) and can carry
     // pinned annotations.
+    // ALL persistence below is BEST-EFFORT: it must never turn a completed
+    // verification into a 5xx. LIVE-VALIDATED failure (2026-11-06 dev box):
+    // the local Postgres was unreachable, prisma.agentRun.create threw, the
+    // outer catch returned 500 "infrastructure-failure", and the agent read
+    // its own SUCCESSFUL verification as if the harness had crashed —
+    // "couldn't verify" on every single verify_app call. Artifact/ledger
+    // loss during a DB outage is acceptable; verdict loss is not.
     let effectiveRunId = runId;
     let effectiveTaskId: string | undefined = undefined;
-    if (!effectiveRunId) {
-      const run = await prisma.agentRun.create({
-        data: {
-          userId: session.user.id,
-          prompt: `Browser verification: ${pagePath}`,
-          status: result.success ? "done" : "failed",
-          workspace: workDir,
-          executionTarget: "server",
-          completedAt: new Date(),
-          verifyResult: {
-            success: result.success,
-            consoleErrors: result.consoleErrors.length,
-            durationMs: result.durationMs,
-          },
-          tasks: {
-            create: {
-              role: "browser",
-              title: `Verify ${pagePath} — ${result.success ? "PASS" : "FAIL"}`,
-              status: result.success ? "done" : "failed",
-              input: { pagePath, devCommand, port },
-              output: {
-                success: result.success,
-                consoleErrors: result.consoleErrors.length,
-                consoleWarnings: result.consoleWarnings.length,
-                durationMs: result.durationMs,
+    try {
+      if (!effectiveRunId) {
+        const run = await prisma.agentRun.create({
+          data: {
+            userId: session.user.id,
+            prompt: `Browser verification: ${pagePath}`,
+            status: result.success ? "done" : "failed",
+            workspace: workDir,
+            executionTarget: "server",
+            completedAt: new Date(),
+            verifyResult: {
+              success: result.success,
+              consoleErrors: result.consoleErrors.length,
+              durationMs: result.durationMs,
+            },
+            tasks: {
+              create: {
+                role: "browser",
+                title: `Verify ${pagePath} — ${result.success ? "PASS" : "FAIL"}`,
+                status: result.success ? "done" : "failed",
+                input: { pagePath, devCommand, port },
+                output: {
+                  success: result.success,
+                  consoleErrors: result.consoleErrors.length,
+                  consoleWarnings: result.consoleWarnings.length,
+                  durationMs: result.durationMs,
+                },
+                startedAt: new Date(Date.now() - result.durationMs),
+                completedAt: new Date(),
               },
-              startedAt: new Date(Date.now() - result.durationMs),
-              completedAt: new Date(),
             },
           },
-        },
-        include: { tasks: true },
-      });
-      effectiveRunId = run.id;
-      effectiveTaskId = run.tasks[0]?.id;
-    }
+          include: { tasks: true },
+        });
+        effectiveRunId = run.id;
+        effectiveTaskId = run.tasks[0]?.id;
+      }
 
-    // Save artifacts to the database
-    if (effectiveRunId && result.artifacts.length > 0) {
-      const run = await prisma.agentRun.findFirst({
-        where: { id: effectiveRunId, userId: session.user.id },
-      });
+      // Save artifacts to the database
+      if (effectiveRunId && result.artifacts.length > 0) {
+        const run = await prisma.agentRun.findFirst({
+          where: { id: effectiveRunId, userId: session.user.id },
+        });
 
-      if (run) {
-        for (const artifact of result.artifacts) {
-          await prisma.agentArtifact.create({
+        if (run) {
+          for (const artifact of result.artifacts) {
+            await prisma.agentArtifact.create({
+              data: {
+                runId: effectiveRunId,
+                ...(effectiveTaskId ? { taskId: effectiveTaskId } : {}),
+                kind: artifact.kind,
+                name: artifact.name,
+                mediaType: artifact.mediaType,
+                content: artifact.content,
+              },
+            });
+          }
+
+          // Emit a verification event
+          const maxSeq =
+            (
+              await prisma.runEvent.findFirst({
+                where: { runId: effectiveRunId },
+                orderBy: { sequence: "desc" },
+                select: { sequence: true },
+              })
+            )?.sequence ?? -1;
+
+          await prisma.runEvent.create({
             data: {
+              // effectiveRunId: ad-hoc runs (no client runId) get their own run
+              // row — the event must attach there, not to the empty original.
               runId: effectiveRunId,
-              ...(effectiveTaskId ? { taskId: effectiveTaskId } : {}),
-              kind: artifact.kind,
-              name: artifact.name,
-              mediaType: artifact.mediaType,
-              content: artifact.content,
+              sequence: maxSeq + 1,
+              type: "verification",
+              payload: {
+                success: result.success,
+                errors: result.consoleErrors.length,
+                warnings: result.consoleWarnings.length,
+                duration: result.durationMs,
+              },
             },
           });
         }
-
-        // Emit a verification event
-        const maxSeq =
-          (
-            await prisma.runEvent.findFirst({
-              where: { runId: effectiveRunId },
-              orderBy: { sequence: "desc" },
-              select: { sequence: true },
-            })
-          )?.sequence ?? -1;
-
-        await prisma.runEvent.create({
-          data: {
-            // effectiveRunId: ad-hoc runs (no client runId) get their own run
-            // row — the event must attach there, not to the empty original.
-            runId: effectiveRunId,
-            sequence: maxSeq + 1,
-            type: "verification",
-            payload: {
-              success: result.success,
-              errors: result.consoleErrors.length,
-              warnings: result.consoleWarnings.length,
-              duration: result.durationMs,
-            },
-          },
-        });
       }
+    } catch (persistErr) {
+      // DB unreachable — log it, keep the verdict flowing. Never 500 here.
+      console.warn(
+        "[verify] persistence failed (artifacts/ledger not saved for this read):",
+        persistErr instanceof Error ? persistErr.message : persistErr
+      );
     }
 
     return NextResponse.json({
       success: true,
       // Caller can use this to correlate comments/annotations with the run
-      runId: effectiveRunId,
+      // (absent when persistence itself failed — check server logs for the
+      // "[verify] persistence failed" warn).
+      ...(effectiveRunId ? { runId: effectiveRunId } : {}),
       result: {
         ...result,
         // Don't return raw buffers

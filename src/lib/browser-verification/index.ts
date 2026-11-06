@@ -17,6 +17,7 @@ import { randomBytes } from "crypto";
 import { mkdir, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { join } from "path";
+import { BROWSER_VERIFY_PORT } from "../ui-paths";
 
 // === Types ===
 
@@ -504,7 +505,10 @@ export async function verifyUI(
 ): Promise<VerifyResult> {
   const startTime = Date.now();
   const workDir = options.workDir;
-  const port = options.port || 5000;
+  // Default = the dedicated verify port (ui-paths). NEVER 5000: that is
+  // Orplex's own UI server in the desktop app — the harness would clash with
+  // it (EADDRINUSE) or probe Orplex itself and "verify" the wrong app.
+  const port = options.port || BROWSER_VERIFY_PORT;
   const devCommand = options.devCommand || "npm run dev";
   const pagePath = options.path || "/";
   const startupTimeout = options.startupTimeout || 30000;
@@ -756,7 +760,7 @@ export async function verifyUI(
 
 export async function quickVerify(
   workDir: string,
-  port: number = 5000,
+  port: number = BROWSER_VERIFY_PORT,
   devCommand: string = "npm run dev"
 ): Promise<{
   serverStarted: boolean;

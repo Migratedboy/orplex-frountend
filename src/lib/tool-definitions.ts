@@ -410,7 +410,7 @@ export const M3_TOOL_DEFINITIONS = [
         properties: {
           path: { type: "string", description: "Page path to verify, e.g. \"/\" or \"/about\" (default \"/\")" },
           dev_command: { type: "string", description: "Dev server start command, e.g. \"npm run dev\" (default)" },
-          port: { type: "number", description: "Port to start/serve the app on (default 5000)" },
+          port: { type: "number", description: "Port to start/serve the app on (default 4310 — a dedicated verify port; 5000 is the Orplex UI itself in the desktop app)" },
           interactions: {
             type: "array",
             description: "Optional interactions to perform before the screenshot (click buttons, fill forms)",
