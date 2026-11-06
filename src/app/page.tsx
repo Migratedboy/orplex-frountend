@@ -268,6 +268,7 @@ export default function ChatPage() {
           loading={session.loading}
           agentRunning={session.agentRunning}
           isStreaming={session.isStreaming}
+          turnActive={session.turnActive}
           agentMode={agentMode}
           onModeChange={setAgentMode}
           conversationId={session.conversationId}

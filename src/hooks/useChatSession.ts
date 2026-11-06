@@ -968,6 +968,18 @@ setRunLabel("No response — run stopped");
     },
     agentEvents,
     agentRunning: (bgTask?.status === "streaming" || bgTask?.status === "tool_executing"),
+    // A turn is active whenever ANY background task is mid-flight — including
+    // the paused states (awaiting_approval / waiting_for_input) that
+    // agentRunning deliberately ignores (the composer must stay typeable to
+    // answer them). The follow-up chips gate on THIS, not isWorking, so they
+    // can never regenerate mid-run just because a pause made isWorking blink.
+    turnActive:
+      thinking ||
+      streaming ||
+      bgTask?.status === "streaming" ||
+      bgTask?.status === "tool_executing" ||
+      bgTask?.status === "awaiting_approval" ||
+      bgTask?.status === "waiting_for_input",
     isStreaming: streaming || thinking,
     // Per-turn run state for the tail indicator + composer Stop note.
     runPhase,

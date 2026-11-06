@@ -26,6 +26,14 @@ interface ChatInputProps {
   loading: boolean;
   agentRunning: boolean;
   isStreaming?: boolean;
+  /**
+   * True for the WHOLE turn — streaming, tool running, AND the paused states
+   * (awaiting_approval / waiting_for_input) where the composer stays typeable
+   * and isWorking therefore blinks false. The follow-up chips generate ONLY on
+   * this signal's true→false edge (the AI's response fully complete), never on
+   * an isWorking flicker mid-run. Falls back to isWorking when absent.
+   */
+  turnActive?: boolean;
   agentMode: AgentMode;
   onModeChange: (mode: AgentMode) => void;
   onFastAnswer?: (userMessage: string) => void;
@@ -146,7 +154,7 @@ function savePickers(conversationId: string | null | undefined, state: PickerSta
  */
 export const droppedFilesBridge: { add: ((files: AttachedFile[]) => void) | null } = { add: null };
 
-export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, failedModels, clearFailedModels, onRetryModelSwap, stopped = false }: ChatInputProps) {
+export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, turnActive, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, failedModels, clearFailedModels, onRetryModelSwap, stopped = false }: ChatInputProps) {
   const files = useFileProcessor();
   // Publish the attach bridge (page-level drag-and-drop) and release it on unmount.
   useEffect(() => {
@@ -245,15 +253,21 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   }, [conversationId]);
 
   const isWorking = loading || agentRunning || busy;
+  // The chips + bar live on the TURN lifecycle, not the composer's: awaited
+  // approvals pause the run without ending the turn, and isWorking blinks
+  // false during them (the composer stays typeable on purpose). turnActive
+  // covers every active task state, so its true→false edge can only mean the
+  // AI's response is fully complete.
+  const turnLive = turnActive ?? isWorking;
 
-  // Message just finished (working true→false): refresh the AI chips. The busy
+  // Turn just ended (turnActive true→false): refresh the AI chips. The busy
   // ref inside fetchSuggestions collapses concurrent edges.
-  const prevWorkingRef = useRef(isWorking);
+  const prevTurnRef = useRef(turnLive);
   useEffect(() => {
-    const was = prevWorkingRef.current;
-    prevWorkingRef.current = isWorking;
-    if (was && !isWorking) void fetchSuggestions();
-  }, [isWorking, fetchSuggestions]);
+    const was = prevTurnRef.current;
+    prevTurnRef.current = turnLive;
+    if (was && !turnLive) void fetchSuggestions();
+  }, [turnLive, fetchSuggestions]);
 
   const handleSkillSelected = useCallback((skill: Skill) => {
     const prefix = `${skill.promptPrefix}\n\n`;
@@ -481,7 +495,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             document.querySelector<HTMLTextAreaElement>(".prompt-bar__input")?.focus();
           }}
           hasFiles={files.hasFiles}
-          isRunning={isWorking}
+          isRunning={turnLive}
           suggestions={aiSuggestions}
           loadingSuggestions={aiSuggestionsLoading}
         />
