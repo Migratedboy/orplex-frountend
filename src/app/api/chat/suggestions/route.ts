@@ -7,7 +7,7 @@
 import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
-import { fastCompletion, type FastProviderConfig } from "@/lib/fast-provider";
+import { fastCompletion, rankBySpeed, type FastProviderConfig } from "@/lib/fast-provider";
 import { getProviderConfigs } from "@/lib/chat-middleware";
 
 export const dynamic = "force-dynamic";
@@ -63,21 +63,24 @@ export async function POST(request: NextRequest) {
     // Env fast keys first, then the CALLER's own working lanes (BYOK keys are
     // stored per-user in the DB — LIVE failure 2026-11-06: every env fast key
     // in the dev .env was dead while the user's in-app keys kept the chat
-    // alive, and the chips silently stayed static forever).
+    // alive, and the chips silently stayed static forever). rankBySpeed keeps
+    // the fallback FAST: flash-class models before heavyweights.
     let extras: FastProviderConfig[] = [];
     try {
       const configs = await getProviderConfigs(session.user.id);
-      extras = configs
-        .filter((c) => c.apiKey)
-        .slice(0, 3)
-        .map((c) => ({
-          name: c.name,
-          url: c.url,
-          apiKey: c.apiKey,
-          model: c.model,
-          extraHeaders: c.extraHeaders,
-          authStyle: c.authStyle,
-        }));
+      extras = rankBySpeed(
+        configs
+          .filter((c) => c.apiKey)
+          .slice(0, 3)
+          .map((c) => ({
+            name: c.name,
+            url: c.url,
+            apiKey: c.apiKey,
+            model: c.model,
+            extraHeaders: c.extraHeaders,
+            authStyle: c.authStyle,
+          }))
+      );
     } catch {
       /* user lane unavailable — env-only ladder */
     }

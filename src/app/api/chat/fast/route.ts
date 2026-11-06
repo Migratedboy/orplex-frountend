@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
 import { sseTransform } from "@/lib/ai-providers";
-import { getFastProviders, type FastProviderConfig } from "@/lib/fast-provider";
+import { getFastProviders, rankBySpeed, type FastProviderConfig } from "@/lib/fast-provider";
 import { getProviderConfigs } from "@/lib/chat-middleware";
 
 const FAST_SYSTEM_PROMPT = `You are a fast, concise assistant. Answer the user's question directly and briefly. No tools, no code blocks unless asked. Keep responses under 200 words.`;
@@ -11,24 +11,27 @@ const FAST_SYSTEM_PROMPT = `You are a fast, concise assistant. Answer the user's
  * Fast-lane candidates: env fast keys first, then the CALLER's own configured
  * providers (BYOK). LIVE failure 2026-11-06: every env key in the dev .env
  * answered 401 while the user's in-app keys kept the chat alive — a single
- * dead env key used to kill the fast lane entirely. Ladder order fixes that.
+ * dead env key used to kill the fast lane entirely. Ladder order fixes that;
+ * rankBySpeed keeps the fallback flash-first so answers stay sub-second.
  */
 async function fastCandidates(userId: string): Promise<FastProviderConfig[]> {
   const envFast = getFastProviders().filter((p) => p.apiKey);
   let extras: FastProviderConfig[] = [];
   try {
     const configs = await getProviderConfigs(userId);
-    extras = configs
-      .filter((c) => c.apiKey)
-      .slice(0, 3)
-      .map((c) => ({
-        name: c.name,
-        url: c.url,
-        apiKey: c.apiKey,
-        model: c.model,
-        extraHeaders: c.extraHeaders,
-        authStyle: c.authStyle,
-      }));
+    extras = rankBySpeed(
+      configs
+        .filter((c) => c.apiKey)
+        .slice(0, 3)
+        .map((c) => ({
+          name: c.name,
+          url: c.url,
+          apiKey: c.apiKey,
+          model: c.model,
+          extraHeaders: c.extraHeaders,
+          authStyle: c.authStyle,
+        }))
+    );
   } catch {
     /* user lane unavailable — env-only ladder */
   }

@@ -54,6 +54,31 @@ export function getFastProvider(): FastProviderConfig | null {
   return getFastProviders()[0] || null;
 }
 
+// Speed hints for the LADDER's fallback order. When the env fast keys are
+// dead and the caller's own lanes trail in, the chips must still snap:
+// a flash-class model (Gemini Flash, GPT-oss-20b, nemotron-flash…) answers a
+// 160-token call in under a second, while a heavyweight reasoning model can
+// take 10s+ — long enough that the user starts typing before the chips show.
+const FAST_MODEL_HINT =
+  /(flash|flash.?lite|instant|\bmini\b|nano|\blite\b|small|\b8b\b|\b3b\b|\b7b\b|oss-20b|haiku|turbo|nemotron)/i;
+const FAST_ENDPOINT_HINT = /(groq|cerebras|fireworks|sambanova|nvidia|together)/i;
+
+function speedScore(p: FastProviderConfig): number {
+  const hay = `${p.name || ""} ${p.model || ""} ${p.url || ""}`;
+  let score = 0;
+  if (FAST_MODEL_HINT.test(hay)) score += 2;
+  if (FAST_ENDPOINT_HINT.test(hay)) score += 1;
+  return score;
+}
+
+/** Stable-reorder: fast-model candidates first (equal scores keep order). */
+export function rankBySpeed(candidates: FastProviderConfig[]): FastProviderConfig[] {
+  return candidates
+    .map((c, i) => ({ c, i, s: speedScore(c) }))
+    .sort((a, b) => (b.s - a.s) || (a.i - b.i))
+    .map((x) => x.c);
+}
+
 function authHeaders(p: FastProviderConfig): Record<string, string> {
   if (p.authStyle === "x-api-key") {
     return { "x-api-key": p.apiKey };

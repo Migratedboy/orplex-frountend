@@ -10,7 +10,7 @@
  * cannot kill the feature, and extras (the user's own lanes) trail in.
  */
 
-import { fastCompletion, getFastProviders } from "../fast-provider";
+import { fastCompletion, getFastProviders, rankBySpeed } from "../fast-provider";
 
 const textBody = (content: string) =>
   new Response(
@@ -81,5 +81,16 @@ describe("fastCommand ladder", () => {
     process.env.NVIDIA_API_KEY = "n";
     const list = getFastProviders();
     expect(list.map((p) => p.name)).toEqual(["Groq-Fast", "NVIDIA-Fast"]);
+  });
+
+  it("rankBySpeed puts flash-class models first, equal scores keep order", () => {
+    const ranked = rankBySpeed([
+      { name: "heavy", url: "https://api.example.com/v1", apiKey: "k", model: "o1-reasoning-pro" },
+      { name: "minimax-flash", url: "https://byok.example/v1", apiKey: "k", model: "minimax/m3.1-flash" },
+      { name: "mid", url: "https://api.example.com/v1", apiKey: "k", model: "gpt-4o" },
+      { name: "groq-lane", url: "https://api.groq.com/v1", apiKey: "k", model: "some/custom-model" },
+    ]);
+    // Flash-class (model hint) and Groq-endpoint lanes lead; heavyweights trail.
+    expect(ranked.map((p) => p.name)).toEqual(["minimax-flash", "groq-lane", "heavy", "mid"]);
   });
 });
