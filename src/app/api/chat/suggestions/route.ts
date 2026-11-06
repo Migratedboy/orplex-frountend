@@ -7,7 +7,8 @@
 import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
-import { fastCompletion } from "@/lib/fast-provider";
+import { fastCompletion, type FastProviderConfig } from "@/lib/fast-provider";
+import { getProviderConfigs } from "@/lib/chat-middleware";
 
 export const dynamic = "force-dynamic";
 
@@ -59,7 +60,34 @@ export async function POST(request: NextRequest) {
     // renderer keeps its static chips either way.
     if (messages.length === 0) return Response.json({ suggestions: [] });
 
-    const raw = await fastCompletion(SYSTEM_PROMPT, messages, { maxTokens: 160, temperature: 0.7, timeoutMs: 10_000 });
+    // Env fast keys first, then the CALLER's own working lanes (BYOK keys are
+    // stored per-user in the DB — LIVE failure 2026-11-06: every env fast key
+    // in the dev .env was dead while the user's in-app keys kept the chat
+    // alive, and the chips silently stayed static forever).
+    let extras: FastProviderConfig[] = [];
+    try {
+      const configs = await getProviderConfigs(session.user.id);
+      extras = configs
+        .filter((c) => c.apiKey)
+        .slice(0, 3)
+        .map((c) => ({
+          name: c.name,
+          url: c.url,
+          apiKey: c.apiKey,
+          model: c.model,
+          extraHeaders: c.extraHeaders,
+          authStyle: c.authStyle,
+        }));
+    } catch {
+      /* user lane unavailable — env-only ladder */
+    }
+
+    const raw = await fastCompletion(
+      SYSTEM_PROMPT,
+      messages,
+      { maxTokens: 160, temperature: 0.7, timeoutMs: 10_000 },
+      extras
+    );
     const suggestions = parseSuggestions(raw)
       .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
       .map((s) => s.trim().slice(0, MAX_SUGGESTION_LENGTH));
