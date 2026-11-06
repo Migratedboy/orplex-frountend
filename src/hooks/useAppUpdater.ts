@@ -41,11 +41,12 @@ export function useAppUpdater() {
 
   const check = useCallback(async () => {
     try {
-      await (window as unknown as {
-        orplexDesktop?: { updates?: { check?: () => Promise<unknown> } };
+      return await (window as unknown as {
+        orplexDesktop?: { updates?: { check?: () => Promise<{ state: string; version?: string; error?: string }> } };
       }).orplexDesktop?.updates?.check?.();
     } catch {
       dispatch({ type: "notice", error: "update check failed" });
+      return { state: "error", error: "update check failed" } as const;
     }
   }, []);
 

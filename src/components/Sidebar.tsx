@@ -335,17 +335,25 @@ export default function Sidebar() {
           type="button"
           className="sidebar-signout"
           onClick={() => {
-            // Sign out WITHOUT the built-in redirect, then hard-navigate locally.
-            // The API app's signout handler advertises its own origin as the
-            // post-signout URL (backend NEXTAUTH_URL), so the default redirect
-            // sent the whole window (or the desktop webview) to the CLOUD
-            // domain — that is why the login screen only appeared after a
-            // manual app reload. The cookie is still cleared by the proxied
-            // POST (host-only on this origin), and a full document load then
-            // drops the in-memory session state so /auth/signin renders clean.
+            if (!confirm("Sign out of Orplex Code?")) return;
             // Full reload is deliberate (matches the sign-in page's dev
             // logout): a soft router push would keep the stale session alive.
-            void signOut({ redirect: false }).then(() => {
+            //
+            // Two clears, both best-effort: (1) NextAuth's signOut endpoint
+            // clears the server-managed auth state/callback cookies it owns;
+            // (2) /api/session/clear is a LOCAL route that expires every
+            // session credential on THIS origin, including the desktop
+            // `__Secure-next-auth.session-token` and the Ed25519
+            // `orplex-app-session` that NextAuth doesn't manage. Without (2)
+            // a leftover credential from account A survived sign-out and a
+            // later login resolved as A (readers prefer __Secure-/app-session
+            // — see server-session.ts, proxy.ts, mcp-auth.ts).
+            const clearLocal = fetch("/api/session/clear", {
+              method: "POST",
+              credentials: "same-origin",
+            }).catch(() => {});
+            const clearNextAuth = signOut({ redirect: false }).catch(() => {});
+            void Promise.all([clearLocal, clearNextAuth]).then(() => {
               const next = new URL("/auth/signin", window.location.origin);
               window.location.assign(next.toString());
             });

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { encode } from "next-auth/jwt";
+import { clearAllSessionCookies } from "@/lib/session-cookies";
 
 export const dynamic = "force-dynamic";
 
@@ -46,8 +47,11 @@ export async function GET(request: Request) {
 
   // Log out: expire the dev session cookie so testers can end the dev session
   // and sign in again under a different (real OAuth) identity. The cookie is
-  // httpOnly, so only the server can clear it — mirror the exact attributes
-  // used when the cookie was issued. Reports whether a valid session existed
+  // httpOnly, so only the server can clear it. Clears EVERY session credential
+  // (prefixed/unprefixed NextAuth token + the desktop Ed25519 app session), not
+  // just the unprefixed dev cookie: readers prefer __Secure-/app-session, so a
+  // leftover from a previous desktop login would survive and make the next
+  // sign-in resolve as the old account. Reports whether a valid session existed
   // so the UI can show an accurate confirmation.
   if (action === "logout") {
     let hadSession = false;
@@ -56,13 +60,16 @@ export async function GET(request: Request) {
       const pair = cookieHeader
         .split(";")
         .map((c) => c.trim())
-        .find((c) => c.startsWith(`${SESSION_COOKIE}=`));
+        .find(
+          (c) =>
+            c.startsWith(`${SESSION_COOKIE}=`) ||
+            c.startsWith("__Secure-next-auth.session-token=") ||
+            c.startsWith("orplex-app-session="),
+        );
       if (pair && process.env.NEXTAUTH_SECRET) {
         const { decode } = await import("next-auth/jwt");
-        const token = await decode({
-          token: pair.slice(SESSION_COOKIE.length + 1),
-          secret: process.env.NEXTAUTH_SECRET,
-        });
+        const value = pair.slice(pair.indexOf("=") + 1);
+        const token = await decode({ token: value, secret: process.env.NEXTAUTH_SECRET });
         hadSession = !!token;
       }
     } catch {
@@ -70,14 +77,7 @@ export async function GET(request: Request) {
     }
 
     const response = NextResponse.json({ ok: true, hadSession });
-    response.cookies.set(SESSION_COOKIE, "", {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 0,
-      expires: new Date(0),
-      secure: false,
-    });
+    clearAllSessionCookies(response);
     return response;
   }
 

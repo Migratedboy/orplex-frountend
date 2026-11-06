@@ -126,6 +126,11 @@ export default function SignInPage() {
     setLoading(true);
     setError("");
     try {
+      // /api/dev/* is proxied to the backend in split mode, so also clear every
+      // session credential on THIS origin via the local-only route (covers the
+      // desktop __Secure-next-auth.session-token + orplex-app-session extras
+      // that a backend-only clear cannot touch).
+      await fetch("/api/session/clear", { method: "POST", credentials: "same-origin" }).catch(() => {});
       const res = await fetch("/api/dev/session?action=logout");
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || "dev logout failed");

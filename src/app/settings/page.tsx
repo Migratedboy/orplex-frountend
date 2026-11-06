@@ -31,25 +31,41 @@ function AppVersion() {
 
 function UpdateCheckRow() {
   const [checking, setChecking] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
   const isDesktop = typeof window !== "undefined" && !!(window as unknown as { orplexDesktop?: unknown }).orplexDesktop;
   if (!isDesktop) return null;
   const check = async () => {
     setChecking(true);
+    setMessage(null);
     try {
-      await (window as unknown as {
-        orplexDesktop?: { updates?: { check?: () => Promise<unknown> } };
+      // The manual check returns its outcome; show it here because the
+      // background event path keeps an up-to-date result silent (scheduled
+      // checks must not toast "up to date"). Available/error also surface in
+      // the UpdateToast card.
+      const res = await (window as unknown as {
+        orplexDesktop?: { updates?: { check?: () => Promise<{ state?: string; version?: string; error?: string }> } };
       }).orplexDesktop?.updates?.check?.();
+      if (res?.state === "available" && res.version) {
+        setMessage(`Update v${res.version} found — downloading in the background.`);
+      } else if (res?.error) {
+        setMessage(res.error);
+      } else if (res?.state === "idle") {
+        setMessage("You're up to date.");
+      } else {
+        setMessage("Check finished.");
+      }
     } catch {
-      /* results (or errors) surface in UpdateToast */
+      setMessage("Update check failed.");
     } finally {
       setChecking(false);
     }
   };
   return (
-    <div className="settings-actions" style={{ marginTop: 12 }}>
+    <div className="settings-actions" style={{ marginTop: 12, flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
       <button onClick={check} disabled={checking} className="settings-save-btn">
         {checking ? "Checking..." : "Check for updates"}
       </button>
+      {message ? <p className="settings-hint" style={{ margin: 0 }}>{message}</p> : null}
     </div>
   );
 }

@@ -7,7 +7,9 @@
 // JSON 503 (x-orplex-offline) instead of a plain-text 500 — that is what the
 // next-auth client can parse without blowing up as CLIENT_FETCH_ERROR.
 // The frontend owns zero API routes and never does CORS/CSRF — that is the
-// backend proxy's job.
+// backend proxy's job. Routes this process answers itself (LOCAL_ONLY, plus all
+// of /api/* when no backend origin is set) are covered by the same-origin gate
+// in src/lib/same-origin.ts — see proxy-origin-guard.test.ts.
 
 // Module scope: without any import/export this file is a global script and its
 // top-level names collide with proxy-cors.test.ts (TS2451). This export

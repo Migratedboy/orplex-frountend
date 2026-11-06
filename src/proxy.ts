@@ -1,23 +1,38 @@
-// proxy.ts — FRONTEND gatekeeper (physical split: UI-only app).
+// proxy.ts — Edge gatekeeper: page auth, API forwarding, CSP, same-origin gate.
 //
-// The frontend owns ZERO API routes. Everything under /api/* used to live
-// here; it now runs in the backend app (backend/src/app/api). This proxy:
-//  1. Rewrites /api/auth/* to the backend origin so the browser keeps using
-//     same-origin next-auth URLs (no CORS on the OAuth dance) while the real
-//     handlers run on the API app.
-//  2. Runs page-route Edge auth: redirect to /auth/signin when no session
+// Two deployment modes share this file, which is why the rules below are
+// stricter than "everything is forwarded":
+//
+//  • SPLIT MODE (ORPLEX_API_URL / NEXT_PUBLIC_API_BASE_URL set — the desktop
+//    app against the hosted backend): /api/* is rewritten to the backend
+//    origin so the browser keeps using same-origin next-auth URLs (no CORS on
+//    the OAuth dance) while the real handlers run on the API app. The BACKEND
+//    owns CORS + CSRF for those forwarded routes.
+//
+//  • SELF-HOSTED MODE (no backend origin — Docker, `next dev`, plain
+//    `next start`): nothing is forwarded, so this proxy serves src/app/api
+//    itself. Those routes therefore get the same-origin gate and the CSP
+//    below, because no backend middleware is in the path to provide them.
+//
+// The LOCAL_ONLY routes further down are served by this process in BOTH modes,
+// so they always pass through the same-origin gate.
+//
+//  1. Runs page-route Edge auth: redirect to /auth/signin when no session
 //     token cookie is present (static assets and auth pages excluded).
+//  2. Refuses cross-origin state-changing requests to routes it serves itself
+//     (src/lib/same-origin.ts).
+//  3. Sets the app's ONLY Content-Security-Policy (src/lib/csp.ts) plus the
+//     request-ID/timing headers.
 //  The sign-in PAGE is a frontend page (src/app/auth/signin) — all UI/UX
-//  renders here per the split architecture.
-//
-// The BACKEND owns CORS + CSRF (see backend/src/proxy.ts) — a split UI has no
-// same-origin API traffic left to protect.
+// renders here per the split architecture.
 
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 import { appSessionUserFromRequest } from "@/lib/app-session";
 import { meetsMinimum } from "@/lib/app-version";
+import { buildCsp } from "@/lib/csp";
+import { isSameOriginRequest, isStateChangingMethod } from "@/lib/same-origin";
 
 // Simple request ID generation - Edge Runtime compatible (no Node.js modules)
 function generateRequestId(): string {
@@ -63,6 +78,13 @@ const LOCAL_ONLY_API_ROUTES = [
   // serverless backend cannot hold module state between the create and the
   // download. Forwarding would also 404: the backend has no such route.
   "/api/files",
+  // Complete sign-out: expires every session credential on THIS origin
+  // (NextAuth prefixed+unprefixed tokens AND the desktop Ed25519 app session).
+  // Lives outside /api/auth/* and /api/dev/* because those prefixes are proxied
+  // to the backend, which cannot clear cookies scoped to the app origin's extra
+  // names. Must run locally so account A's leftover credentials are actually
+  // dropped before account B signs in.
+  "/api/session/clear",
   // Conversations: top-level list/create. Children (rename/delete/fork,
   // migrate-from-cloud) are covered by the /api/conversations/ prefix below.
   "/api/conversations",
@@ -248,16 +270,34 @@ if (
     }
   }
 
-  // ALL /api/* traffic forwards to the backend origin: the browser stays
-  // same-origin (cookies first-party on the UI origin, zero CORS), while the
-  // real handlers run in the cloud backend. Covers next-auth (/api/auth/*),
-  // the dev-session helper (/api/dev/*) and every data route in one rule.
+  // ALL /api/* traffic that this app does not answer itself forwards to the
+  // backend origin: the browser stays same-origin (cookies first-party on the
+  // UI origin, zero CORS), while the real handlers run in the cloud backend.
+  // Covers next-auth (/api/auth/*), the dev-session helper (/api/dev/*) and
+  // every data route in one rule.
   const origin = backendOrigin();
+  const isApiPath = request.nextUrl.pathname.startsWith("/api/");
+  const isLocalOnly = isLocalOnlyApi(request.nextUrl.pathname, request.nextUrl.searchParams);
+  const willForward = !!origin && isApiPath && !isLocalOnly;
+
+  // Same-origin gate for every mutation THIS process answers: the LOCAL_ONLY
+  // routes in both modes, plus all /api/* when there is no backend origin to
+  // take them. A forwarded route keeps the backend's own CSRF middleware —
+  // adding a second gate there would only risk breaking form-encoded
+  // next-auth flows (see BACKEND_CSRF_FIX_PROMPT.md for that failure mode).
   if (
-    origin &&
-    request.nextUrl.pathname.startsWith("/api/") &&
-    !isLocalOnlyApi(request.nextUrl.pathname, request.nextUrl.searchParams)
+    !willForward &&
+    isApiPath &&
+    isStateChangingMethod(request.method) &&
+    !isSameOriginRequest(request)
   ) {
+    return NextResponse.json(
+      { error: "Cross-origin request refused", code: "origin_mismatch" },
+      { status: 403 },
+    );
+  }
+
+  if (willForward) {
     const backendUrl = new URL(request.nextUrl.pathname + request.nextUrl.search, origin);
     const headers = new Headers(request.headers);
     headers.set("x-request-id", requestId);
@@ -326,28 +366,19 @@ if (
   response.headers.set("X-Request-ID", requestId);
   response.headers.set("X-Response-Time", new Date().toISOString());
 
-  // Content-Security-Policy — connect-src explicitly includes the split-API
-  // origin when configured (blanket https: stays for provider-side lanes).
-  const apiBase = backendOrigin();
+  // The app's ONLY Content-Security-Policy. It lives in src/lib/csp.ts so this
+  // response can never carry a second, contradicting policy again (a static
+  // one in next.config.js was enforced as an intersection with this one).
+  //
+  // connect-src must name the origin the BROWSER calls. Here those are not
+  // always the same value: forwarding prefers the runtime ORPLEX_API_URL,
+  // while the browser uses whatever NEXT_PUBLIC_API_BASE_URL api-base.ts
+  // inlined at BUILD time. Both go in — if only one were named, the deployment
+  // where they differ would block every API call from the renderer.
   const isProd = process.env.NODE_ENV === "production";
   response.headers.set(
     "Content-Security-Policy",
-    [
-      "default-src 'self'",
-      // unsafe-eval is a Next.js dev requirement — never ship it in production.
-      isProd ? "script-src 'self' 'unsafe-inline'" : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-      "style-src 'self' 'unsafe-inline'", // Tailwind requires unsafe-inline
-      "img-src 'self' data: blob: https:",
-      "font-src 'self' data:",
-      apiBase
-        ? `connect-src 'self' ${apiBase} https: wss:` // split API + WebSocket/streaming
-        : "connect-src 'self' https: wss:",
-      // localhost frames are a dev/preview requirement — production gets https only.
-      isProd ? "frame-src 'self' https:" : "frame-src 'self' https: http://localhost:* http://127.0.0.1:*",
-      "frame-ancestors 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-    ].join('; ')
+    buildCsp({ isProd, apiOrigins: [origin, process.env.NEXT_PUBLIC_API_BASE_URL] }),
   );
 
   return response;

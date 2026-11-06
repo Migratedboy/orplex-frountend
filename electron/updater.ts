@@ -174,7 +174,12 @@ function notesToText(raw: unknown): string | undefined {
 
 /** Check now (manual from menu/Settings, or the boot/interval schedule). */
 export async function checkForUpdates(getWindow: WindowGetter): Promise<UpdateStatus> {
-  if (!isPackagedRuntime()) return { state: "idle" };
+  if (!isPackagedRuntime()) {
+    // Dev/unpackaged builds have no published update metadata to check. Tell
+    // the manual caller why (Settings shows it) — the boot schedule never
+    // reaches here because startUpdateSchedule() bails on !isPackagedRuntime().
+    return { state: "idle", error: "Update checks run only in the installed app." };
+  }
   try {
     sendStatus(getWindow, { state: "checking" });
     const au = await updater();
@@ -258,8 +263,9 @@ export async function downloadUpdate(getWindow: WindowGetter): Promise<UpdateSta
       sendStatus(getWindow, idle);
       return idle;
     }
-    const done: UpdateStatus = { state: "downloaded", version: pendingVersion };
+    const version = pendingVersion;
     pendingVersion = undefined;
+    const done: UpdateStatus = { state: "downloaded", version };
     sendStatus(getWindow, done);
     return done;
   } catch (err) {

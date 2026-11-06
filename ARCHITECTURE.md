@@ -695,7 +695,12 @@ Added in Phases 0–7 (see `docs/reliability/AUDIT.md`, `PHASE-0.md`,
   `{error, minVersion, updateRequired: true}` when
   `MIN_SUPPORTED_APP_VERSION` is set and the request lacks or fails
   `X-Orplex-App-Version` (browser-UA requests exempt) — the update card
-  turns mandatory. The BACKEND owns CORS + CSRF.
+  turns mandatory. The BACKEND owns CORS + CSRF **for forwarded routes**. The
+  routes this process answers itself — the LOCAL_ONLY set in every mode, plus
+  all of `/api/*` when no backend origin is configured — never reach that
+  middleware, so they pass the same-origin gate in `same-origin.ts` (a
+  cross-origin state-changing request is a **403**), and the app sets exactly
+  one CSP, built in `csp.ts` (no static policy in `next.config.js`).
 
 ## 18. UI Surface (every panel & page)
 
