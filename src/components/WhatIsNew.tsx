@@ -182,6 +182,17 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Catalog audit passes: 32/32 remote endpoints verified, catalog version bumped to 1.2.0",
     ],
   },
+  "1.2.1": {
+    title: "The agent verifies its work — even offline",
+    items: [
+      "Fixed: asking the agent to rate, review or analyze your project no longer turns quoted code into generated files — you get the answer, code and all",
+      "Fixed: app verification runs on a dedicated port, so the agent verifies YOUR app — not the Orplex window it lives in",
+      "Verification survives a database outage — a Postgres that is not running can no longer bury a working PASS/FAIL report under “harness failed”",
+      "Verification runs, screenshots and timeline are mirrored to a local file on your device while the database is offline — nothing is lost",
+      "Browser tools no longer get rate-blocked exactly when the database is down",
+      "Light mode renders the thought / tool list exactly like dark mode — same glass, same contrast in both themes",
+    ],
+  },
 };
 
 /** "1.0.9" < "1.0.10" < "1.1.0" — plain numeric segment compare. */
