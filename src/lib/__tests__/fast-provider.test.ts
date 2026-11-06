@@ -66,6 +66,28 @@ describe("fastCommand ladder", () => {
     expect(out).toBe("Suggested next steps.");
   });
 
+  it("user's own lane LEADS over the built-in env keys (priority rule)", async () => {
+    process.env.GROQ_API_KEY = "live-env-key";
+    const order: string[] = [];
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const auth = (init?.headers as Record<string, string>)?.Authorization || "";
+      order.push(url.includes("api.groq.com") ? "env" : auth.endsWith("live-byok") ? "byok" : "other");
+      if (url.includes("api.groq.com")) return textBody("from-env");
+      return textBody("from-byok");
+    }) as typeof fetch;
+
+    const out = await fastCompletion(
+      "system",
+      [{ role: "user", content: "hi" }],
+      undefined,
+      [{ name: "minimax-personal", url: "https://byok.example/chat/completions", apiKey: "live-byok", model: "minimax/m3.1-flash" }]
+    );
+    // The chips must burn the USER's key, not the app's — user lane first.
+    expect(out).toBe("from-byok");
+    expect(order[0]).toBe("byok");
+  });
+
   it("all candidates dead → null (never throws)", async () => {
     process.env.GROQ_API_KEY = "dead-key";
     global.fetch = (async () =>

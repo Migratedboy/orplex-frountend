@@ -129,10 +129,11 @@ async function oneFastCall(
 }
 
 /**
- * Laddered fast completion: try each configured provider in order; the first
- * real answer wins. `extraConfigs` (the caller's own working lanes, e.g. the
- * user's BYOK providers) trail the env fast keys. All-dead → null + one warn,
- * so a silently-dead feature is diagnosable from the server log.
+ * Laddered fast completion. PRIORITY RULE: the CALLER'S OWN lanes (the user's
+ * in-app BYOK keys) lead whenever they exist — the app's built-in env fast
+ * keys are the FALLBACK for users who never configured their own. First real
+ * answer wins. All-dead → null + one warn, so a silently-dead feature is
+ * diagnosable from the server log.
  */
 export async function fastCompletion(
   system: string,
@@ -140,10 +141,11 @@ export async function fastCompletion(
   opts?: { maxTokens?: number; timeoutMs?: number; temperature?: number },
   extraConfigs?: FastProviderConfig[]
 ): Promise<string | null> {
-  const candidates = [
-    ...getFastProviders().filter((p) => p.apiKey),
-    ...(extraConfigs || []).filter((p) => p.apiKey),
-  ];
+  const userLanes = rankBySpeed((extraConfigs || []).filter((p) => p.apiKey));
+  const envFast = getFastProviders().filter((p) => p.apiKey);
+  // User's own keys first (flash-ranked); env built-ins only when the user
+  // has no lanes at all, or as a fallback after every user lane failed.
+  const candidates = userLanes.length > 0 ? [...userLanes, ...envFast] : envFast;
   for (const p of candidates) {
     const out = await oneFastCall(p, system, messages, opts);
     if (out !== null) return out;

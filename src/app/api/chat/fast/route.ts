@@ -8,18 +8,18 @@ import { getProviderConfigs } from "@/lib/chat-middleware";
 const FAST_SYSTEM_PROMPT = `You are a fast, concise assistant. Answer the user's question directly and briefly. No tools, no code blocks unless asked. Keep responses under 200 words.`;
 
 /**
- * Fast-lane candidates: env fast keys first, then the CALLER's own configured
- * providers (BYOK). LIVE failure 2026-11-06: every env key in the dev .env
- * answered 401 while the user's in-app keys kept the chat alive — a single
- * dead env key used to kill the fast lane entirely. Ladder order fixes that;
- * rankBySpeed keeps the fallback flash-first so answers stay sub-second.
+ * Fast-lane candidates. PRIORITY RULE: the user's own configured providers
+ * (in-app BYOK keys) lead whenever they exist — flash-ranked so chips stay
+ * sub-second; the app's built-in env fast keys are only the fallback (users
+ * without their own keys, or after every user lane failed). LIVE failure
+ * 2026-11-06: every env key in the dev .env answered 401 while the user's
+ * in-app keys kept the chat alive — env-first died silently.
  */
 async function fastCandidates(userId: string): Promise<FastProviderConfig[]> {
-  const envFast = getFastProviders().filter((p) => p.apiKey);
-  let extras: FastProviderConfig[] = [];
+  let userLanes: FastProviderConfig[] = [];
   try {
     const configs = await getProviderConfigs(userId);
-    extras = rankBySpeed(
+    userLanes = rankBySpeed(
       configs
         .filter((c) => c.apiKey)
         .slice(0, 3)
@@ -35,7 +35,8 @@ async function fastCandidates(userId: string): Promise<FastProviderConfig[]> {
   } catch {
     /* user lane unavailable — env-only ladder */
   }
-  return [...envFast, ...extras];
+  const envFast = getFastProviders().filter((p) => p.apiKey);
+  return userLanes.length > 0 ? [...userLanes, ...envFast] : envFast;
 }
 
 export async function POST(request: NextRequest) {

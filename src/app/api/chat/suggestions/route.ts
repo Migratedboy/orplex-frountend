@@ -60,11 +60,11 @@ export async function POST(request: NextRequest) {
     // renderer keeps its static chips either way.
     if (messages.length === 0) return Response.json({ suggestions: [] });
 
-    // Env fast keys first, then the CALLER's own working lanes (BYOK keys are
-    // stored per-user in the DB — LIVE failure 2026-11-06: every env fast key
-    // in the dev .env was dead while the user's in-app keys kept the chat
-    // alive, and the chips silently stayed static forever). rankBySpeed keeps
-    // the fallback FAST: flash-class models before heavyweights.
+    // PRIORITY: the user's own in-app lanes (BYOK keys in the DB) lead; the
+    // app's built-in env fast keys are only the fallback (fastCompletion keeps
+    // that order for everyone). LIVE failure 2026-11-06: every env fast key in
+    // the dev .env was dead while the user's in-app keys kept the chat alive.
+    // rankBySpeed keeps the user lanes flash-class first → sub-second chips.
     let extras: FastProviderConfig[] = [];
     try {
       const configs = await getProviderConfigs(session.user.id);
