@@ -526,7 +526,7 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
   }
 
   let MEMORY_SECTION = "";
-  if (mode !== "ask") {
+  if (mode !== "ask" && typeof window === "undefined") {
     try {
       const { loadMemoryContext } = await import("./memory-store");
       const ctx = await loadMemoryContext(opts.userId || "default");

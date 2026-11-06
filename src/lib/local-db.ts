@@ -305,6 +305,18 @@ export function resetForTests(): void {
     c.rows = [];
     collections.delete(model);
   }
+  // Wipe on-disk files too so tests don't leak state across cases.
+  const dir = process.env.ORPLEX_LOCAL_DB_DIR;
+  if (dir) {
+    try {
+      const fs = require("node:fs");
+      for (const f of fs.readdirSync(dir)) {
+        if (f.endsWith(".json")) {
+          try { fs.unlinkSync(require("node:path").join(dir, f)); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* dir may not exist yet */ }
+  }
 }
 
 // ---------------------------------------------------------------------------
