@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
+import { getWorkspaceCwdForUser, resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import { withVerifySlot } from "@/lib/server-executor/verify-gate";
 import { publicErrorMessage } from "@/lib/errors";
 import { BROWSER_VERIFY_PORT } from "@/lib/ui-paths";
@@ -51,7 +51,23 @@ export async function POST(request: NextRequest) {
   // client override is accepted only when it stays inside the user's
   // registered workspace (prevents probing arbitrary server paths).
   const userWorkspace = getWorkspaceCwdForUser(session.user.id);
-  let workDir = userWorkspace || ".";
+  let workDir: string | null = userWorkspace;
+  if (!workDir) {
+    // The in-memory registration is process-local — a dev-server restart
+    // (hot reload, redeploy) empties it. Fall back to the durable
+    // registration before anything else, so verify never silently retargets.
+    workDir = await resolveWorkspaceCwd(session.user.id).catch(() => null);
+  }
+  if (!workDir && !requestedWorkDir) {
+    // NO bare "." fallback: the Next server's CWD is Orplex's own install
+    // directory, and its package.json EXISTS — so `npm run dev` would boot a
+    // SECOND Orplex instance and "verify" the wrong app (LIVE failure class
+    // 2026-11-06: DB down + fresh process ⇒ registration lookup dead).
+    return NextResponse.json(
+      { success: false, error: "No workspace is registered, so there is nothing to verify. Open your project folder again (sidebar → Open), then call verify_app once more." },
+      { status: 422 }
+    );
+  }
   if (requestedWorkDir && typeof requestedWorkDir === "string") {
     if (!userWorkspace) {
       workDir = requestedWorkDir; // no registration — local desktop default
@@ -67,6 +83,15 @@ export async function POST(request: NextRequest) {
       // else: keep the user's own workspace — a stray/mismatched override
       // (e.g. from another session) must never redirect verification.
     }
+  }
+  // Narrow (and harden): at least one branch above produced a real folder —
+  // except when a MALFORMED (non-string) workDir override came in with no
+  // registration. Refuse those too rather than verifying "." (Orplex).
+  if (!workDir) {
+    return NextResponse.json(
+      { success: false, error: "No workspace is registered, so there is nothing to verify. Open your project folder again (sidebar → Open), then call verify_app once more." },
+      { status: 422 }
+    );
   }
 
   try {
@@ -195,11 +220,52 @@ export async function POST(request: NextRequest) {
         }
       }
     } catch (persistErr) {
-      // DB unreachable — log it, keep the verdict flowing. Never 500 here.
+      // DB unreachable — keep the verdict flowing. Best-effort LOCAL mirror:
+      // a .json file next to the other device-local state, so runs/artifacts
+      // produced while the database is down are retrievable instead of lost
+      // (a video/screenshot artifact bigger than the mirror cap is skipped —
+      // the verdict itself is never at risk). Never 500 here.
       console.warn(
         "[verify] persistence failed (artifacts/ledger not saved for this read):",
         persistErr instanceof Error ? persistErr.message : persistErr
       );
+      try {
+        const { saveVerifyRunLocally } = await import("@/lib/local-run-store");
+        if (!effectiveRunId) {
+          effectiveRunId = saveVerifyRunLocally({
+            userId: session.user.id,
+            prompt: `Browser verification: ${pagePath}`,
+            status: result.success ? "done" : "failed",
+            workspace: workDir,
+            verifyResult: {
+              success: result.success,
+              consoleErrors: result.consoleErrors.length,
+              durationMs: result.durationMs,
+            },
+            task: {
+              role: "browser",
+              title: `Verify ${pagePath} — ${result.success ? "PASS" : "FAIL"}`,
+              input: { pagePath, devCommand, port },
+              output: {
+                success: result.success,
+                consoleErrors: result.consoleErrors.length,
+                consoleWarnings: result.consoleWarnings.length,
+                durationMs: result.durationMs,
+              },
+            },
+            event: {
+              type: "verification",
+              payload: {
+                success: result.success,
+                errors: result.consoleErrors.length,
+                warnings: result.consoleWarnings.length,
+                duration: result.durationMs,
+              },
+            },
+            artifacts: result.artifacts,
+          });
+        }
+      } catch {}
     }
 
     return NextResponse.json({

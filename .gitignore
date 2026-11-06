@@ -37,6 +37,7 @@ npm-debug.log*
 # Device-local stores (playbook learnings, workspace registry) — never in the repo
 .orplex/playbook.json
 .orplex/workspaces.json
+.orplex/verify-runs.json
 .orplex/*.tmp
 
 # IDE / OS
