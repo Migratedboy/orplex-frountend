@@ -216,8 +216,8 @@ export default function Sidebar() {
               tourId: "nav-plugins",
             },
             {
-              label: "Playbook",
-              value: "/playbook",
+              label: "Memory",
+              value: "/memory",
               tourId: "nav-playbook",
             },
             {
@@ -237,7 +237,7 @@ export default function Sidebar() {
           // so the trunk reach + highlight follow deep links ( BranchedMenu
           // syncs this via a useEffect when the pathname changes).
           defaultActive={
-            pathname === "/" || pathname === "/history" || pathname === "/plugins" || pathname === "/playbook"
+            pathname === "/" || pathname === "/history" || pathname === "/plugins" || pathname === "/memory"
               ? pathname
               : pathname.startsWith("/manager")
                 ? "/manager"

@@ -267,6 +267,92 @@ export const M3_TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "memory_list",
+      description: "List memory files (path + description + aliases). Use to discover which files might matter for the current message before reading.",
+      parameters: { type: "object", properties: { path_prefix: { type: "string", description: "Optional path prefix filter (e.g. /topics/)" } }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_read",
+      description: "Read one or more memory files. Returns content + version token (needed for writes). Only read files the listing suggests matter.",
+      parameters: {
+        type: "object",
+        properties: {
+          paths: { type: "array", items: { type: "string" }, description: "Paths to read, e.g. [\"/profile.md\"]" },
+        },
+        required: ["paths"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_write",
+      description: "Create or fully replace a memory file. if_version: \"new\" for new files, else the version from a read. On conflict returns current content — merge and retry.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          content: { type: "string", description: "Full file content including frontmatter" },
+          if_version: { type: ["string", "number"], description: "\"new\" or integer version" },
+        },
+        required: ["path", "content", "if_version"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_str_replace",
+      description: "Replace one exact unique substring in a memory file. Prefer over full rewrite. old_str must match exactly once.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          old_str: { type: "string" },
+          new_str: { type: "string" },
+          if_version: { type: ["string", "number"] },
+        },
+        required: ["path", "old_str", "new_str", "if_version"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_append",
+      description: "Append a line to the end of a memory file (creates it if missing).",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          content: { type: "string" },
+          if_version: { type: ["string", "number"] },
+        },
+        required: ["path", "content", "if_version"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_delete",
+      description: "Delete a memory file. ONLY when the user explicitly asks (e.g. \"forget X\").",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          if_version: { type: ["string", "number"] },
+        },
+        required: ["path", "if_version"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "skill_create",
       description: "Save a reusable skill to the playbook so future tasks benefit. Use when you discover a procedure worth repeating.",
       parameters: {

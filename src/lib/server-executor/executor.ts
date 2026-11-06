@@ -125,7 +125,12 @@ const TOOL_WHITELIST = new Set([
   // the text prompt, so the text-protocol fallback must not drop them (a
   // fully-filtered turn ends the run having executed nothing).
   "playbook_search",
-  "skill_create",
+  "memory_list",
+  "memory_read",
+  "memory_write",
+  "memory_str_replace",
+  "memory_append",
+  "memory_delete",
   "session_search",
   "mcp_call",
   "mcp_search_tools",
@@ -875,6 +880,47 @@ const kept = content.slice(0, 2000);
     } catch (err) {
       return `error: ${(err as Error).message}`;
     }
+  }
+
+  // ── memory_* (persistent markdown memory store) ────────────────────────
+  if (name === "memory_list") {
+    const { memoryList } = await import("../memory-store");
+    const prefix = typeof call.path_prefix === "string" ? call.path_prefix : undefined;
+    const files = await memoryList(prefix);
+    return files.length ? files.map((f) => `- ${f.path} — ${f.description}${f.aliases.length ? ` (aliases: ${f.aliases.join(", ")})` : ""}`).join("\n") : "No memory files yet.";
+  }
+  if (name === "memory_read") {
+    const { memoryRead } = await import("../memory-store");
+    const paths = Array.isArray(call.paths) ? (call.paths as string[]) : (typeof call.path === "string" ? [call.path] : []);
+    const files = await memoryRead(paths);
+    if (!files.length) return "No matching memory files.";
+    return files.map((f) => `### ${f.path} (version ${f.version})\n${f.content}`).join("\n\n");
+  }
+  if (name === "memory_write") {
+    const { memoryWrite } = await import("../memory-store");
+    const r = await memoryWrite(String(call.path), String(call.content), call.if_version as any);
+    if (r.conflict) return `conflict: file changed. Current (v${r.current?.version}):\n${r.current?.content}\nMerge and retry with if_version=${r.current?.version}.`;
+    return `saved ${call.path} (version ${r.version})`;
+  }
+  if (name === "memory_str_replace") {
+    const { memoryStrReplace } = await import("../memory-store");
+    const r = await memoryStrReplace(String(call.path), String(call.old_str), String(call.new_str), call.if_version as any);
+    if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
+    if (!r.ok) return `error: ${r.reason}`;
+    return `updated ${call.path} (version ${r.version})`;
+  }
+  if (name === "memory_append") {
+    const { memoryAppend } = await import("../memory-store");
+    const r = await memoryAppend(String(call.path), String(call.content), call.if_version as any);
+    if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
+    return `appended to ${call.path} (version ${r.version})`;
+  }
+  if (name === "memory_delete") {
+    const { memoryDelete } = await import("../memory-store");
+    const r = await memoryDelete(String(call.path), call.if_version as any);
+    if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
+    if (!r.ok) return `error: ${(r as any).reason || "failed"}`;
+    return `deleted ${call.path}`;
   }
 
   if (name === "skill_create") {

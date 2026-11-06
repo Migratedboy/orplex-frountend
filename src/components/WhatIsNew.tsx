@@ -193,6 +193,17 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Light mode renders the thought / tool list exactly like dark mode — same glass, same contrast in both themes",
     ],
   },
+  "1.2.2": {
+    title: "No database? Everything still works",
+    items: [
+      "Your projects live in device-local files now — conversations, keys, runs and settings keep working with no database server at all",
+      "A dead or missing database can no longer time out requests — every data call answers instantly from local storage",
+      "Your email and sign-in stay safely in the cloud account store; playbook learnings sync to the cloud and keep a local copy offline",
+      "Suggestion chips wait for the full AI answer before regenerating — no more half-formed suggestions mid-reply",
+      "Faster AI responses: your own API keys are tried first and ranked by real speed, built-in keys are only the fallback",
+      "New: a subtle wave animation shows while suggestion chips are being generated",
+    ],
+  },
 };
 
 /** "1.0.9" < "1.0.10" < "1.1.0" — plain numeric segment compare. */

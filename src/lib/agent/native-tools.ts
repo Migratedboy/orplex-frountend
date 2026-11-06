@@ -1589,6 +1589,86 @@ export async function dispatchToolCall(
     return { resultXml: toolResults, blocked: false };
   }
 
+  // ── memory_* (persistent markdown memory store) ────────────────────────
+  if (call.name === "memory_list") {
+    try {
+      const prefix = (call as any).path_prefix;
+      const res = await apiFetch(`/api/memory?op=list${prefix ? `&prefix=${encodeURIComponent(prefix)}` : ""}`);
+      const data = (await res.json()) as { files?: Array<{ path: string; description: string; aliases: string[] }> };
+      const files = data.files ?? [];
+      const lines = files.map((f) => `- ${f.path} — ${f.description}${f.aliases.length ? ` (aliases: ${f.aliases.join(", ")})` : ""}`);
+      result(`<tool_result name="memory_list">\n${lines.length ? lines.join("\n") : "No memory files yet."}\n</tool_result>\n`);
+    } catch (err) {
+      result(`<tool_result name="memory_list">error: ${(err as Error).message}</tool_result>\n`);
+    }
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+  if (call.name === "memory_read") {
+    try {
+      const paths = Array.isArray((call as any).paths) ? (call as any).paths : [ (call as any).path ];
+      const res = await apiFetch(`/api/memory?op=read&paths=${encodeURIComponent(paths.join(","))}`);
+      const data = (await res.json()) as { files?: Array<{ path: string; content: string; version: number }> };
+      const files = data.files ?? [];
+      if (!files.length) result(`<tool_result name="memory_read">No matching memory files.</tool_result>\n`);
+      else result(`<tool_result name="memory_read">\n${files.map((f) => `### ${f.path} (version ${f.version})\n${f.content}`).join("\n\n")}\n</tool_result>\n`);
+    } catch (err) {
+      result(`<tool_result name="memory_read">error: ${(err as Error).message}</tool_result>\n`);
+    }
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+  if (call.name === "memory_write") {
+    try {
+      const res = await apiFetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ op: "write", path: (call as any).path, content: (call as any).content, if_version: (call as any).if_version }) });
+      const data = (await res.json()) as any;
+      if (data.conflict) result(`<tool_result name="memory_write">conflict: file changed. Current (v${data.current?.version}):\n${data.current?.content}\nMerge and retry with if_version=${data.current?.version}.</tool_result>\n`);
+      else result(`<tool_result name="memory_write">saved ${(call as any).path} (version ${data.version})</tool_result>\n`);
+    } catch (err) {
+      result(`<tool_result name="memory_write">error: ${(err as Error).message}</tool_result>\n`);
+    }
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+  if (call.name === "memory_str_replace") {
+    try {
+      const res = await apiFetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ op: "str_replace", path: (call as any).path, old_str: (call as any).old_str, new_str: (call as any).new_str, if_version: (call as any).if_version }) });
+      const data = (await res.json()) as any;
+      if (data.conflict) result(`<tool_result name="memory_str_replace">conflict: current (v${data.current?.version}):\n${data.current?.content}\nretry with if_version=${data.current?.version}.</tool_result>\n`);
+      else if (!data.ok) result(`<tool_result name="memory_str_replace">error: ${data.reason}</tool_result>\n`);
+      else result(`<tool_result name="memory_str_replace">updated ${(call as any).path} (version ${data.version})</tool_result>\n`);
+    } catch (err) {
+      result(`<tool_result name="memory_str_replace">error: ${(err as Error).message}</tool_result>\n`);
+    }
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+  if (call.name === "memory_append") {
+    try {
+      const res = await apiFetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ op: "append", path: (call as any).path, content: (call as any).content, if_version: (call as any).if_version }) });
+      const data = (await res.json()) as any;
+      if (data.conflict) result(`<tool_result name="memory_append">conflict: current (v${data.current?.version}):\n${data.current?.content}\nretry with if_version=${data.current?.version}.</tool_result>\n`);
+      else result(`<tool_result name="memory_append">appended to ${(call as any).path} (version ${data.version})</tool_result>\n`);
+    } catch (err) {
+      result(`<tool_result name="memory_append">error: ${(err as Error).message}</tool_result>\n`);
+    }
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+  if (call.name === "memory_delete") {
+    try {
+      const res = await apiFetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ op: "delete", path: (call as any).path, if_version: (call as any).if_version }) });
+      const data = (await res.json()) as any;
+      if (data.conflict) result(`<tool_result name="memory_delete">conflict: current (v${data.current?.version}):\n${data.current?.content}\nretry with if_version=${data.current?.version}.</tool_result>\n`);
+      else if (!data.ok) result(`<tool_result name="memory_delete">error: ${data.reason || "failed"}</tool_result>\n`);
+      else result(`<tool_result name="memory_delete">deleted ${(call as any).path}</tool_result>\n`);
+    } catch (err) {
+      result(`<tool_result name="memory_delete">error: ${(err as Error).message}</tool_result>\n`);
+    }
+    ctx.syncDisplay();
+    return { resultXml: toolResults, blocked: false };
+  }
+
   // ── playbook_search ──────────────────────────────────────────────────
   // Server-read via API: the browser worker never touches Prisma directly.
   if (call.name === "playbook_search") {

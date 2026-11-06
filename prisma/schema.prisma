@@ -770,3 +770,26 @@ model McpTool {
   @@index([userId, serverId])
   @@map("mcp_tools")
 }
+
+model MemoryFile {
+  id        String   @id @default(cuid())
+  path      String   @unique
+  content   String   @db.Text
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("memory_files")
+}
+
+model MemorySetting {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  enabled   Boolean  @default(true)
+  incognito Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("memory_settings")
+}
+

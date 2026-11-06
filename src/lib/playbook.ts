@@ -168,6 +168,46 @@ async function persist(file: PlaybookFile): Promise<void> {
     // A read-only disk or sandbox must never take the chat lane down —
     // the in-memory store keeps working; persistence just degrades.
   }
+  // Cloud mirror (user decision 2026-11-06): every playbook entry also
+  // upserts into the cloud DB (`learning`, id-stable upsert). Fire-and-forget
+  // + bounded: the LOCAL file stays the working store; a dead cloud must
+  // never block or fail the playbook lane. (Deletions do NOT propagate —
+  // the mirror is a backup, stale rows are harmless.)
+  void mirrorToCloud(file);
+}
+
+const CLOUD_MIRROR_ROWS_PER_PROJECT = 50;
+
+async function mirrorToCloud(file: PlaybookFile): Promise<void> {
+  try {
+    const { prisma } = await import("@/lib/prisma");
+    const jobs: Promise<unknown>[] = [];
+    for (const [projectId, rows] of Object.entries(file.projects)) {
+      for (const r of rows.slice(-CLOUD_MIRROR_ROWS_PER_PROJECT)) {
+        const data = {
+          projectId,
+          pattern: r.pattern,
+          content: r.content,
+          tags: r.tags || [],
+          sourceRunId: r.sourceRunId || null,
+          confidence: r.confidence ?? 0.5,
+          verified: !!r.verified,
+          useCount: r.useCount ?? 1,
+          pinned: !!r.pinned,
+        };
+        jobs.push(
+          prisma.learning.upsert({
+            where: { id: r.id },
+            update: { ...data, updatedAt: new Date(r.updatedAt || Date.now()) },
+            create: { id: r.id, ...data },
+          })
+        );
+      }
+    }
+    await Promise.allSettled(jobs.slice(0, 200));
+  } catch {
+    /* no cloud configured / unreachable — local .json is the source of truth */
+  }
 }
 
 /**
