@@ -11,6 +11,12 @@ interface QuickActionsProps {
    * the bar never goes blank (offline, cold key, before the first answer).
    */
   suggestions?: string[];
+  /**
+   * True while /api/chat/suggestions is generating → the five chip slots
+   * render as skeleton pills with a three-dot wave animation instead of
+   * text, then swap to the real suggestions when they arrive.
+   */
+  loadingSuggestions?: boolean;
 }
 
 const STATIC_ACTIONS = [
@@ -24,8 +30,39 @@ const STATIC_ACTIONS = [
 /** Exports stay actionable regardless of context; the rest need files. */
 const ALWAYS_AVAILABLE = new Set(["export", "regenerate"]);
 
-export default function QuickActions({ onAction, hasFiles, isRunning, suggestions }: QuickActionsProps) {
+/** Skeleton pill widths (px) — hint at where the real text will land. */
+const LOADER_WIDTHS = [78, 96, 70, 88, 64];
+
+export default function QuickActions({
+  onAction,
+  hasFiles,
+  isRunning,
+  suggestions,
+  loadingSuggestions,
+}: QuickActionsProps) {
   if (isRunning) return null;
+
+  // Generating → five non-interactive skeleton chips, each pulsing a
+  // three-dot wave for its slot. No text, nothing clickable.
+  if (loadingSuggestions) {
+    return (
+      <div className="qa-bar" aria-busy="true">
+        {LOADER_WIDTHS.map((w, i) => (
+          <span
+            key={`qa-load-${i}`}
+            className="qa-chip qa-chip--smart qa-chip--loading"
+            style={{ width: w }}
+          >
+            <span className="qa-dot-wave" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+          </span>
+        ))}
+      </div>
+    );
+  }
 
   const useSuggestions = Array.isArray(suggestions) && suggestions.length > 0;
   const chips = useSuggestions

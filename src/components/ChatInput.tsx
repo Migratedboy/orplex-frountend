@@ -185,6 +185,9 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   // `aiSuggestions.length === 0` keeps the static utility chips — offline /
   // cold endpoint / brand-new chat never blanks the bar.
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
+  // True while /api/chat/suggestions is generating — the chips show a 3-dot
+  // wave loader in place of the text until the answer lands.
+  const [aiSuggestionsLoading, setAiSuggestionsLoading] = useState(false);
   const suggestionsBusyRef = useRef(false);
   const fetchSuggestions = useCallback(async () => {
     if (suggestionsBusyRef.current) return;
@@ -207,6 +210,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
         messages = [{ role: "user", content: lastUserMessage.slice(0, 600) }];
       }
       if (messages.length === 0) return;
+      setAiSuggestionsLoading(true);
       const r = await apiFetch("/api/chat/suggestions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -223,6 +227,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
       // Keep whatever chips are showing.
     } finally {
       suggestionsBusyRef.current = false;
+      setAiSuggestionsLoading(false);
     }
   }, [conversationId, lastUserMessage]);
 
@@ -478,6 +483,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
           hasFiles={files.hasFiles}
           isRunning={isWorking}
           suggestions={aiSuggestions}
+          loadingSuggestions={aiSuggestionsLoading}
         />
         <div className="chat-input-wrapper prompt-bar-wrapper" style={{ position: "relative" }}>
           <input
