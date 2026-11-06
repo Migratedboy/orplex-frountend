@@ -74,8 +74,10 @@
   --ob-wash-4: rgba(11, 11, 13, 0.03);
   /* Frosting radius (px) of the patch behind the conversation. Keep it under a
      quarter of the glyph cell (--cellSize 16px in page.tsx) or the field reads
-     as a smear instead of softened text; 0 disables it. */
-  --ob-blur: 7px;
+     as a smear instead of softened text; 0 disables it. 0 = DISABLED: the
+     frosted ellipse read as a visible hazy blob over the artwork — the field
+     stays crisp edge to edge instead (see WhatIsNew 1.2.0). */
+  --ob-blur: 0;
 
   /* Floating composer. The bar is taken out of the flow and overlaid on the
      bottom of the chat column, so everything that used to sit above it in
