@@ -41,6 +41,12 @@ export function providerFailureMessage(
   lastError: string
 ): string {
   if (requestedModel) {
+    // A hard per-minute size ceiling is not a rejection of the model, so the
+    // "will never work" copy above would be a lie. This is what the gpt-oss
+    // free tier actually told us: "Request too large … TPM: Limit 8000".
+    if (isPayloadTooLargeError(lastError)) {
+      return `The request for the selected model (${requestedModel}) was too big for its per-minute token limit. The app trimmed it to fit — send again in a minute, or pick a model with a bigger limit.`;
+    }
     return isPermanentRejection(lastError)
       ? `The selected model (${requestedModel}) rejected the request — it is not a problem that will fix itself. Try a different model.`
       : `The selected model (${requestedModel}) is not responding right now - it may still be warming up on its provider. Send again in a minute or pick another model.`;

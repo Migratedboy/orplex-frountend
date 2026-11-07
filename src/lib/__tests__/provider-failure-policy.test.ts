@@ -53,8 +53,17 @@ describe("providerFailureMessage — shipping copy", () => {
       "The selected model (llama-4-maverick) rejected the request — it is not a problem that will fix itself. Try a different model."
     );
     expect(providerFailureMessage("gpt-5", "HTTP 413 too large")).toBe(
-      "The selected model (gpt-5) rejected the request — it is not a problem that will fix itself. Try a different model."
+      "The request for the selected model (gpt-5) was too big for its per-minute token limit. The app trimmed it to fit — send again in a minute, or pick a model with a bigger limit."
     );
+  });
+
+  it("never calls a size ceiling a permanent model rejection", () => {
+    const msg = providerFailureMessage(
+      "openai/gpt-oss-120b",
+      'Groq HTTP 413: {"error":{"message":"Request too large for model `openai/gpt-oss-120b` … tokens per minute (TPM): Limit 8000, Requested 13636"}}'
+    );
+    expect(msg).not.toContain("not a problem that will fix itself");
+    expect(msg).toContain("per-minute token limit");
   });
 
   it("keeps the warming-up copy for transient selected-model failures", () => {

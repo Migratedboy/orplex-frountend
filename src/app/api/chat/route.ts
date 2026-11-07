@@ -24,6 +24,13 @@ import { refreshMissingSnapshots as refreshMissingMcpSnapshots } from "@/lib/mcp
 import { getMcpCatalogEntry } from "@/lib/mcp-catalog";
 import { routeToModel } from "@/lib/model-router";
 import { resolveMaxOutputTokens, rejectsTemperature } from "@/lib/model-output-caps";
+import {
+  PLATFORM_PROMPT_BUDGET,
+  promptTokens,
+  trimMessagesToTokens,
+  toolSchemaTokens,
+} from "@/lib/prompt-budget";
+import { estimateTokens } from "@/lib/token-budget";
 
 import { preprocessMessages } from "@/lib/vision-preprocessor";
 import { canSendImageParts } from "@/lib/vision-models";
@@ -297,9 +304,11 @@ const routedSupportsVision = canSendImageParts(
     // include run_in_sandbox or verify_app. Same model, same app, different
     // agent — so on those lanes the agent literally could not reach the
     // sandbox or browser verification, and had no doctrine telling it to.
-    // Payload size is now handled where it is real: only AFTER a provider
-    // refuses the request as too large (lean retry below), never pre-emptively
-    // by provider name.
+    // Payload size is decided up front from the provider's token budget (see
+    // the PRE-FLIGHT SIZE GUARD below) and still re-tried lean if a provider
+    // refuses the payload anyway. A hard per-minute cap makes a request that
+    // exceeds the whole minute impossible, so the size has to be chosen before
+    // sending, not learned from a 413.
     const systemPrompt = await buildSystemPrompt({
       mode,
       effort,
@@ -317,11 +326,15 @@ const routedSupportsVision = canSendImageParts(
     const ASK_TOOL_NAMES = ["read_file", "list_files", "search_code", "code_search", "web_search", "extract_archive"];
     const askTools = M3_TOOL_DEFINITIONS.filter((t: any) => ASK_TOOL_NAMES.includes(t?.function?.name));
 
-    const buildRequestBody = (prompt: string, tools: unknown[]): Record<string, unknown> => ({
+    const buildRequestBody = (
+      prompt: string,
+      tools: unknown[],
+      messages: Array<{ role: string; content: unknown }> = attemptMessages,
+    ): Record<string, unknown> => ({
       model: provider.model,
       messages: [
         { role: "system", content: prompt },
-        ...attemptMessages,
+        ...messages,
       ],
       tools,
       tool_choice: "auto",
@@ -344,7 +357,57 @@ const routedSupportsVision = canSendImageParts(
           ...toOpenAiFunctions([...mcpRoster.defs, ...mcpRoster.metaDefs]),
         ];
 
-    const requestBody = buildRequestBody(systemPrompt, fullTools);
+    // Compact prompt + lean roster, built at most once per request.
+    let leanPayload: { prompt: string; tools: unknown[] } | null = null;
+    const buildLeanPayload = async () => {
+      if (!leanPayload) {
+        const prompt = await buildSystemPrompt({
+          mode,
+          effort,
+          profile: "compact",
+          capabilities: { browser: true },
+          projectId: userId,
+          mcpSection,
+        });
+        const tools = mode === "ask"
+          ? askTools
+          : [
+              ...GROQ_TOOL_DEFINITIONS,
+              ...toOpenAiFunctions([...mcpRoster.metaDefs]),
+            ];
+        leanPayload = { prompt, tools };
+      }
+      return leanPayload;
+    };
+
+    // PRE-FLIGHT SIZE GUARD (LIVE FAIL 2026-11-07): the platform Groq key is a
+    // free tier with 8,000 tokens/MINUTE, while one full request measures
+    // ~4,094 (master prompt) + ~10,378 (76-tool roster) ≈ 14.5k. Such a request
+    // can never fit, and every refused attempt is charged against the same
+    // minute — so retrying keeps failing. Measured on the live key: the full
+    // payload answers 413 "Request too large ... TPM: Limit 8000, Requested
+    // 13636", while the compact prompt + lean roster (4,228 tokens) answers
+    // 200. Choose that profile before spending a request.
+    let payloadPrompt = systemPrompt;
+    let payloadTools: typeof fullTools = fullTools;
+    let payloadMessages = attemptMessages;
+    if (onPlatformGroqBudget) {
+      const size = promptTokens({ system: systemPrompt, messages: attemptMessages, tools: fullTools });
+      if (size > PLATFORM_PROMPT_BUDGET) {
+        const lean = await buildLeanPayload();
+        payloadPrompt = lean.prompt;
+        payloadTools = lean.tools as typeof fullTools;
+        payloadMessages = trimMessagesToTokens(
+          attemptMessages,
+          PLATFORM_PROMPT_BUDGET - estimateTokens(lean.prompt) - toolSchemaTokens(lean.tools),
+        );
+        console.log(
+          `[chat] payload ${size} tokens > ${PLATFORM_PROMPT_BUDGET} platform budget — sending compact prompt + lean roster`,
+        );
+      }
+    }
+
+    const requestBody = buildRequestBody(payloadPrompt, payloadTools, payloadMessages);
 
       let result = await fetchWithProviderRetry(provider, requestBody, retryBudget());
       attemptsMade++;
@@ -356,21 +419,15 @@ const routedSupportsVision = canSendImageParts(
       // so the identical request shape is the default everywhere.
       if (!result.ok && isPayloadTooLargeError(result.error)) {
         console.log(`[chat] ${provider.name} rejected payload size — retrying lean`);
-        const leanPrompt = await buildSystemPrompt({
-          mode,
-          effort,
-          profile: "compact",
-          capabilities: { browser: true },
-          projectId: userId,
-          mcpSection,
-        });
-        const leanTools = mode === "ask"
-          ? askTools
-          : [
-              ...GROQ_TOOL_DEFINITIONS,
-              ...toOpenAiFunctions([...mcpRoster.metaDefs]),
-            ];
-        result = await fetchWithProviderRetry(provider, buildRequestBody(leanPrompt, leanTools), retryBudget());
+        const lean = await buildLeanPayload();
+        result = await fetchWithProviderRetry(
+          provider,
+          buildRequestBody(lean.prompt, lean.tools, trimMessagesToTokens(
+            attemptMessages,
+            PLATFORM_PROMPT_BUDGET - estimateTokens(lean.prompt) - toolSchemaTokens(lean.tools),
+          )),
+          retryBudget(),
+        );
         attemptsMade++;
       }
 

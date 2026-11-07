@@ -6,6 +6,7 @@
  */
 import { runInBackground, setFileSystemAccess } from "../background-worker";
 import { getCurrentTask, abortCurrentTask } from "../background-chat";
+import { onAgentStatus } from "../agent-events";
 import { waitFor } from "./helpers";
 
 const toolCallChunk = (call: object) =>
@@ -78,6 +79,44 @@ describe("callModel transient-blip retry", () => {
 
     await waitFor(() => getCurrentTask()?.status === "error", 8000);
     expect(chatCount).toBe(1); // exactly one attempt — no retry on 401
+  });
+
+  it("climbs past the old one-retry cap and shows [attempt N/20] in the feed", async () => {
+    // The old code tolerated exactly ONE blip (2 attempts). This blips TWICE
+    // and must still recover — proving the ladder is longer — and each retry
+    // must reach the UI as its own `[attempt N/20]` row.
+    const seen: string[] = [];
+    const off = onAgentStatus((evt) => {
+      if (evt.type === "activity") seen.push(evt.entry.message);
+    });
+    let chatCount = 0;
+    let blips = 0;
+    global.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/chat")) {
+        chatCount++;
+        if (chatCount <= 2) {
+          blips++;
+          throw new TypeError("fetch failed");
+        }
+        return streamOnce([textChunk("Recovered on attempt 3."), doneChunk()]);
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const promise = runInBackground("write a file", null, [], "code", []);
+    await waitFor(() => getCurrentTask() !== null);
+    await promise;
+    off();
+
+    const task = getCurrentTask();
+    // Two blips survived, so the ladder climbed past the old one-retry cap.
+    // (chatCount is >= 3 rather than exactly 3 because the worker may issue a
+    // follow-up turn after a tool-less reply; the blips are what matter.)
+    expect(blips).toBe(2);
+    expect(chatCount).toBeGreaterThanOrEqual(3);
+    expect(task?.status).toBe("done");
+    expect(seen.some((m) => m.startsWith("[attempt 1/20]"))).toBe(true);
+    expect(seen.some((m) => m.startsWith("[attempt 2/20]"))).toBe(true);
   });
 
   it("never retries after the user aborts", async () => {
