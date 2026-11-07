@@ -284,7 +284,7 @@ if (
   // routes in both modes, plus all /api/* when there is no backend origin to
   // take them. A forwarded route keeps the backend's own CSRF middleware —
   // adding a second gate there would only risk breaking form-encoded
-  // next-auth flows (see BACKEND_CSRF_FIX_PROMPT.md for that failure mode).
+  // next-auth flows (see docs/archive/BACKEND_CSRF_FIX_PROMPT.md for that failure mode).
   if (
     !willForward &&
     isApiPath &&

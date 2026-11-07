@@ -1642,7 +1642,8 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
     const executorMcpSection = remoteTools.length > 0 ? mcpPromptSection(buildMcpRoster(remoteTools)) : "";
 
     // Failover chain: primary adapter first, then the opt-in chain on
-    // rate/quota errors (retries already exhausted inside the adapter).
+    // rate/quota OR exhausted transient errors (the adapter's own retry
+    // ladder — 20 attempts / 180s — exhausts BEFORE a hop is considered).
     const failoverChain = parseFailoverChainEnv();
     let chainIdx = -1;
     // Uptime telemetry: every model call is attributed to the provider that
@@ -1672,8 +1673,13 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
             errorMessage: String((err as Error).message),
             latencyMs: Date.now() - t0,
           });
+          // Fail over when the adapter's ladder is exhausted on a rate limit
+          // OR a leftover transient blip (provider stuck answering 500/504 —
+          // the chat lane fails over the same way). Permanent errors (400/401
+          // bad request/key) rethrow immediately: another provider on the
+          // chain usually repeats them, and retrying those burns budget.
           const next = failoverChain[chainIdx + 1];
-          if (!next || !isRateLimitError(err)) throw err;
+          if (!next || (!isRateLimitError(err) && !isTransientError(err))) throw err;
           chainIdx++;
           const from = servedProvider;
           // Do NOT carry the primary's model id to a different provider: an

@@ -17,11 +17,36 @@ export interface RetryOptions {
   maxDelayMs?: number;
   /** Per-attempt timeout applied when fn doesn't provide its own signal. */
   attemptTimeoutMs?: number;
+  /**
+   * Wall-clock ceiling for the WHOLE ladder (ms). When set, once the deadline
+   * passes no further retries are taken and the last error rethrows — same
+   * contract as chat-middleware's provider ladder, so a 20-attempt retry can
+   * never outlive the caller's function budget.
+   */
+  deadlineMs?: number;
   /** Extra context for log lines. */
   label?: string;
   /** Quiet mode — no console output (tests). */
   silent?: boolean;
 }
+
+/**
+ * The provider API ladder — the SAME patience /api/chat gives its providers
+ * (chat-middleware's DEFAULT_ATTEMPTS 20 / base 1s / cap 30s / 180s deadline).
+ *
+ * LIVE FAIL it fixes: the agent lane's adapter used `attempts: 2`, so the
+ * model call behind tool call #2 hit a transient provider HTTP 500, retried
+ * exactly once, and the whole run died — while the chat lane over the SAME
+ * provider would have ridden out the blip 20 deep. Every adapter transport
+ * now climbs this ladder; the wall-clock deadline (not the attempt count) is
+ * what actually bounds the failure window, matching chat-middleware.
+ */
+export const PROVIDER_LADDER = {
+  attempts: 20,
+  baseDelayMs: 1_000,
+  maxDelayMs: 30_000,
+  deadlineMs: 180_000,
+} as const;
 
 /** Status codes / error shapes worth retrying. */
 export function isTransientError(err: unknown): boolean {
@@ -100,17 +125,30 @@ export async function withRetry<T>(
   const base = opts.baseDelayMs ?? 1500;
   const maxDelay = opts.maxDelayMs ?? 12_000;
   const label = opts.label || "provider";
+  const deadline = opts.deadlineMs != null ? Date.now() + opts.deadlineMs : null;
+  /** Per-attempt timeout clamped to the remaining ladder budget, so one
+   *  attempt can't overshoot the wall-clock ceiling. */
+  const attemptTimeout = (): number | undefined => {
+    if (!opts.attemptTimeoutMs) return undefined;
+    if (deadline === null) return opts.attemptTimeoutMs;
+    return Math.max(1_000, Math.min(opts.attemptTimeoutMs, deadline - Date.now()));
+  };
 
   let lastErr: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (deadline !== null && Date.now() >= deadline && lastErr !== undefined) {
+      throw lastErr;
+    }
     try {
-      if (opts.attemptTimeoutMs) {
-        return await withTimeout(fn(attempt), opts.attemptTimeoutMs, label, attempt);
+      const t = attemptTimeout();
+      if (t !== undefined) {
+        return await withTimeout(fn(attempt), t, label, attempt);
       }
       return await fn(attempt);
     } catch (err) {
       lastErr = err;
       if (attempt >= attempts || !isTransientError(err)) throw err;
+      if (deadline !== null && Date.now() >= deadline) throw err;
       // Honor a server Retry-After when present; otherwise exponential + jitter.
       const hint = retryAfterMs(err);
       const computed = hint ?? Math.min(base * 2 ** (attempt - 1), maxDelay);

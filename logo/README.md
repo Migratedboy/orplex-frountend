@@ -87,3 +87,12 @@ npm run verify:strict
 
 `assets/logo.svg` is the default mark. Drop your own `assets/logo.png` and rebuild to
 override it — the widget and lock screen pick it up automatically.
+
+## Why this folder is called `logo/`
+
+Historical: the folder was created early in the project for branding/logo assets,
+and FocusLock grew into it before the name meant anything. The name stays because
+the desktop packaging scripts (`scripts/stage-desktop-package.mjs` and the
+Orplex electron build) reference `logo/` by path — renaming it would break
+staging for zero benefit. From a new contributor's point of view: this directory
+**is** FocusLock, the companion focus-lock app, not a marketable logo.

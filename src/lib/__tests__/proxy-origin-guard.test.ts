@@ -182,7 +182,7 @@ describe("split mode: forwarded routes keep the backend's CSRF layer", () => {
   it("does NOT gate a forwarded route locally", async () => {
     // next-auth's own endpoints are form-encoded POSTs; a second origin gate
     // in front of the forward is exactly the failure documented in
-    // BACKEND_CSRF_FIX_PROMPT.md.
+    // docs/archive/BACKEND_CSRF_FIX_PROMPT.md.
     const res = await handler(
       req("POST", "/api/agent/exec", { origin: "https://evil.example" }),
     );

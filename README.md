@@ -31,6 +31,8 @@ AI coding assistant with streaming chat, conversation history, file context, OAu
   API layer, and data stores actually fit together (the source of truth).
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** / **[SECURITY.md](SECURITY.md)** —
   workflow and vulnerability reporting.
+- **[logo/](logo/README.md)** — yes, that folder contains FocusLock, our
+  companion Electron focus-lock app, not a logo. The name is historical.
 
 > This section used to list the agent loop, git integration, code review, and
 > task persistence as "in development". All of them ship now — see Current

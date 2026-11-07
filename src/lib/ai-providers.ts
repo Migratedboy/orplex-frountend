@@ -2,7 +2,7 @@
 // OpenAI-compatible base class eliminates duplicate HTTP logic
 // Swap via config, not code.
 
-import { withRetry } from "./retry";
+import { withRetry, PROVIDER_LADDER, type RetryOptions } from "./retry";
 import { deduplicateWords } from "./tool-text";
 import { getProviderDef } from "./provider-registry";
 import { resolveMaxOutputTokens } from "./model-output-caps";
@@ -91,6 +91,24 @@ function authHeaders(apiKey: string, authStyle: "bearer" | "x-api-key" | undefin
   if (authStyle === "x-api-key") headers["x-api-key"] = apiKey;
   else headers["Authorization"] = `Bearer ${apiKey}`;
   return { ...headers, ...(extra ?? {}) };
+}
+
+/** Auth headers builder is defined below; this helper builds the retry ladder
+ *  for EVERY adapter transport. The ladder mirrors /api/chat's provider retry
+ *  (chat-middleware): 20 attempts, exponential base→30s backoff, 180s
+ *  wall-clock deadline, server Retry-After honored, per-attempt timeout
+ *  clamped into the deadline by withRetry. Attempts counts can still cut the
+ *  ladder short (e.g. one-shot chat summaries use fewer) — the deadline is
+ *  what actually bounds the failure window. */
+function providerLadder(label: string): RetryOptions {
+  return {
+    attempts: PROVIDER_LADDER.attempts,
+    baseDelayMs: PROVIDER_LADDER.baseDelayMs,
+    maxDelayMs: PROVIDER_LADDER.maxDelayMs,
+    deadlineMs: PROVIDER_LADDER.deadlineMs,
+    attemptTimeoutMs: 160_000,
+    label,
+  };
 }
 
 export class OpenAICompatibleAdapter implements AIProviderAdapter {
@@ -193,25 +211,35 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       content: this.prepareContent(m.content),
     }));
 
-    const res = await fetch(this.baseUrl, {
-      method: "POST",
-      headers: authHeaders(this.apiKey, this.authStyle, this.headers),
-      body: JSON.stringify({
-        model: this.model,
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...flattened],
-        ...this.tokenParams(16_384),
-        stream: true,
-      }),
-      signal: AbortSignal.timeout(150_000),
-    });
+    // Transient provider blips (HTTP 500/504, dropped connections) used to kill
+    // the stream lane outright — the OTHER transports (complete/completeWithTools)
+    // retried but this one did not. The whole fetch runs inside the ladder:
+    // nothing has been consumed before `res.ok` is checked, so a retry here is
+    // safe (no partial stream is lost).
+    return withRetry(async (): Promise<ReadableStream> => {
+      const res = await fetch(this.baseUrl, {
+        method: "POST",
+        headers: authHeaders(this.apiKey, this.authStyle, this.headers),
+        body: JSON.stringify({
+          model: this.model,
+          messages: [{ role: "system", content: SYSTEM_PROMPT }, ...flattened],
+          ...this.tokenParams(16_384),
+          stream: true,
+        }),
+        signal: AbortSignal.timeout(150_000),
+      });
 
-    if (!res.ok) {
-      const err = await res.text();
-      console.error(`[${this.streamTitle}] Error:`, res.status, err.slice(0, 300));
-      throw new Error(`${this.streamTitle} ${res.status}`);
-    }
+      if (!res.ok) {
+        // Keep the provider's own words in the message: withRetry's
+        // isTransientError classifies by status text, and Retry-After hints
+        // survive a body snippet so the ladder can pace off them.
+        const err = await res.text().catch(() => "");
+        console.error(`[${this.streamTitle}] Error:`, res.status, err.slice(0, 300));
+        throw new Error(`${this.streamTitle} HTTP ${res.status} ${err.slice(0, 200)}`);
+      }
 
-    return res.body!;
+      return res.body!;
+    }, providerLadder(`adapter:${this.name || "stream"}`));
   }
 
   async complete(messages: { role: string; content: MessageContent }[]): Promise<string> {
@@ -243,7 +271,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       }
       const data = await res.json();
       return data.choices?.[0]?.message?.content || "";
-    }, { attempts: 2, baseDelayMs: 3000, label: `adapter:${this.name || "complete"}`, attemptTimeoutMs: 160_000 });
+    }, providerLadder(`adapter:${this.name || "complete"}`));
   }
 
   /**
@@ -309,7 +337,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
           }
         : undefined;
       return { text: typeof message.content === "string" ? message.content : "", toolCalls, usage };
-    }, { attempts: 2, baseDelayMs: 3000, label: `adapter:${this.name || "completeWithTools"}`, attemptTimeoutMs: 160_000 });
+    }, providerLadder(`adapter:${this.name || "completeWithTools"}`));
   }
 }
 
