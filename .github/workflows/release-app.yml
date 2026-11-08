@@ -42,6 +42,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        shell: bash
         # Electron's binary download (via got) can 504 from the mirror;
         # retry up to 3 times instead of failing the whole release.
         run: |
