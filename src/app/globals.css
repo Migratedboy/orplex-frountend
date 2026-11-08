@@ -4178,7 +4178,7 @@ html:not(.dark) .empty-hero-advanced-toggle:hover { background:rgba(0,0,0,0.04);
    margin, slide the topbar left. The topbar button and the floating expand
    button bring it back. Desktop only — mobile never shows the rail. */
 @media (min-width: 768px) {
-  .app-root.sb-collapsed .sidebar-nav { display:none; }
+  .app-root.sb-collapsed .app-sidebar { display:none; }
   .app-root.sb-collapsed .main-content { margin-left:0; }
   .app-root.sb-collapsed .topbar-header { left:0; }
 }

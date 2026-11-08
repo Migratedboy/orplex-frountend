@@ -145,6 +145,13 @@ export default function AppLayout({ children }: AppLayoutProps) {
     });
   }, []);
 
+  // Sidebar rail buttons dispatch this event (the rail itself takes no props).
+  useEffect(() => {
+    const handler = () => toggleSidebar();
+    window.addEventListener("orplex:toggle-sidebar", handler);
+    return () => window.removeEventListener("orplex:toggle-sidebar", handler);
+  }, [toggleSidebar]);
+
   // Global New Chat handler — always mounted (even on /history, /settings, etc.)
   // Ensures chat state is cleared when New Chat is clicked from any page
   useEffect(() => {
