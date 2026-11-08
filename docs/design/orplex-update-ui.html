@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orplex Code — Update UI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#09090b;--card:#141416;--card2:#1b1b1f;--text:#f4f4f5;--muted:#8b8b94;--line:#26262b;
+  --accent:#ff6a00;--accent2:#ffb36b;--ok:#4ade80;--glow:rgba(255,106,0,.35);
+  box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){--bg:#f6f4f1;--card:#ffffff;--card2:#f3efea;--text:#18181b;--muted:#6b6b73;--line:#e4dfd8;--glow:rgba(255,106,0,.25)}
+}
+:root[data-theme="dark"]{--bg:#09090b;--card:#141416;--card2:#1b1b1f;--text:#f4f4f5;--muted:#8b8b94;--line:#26262b}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;overflow:hidden;position:relative}
+body::before{content:"";position:fixed;inset:0;background:
+  radial-gradient(600px 400px at 85% 100%,var(--glow),transparent 70%),
+  linear-gradient(var(--line) 1px,transparent 1px) 0 0/48px 48px,
+  linear-gradient(90deg,var(--line) 1px,transparent 1px) 0 0/48px 48px;opacity:.55;pointer-events:none;
+  -webkit-mask-image:radial-gradient(ellipse at 70% 90%,#000,transparent 80%);mask-image:radial-gradient(ellipse at 70% 90%,#000,transparent 80%)}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+#root{position:relative;height:100%}
+.top{position:absolute;top:20px;left:20px;right:20px}
+.top h1{font-size:15px;font-weight:600;letter-spacing:.01em}
+.top p{font-size:12px;color:var(--muted);margin-top:4px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:14px}
+.chip{font:500 11px 'JetBrains Mono',monospace;padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer;text-transform:uppercase;letter-spacing:.06em}
+.chip.on{color:#fff;background:var(--accent);border-color:var(--accent)}
+.dock{position:absolute;right:20px;bottom:calc(20px + env(safe-area-inset-bottom,0px));width:min(392px,calc(100vw - 40px))}
+.card{position:relative;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;overflow:hidden;box-shadow:0 24px 60px -20px rgba(0,0,0,.6),0 0 0 1px rgba(255,106,0,.08),0 0 40px -12px var(--glow)}
+.card::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),var(--accent2),transparent);opacity:.9}
+.row{display:flex;align-items:center;gap:12px}
+.ico{width:44px;height:44px;flex:none;position:relative;filter:drop-shadow(0 8px 14px var(--glow))}
+.ico img{width:100%;height:100%;display:block;border-radius:21.9%;box-shadow:0 0 0 1px rgba(255,106,0,.45)}
+.badge{position:absolute;right:-6px;bottom:-6px;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:#fff;border:2px solid var(--card)}
+.badge.ok{background:#22c55e}
+.badge svg{width:11px;height:11px}
+.badge .spin{width:10px;height:10px;border-width:2px}
+.ttl{font-size:14px;font-weight:600;line-height:1.2}
+.sub{font:400 11px 'JetBrains Mono',monospace;color:var(--muted);margin-top:4px}
+.x{margin-left:auto;background:none;border:0;color:var(--muted);cursor:pointer;padding:6px;border-radius:8px;display:grid}
+.x:hover{background:var(--card2);color:var(--text)}
+.body{margin-top:14px}
+.bar{height:8px;border-radius:99px;background:var(--card2);overflow:hidden;position:relative;border:1px solid var(--line)}
+.fill{height:100%;border-radius:99px;background:linear-gradient(90deg,#ff3d00,var(--accent),var(--accent2));background-size:200% 100%;animation:sh 1.4s linear infinite;box-shadow:0 0 14px var(--glow)}
+.ind{position:absolute;top:0;bottom:0;width:35%;border-radius:99px;background:linear-gradient(90deg,transparent,var(--accent),transparent)}
+@keyframes sh{to{background-position:-200% 0}}
+.stats{display:flex;justify-content:space-between;align-items:flex-end;margin-top:12px}
+.pct{font:500 28px 'JetBrains Mono',monospace;letter-spacing:-.02em;line-height:1}
+.pct small{font-size:14px;color:var(--muted)}
+.meta{text-align:right;font:400 11px 'JetBrains Mono',monospace;color:var(--muted);line-height:1.7}
+.meta b{color:var(--text);font-weight:500}
+.log{list-style:none;padding:0;margin:0;display:grid;gap:8px}
+.log li{display:flex;gap:10px;font-size:12.5px;color:var(--text);line-height:1.4}
+.tag{flex:none;font:500 9.5px 'JetBrains Mono',monospace;padding:3px 6px;border-radius:6px;height:fit-content;text-transform:uppercase;letter-spacing:.05em;background:rgba(255,106,0,.14);color:var(--accent2)}
+.tag.fix{background:rgba(74,222,128,.14);color:var(--ok)}
+.btns{display:flex;gap:8px;margin-top:14px}
+.btn{flex:1;font:600 13px 'Inter',sans-serif;padding:10px 14px;border-radius:11px;border:1px solid var(--line);background:var(--card2);color:var(--text);cursor:pointer}
+.btn:hover{border-color:var(--muted)}
+.btn.p{flex:1.6;border:0;color:#fff;background:linear-gradient(135deg,var(--accent),#ff3d00);box-shadow:0 8px 20px -8px var(--glow)}
+.btn.p:hover{filter:brightness(1.1)}
+.spin{width:20px;height:20px;border-radius:50%;border:2.5px solid rgba(255,255,255,.35);border-top-color:#fff;animation:rot .8s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+.burst{position:absolute;left:50%;top:50%;width:0;height:0;pointer-events:none}
+.dot{position:absolute;width:6px;height:6px;border-radius:50%;background:var(--ok);left:-3px;top:-3px}
+.show{position:absolute;right:20px;bottom:calc(20px + env(safe-area-inset-bottom,0px));font:500 12px 'JetBrains Mono',monospace;padding:10px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/framer-motion@10.18.0/dist/framer-motion.js"></script>
+<script>
+const {useState,useEffect}=React, h=React.createElement;
+
+/* framer-motion, with a plain-div fallback if the CDN build ever fails to load */
+const FM=window.Motion||{};
+const STRIP=['initial','animate','exit','transition','layout','whileHover','whileTap','variants'];
+const fallback=new Proxy({},{get:(_,tag)=>({children,...p})=>{STRIP.forEach(k=>delete p[k]);return h(tag,p,children)}});
+const motion=FM.motion||fallback;
+const AnimatePresence=FM.AnimatePresence||(({children})=>children);
+
+const TOTAL=84; // MB
+const spring={type:'spring',stiffness:380,damping:30};
+const Svg=({d,extra})=>h('svg',{viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:2.2,strokeLinecap:'round',strokeLinejoin:'round'},h('path',{d}),extra);
+
+const CHANGES=[
+  ['new','Faster agent runs with parallel tool calls'],
+  ['new','Refreshed Runs Board with live status'],
+  ['fix','Fixed provider key reset after restart'],
+];
+
+const LOGO='data:image/svg+xml;utf8,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FB923C"/><stop offset=".5" stop-color="#F97316"/><stop offset="1" stop-color="#EA580C"/></linearGradient><radialGradient id="glow" cx=".5" cy="1.02" r=".85" fx=".5" fy="1.02"><stop offset="0" stop-color="#F97316" stop-opacity=".56"/><stop offset=".45" stop-color="#F97316" stop-opacity=".19"/><stop offset="1" stop-color="#F97316" stop-opacity="0"/></radialGradient></defs><rect width="256" height="256" rx="56" fill="url(#bg)"/><rect x="3.56" y="3.56" width="248.88" height="248.88" rx="52.44" fill="#1C0F07"/><rect x="3.56" y="3.56" width="248.88" height="248.88" rx="52.44" fill="url(#glow)"/><g shape-rendering="crispEdges"><rect x="50" y="89" width="26" height="26" fill="#F97316"/><rect x="76" y="115" width="26" height="26" fill="#F97316"/><rect x="50" y="141" width="26" height="26" fill="#F97316"/><rect x="128" y="141" width="52" height="26" fill="#F97316"/><rect x="180" y="141" width="26" height="26" fill="#FDBA74"/></g></svg>');
+
+function Icon({phase}){
+  const ok=phase==='ready'||phase==='done';
+  const inner=phase==='installing'?h('div',{className:'spin'}):
+    ok?h('svg',{viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:3.2,strokeLinecap:'round',strokeLinejoin:'round'},
+        h(motion.path,{d:'M5 12.5l4.5 4.5L19 7.5',initial:{pathLength:0},animate:{pathLength:1},transition:{duration:.5,delay:.1}})):
+    phase==='downloading'?h(motion.div,{style:{display:'grid'},animate:{y:[-1.5,2,-1.5]},transition:{repeat:Infinity,duration:1.1,ease:'easeInOut'}},h(Svg,{d:'M12 4v13m0 0l-5-5m5 5l5-5'})):
+    h(Svg,{d:'M12 19V5m0 0l-6 6m6-6l6 6'});
+  return h(motion.div,{className:'ico',initial:{scale:.6,opacity:0},animate:{scale:1,opacity:1},transition:spring},
+    h('img',{src:LOGO,alt:'Orplex Code',width:44,height:44}),
+    h(AnimatePresence,{mode:'wait'},h(motion.div,{key:phase,className:'badge'+(ok?' ok':''),initial:{scale:0},animate:{scale:1},exit:{scale:0},transition:spring},inner)));
+}
+
+function Body({phase,p,speed,go,hide}){
+  const done=p/100*TOTAL, eta=Math.max(0,Math.ceil((TOTAL-done)/speed));
+  if(phase==='available') return h('div',{className:'body'},
+    h('ul',{className:'log'},CHANGES.map(([t,x],i)=>h(motion.li,{key:i,initial:{opacity:0,x:-8},animate:{opacity:1,x:0},transition:{delay:.08*i+.1}},
+      h('span',{className:'tag '+t},t==='new'?'new':'fix'),x))),
+    h('div',{className:'btns'},
+      h('button',{className:'btn',onClick:hide},'Later'),
+      h(motion.button,{className:'btn p',whileTap:{scale:.97},whileHover:{scale:1.02},onClick:()=>go('downloading',0)},'Download update')));
+  if(phase==='downloading') return h('div',{className:'body'},
+    h('div',{className:'bar'},h(motion.div,{className:'fill',animate:{width:p+'%'},transition:{ease:'linear',duration:.15}})),
+    h('div',{className:'stats'},
+      h('div',{className:'pct'},Math.floor(p),h('small',null,'%')),
+      h('div',{className:'meta'},h('b',null,done.toFixed(1)),' / '+TOTAL+' MB',h('br'),speed.toFixed(1)+' MB/s · ',h('b',null,eta+'s'),' left')));
+  if(phase==='ready') return h('div',{className:'body'},
+    h('p',{className:'sub',style:{marginTop:0,lineHeight:1.6}},'Download verified. Restart Orplex to finish updating — your chats and agents will be restored.'),
+    h('div',{className:'btns'},
+      h('button',{className:'btn',onClick:hide},'Later'),
+      h(motion.button,{className:'btn p',whileTap:{scale:.97},whileHover:{scale:1.02},onClick:()=>go('installing')},'Restart & install')));
+  if(phase==='installing') return h('div',{className:'body'},
+    h('div',{className:'bar'},h(motion.div,{className:'ind',animate:{left:['-35%','100%']},transition:{repeat:Infinity,duration:1.1,ease:'easeInOut'}})),
+    h('p',{className:'sub'},'Please don’t close the app…'));
+  return h('div',{className:'body'},
+    h('div',{className:'burst'},Array.from({length:14}).map((_,i)=>{const a=i*(360/14)*Math.PI/180;
+      return h(motion.span,{key:i,className:'dot',style:{background:i%2?'var(--accent)':'var(--ok)'},initial:{x:0,y:0,opacity:1,scale:1},animate:{x:Math.cos(a)*90,y:Math.sin(a)*90-40,opacity:0,scale:.3},transition:{duration:.9,ease:'easeOut'}})})),
+    h('div',{className:'btns',style:{marginTop:0}},h(motion.button,{className:'btn p',whileTap:{scale:.97},onClick:hide},'Let’s go')));
+}
+
+const TITLES={
+  available:['Update available','Orplex v1.2.6 · '+TOTAL+' MB'],
+  downloading:['Downloading Orplex v1.2.6','Fetching update in the background'],
+  ready:['Ready to install','v1.2.4 → v1.2.6'],
+  installing:['Installing update…','Restarting Orplex'],
+  done:['You’re on v1.2.6','Update installed successfully']
+};
+
+function App(){
+  const [phase,setPhase]=useState('available');
+  const [p,setP]=useState(0);
+  const [speed,setSpeed]=useState(7.4);
+  const [open,setOpen]=useState(true);
+  const go=(ph,pp)=>{if(pp!==undefined)setP(pp);setPhase(ph);setOpen(true)};
+
+  useEffect(()=>{
+    if(phase!=='downloading')return;
+    const t=setInterval(()=>{
+      setSpeed(s=>Math.max(5,Math.min(10,s+(Math.random()-.5)*1.2)));
+      setP(v=>{const n=v+.5+Math.random()*1.4;if(n>=100){setTimeout(()=>setPhase('ready'),350);return 100}return n});
+    },130);
+    return()=>clearInterval(t);
+  },[phase]);
+  useEffect(()=>{
+    if(phase!=='installing')return;
+    const t=setTimeout(()=>setPhase('done'),3000);
+    return()=>clearTimeout(t);
+  },[phase]);
+
+  const [t,s]=TITLES[phase];
+  const hide=()=>setOpen(false);
+  const demo=[['available','Available'],['downloading','Downloading'],['ready','Ready'],['installing','Installing'],['done','Done']];
+
+  return h('div',null,
+    h('div',{className:'top'},
+      h('h1',null,'Orplex Code — update flow'),
+      h('p',null,'Interactive preview. Click through, or jump to any state:'),
+      h('div',{className:'chips'},demo.map(([k,l])=>h('button',{key:k,className:'chip'+(phase===k?' on':''),onClick:()=>go(k,k==='downloading'?62:k==='ready'?100:0)},l)))),
+    h(AnimatePresence,null,
+      open?h(motion.div,{key:'dock',className:'dock',initial:{opacity:0,y:40,scale:.96},animate:{opacity:1,y:0,scale:1},exit:{opacity:0,y:30,scale:.96},transition:spring},
+        h(motion.div,{className:'card',layout:true,transition:spring},
+          h('div',{className:'row'},
+            h(Icon,{phase}),
+            h('div',null,
+              h(motion.div,{key:phase+'t',className:'ttl',initial:{opacity:0,y:6},animate:{opacity:1,y:0}},t),
+              h('div',{className:'sub'},s)),
+            phase==='downloading'
+              ?h('button',{className:'btn',style:{flex:'none',marginLeft:'auto',padding:'7px 12px',fontSize:12},onClick:()=>go('available',0)},'Cancel')
+              :h('button',{className:'x','aria-label':'Dismiss',onClick:hide},h('svg',{width:16,height:16,viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:2.2,strokeLinecap:'round'},h('path',{d:'M6 6l12 12M18 6L6 18'})))),
+          h(AnimatePresence,{mode:'wait'},
+            h(motion.div,{key:phase,initial:{opacity:0,y:8},animate:{opacity:1,y:0},exit:{opacity:0,y:-6},transition:{duration:.18}},
+              h(Body,{phase,p,speed,go,hide}))))):
+      h(motion.button,{key:'show',className:'show',initial:{opacity:0},animate:{opacity:1},exit:{opacity:0},onClick:()=>setOpen(true)},'↑ Show update')));
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+</script>
+</body>
+</html>

@@ -28,7 +28,7 @@ const TopBarInner = dynamic(() => import("./TopBar"), {
 });
 const BugReportModal = dynamic(() => import("./BugReportModal"), { ssr: false });
 const ProductivityOverlays = dynamic(() => import("./ProductivityOverlays"), { ssr: false });
-const UpdateToast = dynamic(() => import("./UpdateToast"), { ssr: false });
+const UpdateCard = dynamic(() => import("./update/UpdateCard"), { ssr: false });
 
 // Artifact panel state — managed at layout level so any component can open it.
 // A const bridge object (not reassignable module-lets) so the React compiler
@@ -289,7 +289,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
       )}
       <ApprovalDialog />
       <ScrollFadeManager />
-      <UpdateToast />
+      <UpdateCard />
       {tourOpen && <OnboardingTour onComplete={finishTour} />}
     </>
   );

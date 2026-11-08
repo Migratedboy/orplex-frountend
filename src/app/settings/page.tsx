@@ -6,6 +6,7 @@ import { apiFetch, getCachedAppVersion } from "@/lib/api-base";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useToast } from "@/components/Toast";
+import { useUpdateStore, checkForUpdates } from "@/lib/update/updateStore";
 import { IconCheck } from "@/components/Icons";
 import { SettingsApiKeyTab } from "@/components/settings/api-keys-tab";
 import { SettingsCostTab } from "@/components/settings/cost-tab";
@@ -32,22 +33,30 @@ function AppVersion() {
 function UpdateCheckRow() {
   const [checking, setChecking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const store = useUpdateStore();
+
+  // Mirror store phase into the status line.
+  useEffect(() => {
+    if (store.phase === "downloading" && store.version) {
+      setMessage(`Downloading Orplex v${store.version}…`);
+    } else if (store.phase === "ready" && store.version) {
+      setMessage(`Update v${store.version} ready to install.`);
+    } else if (store.phase === "error" && store.error) {
+      setMessage(store.error);
+    }
+  }, [store.phase, store.version, store.error]);
+
   const isDesktop = typeof window !== "undefined" && !!(window as unknown as { orplexDesktop?: unknown }).orplexDesktop;
   if (!isDesktop) return null;
+
   const check = async () => {
     setChecking(true);
     setMessage(null);
     try {
-      // The manual check returns its outcome; show it here because the
-      // background event path keeps an up-to-date result silent (scheduled
-      // checks must not toast "up to date"). Available/error also surface in
-      // the UpdateToast card.
-      const res = await (window as unknown as {
-        orplexDesktop?: { updates?: { check?: () => Promise<{ state?: string; version?: string; error?: string }> } };
-      }).orplexDesktop?.updates?.check?.();
+      const res = await checkForUpdates(true);
       if (res?.state === "available" && res.version) {
         setMessage(`Update v${res.version} found — downloading in the background.`);
-      } else if (res?.error) {
+      } else if (res?.state === "error" && res.error) {
         setMessage(res.error);
       } else if (res?.state === "idle") {
         setMessage("You're up to date.");
@@ -60,6 +69,7 @@ function UpdateCheckRow() {
       setChecking(false);
     }
   };
+
   return (
     <div className="settings-actions" style={{ marginTop: 12, flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
       <button onClick={check} disabled={checking} className="settings-save-btn">
