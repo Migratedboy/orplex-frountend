@@ -487,6 +487,7 @@ export interface StreamResult {
 export interface StreamCallbacks {
   onChunk: (content: string) => void;
   onThinking?: (thinking: string) => void;
+  onToolCall?: (call: { index: number; id?: string; name?: string; arguments: string }) => void;
   /** The provider's stream ended cleanly ([DONE]). Absent for a mid-stream drop. */
   onDone?: () => void;
 }
@@ -577,7 +578,7 @@ export async function readStream(
 ): Promise<StreamResult> {
   const model = opts.model;
   const mcpRemotes = opts.mcpRemotes;
-  const { onChunk, onThinking, onDone } = callbacks;
+  const { onChunk, onThinking, onToolCall, onDone } = callbacks;
 
   const isAborted = () => signal?.aborted === true;
 
@@ -709,8 +710,21 @@ export async function readStream(
           }
           const acc = accumulatorMap.get(idx)!;
           if (tc.id) acc.id = tc.id;
-          if (tc.function?.name) acc.name = tc.function.name;
+          if (tc.function?.name) {
+            const currentName = acc.name ?? "";
+            acc.name = tc.function.name.startsWith(currentName)
+              ? tc.function.name
+              : currentName + tc.function.name;
+          }
           if (tc.function?.arguments) acc.arguments += tc.function.arguments;
+          if (acc.name) {
+            onToolCall?.({
+              index: idx,
+              id: acc.id,
+              name: acc.name,
+              arguments: acc.arguments,
+            });
+          }
         }
       }
     } catch {}
@@ -771,7 +785,7 @@ export async function readStream(
     "dest",
   ] as const;
   const nativeToolCalls: ToolCall[] = [];
-  for (const [, acc] of accumulatorMap) {
+  for (const [, acc] of [...accumulatorMap].sort(([a], [b]) => a - b)) {
     if (acc.name) {
       const call: ToolCall = { name: acc.name };
       if (acc.arguments) {

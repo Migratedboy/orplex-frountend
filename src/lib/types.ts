@@ -16,7 +16,7 @@ export type MessageId = Brand<string, "MessageId">;
 
 export type AgentEvent =
   | { type: "text"; content: string }
-  | { type: "tool_call"; tool: string; args: Record<string, unknown> }
+  | { type: "tool_call"; id?: string; tool: string; args: Record<string, unknown>; status?: "running" | "success" | "error"; startedAt?: number }
   | { type: "tool_result"; tool: string; result: string; success: boolean }
   | { type: "plan"; content: string }
   | { type: "thinking"; content: string }
@@ -49,7 +49,7 @@ export function isCompactionEvent(
   return event.type === "compacted";
 }
 
-export function isToolCallEvent(event: AgentEvent): event is { type: "tool_call"; tool: string; args: Record<string, unknown> } {
+export function isToolCallEvent(event: AgentEvent): event is Extract<AgentEvent, { type: "tool_call" }> {
   return event.type === "tool_call";
 }
 

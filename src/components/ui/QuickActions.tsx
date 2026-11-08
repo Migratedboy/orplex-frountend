@@ -11,6 +11,7 @@ interface QuickActionsProps {
    * the bar never goes blank (offline, cold key, before the first answer).
    */
   suggestions?: string[];
+   fallbackSuggestions?: string[];
   /**
    * True while /api/chat/suggestions is generating → the five chip slots
    * render as skeleton pills with a three-dot wave animation instead of
@@ -38,6 +39,7 @@ export default function QuickActions({
   hasFiles,
   isRunning,
   suggestions,
+  fallbackSuggestions,
   loadingSuggestions,
 }: QuickActionsProps) {
   if (isRunning) return null;
@@ -45,9 +47,12 @@ export default function QuickActions({
   // Generating → five non-interactive skeleton chips, each pulsing a
   // three-dot wave for its slot. No text, nothing clickable.
   if (loadingSuggestions) {
+    const widths = fallbackSuggestions?.length
+      ? LOADER_WIDTHS.slice(0, fallbackSuggestions.length)
+      : LOADER_WIDTHS;
     return (
       <div className="qa-bar" aria-busy="true">
-        {LOADER_WIDTHS.map((w, i) => (
+        {widths.map((w, i) => (
           <span
             key={`qa-load-${i}`}
             className="qa-chip qa-chip--smart qa-chip--loading"
@@ -65,9 +70,12 @@ export default function QuickActions({
   }
 
   const useSuggestions = Array.isArray(suggestions) && suggestions.length > 0;
+  const hasFallbackSuggestions = Array.isArray(fallbackSuggestions) && fallbackSuggestions.length > 0;
   const chips = useSuggestions
-    ? suggestions.slice(0, 5).map((s, i) => ({ id: s, label: s, icon: "✦", key: `${i}:${s}` }))
-    : STATIC_ACTIONS.map((a) => ({ ...a, key: a.id }));
+    ? suggestions.slice(0, 3).map((s, i) => ({ id: s, label: s, icon: "✦", key: `${i}:${s}` }))
+    : hasFallbackSuggestions
+      ? fallbackSuggestions.slice(0, 3).map((s, i) => ({ id: s, label: s, icon: "✦", key: `${i}:${s}` }))
+      : STATIC_ACTIONS.map((a) => ({ ...a, key: a.id }));
 
   return (
     <div className="qa-bar">
@@ -75,8 +83,8 @@ export default function QuickActions({
         <button
           key={action.key}
           onClick={() => onAction(action.id)}
-          disabled={!useSuggestions && !hasFiles && !ALWAYS_AVAILABLE.has(action.id)}
-          className={`qa-chip${useSuggestions ? " qa-chip--smart" : ""}`}
+          disabled={!useSuggestions && !hasFallbackSuggestions && !hasFiles && !ALWAYS_AVAILABLE.has(action.id)}
+          className={`qa-chip${useSuggestions || hasFallbackSuggestions ? " qa-chip--smart" : ""}`}
           title={useSuggestions ? "AI-suggested next step" : undefined}
         >
           <span className="qa-chip-badge">{action.icon}</span>

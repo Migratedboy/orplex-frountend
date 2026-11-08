@@ -15,7 +15,7 @@ import { initializePlugins, isPluginEnabled } from "./plugins/initializer";
 import { TIMEOUTS, LIMITS } from "./constants";
 import { runTurnLoop, stripToolCallText, type DispatchedCall } from "./agent/loop-engine";
 import { estimateComplexity, effortForTier } from "./effort";
-import { readStream, deduplicateWords, dedupeStreamedChunk, replaceLastStatus, parseToolCalls, normalizeThinkingBlocks, stripRedundantFences, appendTaskAnchor, repairInterleavedReplay, type ToolCall, type StreamResult, type StreamCallbacks } from "./stream-reader";
+import { deduplicateWords, dedupeStreamedChunk, replaceLastStatus, parseToolCalls, normalizeThinkingBlocks, stripRedundantFences, repairInterleavedReplay, type ToolCall, type StreamResult } from "./stream-reader";
 import { parseBareJsonToolCalls } from "./tool-text";
 import {
   createLoopStreaks,
@@ -24,14 +24,13 @@ import {
 } from "@/lib/agent/contract";
 import { SPARC_PLAN_DIRECTIVE, FORCE_TOOLS_DIRECTIVE, FORCE_BROWSER_TOOLS_DIRECTIVE, SAFETY_CONTINUE_DIRECTIVE, qualityReviewDirective, SELF_REVIEW_DIRECTIVE, verificationRepairDirective, browserRepairDirective, truncationContinue, adaptiveFailureDoctrine } from "./master-prompt";
 import { recordFailure, recordRepairAttempt, clearFailures } from "./failure-memory";
-import { startTaskMeter, recordPromptCall, formatSavingsSummary, logTaskMeter, calibratePromptSizes, computeTaskSavings } from "./prompt-meter";
+import { startTaskMeter, formatSavingsSummary, logTaskMeter, calibratePromptSizes, computeTaskSavings } from "./prompt-meter";
 import { startRubricObservation, recordToolCall, recordLaneOutcome, finishRubricObservation, isRecordingEnabled, formatTrendReport, readTrendHistoryForReport, getObservationMeta } from "./rubric-recorder";
 import { getWorkspaceKey, buildFinalizePayload, postRunToLedger, hydrateFailureMemoryFromLedger } from "./run-ledger";
 import { buildSystemPrompt } from "./master-prompt";
-import { emitStatus, emitActivity, emitPreview, emitCompaction } from "./agent-events";
+import { emitStatus, emitActivity, emitPreview, emitLiveToolCall } from "./agent-events";
 import { dispatchToolCall, type ToolContext } from "./agent/native-tools";
 import { runSubagent } from "./agent/subagent";
-import { configureCache, searchCache, cacheResponse } from "./semantic-cache";
 import {
   createScratchpad,
   seedScratchpad,
@@ -44,6 +43,8 @@ import {
 } from "./scratchpad";
 import { stampFailedMessage } from "./message-retry";
 import { lowMemoryNote } from "./memory-note";
+import { callModel, initializeModelCall, type RunState } from "./model-call";
+import { waitForAnswer } from "./task-waiter";
 // === Reliability gate pipeline (plan Phase 1, all behind RELIABILITY_* flags) ===
 // Every import here is a no-op unless RELIABILITY_GATES=1, so the default
 // behaviour of this worker is byte-for-byte unchanged.
@@ -97,14 +98,8 @@ import { buildVerificationReport, formatVerificationReport } from "./reliability
 import { extractAcceptanceFromTask } from "./reliability/acceptance";
 import { runOrchestration, executeOrchestratedWrites } from "./orchestration-client";
 import {
-  SENT_LOG,
   TOKEN_LIMIT_RE,
-  OUTPUT_RESERVE,
-  contextWindowForModel,
   estimateTokens,
-  fitMessagesToBudget,
-  msgBudgetFor,
-  reserveTokenWindow,
 } from "./token-budget";
 // Public surface preserved: the token-budget helpers were exported from here
 // and token-budget.test.ts imports them from this module.
@@ -115,6 +110,7 @@ import {
   startTask,
   updateTaskStatus,
   setDisplayContent,
+  flushDisplayContent,
   appendToDisplayContent,
   completeTask,
   failTask,
@@ -133,8 +129,6 @@ import {
   type ChatMessage,
 } from "./background-chat";
 
-// Types re-exported from stream-reader.ts: ToolCall, StreamResult
-
 // Calibrate the prompt meter with the REAL master-prompt sizes (once per load).
 try {
   const p = await buildSystemPrompt({ mode: "code" });
@@ -142,51 +136,7 @@ try {
   calibratePromptSizes(p.length, cp.length);
 } catch {}
 
-
-/**
- * Model call with budget fitting + pacing + one adaptive retry on TPM 413s.
- * Mirrors readStream's signature - all worker model calls go through here.
- */
-
-/**
- * State that belongs to ONE run, not to the module.
- *
- * These four were module-level `let`s, written when a run started and read
- * inside callModel with network awaits in between. Two overlapping runs (queue
- * concurrency is 3, and the detached lanes run in parallel) therefore wrote
- * into each other's state:
- *
- *  - anchorTaskMessage: run B set the anchor mid-run, so run A's next callModel
- *    appended B's sentence labelled "ORIGINAL TASK - never ask for
- *    clarification about it". Silent prompt poisoning.
- *  - taskCompactor: ONE shared instance holding {coveredCount, summary,
- *    fingerprint}. B's reset() landed during A's summarizer request, A's
- *    completion wrote its summary back, and B then folded its new tail onto A's
- *    summary - so B's model context literally contained the other run's
- *    compressed history.
- *  - lastCompactedThrough / taskMemoriesUsed: one run's counters attributed to
- *    the other.
- *
- * They now live in a RunState created per run and threaded through callModel,
- * so an overlap cannot reach another run's state at all.
- */
-interface RunState {
-  /** The original task text - keeps the task anchored in the trimmed context. */
-  anchorTaskMessage: string;
-  /** Lazily created per-run summarizing compactor (see compaction.ts). */
-  taskCompactor: import("./compaction").TranscriptCompactor | null;
-  /** Eviction high-water mark, so one logical compaction emits one divider. */
-  lastCompactedThrough: number;
-  /** How many memory entries were injected, for the run record. */
-  taskMemoriesUsed: number;
-  /**
-   * Body of the most recent <context_so_far> summary produced by the
-   * compactor. The turn loop consumes it (seeds EMPTY scratchpad sections —
-   * scratchpad.ts) for one turn and nulls it, so eviction time and handoff
-   * stay in lockstep without the compactor needing a reference to loop state.
-   */
-  lastCompactionSummary: string | null;
-}
+initializeModelCall();
 
 function createRunState(userMessage: string): RunState {
   return {
@@ -198,258 +148,8 @@ function createRunState(userMessage: string): RunState {
   };
 }
 
-// Semantic response cache — opt-in via env (default off to preserve behavior).
-// Set SEMANTIC_CACHE=1 to enable. Cache is in-memory, per-process, TTL 24h.
-let cacheEnabled = process.env.SEMANTIC_CACHE === "1";
-if (cacheEnabled) {
-  try { configureCache({ enabled: true }); } catch {}
-}
-
-/**
- * Pull the human-readable summary out of a compacted transcript.
- *
- * `compactTranscript` replaces the evicted prefix with a single
- * `<context_so_far>…</context_so_far>` block (compaction.ts). The divider wants
- * that body on its own — showing a user the raw wrapper tags would leak an
- * implementation detail into the UI. Returns null when the shape is unexpected,
- * so the divider can say "no summary captured" instead of printing markup.
- */
-function summarizeForDisplay(compacted: Array<{ content?: string }>): string | undefined {
-  const first = compacted?.[0]?.content ?? "";
-  const m = first.match(/<context_so_far>\s*([\s\S]*?)\s*<\/context_so_far>/i);
-  const body = (m?.[1] ?? "").trim();
-  return body.length > 0 ? body : undefined;
-}
 // The task object carries optional telemetry fields beyond the core interface.
 type BackgroundTaskLike = { memoriesUsed?: number };
-async function callModel(
-  apiMessages: { role: string; content: string }[],
-  runState: RunState,
-  conversationId: string | null,
-  callbacks: StreamCallbacks,
-  mode: string,
-  images: string[],
-  signal?: AbortSignal | null,
-  effort?: string,
-  profile: "full" | "compact" = "full",
-  meterInfo?: { taskId: string; turn: number; why: string },
-  model?: string,
-  mcpRemotes?: Array<{ id: string; label: string; url: string; auth: "oauth" | "bearer" | "none"; tools?: Array<{ name: string; description?: string; inputSchema?: unknown }> }>
-): Promise<StreamResult> {
-  const estimate = (ms: { role: string; content: string }[]) => ms.reduce((s, m) => s + estimateTokens(m.content), 0);
-  // Task anchor: trimming drops oldest-first, which on long loops evicted the
-  // original task entirely (live run: the model asked "what would you like me
-  // to help with?" mid-build). The anchor rides on the LAST message — the one
-  // message the budget can never drop.
-  const anchored = appendTaskAnchor(apiMessages, runState.anchorTaskMessage);
-  // Resolved BEFORE the truncation below, for THIS model's real context window.
-  //
-  // It used to be resolved AFTER, and `fitMessagesToBudget(anchored)` was called
-  // with the default budget — msgBudgetFor(FALLBACK_CONTEXT_TOKENS) ≈ 16k. That
-  // default then survived whenever compaction returned null (transcript under
-  // the 0.8 trigger of the REAL budget), so a 1M-window model sent at most ~16k
-  // tokens of history: lossy truncation instead of summarization, and with the
-  // transcript already shrunk, compaction could never reach its trigger to
-  // recover it. Resolving first makes the fallback path use the same budget the
-  // compaction path already used.
-  const MSG_BUDGET_TOKENS = msgBudgetFor(await contextWindowForModel(model));
-  // Summarizing compaction BEFORE truncation: when the transcript outgrows
-  // the budget, evicted messages become a <context_so_far> summary instead of
-  // being dropped. Incremental state = one bounded summary call per eviction.
-  // Any failure falls back to fitMessagesToBudget below — never blocks a task.
-  let fitted = fitMessagesToBudget(anchored, MSG_BUDGET_TOKENS);
-  try {
-    const { createHierarchicalCompactor } = await import("./compaction");
-    runState.taskCompactor ||= createHierarchicalCompactor(async (prompt, maxTokens) => {
-      // The summarize prompt embeds up to 6000 chars per evicted message and
-      // used to skip the TPM pacer — on the 8k free tier it could blow the
-      // window by itself, 413, and silently degrade to lossy truncation with
-      // unaccounted quota. Pace the summarizer like every other model call;
-      // any throw still resolves null (compactTranscript's summarizer catch —
-      // compaction must never block a task).
-      await reserveTokenWindow(estimateTokens(prompt), signal);
-      const res = await readStream(
-        [{ role: "user", content: prompt }],
-        null,
-        { onChunk: () => {}, onThinking: () => {} },
-        mode,
-        [],
-        signal,
-        effort,
-        "compact"
-      );
-      void maxTokens; // compact profile + readStream caps handle the budget
-      return res.content || "";
-    });
-    // Resolved once per callModel for THIS model's real context window.
-    const compacted = await runState.taskCompactor.compact(anchored, MSG_BUDGET_TOKENS, signal);
-    if (compacted) {
-      fitted = fitMessagesToBudget(compacted, MSG_BUDGET_TOKENS);
-      // Hand the summary to the turn loop so it can seed the scratchpad at the
-      // right moment (one turn, then consumed and nulled).
-      runState.lastCompactionSummary = summarizeForDisplay(compacted) ?? runState.lastCompactionSummary;
-      // Honest per-tier accounting (compaction.ts return contract): the trim/
-      // drop tiers keep the message count — nothing was evicted, only
-      // tool-result bodies were capped or stubbed in place. Only the
-      // summarize tier replaces messages ([block, ...tail] = one block added),
-      // so the evicted count there is the naive length delta PLUS the block.
-      const summarizing = String(compacted[0]?.content || "").startsWith("<context_so_far>");
-      if (!summarizing) {
-        const trimmed = compacted.filter((m, i) => m.content !== anchored[i]?.content).length;
-        emitActivity({
-          type: "status",
-          message: `Context compacted — ${trimmed} older tool result(s) trimmed to stay under the token budget`,
-          agent: "coder",
-        });
-      }
-      // Structured companion to the status line: the timeline renders a
-      // collapsible marker with the real before/after numbers, which the flat
-      // status string cannot carry.
-      //
-      // Token figures are ESTIMATES from the same chars/4 heuristic the
-      // prompt meter uses (see below) — the divider renders them "~"-prefixed
-      // for that reason.
-      //
-      // Gated on the eviction advancing: callModel runs again on every tool
-      // turn and again for review/repair, and each pass compacts a little more.
-      // One logical compaction should read as ONE divider in the timeline.
-      const evictedNow = summarizing ? anchored.length - compacted.length + 1 : 0;
-  if (evictedNow > runState.lastCompactedThrough) {
-    runState.lastCompactedThrough = evictedNow;
-        const charsToTokens = (msgs: Array<{ content?: string }>) =>
-          Math.round(msgs.reduce((sum, m) => sum + (m.content || "").length, 0) / 4);
-        emitActivity({
-          type: "status",
-          message: `Context compacted — ${evictedNow} earlier turns summarized to stay under the token budget`,
-          agent: "coder",
-        });
-        emitCompaction({
-          tokensBefore: charsToTokens(anchored),
-          tokensAfter: charsToTokens(fitted),
-          mode: "automatic",
-          summary: summarizeForDisplay(compacted),
-        });
-      }
-    }
-  } catch {}
-  // Meter BEFORE reserving: system block is server-side (profile chosen from
-  // body), so we record the estimated system size + actual context size.
-  if (meterInfo) {
-    try {
-      const { getPromptSizes } = await import("./prompt-meter");
-      const sizes = getPromptSizes();
-      const contextChars = fitted.reduce((s, m) => s + (m.content || "").length, 0);
-      // C10: MCP schemas ride in the tools array every call — count them on
-      // the system side via the shared builder's schemaChars. Include legacy
-      // remotes (localStorage) so the meter accounts for them too.
-      const { loadRemotes } = await import("./mcp/registry");
-      const { buildMcpRoster } = await import("./mcp/tool-builder");
-      const toolSchemaChars = buildMcpRoster(
-        loadRemotes().flatMap((r) =>
-          (r.tools ?? []).map((t) => ({
-            server: r.id,
-            name: t.name,
-            description: t.description ?? "",
-            inputSchema: t.inputSchema,
-            annotations: t.annotations,
-          }))
-        )
-      ).schemaChars;
-      recordPromptCall({
-        taskId: meterInfo.taskId,
-        turn: meterInfo.turn,
-        profile,
-        mode,
-        effort,
-        systemChars: profile === "compact" ? sizes.compact : sizes.full,
-        contextChars,
-        toolSchemaChars,
-        why: meterInfo.why,
-      });
-    } catch {}
-  }
-  // Send legacy-lane remotes to /api/chat so the server-side prompt builder
-  // can include them in the MCP section (the model needs to KNOW the tools
-  // exist to call them — dispatch alone isn't enough).
-  let sendMcpRemotes = mcpRemotes;
-  try {
-    const { loadRemotes } = await import("./mcp/registry");
-    const remotes = loadRemotes();
-    if (remotes.length > 0) {
-      sendMcpRemotes = remotes.map((r) => ({
-        id: r.id,
-        label: r.label,
-        url: r.url,
-        auth: r.auth,
-        tools: r.tools?.map((t) => ({ name: t.name, description: t.description ?? undefined, inputSchema: t.inputSchema ?? undefined })) ?? undefined,
-      }));
-    }
-  } catch {}
-  await reserveTokenWindow(estimate(fitted), signal);
-  // Transient-blip retry: LIVE-VALIDATED (run 4) — a dropped connection
-  // ("fetch failed") on call #2 killed an otherwise-healthy task after it had
-  // already produced its plan. One retry with a short backoff covers both
-  // this and the token-window pressure path. Abort never retries.
-  const attempt = async (msgs: { role: string; content: string }[]): Promise<StreamResult> => {
-    // Semantic cache: check for similar past query (opt-in via SEMANTIC_CACHE=1).
-    // We hash the last user message as the query key.
-    let cacheHit: { response: string; toolsUsed: string[] } | null = null;
-    let cacheKey = "";
-    if (cacheEnabled) {
-      try {
-        const lastUser = [...msgs].reverse().find((m) => m.role === "user")?.content || "";
-        if (lastUser) {
-          cacheKey = lastUser.slice(0, 500);
-          const hit = searchCache(cacheKey);
-          if (hit) {
-            cacheHit = { response: hit.response, toolsUsed: hit.toolsUsed };
-            callbacks?.onChunk?.(hit.response);
-            return { content: hit.response, thinking: "", toolCalls: [] };
-          }
-        }
-      } catch {}
-    }
-
-    try {
-      const result = await readStream(msgs, conversationId, callbacks, mode, images, signal, effort, profile, { model, mcpRemotes: sendMcpRemotes });
-      // Cache successful response (if we have a cache key and content).
-      if (cacheEnabled && cacheKey && result.content) {
-        try { cacheResponse(cacheKey, result.content, cacheHit?.toolsUsed || []); } catch {}
-      }
-      return result;
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      const { isTransientError } = await import("./retry");
-      if (!isTransientError(err)) throw err;
-      await new Promise((r) => setTimeout(r, 1500));
-      updateTaskStatus("tool_executing", "Connection blip — retrying…");
-      emitActivity({ type: "status", message: "Provider blip — retrying once", agent: "coder" });
-      const retryResult = await readStream(msgs, conversationId, callbacks, mode, images, signal, effort, profile, { model, mcpRemotes: sendMcpRemotes });
-      if (cacheEnabled && cacheKey && retryResult.content) {
-        try { cacheResponse(cacheKey, retryResult.content, []); } catch {}
-      }
-      return retryResult;
-    }
-  };
-  try {
-    return await attempt(fitted);
-  } catch (err) {
-    const msg = String((err as Error)?.message || err);
-    if (!TOKEN_LIMIT_RE.test(msg) || signal?.aborted) throw err;
-    // The failed attempt still burned window tokens - account for it, then
-    // retry once with a tighter budget (aggressively trimmed context).
-    SENT_LOG.push({ t: Date.now(), tokens: OUTPUT_RESERVE + 1000 });
-    // Refit the RAW list, then RE-ANCHOR: the adaptive refit used to drop the
-    // task appendix and the retry ran anchor-less. appendTaskAnchor skips when
-    // the anchor is already present, so this mirrors the normal path.
-    const tighter = appendTaskAnchor(
-      fitMessagesToBudget(apiMessages, Math.floor(MSG_BUDGET_TOKENS / 2)),
-      runState.anchorTaskMessage
-    );
-    await reserveTokenWindow(estimate(tighter), signal);
-    return await attempt(tighter);
-  }
-}
 
 // === Filesystem access ===
 
@@ -499,35 +199,6 @@ export { diagnosePortConflict } from "./port-conflict";
  * Poll the task store for the user's answer to a pending question (set via
  * setQuestion). Shared by ask_question and the safety-limit continue prompt.
  */
-function waitForAnswer(timeoutMs = 300_000): Promise<string> {
-  // Capture the WAITING task's id: a newer task starting mid-wait must not
-  // resolve this waiter with the wrong task's answer.
-  const waitingId = getCurrentTask()?.id;
-  return new Promise((resolve) => {
-    let resolved = false;
-    const done = (value: string) => {
-      if (resolved) return;
-      resolved = true;
-      clearInterval(check);
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const check = setInterval(() => {
-      const bg = getCurrentTask();
-      if (!bg || bg.id !== waitingId || bg.status === "done" || bg.status === "error") {
-        done("(task cancelled)");
-        return;
-      }
-      if (bg.question?.answered) {
-        done(bg.question.answer || "");
-      }
-    }, 500);
-    const timer = setTimeout(() => {
-      done("(timed out)");
-    }, timeoutMs);
-  });
-}
-
 // === Filesystem access ===
 
 let _readFile: ((path: string) => Promise<string>) | null = null;
@@ -574,8 +245,7 @@ function listFilesUnderPath(path: string): string {
 // server-side on disk via /api/agent/grep (ripgrep → git grep → node scan),
 // dispatched from agent/native-tools.ts — not over the renderer's hot-set.
 
-// readStream is imported from stream-reader.ts
-// Tool calls are returned as part of StreamResult.toolCalls
+// Model call preparation, compaction, metering, and retries live in model-call.ts.
 
 // === Build workspace context ===
 
@@ -733,7 +403,7 @@ export async function runInBackground(
   hydrateFailureMemoryFromLedger(getWorkspaceKey(_directoryName)).catch(() => {});
   // Per-task prompt-token meter (full vs compact savings — see prompt-meter)
   startTaskMeter(taskId, mode);
-  // The abort signal for THIS task — Stop aborts it and readStream unwinds
+  // The abort signal for THIS task — Stop aborts it and the model call unwinds
   const abortSignal = getTaskAbortSignal();
 
   // User pressed Stop while we were building context (before startTask)
@@ -1086,12 +756,24 @@ export async function runInBackground(
   // per delta, which (with per-chunk fan-out) froze the UI. The fold sites
   // and final assembly still run the full repair before anything persists.
   let lastThinkingSeen: string | null = null;
+  let lastThinkingClosed: boolean | null = null;
   let thinkingBlockCache = "";
-  const thinkingBlock = () => {
-    if (thinkingDisplay === lastThinkingSeen) return thinkingBlockCache;
+  const thinkingBlock = (closed = false) => {
+    if (thinkingDisplay === lastThinkingSeen && closed === lastThinkingClosed) return thinkingBlockCache;
     lastThinkingSeen = thinkingDisplay;
-    thinkingBlockCache = thinkingDisplay ? THINK_OPEN + thinkingDisplay + THINK_CLOSE : "";
+    lastThinkingClosed = closed;
+    thinkingBlockCache = thinkingDisplay
+      ? THINK_OPEN + thinkingDisplay + (closed ? THINK_CLOSE : "")
+      : "";
     return thinkingBlockCache;
+  };
+  const finishThinkingDisplay = () => {
+    if (!thinkingDisplay) return;
+    fullDisplayContent += thinkingBlock(true);
+    thinkingDisplay = "";
+    lastThinkingSeen = null;
+    lastThinkingClosed = null;
+    thinkingBlockCache = "";
   };
   /**
    * composeDisplay(text) — text is the FULL streamed answer so far. Only the
@@ -1297,9 +979,10 @@ export async function runInBackground(
     },
     setStatus: (status, detail) => updateTaskStatus(status, detail),
     replaceStatus: (line) => { fullDisplayContent = replaceLastStatus(fullDisplayContent, line); },
-    syncDisplay: () => setDisplayContent(fullDisplayContent),
+    syncDisplay: () => flushDisplayContent(fullDisplayContent),
     waitForAnswer,
   };
+    let turnToolCallIds: string[] = [];
     const loopExit = await runTurnLoop({
       maxTurns: effortBudget.maxTurns,
       parallelToolLimit: effortBudget.parallelToolLimit,
@@ -1340,12 +1023,17 @@ export async function runInBackground(
         // the caller's side, so the truncated text must not be persisted or
         // displayed as a successful exchange.
         let streamEndedCleanly = false;
-        const streamResult = await callModel(
+        const partialToolIds = new Map<number, string>();
+        const partialToolNames = new Map<number, string>();
+        let streamResult: StreamResult;
+        try {
+          streamResult = await callModel(
           apiMessages,
           runState,
           conversationId,
           {
             onChunk: (content) => {
+              finishThinkingDisplay();
               // Bounded repair + single rebuilt thinking block per turn — see
               // composeDisplay above. Re-repairing the whole transcript per
               // chunk used to freeze the UI mid-run.
@@ -1356,6 +1044,22 @@ export async function runInBackground(
               thinkingDisplay += neutralizeModelMarkers(thinking);
               setDisplayContent(composeDisplay(""));
               emitActivity({ type: "thinking", message: thinking.slice(-80) });
+            },
+            onToolCall: ({ index, name }) => {
+              if (!name || partialToolNames.get(index) === name) return;
+              partialToolNames.set(index, name);
+              let id = partialToolIds.get(index);
+              if (!id) {
+                id = `${taskId}:${turn}:${index}`;
+                partialToolIds.set(index, id);
+              }
+              emitLiveToolCall({
+                taskId,
+                id,
+                tool: name,
+                args: {},
+                status: "running",
+              });
             },
             onDone: () => {
               streamEndedCleanly = true;
@@ -1371,7 +1075,23 @@ export async function runInBackground(
           turn === 0 ? "full" : "compact",
           { taskId, turn, why: turn === 0 ? "initial" : `tool-loop turn ${turn + 1}` },
           selectedModel
-        );
+          );
+        } catch (error) {
+          for (const id of partialToolIds.values()) {
+            emitLiveToolCall({ taskId, id, tool: "", args: {}, status: "dismissed" });
+          }
+          throw error;
+        }
+
+        const nativeIds = [...partialToolIds.entries()]
+          .sort(([a], [b]) => a - b)
+          .map(([, id]) => id);
+        turnToolCallIds = streamResult.toolCalls.map((toolCall, index) => {
+          const id = nativeIds[index] ?? `${taskId}:${turn}:legacy:${index - nativeIds.length}`;
+          const { name, ...args } = toolCall;
+          emitLiveToolCall({ taskId, id, tool: name, args, status: "running" });
+          return id;
+        });
 
         sharedTurnOutput = { content: streamResult?.content ?? "" };
 
@@ -1409,10 +1129,7 @@ export async function runInBackground(
         // any of the turn's display content below is appended, so the
         // collapsible ThinkingCard renders the full reasoning followed by the
         // answer.
-        if (thinkingDisplay) {
-          fullDisplayContent += thinkingBlock();
-          thinkingDisplay = "";
-        }
+        finishThinkingDisplay();
       },
 
       onNoToolCalls: (_turn, out, textOnly) => {
@@ -1423,7 +1140,7 @@ export async function runInBackground(
         // successful writes — "You described the plan but created no files" —
         // even when write_file had succeeded. The written-files check makes
         // the nudge impossible once real work exists.
-        if (!streamedContent) {
+        if (!streamedContent.trim()) {
           // Empty response — set minimal content so message isn't stuck on
           // "Thinking..." and stamp [FAILED] so the renderer offers Retry.
           if (!fullDisplayContent.trim()) {
@@ -1619,7 +1336,19 @@ export async function runInBackground(
         if (displayTextOnly) fullDisplayContent += displayTextOnly + "\n\n";
         return null;
       },
-      dispatchCall: async (call) => dispatchOneTurnCall(call),
+      dispatchCall: async (call, callIndex) => {
+        const id = turnToolCallIds[callIndex];
+        if (id) {
+          emitLiveToolCall({
+            taskId,
+            id,
+            tool: String(call.name),
+            args: Object.fromEntries(Object.entries(call).filter(([key]) => key !== "name")),
+            status: "dismissed",
+          });
+        }
+        return dispatchOneTurnCall(call);
+      },
       postDispatch: (_turn, out, info) => {
         const streamedContent = out.content || "";
         // Aggregate cap for one turn's tool results. Individual tools cap
@@ -3169,6 +2898,12 @@ export async function runInBackground(
         failTask(gateReason);
         // === PLUGIN HOOK: onTaskFail ===
         onTaskFail(userMessage, gateReason).catch(() => {});
+      } else if (failedEmptyResponse) {
+        const error = "The model returned no response. Try again.";
+        setDisplayContent(finalContent);
+        failTask(error);
+        // === PLUGIN HOOK: onTaskFail ===
+        onTaskFail(userMessage, error).catch(() => {});
       } else {
         completeTask(finalContent);
         // === PLUGIN HOOK: onTaskComplete ===

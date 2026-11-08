@@ -8,6 +8,7 @@ interface ToolCallProps {
   args?: Record<string, unknown>;
   result?: string;
   success?: boolean;
+  status?: "running" | "success" | "error";
 }
 
 /**
@@ -15,13 +16,13 @@ interface ToolCallProps {
  * transcript chain renders: icon on the line, status dot, name, mono args,
  * right-aligned state, chevron). Renders as a one-item chain.
  */
-export default function ToolCallDisplay({ tool, args, result, success }: ToolCallProps) {
+export default function ToolCallDisplay({ tool, args, result, success, status }: ToolCallProps) {
   const content = JSON.stringify({ name: tool, ...(args ?? {}) });
   const row = rowFromToolCall({ type: "tool_call", content, name: tool });
   if (result) row.detail = [row.detail, result].filter(Boolean).join("\n\n");
-  if (success === true) row.state = "success";
-  else if (success === false) row.state = "error";
+  if (success === true || status === "success") row.state = "success";
+  else if (success === false || status === "error") row.state = "error";
 
   const items: ChainItem[] = [{ type: "tool", row }];
-  return <ToolChain items={items} runLive={success === undefined} />;
+  return <ToolChain items={items} runLive={status ? status === "running" : success === undefined} />;
 }

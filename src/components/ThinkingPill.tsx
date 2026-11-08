@@ -73,7 +73,8 @@ const ThinkingPill = forwardRef<HTMLDivElement, ThinkingPillProps>(
 
     const [open, setOpen] = useState(defaultOpen);
     const hasText = reasoning.trim().length > 0;
-    const isOpen = open && hasText;
+    const canExpand = hasText || !done;
+    const isOpen = open && canExpand;
 
     /* ---------- timer ---------- */
     const [ms, setMs] = useState<number | undefined>(durationMs);
@@ -102,7 +103,7 @@ const ThinkingPill = forwardRef<HTMLDivElement, ThinkingPillProps>(
     }, [hasText, done]);
 
     const toggle = () => {
-      if (!hasText) return;
+      if (!canExpand) return;
       touched.current = true;
       const next = !isOpen;
       setOpen(next);
@@ -137,9 +138,9 @@ const ThinkingPill = forwardRef<HTMLDivElement, ThinkingPillProps>(
           type="button"
           id={pillId}
           className="tp-pill"
-          disabled={!hasText}
-          aria-expanded={hasText ? isOpen : undefined}
-          aria-controls={hasText ? panelId : undefined}
+          disabled={!canExpand}
+          aria-expanded={canExpand ? isOpen : undefined}
+          aria-controls={canExpand ? panelId : undefined}
           onClick={toggle}
         >
           <span className="tp-orb" aria-hidden="true">
@@ -168,7 +169,7 @@ const ThinkingPill = forwardRef<HTMLDivElement, ThinkingPillProps>(
             </span>
           )}
 
-          {hasText && (
+          {canExpand && (
             <svg
               className="tp-chev"
               viewBox="0 0 16 16"
@@ -208,6 +209,9 @@ const ThinkingPill = forwardRef<HTMLDivElement, ThinkingPillProps>(
               }}
             >
               {reasoning}
+              {!hasText && !done && (
+                <span className="tp-placeholder">Waiting for reasoning to stream…</span>
+              )}
               {!done && <span className="tp-caret" aria-hidden="true" />}
             </div>
           </div>

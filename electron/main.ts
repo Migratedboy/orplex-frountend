@@ -259,8 +259,10 @@ try {
 // DEV as well — it used to be packaged-only, which left the dev taskbar
 // poisoned — and again once the app is ready, because Electron creates that
 // shortcut while initializing its toast support.
-// Only an unbranded electron.exe target is ever deleted; an installed
-// "Orplex Code.exe" shortcut is never touched.
+// Only a dev-lane Electron target (stock electron.exe or the branded
+// orplex-dev.exe) is ever touched; an installed "Orplex Code.exe" shortcut is
+// never deleted, and in the packaged lane OUR shortcut is repointed at the
+// installed exe instead of removed.
 function sweepIconPoison(): void {
   // Candidates: the known "Electron.lnk" plus EVERY shortcut in the Programs
   // folder — Electron may name the poison after the app name instead, and a
@@ -278,12 +280,57 @@ function sweepIconPoison(): void {
     exists: (p) => fs.existsSync(p),
     readTarget: (p) => shell.readShortcutLink(p).target,
     remove: (p) => fs.unlinkSync(p),
+    // Packaged lane only: our own shortcut ("Orplex Code.lnk") is legitimately
+    // ours, only its target is wrong — repoint it at the running exe. In dev
+    // process.execPath IS the bare dev runtime, so repointing would recreate
+    // the bug; there the poisoned link is deleted instead.
+    repoint:
+      process.platform === "win32" && !isDev
+        ? {
+            target: process.execPath,
+            shortcutNames: [`${app.getName()}.lnk`],
+            write: (shortcutPath: string, target: string) => repairShortcut(shortcutPath, target),
+          }
+        : undefined,
   });
   if (result.removed.length) {
     console.log("[win-icon] removed poisonous shortcut(s):", result.removed.join(", "));
   }
+  if (result.repaired.length) {
+    console.log("[win-icon] repointed poisonous shortcut(s) at the installed exe:", result.repaired.join(", "));
+  }
   for (const err of result.errors) {
     console.log("[win-icon] poison sweep noop:", err);
+  }
+}
+
+/**
+ * Rewrite one of OUR Start Menu shortcuts so it points at the installed exe.
+ *
+ * This is the self-heal for the poisoned shortcut that survived the update
+ * AND broke the relaunch: a dev run's toast left "Orplex Code.lnk" pointing at
+ * node_modules\electron\dist\orplex-dev.exe, electron-builder kept that
+ * shortcut (KeepShortcuts), and its post-update relaunch executed the link —
+ * starting a bare Electron with no app path, i.e. the stray Electron window.
+ * The installer now relaunches $INSTDIR\Orplex Code.exe directly (see
+ * electron/nsis/installer.nsh), and this repairs the link itself so nothing else —
+ * shell taskbar resolution included — can resolve the app through it.
+ */
+function repairShortcut(shortcutPath: string, target: string): void {
+  const details = {
+    target,
+    cwd: path.dirname(target),
+    description: "Orplex Code",
+    icon: target,
+    iconIndex: 0,
+    // Same AUMID the window and the installer use: without it the shortcut
+    // would undo the taskbar identity the sweep exists to protect.
+    appUserModelId: PACKAGED_APP_ID,
+  };
+  // "update" rewrites only the properties given and keeps the file; fall back
+  // to "create" for a link Windows no longer considers a valid shortcut.
+  if (!shell.writeShortcutLink(shortcutPath, "update", details)) {
+    shell.writeShortcutLink(shortcutPath, "create", details);
   }
 }
 try {

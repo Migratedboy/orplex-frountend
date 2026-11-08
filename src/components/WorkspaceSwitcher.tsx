@@ -7,12 +7,14 @@
 // The roster comes from WorkspaceProvider — the single owner shared with the
 // sidebar, so re-attaching here updates the sidebar's Projects section too.
 
-import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { IconFolder, IconFolderOpen, IconChevronDown, IconPlus } from "./Icons";
 import { useFileSystemContext } from "./FileSystemProvider";
 import { useWorkspace } from "./WorkspaceProvider";
 import { projectLabel } from "@/lib/project-threads";
 import type { ProjectEntry } from "@/lib/project-registry";
+import { positionPromptMenu } from "@/lib/prompt-menu-position";
 
 export default function WorkspaceSwitcher() {
   const { directoryName, openFolder, reopenProject } = useFileSystemContext();
@@ -21,12 +23,15 @@ export default function WorkspaceSwitcher() {
   const [reopening, setReopening] = useState<string | null>(null);
   const [recent, setRecent] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuPortalRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click / Esc.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (!wrapRef.current?.contains(target) && !menuPortalRef.current?.contains(target)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
@@ -38,6 +43,24 @@ export default function WorkspaceSwitcher() {
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    const anchor = wrapRef.current?.querySelector<HTMLButtonElement>(".ws-chip");
+    if (!open || !menu || !anchor) return;
+    const reposition = () => positionPromptMenu(anchor, menu);
+    reposition();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reposition);
+    observer?.observe(menu);
+    observer?.observe(anchor);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+      observer?.disconnect();
+    };
+  }, [open, projects.length, reopening, recent]);
 
   const reopen = async (project: ProjectEntry) => {
     if (reopening) return; // one permission prompt at a time
@@ -54,8 +77,8 @@ export default function WorkspaceSwitcher() {
   };
 
   // Active chip label: the open folder, else the last context (marker row),
-  // else "project".
-  const label = directoryName ?? recent ?? "project";
+  // else invite the user to select one.
+  const label = directoryName ?? recent ?? "Choose project";
 
   return (
     <div className="ws-switcher" ref={wrapRef}>
@@ -71,8 +94,9 @@ export default function WorkspaceSwitcher() {
         <span className="ws-chip-label">{label}</span>
         <IconChevronDown size={12} />
       </button>
-      {open && (
-        <div className="ws-menu" role="menu">
+      {open && typeof document !== "undefined" ? createPortal(
+        <div className="prompt-bar prompt-bar__floating-layer" ref={menuPortalRef} data-md="ask">
+          <div className="ws-menu" ref={menuRef} role="menu">
           <button
             type="button"
             className="ws-menu-item ws-menu-open"
@@ -101,8 +125,9 @@ export default function WorkspaceSwitcher() {
               {directoryName === project.name && <span className="ws-menu-check">✓</span>}
             </button>
           ))}
+          </div>
         </div>
-      )}
+      , document.body) : null}
     </div>
   );
 }

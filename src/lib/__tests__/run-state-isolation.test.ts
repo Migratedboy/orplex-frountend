@@ -21,6 +21,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const SRC = readFileSync(join(__dirname, "..", "background-worker.ts"), "utf8");
+const MODEL_SRC = readFileSync(join(__dirname, "..", "model-call.ts"), "utf8");
 
 describe("per-run state isolation", () => {
   it("declares no module-level per-run state", () => {
@@ -36,17 +37,14 @@ describe("per-run state isolation", () => {
   });
 
   it("threads runState into every callModel invocation", () => {
-    // Declarations, doc comments and call sites all mention callModel, so pin
-    // the invariant rather than a brittle count: every invocation passes
-    // runState as its second argument, so the two tallies line up.
+    // Pin that every worker call site passes runState as the second argument.
     const calls = (SRC.match(/callModel\(/g) || []).length;
     const withRunState = (SRC.match(/runState,/g) || []).length;
-    // `callModel(` also matches the declaration, so calls = 1 + invocations.
     // Each invocation passes runState as its second argument.
-    // Transform 2a: the subagent mini-loop's call is an 7th invocation, and it
-    // threads runState too (per-run state isolation applies to subagents).
-    expect(calls).toBe(8); // declaration + 7 invocations
-    expect(withRunState).toBe(calls - 1);
+    // The function itself lives in model-call.ts; this file holds all seven
+    // worker call sites, including the subagent mini-loop.
+    expect(calls).toBe(7);
+    expect(withRunState).toBe(calls);
   });
 
   it("creates a fresh RunState per run rather than resetting shared state", () => {
@@ -56,12 +54,12 @@ describe("per-run state isolation", () => {
   });
 
   it("reads and writes compaction state through runState", () => {
-    expect(SRC).toMatch(/appendTaskAnchor\(apiMessages, runState\.anchorTaskMessage\)/);
+    expect(MODEL_SRC).toMatch(/appendTaskAnchor\(apiMessages, runState\.anchorTaskMessage\)/);
     // 4c: the compactor is now hierarchical (trim/drop tiers first, summarize
     // last) — the per-run instance lives on runState exactly as before.
-    expect(SRC).toMatch(/runState\.taskCompactor \|\|= createHierarchicalCompactor\(/);
-    expect(SRC).toMatch(/await runState\.taskCompactor\.compact\(/);
-    expect(SRC).toMatch(/evictedNow > runState\.lastCompactedThrough/);
+    expect(MODEL_SRC).toMatch(/runState\.taskCompactor \|\|= createHierarchicalCompactor\(/);
+    expect(MODEL_SRC).toMatch(/await runState\.taskCompactor\.compact\(/);
+    expect(MODEL_SRC).toMatch(/evictedNow > runState\.lastCompactedThrough/);
   });
 
   it("runs the subagent mini-loop on a DERIVED child state, not the parent's", () => {

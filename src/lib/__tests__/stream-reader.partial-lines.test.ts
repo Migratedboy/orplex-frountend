@@ -96,6 +96,25 @@ describe("readStream partial-line buffering", () => {
     expect(result.toolCalls[0].content).toBe("x");
   });
 
+  it("reports native tool names and argument fragments as they stream", async () => {
+    const mk = (name: string, args: string) =>
+      `data: ${JSON.stringify({ tool_calls: [{ index: 0, function: { name, arguments: args } }] })}\n\n`;
+    const raw = mk("write_", '{"path":') + mk("file", '"a.ts"}') + "data: [DONE]\n\n";
+    mockChatApi(streamFromChunks([encoder.encode(raw)]));
+
+    const seen: Array<{ index: number; name?: string; arguments: string }> = [];
+    const result = await readStream(
+      [{ role: "user", content: "hi" }],
+      null,
+      { onChunk: () => {}, onToolCall: (call) => seen.push(call) },
+      "code"
+    );
+
+    expect(seen[0]).toEqual({ index: 0, name: "write_", arguments: '{"path":' });
+    expect(seen[1]).toEqual({ index: 0, name: "write_file", arguments: '{"path":"a.ts"}' });
+    expect(result.toolCalls[0].name).toBe("write_file");
+  });
+
   it("passes create_file's filename argument through the native arg allowlist", async () => {
     // create_file is a NEW tool whose args ride the same allowlist — before
     // the fix, `filename` was missing from TOOL_ARG_FIELDS and the parser

@@ -5,6 +5,8 @@
 import { trackTaskStart, trackTaskEnd } from "./run-sync";
 import { normalizeThinkingBlocks } from "./stream-reader";
 import { clearPlanLatch } from "./plan-gate";
+import { captureActivityTiming, type ActivityTiming } from "./activity";
+import { parseContent } from "./message-content";
 
 // === Types ===
 
@@ -22,6 +24,7 @@ export interface BackgroundTask {
   userMessage: string;
   messages: ChatMessage[];
   displayContent: string;
+  activityTiming?: ActivityTiming;
   status: TaskStatus;
   statusDetail: string;
   error?: string;
@@ -111,6 +114,7 @@ export interface TaskSnapshot {
   conversationId: string | null;
   userMessage: string;
   displayContent: string;
+  activityTiming?: ActivityTiming;
   status: string;
   statusDetail: string;
   startedAt: number;
@@ -228,6 +232,7 @@ export function persistTaskSnapshot(force = false): void {
       conversationId: currentTask.conversationId,
       userMessage: currentTask.userMessage,
       displayContent: currentTask.displayContent.slice(0, SNAPSHOT_MAX_CHARS),
+      activityTiming: currentTask.activityTiming,
       status: currentTask.status,
       statusDetail: currentTask.statusDetail,
       startedAt: currentTask.startedAt,
@@ -386,6 +391,7 @@ export function startTask(
     userMessage,
     messages: initialMessages,
     displayContent: "",
+    activityTiming: { groups: {}, steps: {} },
     status: "streaming",
     statusDetail: "Thinking…",
     startedAt: Date.now(),
@@ -512,13 +518,34 @@ export function answerQuestion(answer: string) {
 export function appendToDisplayContent(text: string) {
   if (!currentTask) return;
   currentTask.displayContent += text;
+  captureTaskActivityTiming(currentTask, false);
   notifyThrottled();
 }
 
 export function setDisplayContent(content: string) {
   if (!currentTask || !ownsTaskStore()) return;
   currentTask.displayContent = content;
+  captureTaskActivityTiming(currentTask, false);
   notifyThrottled();
+}
+
+/** Flush a discrete display transition immediately instead of coalescing it with later output. */
+export function flushDisplayContent(content: string) {
+  if (!currentTask || !ownsTaskStore()) return;
+  currentTask.displayContent = content;
+  captureTaskActivityTiming(currentTask, false);
+  notifyScheduled = false;
+  notify();
+}
+
+function captureTaskActivityTiming(task: BackgroundTask, terminal: boolean) {
+  const parsed = parseContent(task.displayContent, {
+    live: !terminal,
+    startedAt: task.startedAt,
+    activityTiming: task.activityTiming,
+    activity: true,
+  });
+  task.activityTiming = captureActivityTiming(parsed, task.activityTiming, Date.now(), terminal);
 }
 
 function addAssistantMessage(content: string) {
@@ -536,6 +563,7 @@ export function completeTask(finalContent?: string) {
   if (finalContent !== undefined) {
     currentTask.displayContent = finalContent;
   }
+  captureTaskActivityTiming(currentTask, true);
   currentTask.status = "done";
   currentTask.statusDetail = "Complete";
   currentTask.completedAt = Date.now();
@@ -584,6 +612,7 @@ export function failTask(error: string) {
   // Raw reasoning must never bleed into the response text on a failed task
   // either — normalize markers so the ThinkingCard still renders it collapsed.
   currentTask.displayContent = normalizeThinkingBlocks(currentTask.displayContent);
+  captureTaskActivityTiming(currentTask, true);
   currentTask.completedAt = Date.now();
   const failedId = currentTask.id;
   const failedTask = currentTask;
@@ -658,6 +687,7 @@ if (options.abort) {
   // into the message store). Markers get repaired instead of removed, so the
   // ThinkingCard still renders — only the raw-as-answer bleed is prevented.
   currentTask.displayContent = normalizeThinkingBlocks(currentTask.displayContent);
+  captureTaskActivityTiming(currentTask, true);
   currentTask.completedAt = Date.now();
   const cancelledTask = currentTask;
   // Status change (user pressed Stop) — flush IMMEDIATELY, never on a timer:

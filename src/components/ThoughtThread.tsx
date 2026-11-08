@@ -44,7 +44,6 @@ function toInputs(steps: ThoughtStep[]) {
     return {
       ...base,
       status: step.status === "error" ? ("error" as const) : ("done" as const),
-      duration: 0,
     };
   });
 }

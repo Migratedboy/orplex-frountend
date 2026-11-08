@@ -30,8 +30,18 @@ describe("isIconPoisonTarget — the Start Menu shortcut that poisons the taskba
     expect(isIconPoisonTarget("C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\electron\\dist\\electron.exe")).toBe(true);
   });
 
-  it("does NOT flag the branded dev binary (we run that one)", () => {
-    expect(isIconPoisonTarget("D:\\orplex\\node_modules\\electron\\dist\\orplex-dev.exe")).toBe(false);
+  it("flags the BRANDED dev binary — the one that actually broke updates", () => {
+    // This used to be whitelisted. That whitelist is why the poisoned
+    // "Orplex Code.lnk" pointing at orplex-dev.exe survived every sweep and
+    // electron-builder relaunched the app through it after an update, which
+    // started a bare Electron with no app path (the stray Electron window).
+    expect(isIconPoisonTarget("D:\\orplex\\node_modules\\electron\\dist\\orplex-dev.exe")).toBe(true);
+    expect(isIconPoisonTarget("D:/orplex/node_modules/electron/dist/orplex-dev.exe")).toBe(true);
+  });
+
+  it("does not flag our branded dev binary outside an electron runtime tree", () => {
+    // A copy someone installed themselves is not the dev lane we own.
+    expect(isIconPoisonTarget("C:\\Users\\me\\Desktop\\orplex-dev.exe")).toBe(false);
   });
 
   it("does NOT flag the installed product", () => {
@@ -145,5 +155,72 @@ describe("sweepIconPoison", () => {
     const result = sweepIconPoison(base);
     expect(result.errors.length).toBe(1);
     expect(result.removed).toEqual([other]);
+  });
+
+  it("repoints our own poisoned shortcut instead of deleting it (packaged lane)", () => {
+    const written: Array<{ path: string; target: string }> = [];
+    const { base, removed } = deps({
+      candidates: [INSTALLED],
+      readTarget: () => "D:\\orplex\\node_modules\\electron\\dist\\orplex-dev.exe",
+      repoint: {
+        target: "C:\\Users\\me\\AppData\\Local\\Programs\\orplex-code\\Orplex Code.exe",
+        shortcutNames: ["Orplex Code.lnk"],
+        write: (path, target) => {
+          written.push({ path, target });
+        },
+      },
+    });
+    const result = sweepIconPoison(base);
+    expect(result.repaired).toEqual([INSTALLED]);
+    expect(result.removed).toEqual([]);
+    expect(removed).toHaveLength(0);
+    expect(written).toEqual([
+      { path: INSTALLED, target: "C:\\Users\\me\\AppData\\Local\\Programs\\orplex-code\\Orplex Code.exe" },
+    ]);
+  });
+
+  it("still deletes a poisoned shortcut that is NOT ours, even with repoint set", () => {
+    const { base, removed } = deps({
+      candidates: [POISON],
+      readTarget: () => "D:\\orplex\\node_modules\\electron\\dist\\orplex-dev.exe",
+      repoint: {
+        target: "C:\\Users\\me\\AppData\\Local\\Programs\\orplex-code\\Orplex Code.exe",
+        shortcutNames: ["Orplex Code.lnk"],
+        write: () => {
+          throw new Error("must not repoint a foreign shortcut");
+        },
+      },
+    });
+    const result = sweepIconPoison(base);
+    expect(result.removed).toEqual([POISON]);
+    expect(result.repaired).toEqual([]);
+    expect(removed).toEqual([POISON]);
+  });
+
+  it("never repoints in dev (no repoint dep → the dev binary target is deleted)", () => {
+    const { base, removed } = deps({
+      candidates: [INSTALLED],
+      readTarget: () => "D:\\orplex\\node_modules\\electron\\dist\\orplex-dev.exe",
+    });
+    const result = sweepIconPoison(base);
+    expect(result.repaired).toEqual([]);
+    expect(removed).toEqual([INSTALLED]);
+  });
+
+  it("refuses to repoint at another dev-lane binary (packaged-mode run from a checkout)", () => {
+    const { base, removed } = deps({
+      candidates: [INSTALLED],
+      readTarget: () => "D:\\orplex\\node_modules\\electron\\dist\\orplex-dev.exe",
+      repoint: {
+        target: "D:\\orplex\\node_modules\\electron\\dist\\electron.exe",
+        shortcutNames: ["Orplex Code.lnk"],
+        write: () => {
+          throw new Error("must not write a dev-lane shortcut target");
+        },
+      },
+    });
+    const result = sweepIconPoison(base);
+    expect(result.repaired).toEqual([]);
+    expect(removed).toEqual([INSTALLED]);
   });
 });

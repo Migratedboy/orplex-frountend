@@ -24,7 +24,7 @@ function openModelMenu() {
   render(<PromptBar models={DUPLICATED} defaultModel={DUPLICATED[0].key} />);
   // The composer is focused in the real app; the picker's onFocus handler
   // closes the menus, so the click below has to start from that state.
-  screen.getByLabelText("Prompt").focus();
+  screen.getByLabelText("Message").focus();
   fireEvent.click(screen.getByLabelText("Choose model"));
 }
 
@@ -51,13 +51,13 @@ describe("model picker rows", () => {
 
   it("shows each model id once", () => {
     openModelMenu();
-    const names = screen.getAllByRole("option").map((o) => o.textContent ?? "");
+    const names = screen.getAllByRole("menuitemradio").map((o) => o.textContent ?? "");
     expect(names.filter((n) => n.includes("Nemotron 3 Ultra"))).toHaveLength(1);
     expect(names.filter((n) => n.includes("Gemma 4 31B"))).toHaveLength(1);
   });
 
   it("renders every distinct model", () => {
     openModelMenu();
-    expect(screen.getAllByRole("option")).toHaveLength(2);
+    expect(screen.getAllByRole("menuitemradio")).toHaveLength(2);
   });
 });

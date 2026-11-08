@@ -3,8 +3,6 @@
 import { useRef, useEffect, useState } from "react";
 import { VirtualList } from "./VirtualList";
 import MessageContent from "./MessageContent";
-import ThinkingPill from "./ThinkingPill";
-import ToolCallDisplay from "./ToolCallDisplay";
 import { MessageSkeleton } from "./Skeleton";
 import ClarificationCard from "./ClarificationCard";
 import DotGridLoader from "./DotGridLoader";
@@ -49,7 +47,7 @@ type RenderableItem = {
  *
  * The key deliberately excludes the content LENGTH. Including it meant every
  * streamed delta produced a brand-new key, so React unmounted and remounted the
- * entire row on every token — which reset ThinkingPill's elapsed timer, its
+ * entire row on every token — which reset the activity pill's timer, its
  * expanded state, CollapsibleText's expansion, and re-fired the VirtualList
  * measuring ref (a forced getBoundingClientRect) per token. `time` + `role` +
  * `index` are stable for the life of a message: the timestamp is fixed at
@@ -63,6 +61,7 @@ interface MessageListProps {
   messages: Message[];
   agentEvents: AgentEvent[];
   agentRunning: boolean;
+  runActive?: boolean;
   agentStatus?: string;
   onFastAnswer?: (userMessage: string) => void;
   /** One-click Retry on a failed assistant bubble (resends the original prompt). */
@@ -95,7 +94,7 @@ function estimateMessageHeight(item: RenderableItem): number {
   return Math.min(h, 600);
 }
 
-export default function MessageList({ messages, agentEvents, agentRunning, agentStatus, onFastAnswer, onRetryMessage, retryingIdx = null, runPhase = "idle", runLabel = "", clarification = null, clarificationAskCount = 1, onAnswerClarification, onSkipClarification }: MessageListProps) {
+export default function MessageList({ messages, agentEvents, agentRunning, runActive = false, agentStatus, onFastAnswer, onRetryMessage, retryingIdx = null, runPhase = "idle", runLabel = "", clarification = null, clarificationAskCount = 1, onAnswerClarification, onSkipClarification }: MessageListProps) {
   const { toast } = useToast();
   // "Copy summary" needs no extra plumbing, so the divider always gets a copy
   // handler here — without one the kebab renders NOTHING (the component hides
@@ -114,6 +113,17 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
   agentEvents.forEach((event, i) => {
     items.push({ kind: "event", event, index: i });
   });
+  const activeCalls = agentEvents.flatMap((event, i) =>
+    isToolCallEvent(event) && event.status === "running"
+      ? [{
+          id: event.id ?? `live-tool-${i}`,
+          tool: event.tool,
+          args: event.args,
+          ...(event.startedAt ? { startedAt: event.startedAt } : {}),
+        }]
+      : []
+  );
+  const liveToolCalls = activeCalls;
 
   // Use virtual list for 20+ items, fall back to simple rendering
   const useVirtual = items.length > 20;
@@ -124,17 +134,10 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
   const lastMsg = messages[messages.length - 1];
   const streamKey = `${items.length}:${lastMsg?.content?.length ?? 0}:${clarification?.question ?? ""}`;
 
-  // === ONE indicator at a time ============================================
-  // The original "Thinking Xs" block owns the thinking state outright (it
-  // already counts elapsed time and matches the message style): it is only
-  // ever LIVE while the run is in phase "thinking", and the tail indicator
-  // never renders in that phase. The two never overlap:
-  //   thinking     → Thinking block (live)      · tail hidden
-  //   running_tool → Thinking block settled/absent · tail "Working…"
-  //   streaming    → Thinking block settled/absent · tail "Responding…"
-  // A pending clarification owns the slot the other way: the card IS the
-  // tail while waiting — spinner and card never share the screen.
+  // A pending clarification owns the tail slot while waiting — its card and
+  // the generic run indicator never share the screen.
   const liveThinking = runPhase === "thinking";
+  const turnRunning = agentRunning || runActive;
   const pendingClarify = clarification && !clarification.answered ? clarification : null;
   const tail = pendingClarify ? (
     <ClarificationCard
@@ -169,12 +172,13 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
           renderItem={(item) => (
             <RenderableItem
               item={item}
-              agentRunning={agentRunning}
+              agentRunning={turnRunning}
               liveThinking={liveThinking}
               isLast={item.kind === "message" && item.index === messages.length - 1}
               onRetryMessage={onRetryMessage}
               retryingIdx={retryingIdx}
               onCopySummary={copyCompactionSummary}
+              liveToolCalls={item.kind === "message" && item.index === messages.length - 1 ? liveToolCalls : []}
             />
           )}
         />
@@ -196,11 +200,12 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
             key={msgKey(msg, i)}
             msg={msg}
             index={i}
-            agentRunning={agentRunning}
+            agentRunning={turnRunning}
             liveThinking={liveThinking}
             isLast={i === messages.length - 1}
             onRetryMessage={onRetryMessage}
             retryingIdx={retryingIdx}
+            liveToolCalls={i === messages.length - 1 ? liveToolCalls : []}
           />
         ))}
 
@@ -219,25 +224,6 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
               />
             );
           }
-          if (isToolCallEvent(event)) {
-            return (
-              <ToolCallDisplay
-                key={`evt-${i}`}
-                tool={event.tool}
-                args={event.args}
-              />
-            );
-          }
-          if (isToolResultEvent(event)) {
-            return (
-              <ToolCallDisplay
-                key={`evt-${i}`}
-                tool={event.tool}
-                result={event.result}
-                success={event.success}
-              />
-            );
-          }
           return null;
         })}
 
@@ -250,7 +236,7 @@ export default function MessageList({ messages, agentEvents, agentRunning, agent
 
 // === Individual row components ===
 
-function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, onRetryMessage, retryingIdx = null }: {
+function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, onRetryMessage, retryingIdx = null, liveToolCalls = [] }: {
   msg: Message;
   index: number;
   agentRunning: boolean;
@@ -259,11 +245,11 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
   isLast: boolean;
   onRetryMessage?: (assistantIdx: number) => void;
   retryingIdx?: number | null;
+  liveToolCalls?: Array<{ id: string; tool: string; args: Record<string, unknown>; startedAt?: number }>;
 }) {
   const pending = agentRunning && isLast;
-  // The Thinking block counts only while the model is actually thinking; once
-  // a tool runs or text streams it settles to its "Thought for Xs" done state.
-  // The run tail below the bubbles carries its own dot-grid loader for EVERY
+  // The activity group carries its own step state. The run tail below the
+  // bubbles carries a dot-grid loader for EVERY
   // live phase (thinking included), so the reader always sees that something
   // is still running.
   const thinkingLive = pending && liveThinking;
@@ -318,6 +304,8 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
                   content={msg.content}
                   isThinking={thinkingLive}
                   runLive={pending}
+                  activityTiming={msg.activityTiming}
+                  liveToolCalls={pending ? liveToolCalls : []}
                   onRetry={
                     isFailedMessage(msg.content) && onRetryMessage
                       ? () => onRetryMessage(index)
@@ -325,8 +313,14 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
                   }
                   retrying={retryingIdx === index}
                 />
-              ) : thinkingLive ? (
-                <ThinkingPill done={false} />
+              ) : pending ? (
+                <MessageContent
+                  content=""
+                  isThinking={thinkingLive}
+                  runLive
+                  activityTiming={msg.activityTiming}
+                  liveToolCalls={liveToolCalls}
+                />
               ) : null}
               {/* Footer stays reserved (height held) but hidden until the turn
                   resolves — timestamps + Save are only meaningful once the
@@ -345,7 +339,7 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
           <div className="msg-content msg-content-user">
             {msg.role === "user" ? (
               // No reasoning thread on a user turn — it is the agent's thread.
-              <MessageContent content={stripWorkspaceContext(msg.content)} showThread={false} />
+              <MessageContent content={stripWorkspaceContext(msg.content)} />
             ) : msg.content}
           </div>
         )}
@@ -356,7 +350,7 @@ function MessageRow({ msg, index, agentRunning, liveThinking = false, isLast, on
 }
 
 /** Wrapper that renders a RenderableItem — used by the virtual list */
-function RenderableItem({ item, agentRunning, liveThinking = false, isLast, onRetryMessage, retryingIdx = null, onCopySummary }: {
+function RenderableItem({ item, agentRunning, liveThinking = false, isLast, onRetryMessage, retryingIdx = null, onCopySummary, liveToolCalls = [] }: {
   item: RenderableItem;
   agentRunning: boolean;
   /** Run is in the thinking phase — the only time the Thinking block is live. */
@@ -366,6 +360,7 @@ function RenderableItem({ item, agentRunning, liveThinking = false, isLast, onRe
   retryingIdx?: number | null;
   /** Passed down so the compaction divider can copy its summary from either path. */
   onCopySummary?: (summary: string) => void;
+  liveToolCalls?: Array<{ id: string; tool: string; args: Record<string, unknown>; startedAt?: number }>;
 }) {
   if (item.kind === "event") {
     const event = item.event;
@@ -384,12 +379,8 @@ function RenderableItem({ item, agentRunning, liveThinking = false, isLast, onRe
         />
       );
     }
-      if (isToolCallEvent(event)) {
-        return <ToolCallDisplay tool={event.tool} args={event.args} />;
-      }
-    if (isToolResultEvent(event)) {
-      return <ToolCallDisplay tool={event.tool} result={event.result} success={event.success} />;
-    }
+    if (isToolCallEvent(event)) return null;
+    if (isToolResultEvent(event)) return null;
     return null;
   }
   return (
@@ -401,13 +392,14 @@ function RenderableItem({ item, agentRunning, liveThinking = false, isLast, onRe
       isLast={isLast}
       onRetryMessage={onRetryMessage}
       retryingIdx={retryingIdx}
+      liveToolCalls={liveToolCalls}
     />
   );
 }
 
 /** Fallback labels when a phase carries no status detail of its own.
- *  ("thinking" has none on purpose — the Thinking block inside the bubble
- *  already spells that out, so the tail shows the grid alone.) */
+ *  ("thinking" has none on purpose — the activity group inside the bubble
+ *  owns the detailed state, so the tail shows the grid alone.) */
 const RUN_LABEL: Partial<Record<RunPhase, string>> = {
   running_tool: "Working…",
   streaming: "Responding…",
@@ -429,9 +421,8 @@ const RUN_LABEL: Partial<Record<RunPhase, string>> = {
  * outcome glyph (check / error / stop), because the run is over and a pulsing
  * loader would lie about it.
  *
- * The "Thinking Xs" block (ThinkingPill) lives INSIDE the last bubble and
- * keeps its own elapsed-time animation; the tail is a separate line below the
- * bubbles, so the two no longer compete for the same spot.
+ * The activity pill lives INSIDE the last bubble; the tail is a separate line
+ * below the bubbles, so the two do not compete for the same spot.
  */
 function RunTail({ phase, label }: { phase: RunPhase; label?: string }) {
   if (phase === "idle") return null;
@@ -442,8 +433,8 @@ function RunTail({ phase, label }: { phase: RunPhase; label?: string }) {
         : phase === "stopped" ? "stop_circle"
           : "";
   const text = (label ?? "").trim() || RUN_LABEL[phase] || "";
-  // "Thinking" is already spelled out by the Thinking block inside the last
-  // bubble (with its elapsed timer), so repeating it next to the grid is
+  // "Thinking" is already spelled out by the activity group inside the last
+  // bubble, so repeating it next to the grid is
   // noise — the grid stands alone for that phase, exactly as in the reference.
   // A REAL detail ("Reading src/app/page.tsx…") is still worth showing.
   const genericThinking = phase === "thinking" && /^(thinking|processing)\b/i.test(text);

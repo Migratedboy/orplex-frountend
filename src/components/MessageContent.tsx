@@ -2,14 +2,13 @@
 
 import { useMemo, useState } from "react";
 import MarkdownRenderer from "./MarkdownRenderer";
-import ThinkingPill from "./ThinkingPill";
-import ThoughtThread from "./ThoughtThread";
+import ActivityGroup from "./activity/ActivityGroup";
 import ClarificationCard from "./ClarificationCard";
 import FileCard from "./FileCard";
 import SandboxArtifact from "./SandboxArtifact";
 import { IconRefresh, IconChevronUp, IconChevronDown } from "./Icons";
 import { parseContent, type ContentSegment } from "@/lib/message-content";
-import { buildChainGroups } from "@/lib/tool-chain";
+import { appendLiveToolSteps, combineActivityGroups, type ActivityTiming } from "@/lib/activity";
 
 // === Collapsible text for long content ===
 
@@ -57,10 +56,6 @@ function CollapsibleText({ content }: { content: string }) {
 
 // === Types & parser live in @/lib/message-content (pure, unit-testable) ===
 
-// === Tool calls render as one connector-lined chain (see ToolChain) ===
-// Status/result segments never reach the solo path below — buildChainGroups
-// folds them (plus any adjacent reasoning) into a chain group.
-
 function InterruptedNotice() {
   return (
     <div className="interrupted-notice" role="status">
@@ -96,91 +91,91 @@ export default function MessageContent({
   content,
   isThinking = false,
   runLive = false,
+  runStartedAt,
+  activityTiming,
+  liveToolCalls = [],
   onRetry,
   retrying = false,
-  showThread = true,
 }: {
   content: string;
   isThinking?: boolean;
   /** The turn is still running — pending tool rows keep their running state. */
   runLive?: boolean;
+  runStartedAt?: number;
+  activityTiming?: ActivityTiming;
+  liveToolCalls?: Array<{ id: string; tool: string; args: Record<string, unknown>; startedAt?: number }>;
   onRetry?: () => void;
   retrying?: boolean;
-  /** The agent's reasoning thread above the message (off for user turns). */
-  showThread?: boolean;
 }) {
-  // Parsed once per content change, not once per render. These ran on every
-  // one of the 8 store notifications per second while streaming.
-  const segments = useMemo(() => parseContent(content), [content]);
-  // Unconditional: the early returns below would make a later hook call
-  // conditional (rules-of-hooks violation).
-  const groups = useMemo(() => buildChainGroups(segments, isThinking), [segments, isThinking]);
-
-  // If no segments but thinking is active, show empty thinking pill
-  if (segments.length === 0) {
-    if (isThinking) {
-      return (
-        <>
-          {showThread && <ThoughtThread segments={segments} runLive={runLive} />}
-          <ThinkingPill done={false} />
-        </>
-      );
+  // Parse only when transcript or live activity inputs change.
+  const segments = useMemo(() => {
+    let parsed = parseContent(content, {
+      live: runLive || isThinking,
+      startedAt: runStartedAt,
+      activityTiming,
+      activity: true,
+    });
+    if (liveToolCalls.length > 0) {
+      parsed = appendLiveToolSteps(parsed, liveToolCalls, runStartedAt || 0);
     }
+    if ((runLive || isThinking) && !parsed.some((segment) => segment.type === "activity")) {
+      parsed = [{
+        type: "activity",
+        content: "",
+        activity: { id: "activity-live", steps: [], startedAt: runStartedAt || 0 },
+      }, ...parsed];
+    }
+    const activitySegments = parsed.filter((segment) => segment.type === "activity" && segment.activity);
+    if (activitySegments.length <= 1) return parsed;
+
+    const combined = combineActivityGroups(
+      activitySegments.flatMap((segment) => segment.activity ? [segment.activity] : [])
+    );
+    if (!combined) return parsed;
+
+    let inserted = false;
+    return parsed.flatMap((segment) => {
+      if (segment.type !== "activity") return [segment];
+      if (inserted) return [];
+      inserted = true;
+      return [{ ...segment, activity: combined }];
+    });
+  }, [content, runLive, isThinking, runStartedAt, activityTiming, liveToolCalls]);
+
+  if (segments.length === 0) {
     return null;
   }
 
   if (segments.length === 1 && segments[0].type === "text") {
-    return (
-      <>
-        {showThread && <ThoughtThread segments={segments} runLive={runLive} />}
-        <MarkdownRenderer content={segments[0].content} />
-      </>
-    );
+    return <MarkdownRenderer content={segments[0].content} />;
   }
-
-  // Check if any thinking segment exists
-  const hasThinking = segments.some(s => s.type === "thinking");
-
 
   return (
     <div className="message-content-mixed">
-      {/* The agent's reasoning thread: reasoning, tool steps, gates and stops,
-          above the message body. One hook per turn (see ThoughtThread). */}
-      {showThread && <ThoughtThread segments={segments} runLive={runLive} />}
-      {/* Show active thinking pill even before thinking content arrives */}
-      {isThinking && !hasThinking && (
-        <ThinkingPill done={false} />
-      )}
-      {groups.map((group, i) => {
-        // The thread above owns the run's STEPS: the tool calls, the
-        // reasoning blocks and the gate markers. Rendering the inline chain
-        // as well would list every tool TWICE (the collision that made the
-        // two UIs fight). What is left in the body is the agent's PROSE and
-        // the notices (a clarification card, an artifact, an interruption).
-        if (group.type === "chain") return null;
-        const segment: ContentSegment = group.segment;
+      {segments.map((segment: ContentSegment, i) => {
         switch (segment.type) {
           case "text":
-            return <CollapsibleText key={i} content={segment.content} />;
-          case "thinking":
-            // The reasoning is a thread row too — keep it out of the body.
-            return null;
+            return <CollapsibleText key={`${segment.type}-${i}`} content={segment.content} />;
+          case "activity":
+            return segment.activity
+              ? <ActivityGroup key={segment.activity.id} activity={segment.activity} live={runLive || isThinking} />
+              : null;
           case "interrupted":
-            return <InterruptedNotice key={i} />;
+            return <InterruptedNotice key={`${segment.type}-${i}`} />;
           case "clarified":
             return segment.data ? (
-              <ClarificationCard key={i} compact data={segment.data} />
+              <ClarificationCard key={`${segment.type}-${i}`} compact data={segment.data} />
             ) : null;
           case "filecard":
             return segment.file ? (
-              <FileCard key={i} file={segment.file} />
+              <FileCard key={`${segment.type}-${i}`} file={segment.file} />
             ) : null;
           case "artifact":
             return segment.artifact ? (
-              <SandboxArtifact key={i} artifact={segment.artifact} />
+              <SandboxArtifact key={`${segment.type}-${i}`} artifact={segment.artifact} />
             ) : null;
           case "failed":
-            return <FailedNotice key={i} onRetry={onRetry} retrying={retrying} />;
+            return <FailedNotice key={`${segment.type}-${i}`} onRetry={onRetry} retrying={retrying} />;
           default:
             return null;
         }

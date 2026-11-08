@@ -59,6 +59,23 @@ cpSync(path.join(root, "electron-dist"), path.join(stage, "electron-dist"), { re
 cpSync(path.join(root, "electron", "app-config.json"), path.join(stage, "electron", "app-config.json"), { recursive: true });
 cpSync(path.join(root, "electron", "assets"), path.join(stage, "electron", "assets"), { recursive: true });
 
+// 2b. The NSIS hook named by build.nsis.include (electron/nsis/installer.nsh).
+//     electron-builder resolves `include` against buildResourcesDir
+//     (<projectDir>/build) or the project dir, so the staged tree needs the file
+//     at the SAME repo-relative path — it is not part of `files` and would
+//     otherwise be missing, failing the package step with "cannot find
+//     specified resource". This file is what stops an update from relaunching
+//     the app through the Start Menu shortcut (see electron/nsis/installer.nsh).
+//     It lives outside build/ on purpose: build/ is gitignored, and a fix that
+//     cannot be committed is a fix that silently never ships.
+const nsisInclude = path.join(root, "electron", "nsis", "installer.nsh");
+if (!existsSync(nsisInclude)) {
+  console.error("[stage] FATAL: electron/nsis/installer.nsh missing — the NSIS relaunch fix would not ship.");
+  process.exit(1);
+}
+mkdirSync(path.join(stage, "electron", "nsis"), { recursive: true });
+cpSync(nsisInclude, path.join(stage, "electron", "nsis", "installer.nsh"));
+
 // 3. The standalone Next server (self-contained; includes its node_modules).
 //    dereference: the standalone tree contains SYMLINKED packages (@prisma/
 //    client -> .prisma/client-<hash>, playwright browsers). Copying links

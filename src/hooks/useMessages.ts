@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef } from "react";
 import { AttachedFile } from "./useFileProcessor";
+import type { ActivityTiming } from "@/lib/activity";
 
 export interface Message {
   role: "user" | "assistant";
@@ -9,6 +10,7 @@ export interface Message {
   time: string;
   files?: AttachedFile[];
   images?: { name: string; dataUrl: string; size: number }[];
+  activityTiming?: ActivityTiming;
 }
 
 export function useMessages() {

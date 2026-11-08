@@ -15,7 +15,7 @@ import {
   parseJsonRequest,
 } from "@/lib/chat-middleware";
 import { sseTransform } from "@/lib/ai-providers";
-import { isMockAiEnabled, createMockProviderStream } from "@/lib/mock-ai";
+import { isMockAiEnabled, createMockProviderStream, buildMockActivityReplyText } from "@/lib/mock-ai";
 import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS } from "@/lib/tool-definitions";
 import { buildSystemPrompt } from "@/lib/master-prompt";
 import { buildMcpRoster, mcpPromptSection, toOpenAiFunctions, type BuilderTool } from "@/lib/mcp/tool-builder";
@@ -56,7 +56,10 @@ export async function POST(request: NextRequest) {
     // usage) and before provider selection, answering every request with a
     // slow deterministic fake stream. See src/lib/mock-ai.ts.
     if (isMockAiEnabled(request.headers)) {
-      return new Response(sseTransform(createMockProviderStream()), {
+      const mockText = request.headers.get("x-mock-ai-activity") === "1"
+        ? buildMockActivityReplyText()
+        : undefined;
+      return new Response(sseTransform(createMockProviderStream(mockText)), {
         headers: {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",

@@ -329,7 +329,7 @@ function installStyles(nonce?: string) {
 
 function fmt(ms: number) {
   let s = Math.max(0, ms) / 1000;
-  return s < 60 ? s.toFixed(1) + 's' : Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
+  return s < 0.1 ? '<0.1s' : s < 60 ? s.toFixed(1) + 's' : Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
 }
 
 export interface ThoughtLineProps {
@@ -434,7 +434,7 @@ export function ThoughtLine({
 /* -------------------------------------------------------------------- hook */
 
 function build(o: ThoughtInput, now: number, id: string): Thought {
-  let hasDur = typeof o.duration === 'number' && !Number.isNaN(o.duration);
+  let hasDur = o.status !== 'error' && typeof o.duration === 'number' && !Number.isNaN(o.duration);
   let status: ThoughtStatus =
     o.status === 'error' ? 'error' : o.status === 'done' || hasDur ? 'done' : 'active';
   return {
@@ -444,7 +444,7 @@ function build(o: ThoughtInput, now: number, id: string): Thought {
     kind: o.kind ?? 'think',
     status,
     startedAt: now,
-    endedAt: status === 'active' ? null : now + (hasDur ? (o.duration as number) : 0),
+    endedAt: status === 'active' ? null : hasDur ? now + (o.duration as number) : null,
     glyph: o.glyph,
   };
 }

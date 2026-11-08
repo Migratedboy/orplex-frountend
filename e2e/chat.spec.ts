@@ -53,6 +53,38 @@ test("sending a message streams a reply that completes", async ({ page }) => {
   expect(await countOccurrences(replies, "MOCK_END")).toBe(1);
 });
 
+test("activity pill streams live time, auto-collapses and expands in light and dark themes", async ({ page }) => {
+  await loginViaApi(page, { activity: true });
+  await sendPrompt(page, "E2E activity timeline");
+
+  const reply = assistantBubbles(page).last();
+  await expect(reply.locator(".activity-pill")).toContainText(/Working for (?:less than 1 second|\d+ seconds?)/);
+  await expect(reply).toContainText("MOCK_END");
+
+  const pill = reply.locator(".activity-pill");
+  await expect(pill).toContainText(/Worked for (?:less than 1 second|\d+ seconds?)/);
+  await expect(pill).toHaveAttribute("aria-expanded", "false");
+
+  const colors = await page.evaluate(() => {
+    const root = document.documentElement;
+    const pill = document.querySelector(".activity-pill");
+    if (!pill) throw new Error("Activity pill was not rendered");
+    root.classList.remove("dark");
+    const light = getComputedStyle(pill).backgroundColor;
+    root.classList.add("dark");
+    const dark = getComputedStyle(pill).backgroundColor;
+    return { light, dark };
+  });
+  expect(colors.light).not.toBe(colors.dark);
+
+  await pill.click();
+  await expect(pill).toHaveAttribute("aria-expanded", "true");
+  const readRow = reply.getByRole("button", { name: /Read src\/app\/page\.tsx/ });
+  await expect(readRow).toBeVisible();
+  await readRow.click();
+  await expect(reply.getByText(/Read `src\/app\/page\.tsx` \(lines 1-3, 42 chars\)/)).toBeVisible();
+});
+
 test("Stop mid-stream cuts the reply and a resend completes on a fresh task", async ({ page }) => {
   await loginViaApi(page);
   await sendPrompt(page, "E2E stop me mid stream please");

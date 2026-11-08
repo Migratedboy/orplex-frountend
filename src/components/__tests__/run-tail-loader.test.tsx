@@ -30,7 +30,11 @@ jest.mock("@/lib/api-base", () => ({ apiFetch: jest.fn() }));
 // The bubble renderers are irrelevant to what this test asserts (the run tail),
 // and MessageContent -> MarkdownRenderer drags in `import.meta.url`, which
 // ts-jest cannot emit as CommonJS.
-jest.mock("../MessageContent", () => ({ __esModule: true, default: () => null }));
+jest.mock("../MessageContent", () => ({
+  __esModule: true,
+  default: ({ runLive }: { runLive?: boolean }) =>
+    runLive ? <div data-testid="live-message-activity" /> : null,
+}));
 jest.mock("../ThinkingPill", () => ({ __esModule: true, default: () => null }));
 jest.mock("../ToolCallDisplay", () => ({ __esModule: true, default: () => null }));
 
@@ -104,5 +108,19 @@ describe("MessageList — run tail loader", () => {
 
   it("renders no tail at all for idle", () => {
     expect(renderTail("idle").container.querySelector(".run-tail")).toBeNull();
+  });
+
+  it("renders the live message activity immediately while run startup is pending", () => {
+    render(
+      <MessageList
+        messages={[{ role: "assistant", content: "", time: "21:00" }]}
+        agentEvents={[]}
+        agentRunning={false}
+        runActive
+        runPhase="idle"
+      />
+    );
+
+    expect(screen.getByTestId("live-message-activity")).toBeInTheDocument();
   });
 });

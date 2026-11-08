@@ -11,6 +11,7 @@ import {
   type SaveConversationInput,
 } from "@/lib/conversations-transport";
 import { refToUrl, refsInContent } from "@/lib/client-attachments";
+import type { ActivityTiming } from "@/lib/activity";
 
 export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]) => void) {
   const { data: session } = useSession();
@@ -37,7 +38,7 @@ export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]
         if (token !== loadTokenRef.current) return; // superseded — drop stale
         if (conv) {
           setConversationId(conv.id);
-setMessages(() => conv.messages.map((m: { role: string; content: string; createdAt: string }) => {
+setMessages(() => conv.messages.map((m: { role: string; content: string; createdAt: string; activityTiming?: ActivityTiming }) => {
           // Images are stored on local disk, never in the DB — the body carries
           // `attachment:<id><ext>` refs which we resolve back to local URLs so
           // a reload still renders the image instead of losing it.
@@ -51,6 +52,7 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
           return {
             role: m.role as "user" | "assistant",
             content: m.content,
+            ...(m.activityTiming ? { activityTiming: m.activityTiming } : {}),
             time: new Date(m.createdAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }),
             ...(images && images.length > 0 ? { images } : {}),
           };
@@ -99,6 +101,7 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
     workspaceName?: string | null,
     /** Surfaced to the user when a save fails or truncates content. */
     onSaveError?: (message: string) => void,
+    activityTiming?: ActivityTiming,
   ) => {
     const saveToken = navTokenRef.current;
     try {
@@ -111,7 +114,7 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
         ...(targetId !== undefined ? { conversationId: targetId } : {}),
         messages: [
           { role: "user", content: userContent },
-          { role: "assistant", content: assistantContent },
+          { role: "assistant", content: assistantContent, ...(activityTiming ? { activityTiming } : {}) },
         ],
       };
       const data = await saveConversationTransport(input);

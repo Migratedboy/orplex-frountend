@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./fonts.css";
 import "./globals.css";
+import "../components/activity/activity.css";
 import Providers from "@/components/Providers";
 import BootGate from "@/components/loader/BootGate";
 import AppLayout from "@/components/AppLayout";

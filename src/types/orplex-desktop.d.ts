@@ -161,13 +161,13 @@ declare global {
           workspaceName: string | null;
           createdAt: string;
           updatedAt: string;
-          messages: { role: string; content: string; createdAt: string }[];
+          messages: { role: string; content: string; createdAt: string; activityTiming?: { groups: Record<string, { startedAt: number; endedAt?: number }>; steps: Record<string, { startedAt: number; endedAt?: number }> } }[];
         } | null>;
         save: (
           input: {
             conversationId?: string | null;
             workspaceName?: string | null;
-            messages: Array<{ role: string; content: string }>;
+            messages: Array<{ role: string; content: string; activityTiming?: { groups: Record<string, { startedAt: number; endedAt?: number }>; steps: Record<string, { startedAt: number; endedAt?: number }> } }>;
           }
         ) => Promise<{ conversationId: string } | { error: string }>;
         rename: (id: string, title: string) => Promise<boolean>;

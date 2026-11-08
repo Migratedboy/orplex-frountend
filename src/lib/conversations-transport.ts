@@ -11,10 +11,12 @@
  */
 
 import { apiFetch } from "@/lib/api-base";
+import type { ActivityTiming } from "@/lib/activity";
 
 export interface ConversationMessagePayload {
   role: string;
   content: string;
+  activityTiming?: ActivityTiming;
 }
 
 /** Sidebar/History row shape (previews already cleaned upstream). */
@@ -34,7 +36,7 @@ export interface ConversationFull {
   createdAt: string;
   updatedAt: string;
   workspaceName?: string | null;
-  messages: Array<{ role: string; content: string; createdAt: string }>;
+  messages: Array<{ role: string; content: string; createdAt: string; activityTiming?: ActivityTiming }>;
 }
 
 export interface SaveConversationInput {
@@ -99,7 +101,7 @@ export async function saveConversation(input: SaveConversationInput): Promise<Sa
   const body: Record<string, unknown> = {};
   if (input.conversationId !== undefined) body.conversationId = input.conversationId;
   if (input.workspaceName !== undefined && input.workspaceName !== null) body.workspaceName = input.workspaceName;
-  body.messages = input.messages;
+  body.messages = input.messages.map(({ role, content }) => ({ role, content }));
   const res = await apiFetch("/api/conversations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

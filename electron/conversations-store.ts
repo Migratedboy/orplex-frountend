@@ -17,10 +17,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+export interface StoredActivityTiming {
+  groups: Record<string, { startedAt: number; endedAt?: number }>;
+  steps: Record<string, { startedAt: number; endedAt?: number }>;
+}
+
 export interface StoredMessage {
   role: string; // "user" | "assistant" | "system"
   content: string;
   createdAt: string; // ISO
+  activityTiming?: StoredActivityTiming;
 }
 
 export interface StoredConversation {
@@ -69,13 +75,40 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function normalizeIncomingMessage(m: { role?: unknown; content?: unknown }): StoredMessage | null {
+function normalizeActivityTiming(input: unknown): StoredActivityTiming | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const raw = input as { groups?: unknown; steps?: unknown };
+  const normalizeEntries = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const result: StoredActivityTiming["groups"] = {};
+    for (const [id, timing] of Object.entries(value).slice(0, 2000)) {
+      if (!id || !timing || typeof timing !== "object") continue;
+      const entry = timing as { startedAt?: unknown; endedAt?: unknown };
+      if (typeof entry.startedAt !== "number" || !Number.isFinite(entry.startedAt) || entry.startedAt <= 0) continue;
+      result[id.slice(0, 160)] = {
+        startedAt: entry.startedAt,
+        ...(typeof entry.endedAt === "number" && Number.isFinite(entry.endedAt) && entry.endedAt >= entry.startedAt
+          ? { endedAt: entry.endedAt }
+          : {}),
+      };
+    }
+    return result;
+  };
+  return {
+    groups: normalizeEntries(raw.groups),
+    steps: normalizeEntries(raw.steps),
+  };
+}
+
+function normalizeIncomingMessage(m: { role?: unknown; content?: unknown; activityTiming?: unknown }): StoredMessage | null {
   const role = m.role === "user" || m.role === "assistant" || m.role === "system" ? m.role : null;
   if (!role || typeof m.content !== "string") return null;
+  const activityTiming = normalizeActivityTiming(m.activityTiming);
   return {
     role,
     content: m.content.slice(0, MAX_MESSAGE_CHARS),
     createdAt: nowIso(),
+    ...(activityTiming ? { activityTiming } : {}),
   };
 }
 
@@ -94,7 +127,7 @@ export interface LocalConversationStore {
   save(input: {
     conversationId?: string | null;
     workspaceName?: string | null;
-    messages: Array<{ role?: unknown; content?: unknown }>;
+    messages: Array<{ role?: unknown; content?: unknown; activityTiming?: unknown }>;
   }): { conversationId: string } | { error: string };
   rename(id: string, title: string): boolean;
   remove(id: string): boolean;

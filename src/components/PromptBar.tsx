@@ -1,34 +1,54 @@
 "use client";
 
-import { Fragment, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, isValidElement, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  ArrowDown01Icon,
-  Attachment01Icon,
-  Calendar03Icon,
-  Cancel01Icon,
-  ChartLineData01Icon,
-  File02Icon,
-  Globe02Icon,
-  HelpCircleIcon,
-  Mail01Icon,
-  Mic01Icon,
-  PlusSignIcon,
-  SparklesIcon,
-  Tick02Icon,
-} from "@hugeicons/core-free-icons";
+import { Cancel01Icon, File02Icon, HelpCircleIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import "./PromptBar.css";
-import { useReducedMotion } from "motion/react";
 import { ProviderMark, modelCreatorId, modelCreatorLabel } from "./ProviderIcons";
-import { SendGlyph } from "./send-glyph";
+import { positionPromptMenu, type PromptMenuAlignment } from "@/lib/prompt-menu-position";
 
 type AnyIcon = unknown;
+type MenuKind = "sources" | "commands" | "model" | "mode" | "effort" | null;
+type MenuRow = PromptBarSource | PromptBarCommand | PromptBarModel | PromptBarMode;
+type ToolIcon = "globe" | "file" | "pencil" | "term" | "plug";
+
+interface PromptToolCall {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  startedAt?: number;
+}
+
+interface RecentTool {
+  id: string;
+  icon: ToolIcon;
+  verb: string;
+  detail: string;
+  startedAt: number;
+}
+
+const RECENT_TOOL_MS = 5000;
+
+function hasIcon(row: MenuRow): row is PromptBarSource {
+  return "icon" in row;
+}
+
+function hasDescription(row: MenuRow): row is PromptBarSource | PromptBarCommand | PromptBarMode {
+  return "description" in row;
+}
 
 const LINE = 22;
-const EDGE = 11;
-
-/** Model-menu infinite scroll: rows rendered per chunk. */
 const MODEL_CHUNK = 50;
+const DEFAULT_SOURCES: PromptBarSource[] = [];
+const DEFAULT_COMMANDS: PromptBarCommand[] = [];
+const DEFAULT_MODELS: PromptBarModel[] = [];
+const DEFAULT_MODES: PromptBarMode[] = [
+  { key: "ask", name: "Ask", description: "Questions and quick answers" },
+  { key: "code", name: "Code", description: "Build and edit code" },
+  { key: "plan", name: "Plan", description: "Plan first, then build" },
+];
+const DEFAULT_EFFORTS = ["Low", "Medium", "High"];
 
 export interface PromptBarSource {
   key: string;
@@ -36,7 +56,6 @@ export interface PromptBarSource {
   description?: string;
   icon?: AnyIcon;
   attach?: boolean;
-  /** Text to insert when picked instead of the default `@Name` (e.g. "/" to open the command menu) */
   insert?: string;
 }
 
@@ -44,7 +63,6 @@ export interface PromptBarCommand {
   key: string;
   name: string;
   description?: string;
-  /** Text to insert when picked instead of the command name (e.g. a skill prompt prefix) */
   insert?: string;
 }
 
@@ -52,16 +70,9 @@ export interface PromptBarModel {
   key: string;
   name: string;
   tag?: string;
-  /** Secondary line for model rows: context size, free/free-tier or BYOK marker. */
   detail?: string;
-  /** Probe health dot: "green" = answered a probe <24h ago, "amber" = aged out. */
   healthDot?: "green" | "amber";
-  /** Tooltip for the health dot — last-verified time + probe latency. */
   healthTitle?: string;
-  /**
-   * Force a specific group header for this row (e.g. "Default Models"),
-   * overriding the creator-based grouping.
-   */
   group?: string;
 }
 
@@ -78,95 +89,12 @@ export interface PromptBarSendMeta {
   mode?: PromptBarMode;
 }
 
-const DEFAULT_SOURCES: PromptBarSource[] = [
-  { key: "files", name: "Photos & files", description: "Upload from this device", icon: Attachment01Icon, attach: true },
-  { key: "web", name: "Web search", description: "Live results", icon: Globe02Icon },
-  { key: "sales", name: "Sales data", description: "Revenue and churn", icon: ChartLineData01Icon },
-  { key: "docs", name: "Documents", description: "Specs, notes, briefs", icon: File02Icon },
-  { key: "mail", name: "Mail", description: "Read and draft mail", icon: Mail01Icon },
-  { key: "calendar", name: "Calendar", description: "Events and availability", icon: Calendar03Icon },
-];
-const DEFAULT_COMMANDS: PromptBarCommand[] = [
-  { key: "summarize", name: "/summarize", description: "Digest the thread so far" },
-  { key: "compare", name: "/compare", description: "Two options side by side" },
-  { key: "draft", name: "/draft", description: "Write a first version" },
-  { key: "explain", name: "/explain", description: "A plain-language walkthrough" },
-  { key: "tasks", name: "/tasks", description: "Turn this into a to-do list" },
-];
-const DEFAULT_MODELS: PromptBarModel[] = [
-  { key: "nova-3", name: "Nova 3", tag: "Flagship" },
-  { key: "nova-mini", name: "Nova Mini", tag: "Fast" },
-  { key: "nova-2", name: "Nova 2", tag: "Legacy" },
-];
-const DEFAULT_MODES: PromptBarMode[] = [
-  { key: "ask", name: "Ask", description: "Simple chat, no file access" },
-  { key: "plan", name: "Plan", description: "Analyze codebase, create plan" },
-  { key: "code", name: "Code", description: "Edit files, run commands" },
-];
-const DEFAULT_EFFORTS = ["Low", "Medium", "High", "Extra", "Max"];
-
-/**
- * Bucket models by CREATOR (never the hosting platform). Bucket order follows
- * each creator's first appearance and the original order is preserved inside a
- * bucket, so grouping is stable. The result replaces `list` wholesale — cursor,
- * rowRefs and keyboard nav all index it, so what's rendered and what's
- * highlighted can never drift apart.
- */
-function groupByCreator(rows: PromptBarModel[]): PromptBarModel[] {
-  const buckets = new Map<string, PromptBarModel[]>();
-  for (const row of rows) {
-    const id = modelCreatorId(row);
-    const bucket = buckets.get(id);
-    if (bucket) bucket.push(row);
-    else buckets.set(id, [row]);
-  }
-  return buckets.size > 1 ? Array.from(buckets.values()).flat() : rows;
-}
-
-/**
- * Drop rows whose key was already seen, keeping the first.
- *
- * The model menu keys each row by its model id. Two rows sharing an id render
- * as two children with the same key, which React reports as a console error
- * and which can make React drop and re-create rows instead of updating them.
- * A duplicate id can reach here from more than one feed (the curated defaults
- * and the live catalog both carry the same model), so the menu collapses them
- * itself rather than trusting every feed to be clean.
- */
-function dedupeByKey(rows: PromptBarModel[]): PromptBarModel[] {
-  const seen = new Set<string>();
-  const out: PromptBarModel[] = [];
-  for (const row of rows) {
-    if (seen.has(row.key)) continue;
-    seen.add(row.key);
-    out.push(row);
-  }
-  return out;
-}
-
-
-const parseToken = (draft: string) => {
-  const m = /(^|\s)([@/])([\w-]*)$/.exec(draft);
-  if (!m) return null;
-  return { kind: m[2] === "@" ? "at" : "slash", query: m[3].toLowerCase(), start: m.index + m[1].length } as {
-    kind: "at" | "slash";
-    query: string;
-    start: number;
-  };
-};
-
-const renderIcon = (icon: AnyIcon, size: number) =>
-  icon == null || typeof icon === "boolean"
-    ? null
-    : isValidElement(icon)
-      ? icon
-      : typeof icon === "object"
-        ? (icon as never) && <HugeiconsIcon icon={icon as never} size={size} strokeWidth={1.8} />
-        : null;
-
-
 export interface PromptBarProps {
   placeholder?: string;
+  conversationState?: "initial" | "chat" | "thinking";
+  footerProject?: ReactNode;
+  quotaIndicator?: ReactNode;
+  onOpenConnectors?: () => void;
   sources?: PromptBarSource[];
   commands?: PromptBarCommand[];
   models?: PromptBarModel[];
@@ -178,26 +106,21 @@ export interface PromptBarProps {
   onEffortChange?: (level: string) => void;
   onModelChange?: (model: PromptBarModel) => void;
   onModeChange?: (mode: PromptBarMode) => void;
-  /** Recently used models (most recent first) — shown when the model menu opens with an empty search */
   recentModels?: PromptBarModel[];
-  /** True while the parent is fetching the live verified catalog — the model menu shows a small loading indicator instead of implying the short list is everything */
   modelsLoading?: boolean;
-  /** The blocking indicator already gave up but the catalog is still landing. Renders a quiet note instead of a spinner. */
   modelsSettling?: boolean;
-  /** Fired when the model menu opens so the parent can (re)load the verified catalog */
   onModelMenuOpened?: () => unknown;
-  /** Extra condition that enables sending even with an empty draft (e.g. attached files) */
   canSendExtra?: boolean;
   busy?: boolean;
+  statusPhase?: "thinking" | "writing";
+  requestStartedAt?: number;
+  activeToolCall?: PromptToolCall | null;
   onSend?: (text: string, meta: PromptBarSendMeta) => void;
   onStop?: () => void;
   onAttach?: (source: PromptBarSource) => unknown;
   onDictate?: () => unknown;
-  /** Mirrors the draft upward so parents can queue it while busy */
   onDraftChange?: (text: string) => void;
-  /** Registers a clear() so parents can empty the bar after queueing */
   onRegisterClear?: (fn: () => void) => void;
-  /** Registers { clear, setText } for parents that need to inject text (skills, queue) */
   onRegisterControls?: (c: { clear: () => void; setText: (t: string) => void }) => void;
   background?: string;
   color?: string;
@@ -214,464 +137,456 @@ export interface PromptBarProps {
   style?: React.CSSProperties;
 }
 
+const MODE_PLACEHOLDERS: Record<string, { initial: string; chat: string }> = {
+  ask: {
+    initial: "How can I help you today?",
+    chat: "Write a message...",
+  },
+  code: {
+    initial: "What do you want to build?",
+    chat: "Describe the change...",
+  },
+  plan: {
+    initial: "What should we plan?",
+    chat: "Add to the plan...",
+  },
+};
+
+const SYMBOL_PATHS: Record<string, ReactNode> = {
+  plus: <path d="M12 5v14M5 12h14" />,
+  check: <path d="M20 6 9 17l-5-5" />,
+  down: <path d="m6 9 6 6 6-6" />,
+  right: <path d="m9 18 6-6-6-6" />,
+  mic: <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v3" />,
+  enter: <path d="M20 4v7a4 4 0 0 1-4 4H4M9 10l-5 5 5 5" />,
+  stop: <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none" />,
+  spark: <path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z" fill="currentColor" stroke="none" />,
+  ask: <path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-5.4A8 8 0 1 1 21 12z" />,
+  code: <path d="m16 18 6-6-6-6M8 6l-6 6 6 6" />,
+  plan: <path d="M9 6h12M9 12h12M9 18h12M3 6l1 1 2-2M3 12l1 1 2-2M3 18l1 1 2-2" />,
+  plug: <path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z" />,
+  globe: <><circle cx="12" cy="12" r="10" /><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></>,
+  file: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M8 13h8M8 17h8" /></>,
+  pencil: <><path d="m16 4 4 4M4 20l4-.8L19 8a2.8 2.8 0 0 0-4-4L4 15z" /></>,
+  term: <><path d="m4 17 6-6-6-6M12 19h8" /></>,
+};
+
+function describeToolCall(tool: string, args: Record<string, unknown>) {
+  const name = tool.toLowerCase();
+  const detail = Object.entries(args).find(([key, value]) =>
+    /path|file|query|command|url|target/i.test(key) && typeof value === "string" && value.trim()
+  )?.[1];
+  const shortDetail = typeof detail === "string" ? detail.trim() : "";
+
+  if (/search_code|search_file|grep|find_files/.test(name)) {
+    return { icon: "file" as const, verb: "Searching", detail: shortDetail };
+  }
+  if (/web|browse|fetch|navigate|screenshot|verify_app|record_page/.test(name)) {
+    return { icon: "globe" as const, verb: /search/.test(name) ? "Searching the web" : "Browsing", detail: shortDetail };
+  }
+  if (/read|list_files|inspect/.test(name)) {
+    return { icon: "file" as const, verb: /list/.test(name) ? "Listing" : "Reading", detail: shortDetail };
+  }
+  if (/write|edit|patch|create|delete/.test(name)) {
+    return { icon: "pencil" as const, verb: "Editing", detail: shortDetail };
+  }
+  if (/command|terminal|shell|npm|run/.test(name)) {
+    return { icon: "term" as const, verb: "Running", detail: shortDetail };
+  }
+  if (/mcp|connector|server/.test(name)) {
+    return { icon: "plug" as const, verb: "Calling", detail: shortDetail || tool };
+  }
+  return { icon: "file" as const, verb: "Working", detail: shortDetail || tool };
+}
+
+function Icon({ name, className = "i" }: { name: string; className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      {SYMBOL_PATHS[name]}
+    </svg>
+  );
+}
+
+function parseToken(draft: string) {
+  const match = /(^|\s)([@/])([\w-]*)$/.exec(draft);
+  if (!match) return null;
+  return {
+    kind: match[2] === "@" ? "sources" as const : "commands" as const,
+    query: match[3].toLowerCase(),
+    start: match.index + match[1].length,
+  };
+}
+
+function dedupeModels(models: PromptBarModel[]) {
+  const seen = new Set<string>();
+  return models.filter((model) => !seen.has(model.key) && !!seen.add(model.key));
+}
+
+const renderIcon = (icon: AnyIcon) =>
+  icon == null || typeof icon === "boolean"
+    ? null
+    : isValidElement(icon)
+      ? icon
+      : typeof icon === "object"
+        ? <HugeiconsIcon icon={icon as never} size={16} strokeWidth={1.8} />
+        : null;
+
 export default function PromptBar({
-  /* eslint-disable react-hooks/preserve-manual-memoization -- the effort-sync
-     effect below intentionally watches only `defaultEffort` because the
-     `efforts` prop's identity is unstable (inline arrays); adding it would
-     reset the user's effort choice on every parent render. The compiler
-     therefore declines to preserve memoization — runtime is correct. */
-  placeholder = "Ask anything",
+  placeholder = "Write a message...",
+  conversationState,
+  footerProject,
+  quotaIndicator,
+  onOpenConnectors,
   sources = DEFAULT_SOURCES,
   commands = DEFAULT_COMMANDS,
   models = DEFAULT_MODELS,
   defaultModel = "",
   modes = DEFAULT_MODES,
-  defaultMode = "",
+  defaultMode = "ask",
   efforts = DEFAULT_EFFORTS,
-  defaultEffort = "",
+  defaultEffort = "Medium",
   onEffortChange,
-  canSendExtra = false,
-  busy = false,
-  onSend,
-  onStop,
-  onAttach,
-  onDictate,
   onModelChange,
   onModeChange,
   recentModels,
   onModelMenuOpened,
   modelsLoading = false,
   modelsSettling = false,
+  canSendExtra = false,
+  busy = false,
+  statusPhase = "thinking",
+  requestStartedAt,
+  activeToolCall,
+  onSend,
+  onStop,
+  onAttach,
+  onDictate,
   onDraftChange,
   onRegisterClear,
   onRegisterControls,
-  background = undefined,
-  color = undefined,
-  menuBackground = undefined,
-  sparkColor = undefined,
-  width = undefined,
-  radius = undefined,
+  background,
+  color,
+  menuBackground,
+  sparkColor,
+  width,
+  radius,
   maxRows = 5,
-  morphDuration = 240,
-  squash = 0.12,
-  tilt = 8,
-  pressScale = undefined,
+  pressScale,
   className = "",
   style,
 }: PromptBarProps) {
-  const reduce = useReducedMotion();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-
-  // The empty-state starter prompts hand their text over through this event.
-  // The textarea is CONTROLLED by `draft`, so writing the DOM value directly
-  // would be wiped on the next render — the draft state is the only path.
-  useEffect(() => {
-    const onPrefill = (event: Event) => {
-      const text = (event as CustomEvent<{ text?: string }>).detail?.text;
-      if (!text) return;
-      setDraft(text);
-      setDismissed(false);
-      requestAnimationFrame(() => {
-        const el = inputRef.current;
-        if (!el) return;
-        el.focus();
-        el.setSelectionRange(text.length, text.length);
-      });
-    };
-    window.addEventListener("orplex:prefill-prompt", onPrefill);
-    return () => window.removeEventListener("orplex:prefill-prompt", onPrefill);
-  }, []);
-  const glowRef = useRef<HTMLSpanElement | null>(null);
-  const sparkRef = useRef<HTMLCanvasElement | null>(null);
-  const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const lastOpen = useRef<string | null>(null);
-  const dictation = useRef(0);
-  const latest = useRef({ onSend, onStop, onAttach, onDictate, onEffortChange, onModelChange, onModeChange, onModelMenuOpened });
-  useEffect(() => {
-    latest.current = { onSend, onStop, onAttach, onDictate, onEffortChange, onModelChange, onModeChange, onModelMenuOpened };
-  });
-
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const permissionMenuRef = useRef<HTMLDivElement | null>(null);
+  const permissionTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuPortalRef = useRef<HTMLDivElement | null>(null);
+  const menuAnchorRef = useRef<HTMLElement | null>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const effortTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const recentToolIdRef = useRef<string | null>(null);
+  const requestStartedAtRef = useRef<number | null>(null);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [modelKey, setModelKey] = useState(defaultModel);
   const [modeKey, setModeKey] = useState(defaultMode);
-  const [plusOpen, setPlusOpen] = useState(false);
-  const [modelOpen, setModelOpen] = useState(false);
+  const [effort, setEffort] = useState(defaultEffort);
+  const [menu, setMenu] = useState<MenuKind>(null);
   const [modelQuery, setModelQuery] = useState("");
-  const [modeOpen, setModeOpen] = useState(false);
-  const [effortOpen, setEffortOpen] = useState(false);
-  const [effortIndex, setEffortIndex] = useState(() => {
-    const i = efforts.indexOf(defaultEffort);
-    return i >= 0 ? i : Math.max(0, Math.floor((efforts.length - 1) / 2));
-  });
-  const [dismissed, setDismissed] = useState(false);
   const [active, setActive] = useState(0);
+  const [dismissed, setDismissed] = useState(false);
   const [listening, setListening] = useState(false);
   const [pressed, setPressed] = useState(false);
-  // Infinite scroll for the (potentially hundreds-long) model and slash-skill
-  // lists: render 50 rows per chunk and grow as the menu scrolls near the
-  // bottom.
+  const [permission, setPermission] = useState<"Manual" | "Auto">("Manual");
+  const [permissionOpen, setPermissionOpen] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [statusNow, setStatusNow] = useState(0);
+  const [recentTool, setRecentTool] = useState<RecentTool | null>(null);
   const [renderLimit, setRenderLimit] = useState(MODEL_CHUNK);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const latest = useRef({ onSend, onStop, onAttach, onDictate, onEffortChange, onModelChange, onModeChange, onModelMenuOpened });
+  latest.current = { onSend, onStop, onAttach, onDictate, onEffortChange, onModelChange, onModeChange, onModelMenuOpened };
 
-  const model = models.find((m) => m.key === modelKey) ?? models[0];
-  const mode = modes.find((m) => m.key === modeKey) ?? modes[0];
-  // Keep internal picker state in sync when the parent changes the defaults
-  // externally (mode/effort/model restore on conversation switch, queue replay,
-  // mode buttons elsewhere in the app).
-  useEffect(() => {
-    setModeKey(defaultMode);
-  }, [defaultMode]);
-  useEffect(() => {
-    if (defaultModel) setModelKey(defaultModel);
-  }, [defaultModel]);
-  useEffect(() => {
-    const i = efforts.indexOf(defaultEffort);
-    if (i >= 0) setEffortIndex(i);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaultEffort]);
+  const model = models.find((item) => item.key === modelKey) ?? models[0];
+  const mode = modes.find((item) => item.key === modeKey) ?? modes[0];
+  const uiState = conversationState ?? (busy ? "thinking" : "chat");
+  const modeCopy = MODE_PLACEHOLDERS[mode?.key ?? "ask"] ?? MODE_PLACEHOLDERS.ask;
   const token = dismissed ? null : parseToken(draft);
-  const open: "at" | "slash" | "model" | "mode" | "effort" | null = plusOpen
-    ? "at"
-    : token?.kind ?? (modelOpen ? "model" : modeOpen ? "mode" : effortOpen ? "effort" : null);
-  const query = plusOpen ? "" : token?.query ?? "";
-  // Grow the rendered chunk when the menu scrolls near the bottom (infinite
-  // scroll without an IntersectionObserver dependency).
-  const onMenuScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    if (open !== "model" && open !== "slash") return;
-    const el = e.currentTarget;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 60) {
-      setRenderLimit((c) => Math.min(c + MODEL_CHUNK, Math.max(c, list.length)));
+  const openMenu: MenuKind = token?.kind ?? menu;
+  const query = token?.query ?? "";
+  let filtered: MenuRow[] = [];
+  if (openMenu === "sources") {
+    filtered = sources.filter((source) => source.name.toLowerCase().includes(query));
+  } else if (openMenu === "commands") {
+    filtered = commands.filter((command) => command.name.replace(/^\//, "").toLowerCase().startsWith(query));
+  } else if (openMenu === "mode") {
+    filtered = modes;
+  } else if (openMenu === "model") {
+    const search = modelQuery.trim().toLowerCase();
+    const matches = search
+      ? models.filter((item) => item.name.toLowerCase().includes(search) || item.key.toLowerCase().includes(search))
+      : models;
+    if (!search && recentModels?.length) {
+      const recentIds = new Set(recentModels.map((item) => item.key));
+      filtered = dedupeModels([...recentModels.filter((item) => models.some((candidate) => candidate.key === item.key)), ...matches.filter((item) => !recentIds.has(item.key))]);
+    } else {
+      filtered = dedupeModels(matches);
     }
-  };
-  // New menu open or new search → back to the first chunk.
-  useEffect(() => {
-    setRenderLimit(MODEL_CHUNK);
-  }, [open, modelQuery, query]);
-  const filtered = useMemo<PromptBarSource[] | PromptBarCommand[] | PromptBarModel[] | PromptBarMode[]>(() => {
-    if (open === "at") return sources.filter((s) => s.name.toLowerCase().includes(query));
-    if (open === "slash") return commands.filter((c) => c.name.replace(/^\//, "").toLowerCase().startsWith(query));
-    if (open === "model") {
-      const q = modelQuery.trim().toLowerCase();
-      if (q) {
-        return dedupeByKey(
-          models.filter((m) => m.name.toLowerCase().includes(q) || m.key.toLowerCase().includes(q))
-        );
-      }
-      // Empty search → recently used first (deduped, still verified list members)
-      if (recentModels && recentModels.length > 0) {
-        const seen = new Set<string>();
-        const recents = recentModels.filter((m) => models.some((x) => x.key === m.key) && !seen.has(m.key) && seen.add(m.key));
-        const rest = models.filter((m) => !seen.has(m.key));
-        return dedupeByKey([...recents, ...rest]);
-      }
-      return dedupeByKey(models);
-    }
-    if (open === "mode") return modes;
-    return [];
-  }, [open, query, sources, commands, models, modes, modelQuery, recentModels]);
-  // The model menu is grouped by creator; every other menu keeps its order.
-  const list = useMemo<PromptBarSource[] | PromptBarCommand[] | PromptBarModel[] | PromptBarMode[]>(
-    () => (open === "model" ? groupByCreator(filtered as PromptBarModel[]) : filtered),
-    [filtered, open]
-  );
-  const cursor = Math.min(active, Math.max(0, list.length - 1));
-  // Keyboard nav walks the FULL list — pull the next chunk into the DOM when
-  // the cursor reaches the edge of what's rendered (model + slash menus).
-  const ensureCursorRendered = (next: number) => {
-    if (open !== "model" && open !== "slash") return;
-    setRenderLimit((c) => (next >= c ? Math.ceil((next + 1) / MODEL_CHUNK) * MODEL_CHUNK : c));
-  };
-  // What actually renders: the model and slash-skill menus stream in
-  // MODEL_CHUNK rows (plus one group header per creator run); every other
-  // menu shows its full list. Widened to the shared shape so one row type
-  // covers every menu kind.
-  const chunked = open === "model" || open === "slash";
-  const rows = (
-    chunked ? list.slice(0, renderLimit) : list
-  ) as (PromptBarSource & PromptBarCommand & PromptBarModel & PromptBarMode)[];
-  const canSend = draft.trim().length > 0 || attachments.length > 0 || canSendExtra;
-  // P7: the catalog streams in AFTER the menu is already open. renderLimit only
-  // grew on scroll-to-bottom, so models that arrived while the user was reading
-  // the top of the list were sliced out of the DOM and stayed invisible until
-  // they scrolled back to the bottom. Grow to cover whatever is there now.
-  useEffect(() => {
-    if (!chunked) return;
-    setRenderLimit((c) => (list.length > c ? list.length : c));
-  }, [chunked, list.length]);
-  const armed = busy || canSend;
-  const level = efforts[effortIndex] ?? "";
-  const maxed = efforts.length > 1 && effortIndex === efforts.length - 1;
+  }
 
-  const focusInput = () => inputRef.current?.focus({ preventScroll: true });
-  const searchRef = useRef<HTMLInputElement | null>(null);
+  const rows = openMenu === "model" ? filtered.slice(0, renderLimit) : filtered;
+  const cursor = Math.min(active, Math.max(0, filtered.length - 1));
+  const canSend = draft.trim().length > 0 || attachments.length > 0 || canSendExtra;
+  const armed = busy || canSend;
+  const placeholderText = listening
+    ? "Listening..."
+    : uiState === "thinking"
+      ? "Reply..."
+      : modeCopy[uiState] ?? placeholder;
+  const statusText = statusPhase === "writing" ? "Writing" : "Thinking";
+  const promptStyle = {
+    ...(background !== undefined ? { "--pb-bg": background } : {}),
+    ...(color !== undefined ? { "--pb-ink": color } : {}),
+    ...(menuBackground !== undefined ? { "--pb-menu": menuBackground } : {}),
+    ...(width !== undefined ? { "--pb-w": `${width}px` } : {}),
+    ...(radius !== undefined ? { "--pb-radius": `${radius}px` } : {}),
+    ...(sparkColor !== undefined ? { "--pb-spark": sparkColor } : {}),
+    ...(pressScale !== undefined ? { "--pb-press": pressScale } : {}),
+    ...style,
+  } as React.CSSProperties;
+
   const closeMenus = useCallback(() => {
-    setPlusOpen(false);
-    setModelOpen(false);
-    setModeOpen(false);
-    setEffortOpen(false);
+    setMenu(null);
+    setPermissionOpen(false);
     setModelQuery("");
-  }, []);
+  }, [setMenu, setPermissionOpen, setModelQuery]);
 
   const clearDraft = useCallback(() => {
     setDraft("");
     setAttachments([]);
     setDismissed(false);
     closeMenus();
-  }, [closeMenus]);
+  }, [closeMenus, setDraft, setAttachments, setDismissed]);
+
+  useEffect(() => setModeKey(defaultMode), [defaultMode]);
+  useEffect(() => {
+    if (defaultModel) setModelKey(defaultModel);
+  }, [defaultModel]);
+  useEffect(() => setEffort(defaultEffort), [defaultEffort]);
   useEffect(() => {
     onRegisterClear?.(clearDraft);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clearDraft]);
-  useEffect(() => {
     onRegisterControls?.({
       clear: clearDraft,
-      setText: (t: string) => {
-        setDraft(t);
+      setText: (text) => {
+        setDraft(text);
         setDismissed(false);
       },
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clearDraft]);
-
-  useLayoutEffect(() => {
-    const glow = glowRef.current;
-    if (!glow || !open) return;
-    const row = rowRefs.current[cursor];
-    if (!row) {
-      glow.style.opacity = "0";
-      return;
-    }
-    // Keep the highlighted row visible when the list scrolls (model menu
-    // caps its height — keyboard nav must follow the selection).
-    row.scrollIntoView?.({ block: "nearest" });
-    const fresh = lastOpen.current !== open;
-    lastOpen.current = open;
-    if (fresh) glow.style.transition = "none";
-    glow.style.top = `${row.offsetTop}px`;
-    glow.style.height = `${row.offsetHeight}px`;
-    glow.style.opacity = "1";
-    if (fresh) {
-      void glow.offsetHeight;
-      glow.style.transition = "";
-    }
-  }, [open, cursor, list]);
-
+  }, [clearDraft, onRegisterClear, onRegisterControls]);
   useEffect(() => {
-    if (!open) lastOpen.current = null;
-  }, [open]);
-
+    onDraftChange?.(draft);
+  }, [draft, onDraftChange]);
   useEffect(() => {
-    if (!plusOpen && !modelOpen && !modeOpen && !effortOpen) return undefined;
-    const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) closeMenus();
+    const onPrefill = (event: Event) => {
+      const text = (event as CustomEvent<{ text?: string }>).detail?.text;
+      if (!text) return;
+      setDraft(text);
+      setDismissed(false);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    };
+    window.addEventListener("orplex:prefill-prompt", onPrefill);
+    return () => window.removeEventListener("orplex:prefill-prompt", onPrefill);
+  }, []);
+  useEffect(() => {
+    const onDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (!rootRef.current?.contains(target) && !menuPortalRef.current?.contains(target)) closeMenus();
     };
     document.addEventListener("pointerdown", onDown);
     return () => document.removeEventListener("pointerdown", onDown);
-  }, [plusOpen, modelOpen, modeOpen, effortOpen, closeMenus]);
-
+  }, [closeMenus]);
+  useEffect(() => {
+    if (!busy) {
+      requestStartedAtRef.current = null;
+      setElapsedSeconds(0);
+      setRecentTool(null);
+      recentToolIdRef.current = null;
+      return;
+    }
+    const startedAt = requestStartedAt ?? requestStartedAtRef.current ?? Date.now();
+    requestStartedAtRef.current = startedAt;
+    const update = () => {
+      const now = Date.now();
+      setStatusNow(now);
+      setElapsedSeconds(Math.floor((now - startedAt) / 1000));
+    };
+    update();
+    const timer = window.setInterval(update, 250);
+    return () => window.clearInterval(timer);
+  }, [busy, requestStartedAt]);
+  const pushTool = useCallback((icon: ToolIcon, verb: string, detail: string, id: string, startedAt?: number) => {
+    recentToolIdRef.current = id;
+    setRecentTool({ id, icon, verb, detail, startedAt: startedAt ?? Date.now() });
+  }, []);
+  useEffect(() => {
+    if (!busy || !activeToolCall || recentToolIdRef.current === activeToolCall.id) return;
+    const description = describeToolCall(activeToolCall.tool, activeToolCall.args);
+    pushTool(description.icon, description.verb, description.detail, activeToolCall.id, activeToolCall.startedAt);
+  }, [activeToolCall, busy, pushTool]);
+  const renderStatus = () => {
+    if (!recentTool) return { tool: null, fading: false };
+    const age = statusNow - recentTool.startedAt;
+    return {
+      tool: age < RECENT_TOOL_MS ? recentTool : null,
+      fading: age >= RECENT_TOOL_MS - 700,
+    };
+  };
+  const status = renderStatus();
   useLayoutEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "0px";
-    const max = LINE * maxRows;
-    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
-    el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
+    const input = inputRef.current;
+    if (!input) return;
+    input.style.height = "0px";
+    const maximum = LINE * maxRows;
+    input.style.height = `${Math.min(input.scrollHeight, maximum)}px`;
+    input.style.overflowY = input.scrollHeight > maximum ? "auto" : "hidden";
   }, [draft, maxRows]);
-
   useEffect(() => {
-    onDraftChange?.(draft);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft]);
-
-  useEffect(
-    () => () => {
-      dictation.current += 1;
-    },
-    []
-  );
-
-  useEffect(() => {
-    const canvas = sparkRef.current;
-    if (!maxed || reduce || !canvas) return undefined;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return undefined;
-    let raf = 0;
-    let running = false;
-    let last = performance.now();
-    let w = 0;
-    let h = 0;
-    let due = 0;
-    const parts: { x: number; y: number; r: number; vy: number; sway: number; phase: number; life: number; span: number }[] = [];
-    const resize = () => {
-      const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
-      w = rect.width;
-      h = rect.height;
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    setRenderLimit(MODEL_CHUNK);
+  }, [openMenu, modelQuery, query]);
+  useLayoutEffect(() => {
+    const menuElement = permissionOpen ? permissionMenuRef.current : menuRef.current;
+    if (!menuElement) return;
+    const anchor = permissionOpen
+      ? permissionTriggerRef.current
+      : token?.kind === openMenu
+        ? inputRef.current
+        : menuAnchorRef.current?.isConnected
+          ? menuAnchorRef.current
+          : openMenu === "effort"
+            ? effortTriggerRef.current ?? modelTriggerRef.current
+            : modelTriggerRef.current;
+    const alignment: PromptMenuAlignment =
+      permissionOpen || openMenu === "model" || openMenu === "effort" ? "end" : "start";
+    const reposition = (recalculatePlacement = false) =>
+      positionPromptMenu(anchor, menuElement, alignment, !recalculatePlacement);
+    const onWindowScroll = (event: Event) => {
+      if (event.target instanceof Node && menuElement.contains(event.target)) return;
+      reposition();
     };
-    const spawn = (burst: boolean) => {
-      parts.push({
-        x: Math.random() * w,
-        y: burst ? h * (0.2 + Math.random() * 0.8) : h + 3,
-        r: 0.9 + Math.random() * 1.1,
-        vy: -(7 + Math.random() * 9),
-        sway: (Math.random() - 0.5) * 10,
-        phase: Math.random() * Math.PI * 2,
-        life: burst ? Math.random() * 1.2 : 0,
-        span: 2.4 + Math.random() * 2.4,
-      });
-    };
-    const tick = (now: number) => {
-      const dt = Math.min(0.05, (now - last) / 1000);
-      last = now;
-      due += dt;
-      while (due > 0.14) {
-        due -= 0.14;
-        if (parts.length < 30) spawn(false);
-      }
-      ctx.clearRect(0, 0, w, h);
-      const spark = sparkColor || "#b39dff";
-      ctx.fillStyle = spark;
-      for (let i = parts.length - 1; i >= 0; i -= 1) {
-        const p = parts[i];
-        p.life += dt;
-        if (p.life > p.span) {
-          parts.splice(i, 1);
-          continue;
-        }
-        const k = p.life / p.span;
-        const twinkle = 0.7 + 0.3 * Math.sin(now / 160 + p.phase);
-        p.y += p.vy * dt;
-        ctx.globalAlpha = Math.sin(k * Math.PI) * 0.9 * twinkle;
-        ctx.beginPath();
-        ctx.arc(p.x + Math.sin(now / 900 + p.phase) * p.sway, p.y, p.r * twinkle, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      if (running) raf = requestAnimationFrame(tick);
-    };
-    // Occluded/backgrounded windows composite stale canvas frames (visible
-    // as a garbage streak under memory pressure), so the loop stops whenever
-    // the bar is not on screen — which is also the cheaper default.
-    const start = () => {
-      if (running || reduce) return;
-      running = true;
-      last = performance.now();
-      resize();
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(tick);
-    };
-    const stop = () => {
-      running = false;
-      cancelAnimationFrame(raf);
-      ctx.clearRect(0, 0, w, h);
-    };
-    const onVisibility = () => {
-      if (document.hidden) stop();
-      else start();
-    };
-    const ro = new ResizeObserver(() => (running ? resize() : undefined));
-    const io = new IntersectionObserver((entries) => {
-      for (const e of entries) {
-        if (e.isIntersecting && !document.hidden) start();
-        else stop();
-      }
-    });
-    resize();
-    for (let i = 0; i < 26; i += 1) spawn(true);
-    ro.observe(canvas);
-    io.observe(canvas);
-    document.addEventListener("visibilitychange", onVisibility);
-    start();
+    reposition();
+    const onResize = () => reposition(true);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onWindowScroll, true);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reposition);
+    if (observer) {
+      if (anchor) observer.observe(anchor);
+    }
     return () => {
-      stop();
-      ro.disconnect();
-      io.disconnect();
-      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onWindowScroll, true);
+      observer?.disconnect();
     };
-  }, [maxed, reduce, sparkColor]);
+  // Keep the dependency tuple at eight slots so Fast Refresh can update
+  // already-mounted instances without tripping React's dependency-size check.
+  }, [null, filtered.length, modelQuery, openMenu, permissionOpen, query, renderLimit, token?.kind]);
+  useEffect(() => {
+    if (openMenu !== "model" || filtered.length <= renderLimit) return;
+    const menuElement = menuRef.current;
+    if (!menuElement) return;
+    const onScroll = () => {
+      if (menuElement.scrollHeight - menuElement.scrollTop - menuElement.clientHeight < 60) {
+        setRenderLimit((limit) => Math.min(limit + MODEL_CHUNK, filtered.length));
+      }
+    };
+    menuElement.addEventListener("scroll", onScroll);
+    return () => menuElement.removeEventListener("scroll", onScroll);
+  }, [filtered.length, openMenu, renderLimit]);
 
-  const setEffort = (i: number) => {
-    const next = Math.max(0, Math.min(efforts.length - 1, i));
-    if (next === effortIndex) return;
-    setEffortIndex(next);
-    latest.current.onEffortChange?.(efforts[next]);
+  const focusInput = () => inputRef.current?.focus({ preventScroll: true });
+  const focusRow = (index: number) => {
+    if (openMenu === "model" && index >= renderLimit) {
+      setRenderLimit(Math.ceil((index + 1) / MODEL_CHUNK) * MODEL_CHUNK);
+    }
+    requestAnimationFrame(() => {
+      const row = rowRefs.current[index];
+      row?.focus({ preventScroll: true });
+      row?.scrollIntoView?.({ block: "nearest" });
+    });
   };
-  const effortFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const k = (e.clientX - rect.left - EDGE) / Math.max(1, rect.width - 2 * EDGE);
-    setEffort(Math.round(k * (efforts.length - 1)));
-  };
-  const onEffortKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step =
-      e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : 0;
-    if (step) {
-      e.preventDefault();
-      setEffort(effortIndex + step);
-    } else if (e.key === "Home") {
-      e.preventDefault();
-      setEffort(0);
-    } else if (e.key === "End") {
-      e.preventDefault();
-      setEffort(efforts.length - 1);
-    } else if (e.key === "Escape") {
-      setEffortOpen(false);
+
+  const onMenuRowKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number, row: MenuRow) => {
+    const go = (next: number) => {
+      event.preventDefault();
+      const wrapped = (next + filtered.length) % filtered.length;
+      setActive(wrapped);
+      focusRow(wrapped);
+    };
+    if (event.key === "ArrowDown") go(index + 1);
+    else if (event.key === "ArrowUp") go(index - 1);
+    else if (event.key === "Home") go(0);
+    else if (event.key === "End") go(filtered.length - 1);
+    else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      pick(row);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenus();
       focusInput();
+    } else if (event.key === "Tab") {
+      closeMenus();
+    } else if (event.key.length === 1 && /\S/.test(event.key)) {
+      const character = event.key.toLowerCase();
+      const next = [...filtered.slice(index + 1), ...filtered.slice(0, index + 1)]
+        .findIndex((item) => item.name.trim().toLowerCase().startsWith(character));
+      if (next >= 0) {
+        const absolute = (index + 1 + next) % filtered.length;
+        setActive(absolute);
+        focusRow(absolute);
+      }
     }
   };
-  const stepAt = (i: number) => `calc(${EDGE}px + (100% - ${EDGE * 2}px) * ${i / Math.max(1, efforts.length - 1)})`;
-  const fillAt = (i: number) => (i === efforts.length - 1 ? "100%" : `calc(${stepAt(i)} + 7px)`);
 
-  const pick = (row: PromptBarSource | PromptBarCommand | PromptBarModel | PromptBarMode) => {
-    if (open === "model") {
-      setModelKey(row.key);
-      setModelOpen(false);
-      latest.current.onModelChange?.(row as PromptBarModel);
+  const pick = (row: MenuRow) => {
+    if (openMenu === "model") {
+      const next = row as PromptBarModel;
+      setModelKey(next.key);
+      closeMenus();
+      latest.current.onModelChange?.(next);
       focusInput();
       return;
     }
-    if (open === "mode") {
-      setModeKey(row.key);
-      setModeOpen(false);
-      latest.current.onModeChange?.(row as PromptBarMode);
+    if (openMenu === "mode") {
+      const next = row as PromptBarMode;
+      setModeKey(next.key);
+      closeMenus();
+      latest.current.onModeChange?.(next);
       focusInput();
       return;
     }
     const head = token ? draft.slice(0, token.start) : draft;
     if ("attach" in row && row.attach) {
       setDraft(head);
-      Promise.resolve(latest.current.onAttach?.(row as PromptBarSource)).then((files) => {
-        if (!files) return;
-        setAttachments((a) => [...a, ...(Array.isArray(files) ? (files as string[]) : [files as string])]);
+      Promise.resolve(latest.current.onAttach?.(row as PromptBarSource)).then((result) => {
+        if (!result) return;
+        setAttachments((items) => [...items, ...(Array.isArray(result) ? result : [String(result)])]);
       });
-    } else if (open === "at") {
-      const ins = "insert" in row && row.insert ? row.insert : `@${row.name} `;
-      if (ins === "/") {
-        // Insert a bare slash token so the command menu opens (needs a space
-        // boundary before it for the token parser to see it).
-        const head2 = head && !/\s$/.test(head) ? `${head} ` : head;
-        setDraft(`${head2}/`);
-        setPlusOpen(false);
-        setDismissed(false);
-        focusInput();
-        return;
-      }
-      setDraft(`${head}${ins}`);
     } else {
-      const ins = "insert" in row && row.insert ? row.insert : `${row.name} `;
-      setDraft(`${head}${ins}`);
+      const insertion = "insert" in row && row.insert
+        ? row.insert
+        : openMenu === "sources"
+          ? `@${row.name} `
+          : `${row.name} `;
+      setDraft(`${head}${insertion}`);
     }
-    setPlusOpen(false);
+    closeMenus();
     setDismissed(false);
     focusInput();
   };
 
   const send = () => {
     if ((!canSend && !canSendExtra) || busy) return;
-    latest.current.onSend?.(draft.trim(), { attachments, model, effort: level, mode });
+    latest.current.onSend?.(draft.trim(), { attachments, model, effort, mode });
     setDraft("");
     setAttachments([]);
     setDismissed(false);
@@ -679,454 +594,436 @@ export default function PromptBar({
     focusInput();
   };
 
-  const toggleListen = () => {
+  const toggleListening = () => {
+    if (!latest.current.onDictate) return;
     if (listening) {
-      dictation.current += 1;
       setListening(false);
       return;
     }
-    const seq = ++dictation.current;
     setListening(true);
-    Promise.resolve(latest.current.onDictate?.()).then(
+    Promise.resolve(latest.current.onDictate()).then(
       (text) => {
-        if (seq !== dictation.current) return;
         setListening(false);
-        if (text) setDraft((d) => (d.trim() ? `${d.trimEnd()} ${text}` : String(text)));
+        if (typeof text === "string" && text) {
+          setDraft((current) => current.trim() ? `${current.trimEnd()} ${text}` : text);
+        }
         focusInput();
       },
-      () => {
-        if (seq === dictation.current) setListening(false);
-      }
+      () => setListening(false)
     );
   };
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (open && list.length) {
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        const next = (cursor + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length;
-        setActive(next);
-        ensureCursorRendered(next);
-        return;
-      }
-      if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
-        e.preventDefault();
-        pick(list[cursor]);
-        return;
-      }
+  const onInputKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (openMenu && filtered.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      const next = (cursor + (event.key === "ArrowDown" ? 1 : filtered.length - 1)) % filtered.length;
+      setActive(next);
+      focusRow(next);
+      return;
     }
-    if (e.key === "Escape") {
-      if (open) {
-        e.preventDefault();
+    if (openMenu && filtered.length && event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      pick(filtered[cursor]);
+      return;
+    }
+    if (event.key === "Escape") {
+      if (openMenu || permissionOpen) {
+        event.preventDefault();
         setDismissed(true);
         closeMenus();
       }
       return;
     }
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault();
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
       send();
     }
   };
 
-  const down = (e: React.PointerEvent<HTMLButtonElement>) => {
-    if (e.button !== 0 || !armed) return;
-    setPressed(true);
+  const showMenu = (kind: Exclude<MenuKind, null>, anchor?: HTMLElement | null) => {
+    const opening = menu !== kind;
+    setDismissed(false);
+    setPermissionOpen(false);
+    menuAnchorRef.current = anchor ?? (
+      kind === "effort" ? effortTriggerRef.current ?? modelTriggerRef.current : null
+    );
+    setModelQuery("");
+    setActive(kind === "model"
+      ? Math.max(0, models.findIndex((item) => item.key === model?.key))
+      : kind === "mode"
+        ? Math.max(0, modes.findIndex((item) => item.key === mode?.key))
+        : 0);
+    setMenu(opening ? kind : null);
+    if (kind === "model" && opening) {
+      latest.current.onModelMenuOpened?.();
+      requestAnimationFrame(() => searchRef.current?.focus({ preventScroll: true }));
+    } else if (opening) {
+      focusInput();
+    }
   };
-  const up = () => setPressed(false);
 
+  const chooseEffort = (level: string) => {
+    setEffort(level);
+    latest.current.onEffortChange?.(level);
+    closeMenus();
+  };
+
+  const renderMenu = () => {
+    if (!openMenu) return null;
+    return (
+      <div
+        ref={menuRef}
+        className="prompt-bar__menu menu"
+        role="menu"
+        aria-label={openMenu === "model" ? "Models" : openMenu === "mode" ? "Mode" : openMenu === "effort" ? "Effort" : openMenu === "commands" ? "Commands" : "Sources"}
+        data-kind={openMenu}
+      >
+        {openMenu === "model" ? (
+          <div className="prompt-bar__search">
+            <input
+              ref={searchRef}
+              className="prompt-bar__search-input"
+              type="search"
+              value={modelQuery}
+              placeholder="Search models..."
+              aria-label="Search models"
+              onChange={(event) => {
+                setModelQuery(event.target.value);
+                setActive(0);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  const next = (cursor + (event.key === "ArrowDown" ? 1 : filtered.length - 1)) % Math.max(1, filtered.length);
+                  setActive(next);
+                  focusRow(next);
+                } else if (event.key === "Enter" && filtered.length) {
+                  event.preventDefault();
+                  pick(filtered[cursor]);
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  closeMenus();
+                  focusInput();
+                }
+              }}
+            />
+          </div>
+        ) : null}
+        {openMenu === "model" ? (
+          model ? (
+            <>
+            <div className="prompt-bar__model-current">
+              <span className="prompt-bar__provider"><ProviderMark model={model} /></span>
+              <span className="prompt-bar__current-copy">
+                <b>{model.name}</b>
+                {model.detail ? <small>{model.detail}</small> : null}
+              </span>
+              <Icon name="check" className="i chk" />
+            </div>
+            <button type="button" className="prompt-bar__effort-link" role="menuitem" onClick={(event) => showMenu("effort", effortTriggerRef.current ?? modelTriggerRef.current ?? event.currentTarget)}>
+              <span>Effort</span><span className="val">{effort}</span><Icon name="right" />
+            </button>
+            <hr />
+            </>
+          ) : null
+        ) : null}
+        {openMenu === "effort" ? (
+          <>
+            <div className="prompt-bar__effort-head">
+              <span className="prompt-bar__effort-title">Effort</span>
+              <span className="prompt-bar__effort-level">{effort}</span>
+              <span className="prompt-bar__effort-help" title="Higher effort spends longer reasoning before answering">
+                <HugeiconsIcon icon={HelpCircleIcon} size={14} strokeWidth={1.8} />
+              </span>
+            </div>
+            {efforts.map((level) => (
+              <button
+                type="button"
+                key={level}
+                role="menuitemradio"
+                aria-checked={level === effort}
+                className="prompt-bar__row"
+                onClick={() => chooseEffort(level)}
+              >
+                <span className="prompt-bar__row-name">{level}</span>
+                {level === effort ? <Icon name="check" className="i chk" /> : null}
+              </button>
+            ))}
+          </>
+        ) : null}
+        {rows.map((row, index) => {
+          const currentModelGroup = openMenu === "model" ? modelCreatorLabel(row as PromptBarModel) : null;
+          const previousModelGroup = index > 0 && openMenu === "model" ? modelCreatorId(rows[index - 1] as PromptBarModel) : null;
+          const startsGroup = currentModelGroup && currentModelGroup !== previousModelGroup;
+          const selected = openMenu === "model" ? row.key === model?.key : openMenu === "mode" ? row.key === mode?.key : false;
+          return (
+            <Fragment key={row.key}>
+              {startsGroup ? <div className="prompt-bar__group hd">{currentModelGroup}</div> : null}
+              <button
+                type="button"
+                ref={(element) => { rowRefs.current[index] = element; }}
+                role={openMenu === "mode" || openMenu === "model" ? "menuitemradio" : "menuitem"}
+                aria-checked={openMenu === "mode" || openMenu === "model" ? selected : undefined}
+                aria-selected={index === cursor}
+                tabIndex={-1}
+                className="prompt-bar__row"
+                onMouseDown={(event) => event.preventDefault()}
+                onPointerEnter={(event) => {
+                  setActive(index);
+                  if (event.pointerType !== "touch") event.currentTarget.focus({ preventScroll: true });
+                }}
+                onKeyDown={(event) => onMenuRowKeyDown(event, index, row)}
+                onClick={() => pick(row)}
+              >
+                {openMenu === "sources" && hasIcon(row) ? <span className="prompt-bar__row-icon">{renderIcon(row.icon)}</span> : null}
+                {openMenu === "model" ? <span className="prompt-bar__provider"><ProviderMark model={row as PromptBarModel} /></span> : null}
+                {openMenu === "mode" ? <Icon name={row.key} className="i prompt-bar__mode-icon" /> : null}
+                <span className="prompt-bar__row-name">{row.name}</span>
+                {hasDescription(row) && row.description ? <span className="prompt-bar__row-desc">{row.description}</span> : null}
+                {openMenu === "model" && (row as PromptBarModel).detail ? <span className="prompt-bar__row-detail">{(row as PromptBarModel).detail}</span> : null}
+                {openMenu === "model" && (row as PromptBarModel).healthDot ? (
+                  <span className="prompt-bar__row-health" data-health={(row as PromptBarModel).healthDot} title={(row as PromptBarModel).healthTitle} />
+                ) : null}
+                {openMenu === "model" && (row as PromptBarModel).tag ? <span className="prompt-bar__row-tag">{(row as PromptBarModel).tag}</span> : null}
+                {selected ? <Icon name="check" className="i chk" /> : null}
+              </button>
+            </Fragment>
+          );
+        })}
+        {openMenu === "model" && modelsLoading ? (
+          <div className="prompt-bar__model-loading" role="status">Loading available models...</div>
+        ) : null}
+        {openMenu === "model" && modelsSettling && !modelsLoading ? (
+          <div className="prompt-bar__model-settling" role="status">More verified models are still loading.</div>
+        ) : null}
+        {openMenu === "model" && filtered.length > rows.length ? (
+          <button type="button" className="prompt-bar__row prompt-bar__more" onClick={() => setRenderLimit((limit) => limit + MODEL_CHUNK)}>
+            Show {Math.min(MODEL_CHUNK, filtered.length - renderLimit)} more
+          </button>
+        ) : null}
+        {filtered.length === 0 ? <div className="prompt-bar__empty">{openMenu === "model" && modelsLoading ? "Loading available models..." : "No results found."}</div> : null}
+      </div>
+    );
+  };
+
+  const styleVars = promptStyle as React.CSSProperties;
   return (
     <div
       ref={rootRef}
       className={`prompt-bar${className ? ` ${className}` : ""}`}
+      data-state={uiState}
+      data-md={mode?.key ?? "ask"}
       data-busy={busy ? "" : undefined}
-      data-max={maxed ? "" : undefined}
-      style={{
-        ...(background !== undefined ? { "--pb-bg": background } : {}),
-        ...(color !== undefined ? { "--pb-ink": color } : {}),
-        ...(menuBackground !== undefined ? { "--pb-menu": menuBackground } : {}),
-        ...(width !== undefined ? { "--pb-w": `${width}px` } : {}),
-        ...(radius !== undefined ? { "--pb-radius": `${radius}px` } : {}),
-        ...(sparkColor !== undefined ? { "--pb-spark": sparkColor } : {}),
-        ...(pressScale !== undefined ? { "--pb-press": pressScale } : {}),
-        ...style,
-      } as React.CSSProperties}
+      data-has-text={draft.trim() ? "" : undefined}
+      style={styleVars}
     >
-      {open ? (
+      {typeof document !== "undefined" && (openMenu || permissionOpen) ? createPortal(
         <div
-          className="prompt-bar__menu"
-          ref={menuRef}
-          onScroll={onMenuScroll}
-          role={open === "effort" ? "dialog" : "listbox"}
-          aria-label={
-            open === "at"
-              ? "Sources"
-              : open === "slash"
-                ? "Commands"
-                : open === "model"
-                  ? "Models"
-                  : open === "mode"
-                    ? "Mode"
-                    : "Effort"
-          }
-          data-kind={open}
+          ref={menuPortalRef}
+          className="prompt-bar prompt-bar__floating-layer"
+          data-md={mode?.key ?? "ask"}
+          style={styleVars}
         >
-          {open === "effort" ? (
-            <>
-              <div className="prompt-bar__effort-head">
-                <span className="prompt-bar__effort-title">Effort</span>
-                <span className="prompt-bar__effort-level">{level}</span>
-                <span className="prompt-bar__effort-help" title="Higher effort thinks longer before answering">
-                  <HugeiconsIcon icon={HelpCircleIcon} size={14} strokeWidth={1.8} />
-                </span>
-              </div>
-              <div className="prompt-bar__effort-ends">
-                <span>Faster</span>
-                <span>Smarter</span>
-              </div>
-              <div
-                className="prompt-bar__effort-track"
-                role="slider"
-                tabIndex={0}
-                aria-label="Effort"
-                aria-valuemin={0}
-                aria-valuemax={efforts.length - 1}
-                aria-valuenow={effortIndex}
-                aria-valuetext={level}
-                style={{ "--pb-effort-x": stepAt(effortIndex), "--pb-effort-fill": fillAt(effortIndex) } as React.CSSProperties}
-                onPointerDown={(e) => {
-                  if (e.button !== 0) return;
-                  try {
-                    e.currentTarget.setPointerCapture(e.pointerId);
-                  } catch {}
-                  e.currentTarget.focus({ preventScroll: true });
-                  effortFromPointer(e);
-                }}
-                onPointerMove={(e) => {
-                  if (e.buttons & 1) effortFromPointer(e);
-                }}
-                onKeyDown={onEffortKey}
-              >
-                <span className="prompt-bar__effort-fill" />
-                {efforts.map((label, i) => (
-                  <i key={label} className="prompt-bar__effort-dot" style={{ left: stepAt(i) }} />
-                ))}
-                <span className="prompt-bar__effort-thumb" />
-              </div>
-            </>
-          ) : (
-            <>
-              {open === "model" ? (
-                <div className="prompt-bar__search">
-                  <input
-                    ref={searchRef}
-                    type="text"
-                    className="prompt-bar__search-input"
-                    placeholder={recentModels && recentModels.length ? "Search all models…" : "Search models…"}
-                    aria-label="Search models"
-                    value={modelQuery}
-                    onChange={(e) => {
-                      setModelQuery(e.target.value);
-                      setActive(0);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                        e.preventDefault();
-                        const next = (cursor + (e.key === "ArrowDown" ? 1 : list.length - 1)) % Math.max(1, list.length);
-                        setActive(next);
-                        ensureCursorRendered(next);
-                      } else if ((e.key === "Enter" || e.key === "Tab") && list.length > 0) {
-                        e.preventDefault();
-                        pick(list[cursor]);
-                      } else if (e.key === "Escape") {
-                        e.preventDefault();
-                        setDismissed(true);
-                        closeMenus();
-                        focusInput();
-                      }
-                      e.stopPropagation();
-                    }}
-                  />
-                </div>
-              ) : null}
-              <span ref={glowRef} className="prompt-bar__glow" aria-hidden="true" />
-              {rows.map((row, i) => {
-                const groupLabel = open === "model" ? modelCreatorLabel(row) : null;
-                const startsGroup =
-                  groupLabel !== null && (i === 0 || modelCreatorId(rows[i - 1]) !== modelCreatorId(row));
-                return (
-                  <Fragment key={row.key}>
-                    {startsGroup ? (
-                      <div className="prompt-bar__group" role="presentation">
-                        {groupLabel}
-                      </div>
-                    ) : null}
+          {renderMenu()}
+          {permissionOpen ? (
+            <div ref={permissionMenuRef} className="menu prompt-bar__permission-menu" role="menu" aria-label="Permission">
+              {(["Manual", "Auto"] as const).map((level) => (
                 <button
                   type="button"
-                  ref={(el) => {
-                    rowRefs.current[i] = el;
-                  }}
-                  role="option"
-                  aria-selected={i === cursor}
+                  key={level}
                   className="prompt-bar__row"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onPointerEnter={() => setActive(i)}
-                  onClick={() => pick(row)}
+                  role="menuitemradio"
+                  aria-checked={permission === level}
+                  onClick={() => {
+                    setPermission(level);
+                    setPermissionOpen(false);
+                  }}
                 >
-                  {open === "at" ? <span className="prompt-bar__row-icon">{renderIcon(row.icon, 15)}</span> : null}
-                  {open === "model" ? (
-                    <span className="prompt-bar__provider">
-                      <ProviderMark model={row} />
-                    </span>
-                  ) : null}
-                  <span className="prompt-bar__row-name">{row.name}</span>
-                  {row.description ? <span className="prompt-bar__row-desc">{row.description}</span> : null}
-                  {open === "model" && row.detail ? <span className="prompt-bar__row-detail">{row.detail}</span> : null}
-                  {open === "model" && row.healthDot ? (
-                    <span
-                      className="prompt-bar__row-health"
-                      data-health={row.healthDot}
-                      title={row.healthTitle ?? (row.healthDot === "green" ? "Verified recently" : "Not re-verified in the last day")}
-                      aria-label={row.healthDot === "green" ? "Model verified recently" : "Model health aged — re-verification pending"}
-                    />
-                  ) : null}
-                  {open === "model" || open === "mode" ? (
-                    <>
-                      <span className="prompt-bar__row-tag">{row.tag}</span>
-                      <span className="prompt-bar__row-check" data-on={row.key === (open === "mode" ? mode?.key : model?.key) ? "" : undefined}>
-                        <HugeiconsIcon icon={Tick02Icon} size={13} strokeWidth={2.5} />
-                      </span>
-                    </>
-                  ) : null}
+                  <span className="prompt-bar__row-name">{level}</span>
+                  <span className="prompt-bar__row-desc">{level === "Manual" ? "Ask before each action" : "Run without asking"}</span>
+                  {permission === level ? <Icon name="check" className="i chk" /> : null}
                 </button>
-                  </Fragment>
-                );
-              })}
-{open === "model" && modelsLoading ? (
-        <div className="prompt-bar__model-loading" role="status" aria-live="polite">
-          <span className="prompt-bar__model-loading-spinner" aria-hidden="true" />
-          <span>Fetching verified models…</span>
-        </div>
+              ))}
+            </div>
+          ) : null}
+        </div>,
+        document.body
       ) : null}
-      {open === "model" && modelsSettling && !modelsLoading ? (
-        // Quiet phase: the fallback trio above is usable, so don't block on a
-        // spinner — just say the verified list is still growing.
-        <div className="prompt-bar__model-settling" role="status" aria-live="polite">
-          Still verifying models — this list will keep updating.
-        </div>
-      ) : null}
-              {chunked && list.length > renderLimit ? (
-                <button
-                  type="button"
-                  className="prompt-bar__row prompt-bar__more"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => setRenderLimit((c) => c + MODEL_CHUNK)}
-                >
-                  <span className="prompt-bar__row-name">Show {Math.min(MODEL_CHUNK, list.length - renderLimit)} more…</span>
-                </button>
-              ) : null}
-              {list.length === 0 && !modelsLoading ? <div className="prompt-bar__empty">No matches for “{query}”</div> : null}
-              {list.length === 0 && modelsLoading ? <div className="prompt-bar__empty">Loading the live catalog…</div> : null}
-            </>
-          )}
-        </div>
-      ) : null}
-
       <div
-        className="prompt-bar__field"
-        role="presentation"
-        data-max={maxed ? "" : undefined}
-        onPointerDown={(e) => {
-          if (e.target === e.currentTarget || e.target === inputRef.current) closeMenus();
+        className="box prompt-bar__box"
+        data-max={draft.split("\n").length >= maxRows ? "" : undefined}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) focusInput();
         }}
-        onClick={focusInput}
       >
-        <canvas ref={sparkRef} className="prompt-bar__sparks" aria-hidden="true" />
+        {uiState === "thinking" ? (
+          <div className="status" aria-live="polite">
+            <Icon name="spark" className="i spark" />
+            {status.tool ? (
+              <span className={`tool${status.fading ? " old" : ""}`}>
+                <Icon name={status.tool.icon} className="i" />
+                <b>{status.tool.verb}</b>
+                {status.tool.detail ? <span>{status.tool.detail}</span> : null}
+              </span>
+            ) : (
+              <span className="shim">{statusText}</span>
+            )}
+            <span className="dots" aria-hidden="true"><i /><i /><i /></span>
+            <span className="tm">{elapsedSeconds}s</span>
+          </div>
+        ) : null}
         {attachments.length > 0 ? (
           <div className="prompt-bar__chips">
-            {attachments.map((file, i) => (
-              <span key={`${file}-${i}`} className="prompt-bar__chip">
+            {attachments.map((file, index) => (
+              <span key={`${file}-${index}`} className="prompt-bar__chip">
                 <HugeiconsIcon icon={File02Icon} size={12} strokeWidth={2} />
                 <span className="prompt-bar__chip-name">{file}</span>
-                <button
-                  type="button"
-                  className="prompt-bar__chip-x"
-                  aria-label={`Remove ${file}`}
-                  onClick={() => setAttachments((a) => a.filter((_, j) => j !== i))}
-                >
+                <button type="button" className="prompt-bar__chip-x" aria-label={`Remove ${file}`} onClick={() => setAttachments((items) => items.filter((_, i) => i !== index))}>
                   <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2.5} />
                 </button>
               </span>
             ))}
           </div>
         ) : null}
-
+        <div className="rel plus">
+          <button
+            type="button"
+            className="ib"
+            aria-label="Add content"
+            aria-haspopup="menu"
+            aria-expanded={openMenu === "sources"}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={(event) => showMenu("sources", event.currentTarget)}
+          >
+            <Icon name="plus" />
+          </button>
+        </div>
+        <div className="rel modewrap">
+          <button
+            type="button"
+            className="chip mchip"
+            aria-label="Mode"
+            aria-haspopup="menu"
+            aria-expanded={openMenu === "mode"}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={(event) => showMenu("mode", event.currentTarget)}
+          >
+            <Icon name={mode?.key ?? "ask"} />
+            <span>{mode?.name}</span>
+            <Icon name="down" />
+          </button>
+        </div>
         <textarea
           ref={inputRef}
           className="prompt-bar__input"
           rows={1}
           value={draft}
-          placeholder={listening ? "Listening…" : placeholder}
-          aria-label="Prompt"
-          onChange={(e) => {
-            setDraft(e.target.value);
+          placeholder={placeholderText}
+          aria-label="Message"
+          onChange={(event) => {
+            setDraft(event.target.value);
             setDismissed(false);
-            closeMenus();
+            setMenu(null);
             setActive(0);
           }}
-          onFocus={closeMenus}
-          onKeyDown={onKeyDown}
+          onKeyDown={onInputKeyDown}
         />
-
-        <div className="prompt-bar__bar">
-          {sources.length > 0 ? (
-          <button
-            type="button"
-            className="prompt-bar__tool"
-            aria-label="Add files and sources"
-            aria-expanded={plusOpen}
-            data-on={plusOpen ? "" : undefined}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => {
-              setModelOpen(false);
-              setModeOpen(false);
-              setEffortOpen(false);
-              setActive(0);
-              setPlusOpen((v) => !v);
-              focusInput();
-            }}
-          >
-            <HugeiconsIcon icon={PlusSignIcon} size={16} strokeWidth={2} />
-          </button>
-          ) : null}
-          {modes.length > 0 ? (
-            <button
-              type="button"
-              className="prompt-bar__pick prompt-bar__pick--mode"
-              aria-label="Choose mode"
-              aria-expanded={modeOpen}
-              data-on={modeOpen ? "" : undefined}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                setPlusOpen(false);
-                setModelOpen(false);
-                setEffortOpen(false);
-                setActive(Math.max(0, modes.findIndex((m) => m.key === mode?.key)));
-                setModeOpen((v) => !v);
-                focusInput();
-              }}
-            >
-              <span>{mode?.name}</span>
-              <HugeiconsIcon icon={ArrowDown01Icon} size={12} strokeWidth={2.4} />
-            </button>
-          ) : null}
-          {models.length > 0 ? (
-            <button
-              type="button"
-              className="prompt-bar__pick prompt-bar__pick--model"
-              aria-label="Choose model"
-              aria-expanded={modelOpen}
-              data-on={modelOpen ? "" : undefined}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                setPlusOpen(false);
-                setModeOpen(false);
-                setEffortOpen(false);
-                setModelQuery("");
-                // P6: compute the active row from the MODEL LIST, not `list`.
-                // `list` is derived from `filtered`, which returns [] for every
-                // non-"model" branch — and at click time `modelOpen` is still
-                // false, so `open` !== "model" and the lookup ALWAYS returned
-                // -1. That Math.max(0, …) then pinned the keyboard cursor to
-                // row 0, so opening the picker jumped away from the model you
-                // had actually selected (and Enter re-picked model #1).
-                const modelIdx = models.findIndex((m) => m.key === model?.key);
-                setActive(modelIdx >= 0 ? modelIdx : 0);
-                const opening = !modelOpen;
-                setModelOpen(opening);
-                if (opening) {
-                  // Parent state updates must happen in the event handler, NOT
-                  // inside a setState updater (React renders updater bodies).
-                  latest.current.onModelMenuOpened?.();
-                  // Focus the menu's search box once it renders
-                  requestAnimationFrame(() => searchRef.current?.focus({ preventScroll: true }));
-                } else {
-                  focusInput();
-                }
-              }}
-            >
-              <span className="prompt-bar__provider">
-                <ProviderMark model={model} />
-              </span>
-              <span className="prompt-bar__pick-label">{model?.name}</span>
-              <HugeiconsIcon icon={ArrowDown01Icon} size={12} strokeWidth={2.4} />
-            </button>
-          ) : null}
-          {efforts.length > 0 ? (
-            <button
-              type="button"
-              className="prompt-bar__pick"
-              aria-label="Choose effort"
-              data-level={level.toLowerCase()}
-              aria-expanded={effortOpen}
-              data-on={effortOpen ? "" : undefined}
-              data-max={maxed ? "" : undefined}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                setPlusOpen(false);
-                setModelOpen(false);
-                setModeOpen(false);
-                setEffortOpen((v) => !v);
-                focusInput();
-              }}
-            >
-              <HugeiconsIcon icon={SparklesIcon} size={13} strokeWidth={2} />
-              <span>{level}</span>
-            </button>
-          ) : null}
-          <span className="prompt-bar__spacer" />
+        <div className="right">
           {onDictate ? (
             <button
               type="button"
-              className="prompt-bar__tool"
+              className="ib"
               aria-label={listening ? "Stop dictation" : "Dictate"}
               aria-pressed={listening}
-              data-on={listening ? "" : undefined}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={toggleListen}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={toggleListening}
             >
-              {listening ? (
-                <span className="prompt-bar__eq" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-              ) : (
-                <HugeiconsIcon icon={Mic01Icon} size={15} strokeWidth={2} />
-              )}
+              <Icon name="mic" />
             </button>
           ) : null}
           <button
             type="button"
-            className="prompt-bar__send"
+            className={`ib send${armed ? " on" : ""}${busy ? " stop" : ""}`}
             disabled={!armed}
-            aria-label={busy ? "Stop" : "Send"}
-            data-armed={armed ? "" : undefined}
-            data-busy={busy ? "" : undefined}
-            data-pressed={pressed ? "" : undefined}
-            onMouseDown={(e) => e.preventDefault()}
-            onPointerDown={down}
-            onPointerUp={up}
-            onPointerCancel={up}
-            onPointerLeave={up}
-            onClick={() => {
-              if (busy) latest.current.onStop?.();
-              else send();
+            aria-label={busy ? "Stop response" : "Send message"}
+            onMouseDown={(event) => event.preventDefault()}
+            onPointerDown={(event) => {
+              if (event.button === 0 && armed) setPressed(true);
             }}
+            onPointerUp={() => setPressed(false)}
+            onPointerCancel={() => setPressed(false)}
+            onPointerLeave={() => setPressed(false)}
+            onClick={() => busy ? latest.current.onStop?.() : send()}
+            data-pressed={pressed ? "" : undefined}
           >
-            <SendGlyph busy={busy} morphDuration={morphDuration} squash={squash} tilt={tilt} />
+            <Icon name={busy ? "stop" : "enter"} />
           </button>
         </div>
+      </div>
+      <div className="foot">
+        {uiState === "initial" && footerProject ? <div className="rel init-only proj">{footerProject}</div> : null}
+        {quotaIndicator ? <div className="prompt-bar__quota">{quotaIndicator}</div> : null}
+        <div className="rel">
+          <button type="button" className="chip prompt-bar__connector" onClick={() => onOpenConnectors?.()} aria-label="Open MCP connectors">
+            <Icon name="plug" />
+            <span className="cl">MCP</span>
+            <Icon name="down" />
+          </button>
+        </div>
+        {(models.length > 0 || efforts.length > 0) ? (
+          <div className="rel prompt-bar__model-pill">
+            {models.length > 0 ? (
+              <button
+                type="button"
+                className="chip pill prompt-bar__model-trigger"
+                ref={modelTriggerRef}
+                aria-label="Choose model"
+                aria-haspopup="menu"
+                aria-expanded={openMenu === "model"}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={(event) => showMenu("model", event.currentTarget)}
+              >
+                {model ? <ProviderMark model={model} /> : null}
+                <b>{model?.name}</b>
+                <Icon name="down" />
+              </button>
+            ) : null}
+            {efforts.length > 0 ? (
+              <button
+                type="button"
+                className="chip pill prompt-bar__effort-trigger"
+                ref={effortTriggerRef}
+                aria-haspopup="menu"
+                aria-expanded={openMenu === "effort"}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={(event) => showMenu("effort", event.currentTarget)}
+              >
+                <span>{effort}</span>
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {uiState === "initial" ? (
+          <div className="rel init-only">
+            <button
+              ref={permissionTriggerRef}
+              type="button"
+              className="chip lite"
+              aria-haspopup="menu"
+              aria-expanded={permissionOpen}
+              onClick={() => {
+                closeMenus();
+                menuAnchorRef.current = null;
+                setPermissionOpen(!permissionOpen);
+              }}
+            >
+              <span>{permission}</span><Icon name="down" />
+            </button>
+          </div>
+        ) : null}
+        {uiState === "initial" ? (
+          <p className="disc">Orplex Agent can make mistakes. Verify important information.</p>
+        ) : null}
       </div>
     </div>
   );

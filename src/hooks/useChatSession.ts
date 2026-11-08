@@ -12,6 +12,8 @@ import { buildWorkspaceContext } from "@/lib/client-signatures";
 import { listFilesUnderPath, parseToolCalls, replaceLastStatus } from "@/lib/tool-text";
 import { subscribeBackgroundChat, abortCurrentTask, readTaskSnapshot, clearTaskSnapshot, getCurrentTask, deriveRunPhase, runPhaseLabel, type BackgroundTask, type RunPhase } from "@/lib/background-chat";
 import { normalizeThinkingBlocks } from "@/lib/stream-reader";
+import { captureActivityTiming } from "@/lib/activity";
+import { parseContent } from "@/lib/message-content";
 import { onAgentStatus } from "@/lib/agent-events";
 import type { AgentEvent } from "@/lib/types";
 import { stampFailedMessage, findFailedExchange, userTypedText } from "@/lib/message-retry";
@@ -93,6 +95,7 @@ export function useChatSession() {
   const { directoryName, fileContents, fileTree, readFile, writeFile, editFile } = useFileSystemContext();
   const [agentStatus, setAgentStatus] = useState<string>("");
   const [bgTask, setBgTask] = useState<BackgroundTask | null>(null);
+  const activeTaskIdRef = useRef<string | null>(null);
   const [thinking, setThinking] = useState(false);
   const [streaming, setStreaming] = useState(false);
   // === Per-turn run phase (UI-only view of the task store) =================
@@ -112,17 +115,38 @@ export function useChatSession() {
   // double-count every subsequent event.
   useEffect(() => {
     return onAgentStatus((event) => {
-      if (event.type !== "compaction") return;
-      setAgentEvents((prev) => [
-        ...prev,
-        {
-          type: "compacted",
-          tokensBefore: event.tokensBefore,
-          tokensAfter: event.tokensAfter,
-          mode: event.mode,
-          ...(event.summary ? { summary: event.summary } : {}),
-        },
-      ]);
+      if (event.type === "compaction") {
+        setAgentEvents((prev) => [
+          ...prev,
+          {
+            type: "compacted",
+            tokensBefore: event.tokensBefore,
+            tokensAfter: event.tokensAfter,
+            mode: event.mode,
+            ...(event.summary ? { summary: event.summary } : {}),
+          },
+        ]);
+        return;
+      }
+      if (event.type !== "live-tool-call" || event.taskId !== activeTaskIdRef.current) return;
+      setAgentEvents((prev) => {
+        if (event.status === "dismissed") {
+          return prev.filter((item) => item.type !== "tool_call" || item.id !== event.id);
+        }
+        const nextEvent: AgentEvent = {
+          type: "tool_call",
+          id: event.id,
+          tool: event.tool,
+          args: event.args,
+          status: "running",
+          ...(event.startedAt ? { startedAt: event.startedAt } : {}),
+        };
+        const index = prev.findIndex((item) => item.type === "tool_call" && item.id === event.id);
+        if (index < 0) return [...prev, nextEvent];
+        const next = [...prev];
+        next[index] = nextEvent;
+        return next;
+      });
     });
   }, []);
 
@@ -223,6 +247,7 @@ export function useChatSession() {
       // Only set bgTask to active tasks — terminal/done/error/cancelled/null clears it
       const isActive = task && (task.status === "streaming" || task.status === "tool_executing" || task.status === "awaiting_approval" || task.status === "waiting_for_input");
       const isStreaming = task && (task.status === "streaming" || task.status === "tool_executing");
+      activeTaskIdRef.current = isActive ? task.id : null;
       // A genuinely new task clears the abandoned marker, so it can never mask
       // a later run's write-back.
       if (task && task.id !== abandonedTaskIdRef.current) {
@@ -308,7 +333,11 @@ export function useChatSession() {
                   updated[assistantIdx].role === "assistant" &&
                   !updated[assistantIdx].content
                 ) {
-                  updated[assistantIdx] = { ...updated[assistantIdx], content: finalText };
+                  updated[assistantIdx] = {
+                    ...updated[assistantIdx],
+                    content: finalText,
+                    ...(task.activityTiming ? { activityTiming: task.activityTiming } : {}),
+                  };
                 }
                 return updated;
               }
@@ -317,7 +346,11 @@ export function useChatSession() {
             // message if it's still an empty assistant placeholder.
             const last = updated[updated.length - 1];
             if (last.role === "assistant" && !last.content) {
-              updated[updated.length - 1] = { ...last, content: finalText };
+              updated[updated.length - 1] = {
+                ...last,
+                content: finalText,
+                ...(task.activityTiming ? { activityTiming: task.activityTiming } : {}),
+              };
             }
             return updated;
           });
@@ -342,7 +375,14 @@ export function useChatSession() {
       const assistantMsg = normalizeThinkingBlocks(task.displayContent!);
       if (userMsg && assistantMsg) {
         convoRef.current
-        .saveConversation(userMsg, assistantMsg, undefined, directoryNameRef.current, (msg) => toastRef.current(msg, "error"))
+        .saveConversation(
+          userMsg,
+          assistantMsg,
+          undefined,
+          directoryNameRef.current,
+          (msg) => toastRef.current(msg, "error"),
+          task.activityTiming,
+        )
         .catch(() => {
           /* already surfaced via onSaveError */
         });
@@ -381,6 +421,7 @@ export function useChatSession() {
                       mode: task.mode,
                       model: task.model,
                     }),
+                    ...(task.activityTiming ? { activityTiming: task.activityTiming } : {}),
                   };
                 }
                 // Same fallback the success path has: if the user bubble was
@@ -396,6 +437,7 @@ export function useChatSession() {
                       mode: task.mode,
                       model: task.model,
                     }),
+                    ...(task.activityTiming ? { activityTiming: task.activityTiming } : {}),
                   };
                 }
                 return updated;
@@ -603,9 +645,15 @@ setRunLabel("No response — run stopped");
     const t = toastRef.current;
     const c = convoRef.current;
     const userText = snap.userMessage || "(restored prompt)";
-    // Restore the reasoning UI too: normalize (not strip) so an unclosed
-    // [THINKING] block from the snapshot renders as the ThinkingCard, not raw text.
+    // Normalize (rather than strip) an unclosed thinking block from the
+    // snapshot so its activity row remains parseable.
     const partial = snap.displayContent?.trim() ? normalizeThinkingBlocks(snap.displayContent) : "";
+    const restoredTiming = captureActivityTiming(
+      parseContent(partial, { activity: true, activityTiming: snap.activityTiming }),
+      snap.activityTiming,
+      Date.now(),
+      true,
+    );
     // [INTERRUPTED] marker renders as a dedicated styled banner in
     // MessageContent (see parseContent) instead of an inline italic line.
     const assistantText = partial
@@ -620,7 +668,14 @@ setRunLabel("No response — run stopped");
       if (!(last?.role === "user" && last.content === userText)) {
         updated.push({ role: "user", content: userText, time: m.now() });
       }
-      updated.push({ role: "assistant", content: assistantText, time: m.now() });
+      updated.push({
+        role: "assistant",
+        content: assistantText,
+        time: m.now(),
+        ...(Object.keys(restoredTiming.groups).length || Object.keys(restoredTiming.steps).length
+          ? { activityTiming: restoredTiming }
+          : {}),
+      });
       return updated;
     });
 
@@ -635,7 +690,14 @@ setRunLabel("No response — run stopped");
     // unconditionally destroyed the only copy whenever the save failed
     // (offline, DB down, 500, or a 404 because the conversation was deleted).
     // Clear only after a confirmed save.
-    c.saveConversation(userText, assistantText, snap.conversationId || undefined, directoryNameRef.current)
+    c.saveConversation(
+      userText,
+      assistantText,
+      snap.conversationId || undefined,
+      directoryNameRef.current,
+      undefined,
+      restoredTiming,
+    )
       .then(() => {
         t("Your previous task was interrupted by the reload — partial output restored.", "info");
         clearTaskSnapshot();
@@ -917,7 +979,12 @@ setRunLabel("No response — run stopped");
   // Don't overlay loaded conversation messages with stale background task content
   const isActiveBgTask = bgTask && bgTask.status !== "done" && bgTask.status !== "error" && bgTask.conversationId === convo.conversationId;
   const displayMessages = isActiveBgTask && bgTask?.displayContent
-    ? [...msg.messages.slice(0, -1), { role: "assistant" as const, content: bgTask.displayContent, time: msg.messages[msg.messages.length - 1]?.time || "" }]
+    ? [...msg.messages.slice(0, -1), {
+        role: "assistant" as const,
+        content: bgTask.displayContent,
+        time: msg.messages[msg.messages.length - 1]?.time || "",
+        ...(bgTask.activityTiming ? { activityTiming: bgTask.activityTiming } : {}),
+      }]
     : msg.messages;
 
   return {

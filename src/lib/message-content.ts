@@ -18,8 +18,11 @@
  *   [THINKING] … [THINKING/], [INTERRUPTED], [FAILED], [FAILED_META]:…
  */
 
+import { groupActivitySegments, type ActivityGroup, type ActivityTiming } from "./activity";
+
 export type ContentSegmentType =
   | "text"
+  | "activity"
   | "tool_call"
   | "tool_result"
   | "status"
@@ -39,6 +42,8 @@ export interface ContentSegment {
   path?: string;
   action?: string;
   detail?: string;
+  live?: boolean;
+  activity?: ActivityGroup;
   /** Parsed payload for type "clarified" — question / context / answer. */
   data?: { q: string; c?: string; a: string };
   /** Parsed payload for type "filecard" — the create_file staging record. */
@@ -391,7 +396,10 @@ export function neutralizeModelMarkers(text: string): string {
   return text.replace(/(\[)(FILECARD|CLARIFIED)\]:/g, "$1\u200b$2]:");
 }
 
-export function parseContent(raw: string): ContentSegment[] {
+export function parseContent(
+  raw: string,
+  options: { live?: boolean; startedAt?: number; activityTiming?: ActivityTiming; activity?: boolean } = {}
+): ContentSegment[] {
   const segments: ContentSegment[] = [];
   // Thinking pattern: a closed [THINKING]...[/THINKING] block (multi-line)
   // or a still-streaming unclosed block that runs to the end of the content.
@@ -430,7 +438,14 @@ export function parseContent(raw: string): ContentSegment[] {
       }
     } else if (line.startsWith("<tool_result")) {
       const resultMatch = line.match(/<tool_result[^>]*>([\s\S]*?)<\/tool_result>/);
-      if (resultMatch) segments.push({ type: "tool_result", content: resultMatch[1].trim().slice(0, 500) });
+      if (resultMatch) {
+        const name = line.match(/<tool_result[^>]*\bname=["']([^"']+)["']/i)?.[1];
+        segments.push({
+          type: "tool_result",
+          content: resultMatch[1].trim().slice(0, 500),
+          ...(name ? { name } : {}),
+        });
+      }
     } else if (isStatusLine(line)) {
       const status = matchStatusLine(line);
       if (status) {
@@ -449,7 +464,13 @@ export function parseContent(raw: string): ContentSegment[] {
         .replace(/^\[THINKING\]\s*/, "")
         .replace(/\s*\[\/THINKING\]$/, "")
         .trim();
-      if (thinkingText) segments.push({ type: "thinking", content: thinkingText });
+      if (thinkingText) {
+        segments.push({
+          type: "thinking",
+          content: thinkingText,
+          live: !line.trimEnd().endsWith("[/THINKING]"),
+        });
+      }
     } else if (/^\[OK\]/.test(line)) {
       segments.push({ type: "success", content: line, detail: line.replace(/^\[OK\]\s*/, "").trim() });
     } else if (/^\[SUCCESS\]/.test(line)) {
@@ -536,5 +557,11 @@ export function parseContent(raw: string): ContentSegment[] {
     if (text) segments.push({ type: "text", content: text });
   }
 
-  return segments;
+  return options.activity
+    ? groupActivitySegments(segments, {
+        live: options.live,
+        startedAt: options.startedAt,
+        timing: options.activityTiming,
+      })
+    : segments;
 }

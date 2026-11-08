@@ -29,6 +29,7 @@ import {
   readTaskSnapshot,
   clearTaskSnapshot,
   cancelTask,
+  setDisplayContent,
 } from "../background-chat";
 
 function model(id: string, extra: Partial<CatalogModel> = {}): CatalogModel {
@@ -141,6 +142,16 @@ describe("startTask model stamping", () => {
     expect(snap).not.toBeNull();
     expect(snap?.model).toBe("vendor/m");
     expect(snap?.conversationId).toBe("convo-1");
+  });
+
+  it("persists in-flight activity timestamps in the reload snapshot", () => {
+    installFakeSessionStorage();
+    startTask("convo-1", "do the thing", [], "code");
+    setDisplayContent("running [npm test]");
+    persistTaskSnapshot(true);
+
+    expect(readTaskSnapshot()?.activityTiming?.steps["activity-0-step-0"]?.startedAt).toBeGreaterThan(0);
+    expect(readTaskSnapshot()?.activityTiming?.steps["activity-0-step-0"]?.endedAt).toBeUndefined();
   });
 
   it("leaves the snapshot model unset when none was selected", () => {

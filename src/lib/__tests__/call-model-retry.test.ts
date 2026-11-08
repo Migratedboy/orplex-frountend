@@ -119,6 +119,24 @@ describe("callModel transient-blip retry", () => {
     expect(seen.some((m) => m.startsWith("[attempt 2/20]"))).toBe(true);
   });
 
+  it("fails visibly instead of completing with a blank bubble after a whitespace-only response", async () => {
+    global.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/chat")) {
+        return streamOnce([textChunk("   \n"), doneChunk()]);
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const promise = runInBackground("hello", null, [], "ask", []);
+    await waitFor(() => getCurrentTask() !== null);
+    await promise;
+
+    const task = getCurrentTask();
+    expect(task?.status).toBe("error");
+    expect(task?.displayContent).toContain("No response from the model. Try again.");
+    expect(task?.displayContent).toContain("[FAILED]");
+  });
+
   it("never retries after the user aborts", async () => {
     let chatCount = 0;
     global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

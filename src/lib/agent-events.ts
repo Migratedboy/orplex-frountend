@@ -34,7 +34,28 @@ export type StatusCompaction = {
   summary?: string;
 };
 
-export type StatusMessage = StatusEvent | StatusCompaction;
+export type StatusLiveToolCall = {
+  type: "live-tool-call";
+  taskId: string;
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  status: "running" | "dismissed";
+  startedAt?: number;
+};
+
+export type StatusMessage = StatusEvent | StatusCompaction | StatusLiveToolCall;
+
+const liveToolStartedAt = new Map<string, number>();
+
+export function emitLiveToolCall(event: Omit<StatusLiveToolCall, "type" | "startedAt"> & { startedAt?: number }) {
+  const startedAt = event.status === "running"
+    ? liveToolStartedAt.get(event.id) ?? event.startedAt ?? Date.now()
+    : event.startedAt;
+  if (event.status === "running" && startedAt) liveToolStartedAt.set(event.id, startedAt);
+  emitStatus({ type: "live-tool-call", ...event, ...(startedAt ? { startedAt } : {}) });
+  if (event.status === "dismissed") liveToolStartedAt.delete(event.id);
+}
 
 /**
  * Emit a compaction event. Best-effort by design: a listener that throws is

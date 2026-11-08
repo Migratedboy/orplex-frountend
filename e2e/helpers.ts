@@ -28,23 +28,27 @@ export async function markAsReturningVisitor(page: Page): Promise<void> {
  * running dev server (started without MOCK_AI=1); harmless on a dedicated
  * MOCK_AI server. Real /api/chat requests are passed through untouched.
  */
-export async function tagChatRequestsWithMock(page: Page): Promise<void> {
+export async function tagChatRequestsWithMock(page: Page, activity = false): Promise<void> {
   await page.route("**/api/chat", async (route) => {
     await route.continue({
-      headers: { ...route.request().headers(), "x-mock-ai": "1" },
+      headers: {
+        ...route.request().headers(),
+        "x-mock-ai": "1",
+        ...(activity ? { "x-mock-ai-activity": "1" } : {}),
+      },
     });
   });
 }
 
 /** Prepare a page for chat flows: skip the boot splash, enable the mock. */
-export async function preparePage(page: Page): Promise<void> {
+export async function preparePage(page: Page, activity = false): Promise<void> {
   await markAsReturningVisitor(page);
-  await tagChatRequestsWithMock(page);
+  await tagChatRequestsWithMock(page, activity);
 }
 
 /** Log in through the dev session bypass API, then land on the chat page. */
-export async function loginViaApi(page: Page): Promise<void> {
-  await preparePage(page);
+export async function loginViaApi(page: Page, options: { activity?: boolean } = {}): Promise<void> {
+  await preparePage(page, options.activity);
   const res = await page.request.get("/api/dev/session?action=login");
   if (!res.ok()) {
     throw new Error(`Dev login failed (${res.status()}): ${(await res.text()).slice(0, 200)}`);

@@ -12,7 +12,7 @@
 //      collapsible reasoning panel; tools/gates/result stay in the thread;
 //   6. prefers-reduced-motion is respected.
 
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import ThoughtThread from "../ThoughtThread";
 import { thoughtLineCss } from "../ThoughtLine";
 import { parseContent } from "@/lib/message-content";
@@ -71,6 +71,11 @@ describe("ThoughtThread — the mocked run", () => {
     ]);
   });
 
+  it("does not invent zero-duration timings for a finished transcript", () => {
+    const { container } = renderThread(FULL);
+    expect(container.querySelectorAll(".tl-meta")).toHaveLength(0);
+  });
+
   it("marks the failed tool and the failed gate as errors", () => {
     const { container } = renderThread(FULL);
     const states = rows(container).map((r) => r.getAttribute("data-status"));
@@ -123,6 +128,27 @@ describe("ThoughtThread — live turn", () => {
     const active = rows(container).filter((r) => r.getAttribute("data-status") === "active");
     expect(active).toHaveLength(1);
     expect(active[0].querySelector(".tl-text")?.textContent).toBe("Run grep -rn fetchWithRetry src/");
+  });
+
+  it("shows elapsed time from when a live tool row first appeared", () => {
+    jest.useFakeTimers();
+    try {
+      const { container, rerender } = renderThread("running [npm test]", true);
+      act(() => {
+        jest.advanceTimersByTime(2400);
+      });
+
+      rerender(
+        <ThoughtThread
+          segments={parseContent("running [npm test]\n[OK] Tests passed")}
+          runLive={true}
+        />
+      );
+
+      expect(container.querySelector(".tl-meta")?.textContent).toBe("2.4s");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("never leaves a stale active row after a reload", () => {

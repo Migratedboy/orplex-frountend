@@ -171,6 +171,26 @@ describe("conversations-store", () => {
     expect(reloaded.get(id)?.messages[0].content).toBe("persist me");
   });
 
+  it("round-trips optional activity timings while keeping legacy messages valid", () => {
+    const activityTiming = {
+      groups: { "activity-0": { startedAt: 1000, endedAt: 2800 } },
+      steps: { "activity-0-step-0": { startedAt: 1100, endedAt: 2500 } },
+    };
+    const out = store.save({
+      messages: [
+        { role: "user", content: "legacy message" },
+        { role: "assistant", content: "with activity", activityTiming },
+      ],
+    });
+    if (!("conversationId" in out)) throw new Error(JSON.stringify(out));
+
+    expect(store.get(out.conversationId)?.messages[0].activityTiming).toBeUndefined();
+    expect(store.get(out.conversationId)?.messages[1].activityTiming).toEqual(activityTiming);
+    store.flush();
+    const reloaded = createConversationStore({ file });
+    expect(reloaded.get(out.conversationId)?.messages[1].activityTiming).toEqual(activityTiming);
+  });
+
   it("quarantines a corrupt store file instead of crashing", () => {
     fs.writeFileSync(file, "{ not: valid json");
     const store2 = createConversationStore({ file });

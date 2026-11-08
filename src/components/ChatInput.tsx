@@ -20,12 +20,16 @@ import { getConversation } from "@/lib/conversations-transport";
 import { pushRecent, useModelCatalog } from "@/hooks/useModelCatalog";
 
 import { apiFetch } from "@/lib/api-base";
+import type { AgentEvent } from "@/lib/types";
 interface ChatInputProps {
   onSend: (text: string, fullContent: string, textFiles: any[], imageFiles: any[], mode: AgentMode, effort?: string, model?: string) => void;
   onStop: () => void;
   loading: boolean;
   agentRunning: boolean;
   isStreaming?: boolean;
+  runPhase?: "idle" | "thinking" | "running_tool" | "streaming" | "done" | "error" | "stopped";
+  requestStartedAt?: number;
+  agentEvents?: AgentEvent[];
   /**
    * True for the WHOLE turn — streaming, tool running, AND the paused states
    * (awaiting_approval / waiting_for_input) where the composer stays typeable
@@ -69,22 +73,16 @@ const EFFORT_TIERS = ["Low", "Medium", "High"];
 
 const MODES: (PromptBarMode & { agentMode: AgentMode })[] = [
   { key: "ask", name: "Ask", description: "Simple chat, no file access", agentMode: "ask" },
-  { key: "plan", name: "Plan", description: "Analyze codebase, create plan", agentMode: "plan" },
   { key: "code", name: "Code", description: "Edit files, run commands", agentMode: "code" },
+  { key: "plan", name: "Plan", description: "Analyze codebase, create plan", agentMode: "plan" },
 ];
 
 
 const SOURCES: PromptBarSource[] = [
   { key: "files", name: "Files", description: "Upload from this device", icon: Attachment01Icon, attach: true },
   { key: "skills", name: "Skills", description: "100+ prebuilt prompt templates", icon: SparklesIcon, insert: "/" },
-  { key: "mcp", name: "MCP servers", description: "Connect Supabase, Vercel, Figma, GitHub…", icon: <IconMcp size={16} />, attach: true },
+  { key: "mcp", name: "MCP servers", description: "Manage connected MCP servers", icon: <IconMcp size={16} />, attach: true },
 ];
-
-const PLACEHOLDERS: Record<AgentMode, string> = {
-  ask: "Ask anything…",
-  plan: "Describe what to analyze or plan…",
-  code: "Describe what you want to build or fix…",
-};
 
 const QUICK_ACTION_PROMPTS: Record<string, string> = {
   "fix-bugs": "Fix bugs in the current project",
@@ -92,6 +90,12 @@ const QUICK_ACTION_PROMPTS: Record<string, string> = {
   optimize: "Optimize the current project",
   export: "Export the project as a .zip",
   regenerate: "Regenerate the last response",
+};
+
+const MODE_SUGGESTIONS: Record<AgentMode, string[]> = {
+  ask: ["Explain it simply", "Give me an example", "Summarize in 3 points"],
+  code: ["Add error handling", "Write tests for this", "Make it responsive"],
+  plan: ["Break it into steps", "List the risks", "Estimate the time"],
 };
 
 // --- Picker persistence -----------------------------------------------------
@@ -154,7 +158,7 @@ function savePickers(conversationId: string | null | undefined, state: PickerSta
  */
 export const droppedFilesBridge: { add: ((files: AttachedFile[]) => void) | null } = { add: null };
 
-export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, turnActive, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, failedModels, clearFailedModels, onRetryModelSwap, stopped = false }: ChatInputProps) {
+export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, runPhase = "idle", requestStartedAt, agentEvents = [], turnActive, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, failedModels, clearFailedModels, onRetryModelSwap, stopped = false }: ChatInputProps) {
   const files = useFileProcessor();
   // Publish the attach bridge (page-level drag-and-drop) and release it on unmount.
   useEffect(() => {
@@ -242,6 +246,13 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
   const recentModels: PromptBarModel[] = useMemo(
     () => recents.map((key) => models.find((m) => m.key === key)).filter((m): m is PromptBarModel => !!m),
     [recents, models]
+  );
+  const activeToolCall = useMemo(
+    () => [...agentEvents].reverse().find(
+      (event): event is Extract<AgentEvent, { type: "tool_call" }> & { id: string } =>
+        event.type === "tool_call" && event.status === "running" && typeof event.id === "string"
+    ) ?? null,
+    [agentEvents]
   );
 
   // Restored picker state — recomputed when the conversation changes so each
@@ -454,21 +465,8 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     <>
     <div className="chat-input-bar" ref={barRef}>
       <div className="chat-input-inner">
-        <div className="ws-switcher-row">
-          <WorkspaceSwitcher />
-          <button
-            type="button"
-            className="mcp-chip"
-            aria-label="MCP connectors"
-            title="MCP connectors — Supabase, Vercel, Figma, GitHub…"
-            onClick={() => setMcpOpen(true)}
-          >
-            <IconMcp size={14} />
-            <span className="mcp-chip-label">MCP</span>
-          </button>
-        </div>
         {files.hasFiles && (
-          <div className="file-chips">
+          <div className="file-chips prompt-bar-files">
             {files.attachedFiles.map((f, i) => (
               <div key={i} className={`file-chip ${f.type === "image" ? "file-chip-image" : ""} ${f.name.startsWith("pasted-") ? "file-chip-pasted" : ""}`}>
                 {f.type === "image" && f.dataUrl ? (
@@ -489,43 +487,52 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             ))}
           </div>
         )}
-        <QuickActions
-          onAction={(action) => {
-            controlsRef.current?.setText(QUICK_ACTION_PROMPTS[action] ?? action);
-            document.querySelector<HTMLTextAreaElement>(".prompt-bar__input")?.focus();
-          }}
-          hasFiles={files.hasFiles}
-          isRunning={turnLive}
-          suggestions={aiSuggestions}
-          loadingSuggestions={aiSuggestionsLoading}
-        />
-        <div className="chat-input-wrapper prompt-bar-wrapper" style={{ position: "relative" }}>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            hidden
-            onChange={async (e) => {
-              const fileList = e.target.files;
-              if (!fileList || fileList.length === 0) return;
-      const { processFileListDetailed } = await import("@/lib/file-utils");
-      const { picked, rejected } = await processFileListDetailed(fileList);
-      if (picked.length > 0) files.addFiles(picked);
-      // Never swallow a refusal: a file that vanished with no message is what
-      // made "the AI ignores my files" look like a model problem.
-      for (const r of rejected) {
-        toastRef.current(`Skipped ${r.name} — ${r.reason}`, "error");
-      }
-              if (fileInputRef.current) fileInputRef.current.value = "";
-            }}
-          />
-          {isWorking && onQueueAdd && (
-            <button className="chat-queue-btn" title="Queue this prompt" aria-label="Queue next prompt" onClick={handleQueue}>
-              <span style={{ fontSize: 11, fontWeight: 600 }}>Q</span>
-            </button>
-          )}
-          <PromptBar
-            placeholder={PLACEHOLDERS[agentMode]}
+        {lastUserMessage && (
+          <div className="sugg prompt-bar-suggestions" aria-label="Suggestions">
+            <QuickActions
+              onAction={(action) => {
+                controlsRef.current?.setText(QUICK_ACTION_PROMPTS[action] ?? action);
+                document.querySelector<HTMLTextAreaElement>(".prompt-bar__input")?.focus();
+              }}
+              hasFiles={files.hasFiles}
+              isRunning={turnLive}
+              suggestions={aiSuggestions}
+              fallbackSuggestions={MODE_SUGGESTIONS[agentMode]}
+              loadingSuggestions={aiSuggestionsLoading}
+            />
+          </div>
+        )}
+        <div className={`composer-shell${lastUserMessage ? "" : " composer-shell--initial"}`}>
+          <div className="chat-input-wrapper prompt-bar-wrapper" style={{ position: "relative" }}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={async (e) => {
+                const fileList = e.target.files;
+                if (!fileList || fileList.length === 0) return;
+                const { processFileListDetailed } = await import("@/lib/file-utils");
+                const { picked, rejected } = await processFileListDetailed(fileList);
+                if (picked.length > 0) files.addFiles(picked);
+                // Never swallow a refusal: a file that vanished with no message is what
+                // made "the AI ignores my files" look like a model problem.
+                for (const r of rejected) {
+                  toastRef.current(`Skipped ${r.name} — ${r.reason}`, "error");
+                }
+                if (fileInputRef.current) fileInputRef.current.value = "";
+              }}
+            />
+            {isWorking && onQueueAdd && (
+              <button className="chat-queue-btn" title="Queue this prompt" aria-label="Queue next prompt" onClick={handleQueue}>
+                <span style={{ fontSize: 11, fontWeight: 600 }}>Q</span>
+              </button>
+            )}
+            <PromptBar
+            conversationState={isWorking ? "thinking" : lastUserMessage ? "chat" : "initial"}
+            footerProject={<WorkspaceSwitcher />}
+            quotaIndicator={<QuotaIndicator />}
+            onOpenConnectors={() => setMcpOpen(true)}
             modes={MODES}
             defaultMode={agentMode}
             sources={SOURCES}
@@ -553,6 +560,9 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
               savePickers(conversationId, next);
             }}
             busy={isWorking}
+            statusPhase={runPhase === "streaming" ? "writing" : "thinking"}
+            requestStartedAt={requestStartedAt}
+            activeToolCall={activeToolCall}
             onSend={metaToSend}
             onModeChange={(m) => {
               const am = MODES.find((x) => x.key === m.key)?.agentMode;
@@ -569,10 +579,11 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             onRegisterClear={(fn) => { clearRef.current = fn; }}
             onRegisterControls={(c) => { controlsRef.current = c; }}
             className="prompt-bar--chat"
-          />
-          {/* Fresh-chat patrol: until the first user message lands, the mascot
-              walks the border of the prompt bar (WalkingMascot.tsx). */}
-          {!lastUserMessage && <WalkingMascot />}
+            />
+            {/* Fresh-chat patrol: until the first user message lands, the mascot
+                walks the border of the prompt bar (WalkingMascot.tsx). */}
+            {!lastUserMessage && <WalkingMascot />}
+          </div>
         </div>
         {stopped && !isWorking && (
           <div className="chat-stop-note" role="status">
@@ -604,8 +615,6 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             </div>
           </div>
         )}
-        <QuotaIndicator />
-        <p className="chat-disclaimer">Orplex Agent can make mistakes. Verify important information.</p>
         {onFastAnswer && lastUserMessage && isStreaming && (
           <div className="fast-answer-bar">
             <button

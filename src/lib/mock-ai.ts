@@ -44,6 +44,19 @@ export function buildMockReplyText(): string {
   ].join("\n");
 }
 
+export function buildMockActivityReplyText(): string {
+  return [
+    "[THINKING]Planning the activity timeline.[/THINKING]",
+    "running [npm test]",
+    "[OK] Command finished — exit 0",
+    "analysing [src/app/page.tsx]",
+    "[OK] Read `src/app/page.tsx` (lines 1-3, 42 chars)",
+    "MOCK_BEGIN",
+    "The activity timeline is complete.",
+    "MOCK_END",
+  ].join("\n");
+}
+
 /**
  * Emits the mock reply as an OpenAI-compatible SSE provider stream.
  *
@@ -52,8 +65,7 @@ export function buildMockReplyText(): string {
  * enough to keep the suite fast. `cancel()` stops the timer so an aborted
  * request never keeps ticking server-side.
  */
-export function createMockProviderStream(): ReadableStream<Uint8Array> {
-  const text = buildMockReplyText();
+export function createMockProviderStream(text = buildMockReplyText()): ReadableStream<Uint8Array> {
   const SLICE = 6; // chars per tick
   const TICK_MS = 90;
   let offset = 0;
