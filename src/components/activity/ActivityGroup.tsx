@@ -1,10 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useReducedMotion } from "motion/react";
 import { IconChevronDown } from "../Icons";
 import ActivityStepRow from "./ActivityStepRow";
-import { activitySummary, formatActivityTime, type ActivityGroup as ActivityGroupData } from "@/lib/activity";
+import type { ActivityGroup as ActivityGroupData, ActivityStep } from "@/lib/activity";
 
 interface ActivityGroupProps {
   activity: ActivityGroupData;
@@ -23,15 +22,12 @@ export default function ActivityGroup({ activity, live = false }: ActivityGroupP
     activity.steps.length === 0 ||
     activity.steps.some((step) => step.status === "live" || step.status === "approval")
   );
-  const reduceMotion = useReducedMotion();
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState<boolean | null>(null);
   const [fallbackStartedAt] = useState(() => Date.now());
   const [now, setNow] = useState(fallbackStartedAt);
   const observedLive = useRef(isLive);
   if (isLive) observedLive.current = true;
-  const open = userOpen ?? isLive;
-  const timelineOpen = detailsOpen ?? isLive;
+  const open = userOpen ?? true;
   const firstStepStart = activity.steps.reduce<number | undefined>(
     (earliest, step) => step.startedAt > 0 ? Math.min(earliest ?? step.startedAt, step.startedAt) : earliest,
     undefined
@@ -64,7 +60,6 @@ export default function ActivityGroup({ activity, live = false }: ActivityGroupP
         : 0);
   const hasError = activity.steps.some((step) => step.status === "error");
   const waitingApproval = activity.steps.some((step) => step.status === "approval");
-  const summary = activitySummary(activity.steps);
   const statusText = isLive
     ? waitingApproval
       ? "Waiting for approval"
@@ -72,22 +67,24 @@ export default function ActivityGroup({ activity, live = false }: ActivityGroupP
     : hasError
       ? "Stopped"
       : `Worked for ${formatElapsed(elapsed)}`;
-  const displaySummary = summary
-    .split(", ")
-    .map((part, index) => index === 0 ? part : part.charAt(0).toLowerCase() + part.slice(1))
-    .join(", ");
-  const title = isLive && activity.steps.length === 0
-    ? "Thinking..."
-    : summary === "Finished thinking"
-      ? "Thinking..."
-      : displaySummary;
-  const toggleOpen = () => setUserOpen((current) => !(current ?? isLive));
+  const displaySteps: ActivityStep[] = activity.steps.length > 0
+    ? activity.steps
+    : isLive
+      ? [{
+        id: `${activity.id}-thinking`,
+        kind: "think",
+        title: "Thinking",
+        detail: "",
+        status: "live",
+        startedAt,
+      }]
+      : [];
+  const toggleOpen = () => setUserOpen((current) => !(current ?? true));
 
   return (
     <section
       className="tp-activity-group"
       data-live={isLive ? "true" : "false"}
-      data-reduced-motion={reduceMotion ? "true" : "false"}
     >
       <button
         type="button"
@@ -101,30 +98,16 @@ export default function ActivityGroup({ activity, live = false }: ActivityGroupP
         </span>
         <IconChevronDown size={12} className={`tp-activity-status-chevron${open ? " is-open" : ""}`} aria-hidden="true" />
       </button>
-      <div className="tp-activity-card" hidden={!open}>
-        <button
-          type="button"
-          className="tp-activity-summary"
-          aria-expanded={timelineOpen}
-          aria-label={`${title}. ${timelineOpen ? "Collapse" : "Expand"} details`}
-          onClick={() => setDetailsOpen((current) => !(current ?? isLive))}
-        >
-          <span className={`tp-activity-summary-indicator${isLive ? " is-live" : ""}`} aria-hidden="true" />
-          <span className={`tp-activity-summary-title${title === "Thinking..." && isLive ? " is-thinking" : ""}`}>
-            {title}
-          </span>
-          <IconChevronDown size={14} className={`tp-activity-summary-chevron${timelineOpen ? " is-open" : ""}`} aria-hidden="true" />
-        </button>
-        <div className="tp-activity-body" hidden={!timelineOpen} aria-hidden={!timelineOpen}>
-          <div className="tp-activity-timeline">
-            {activity.steps.map((step) => (
-              <ActivityStepRow key={step.id} step={step} now={now} />
-            ))}
-            {activity.steps.length === 0 && isLive && (
-              <div className="tp-activity-empty" role="status">Thinking through the next step…</div>
-            )}
-          </div>
-        </div>
+      <div className="otc-feed" hidden={!open}>
+        {displaySteps.map((step, index) => (
+          <ActivityStepRow
+            key={step.id}
+            step={step}
+            now={now}
+            fallbackStartedAt={startedAt}
+            entryDelay={index * 30}
+          />
+        ))}
       </div>
     </section>
   );

@@ -83,9 +83,16 @@ describe("write tools with no folder open", () => {
 
   it("does NOT refuse when a filesystem is available (server lane / folder open)", async () => {
     const { ctx } = ctxWithoutFs();
-    // A working fs — the guard must not fire (ask mode is the only refusal left).
-    (ctx.fs as { writeFile: unknown }).writeFile = async () => true;
-    (ctx.fs as { readFile: unknown }).readFile = async () => "";
+    // A working fs — the guard must not fire (ask mode is the only refusal
+    // left). The mock PERSISTS writes: the audited path re-reads after writing,
+    // and the approval gate treats an empty-file read as an existing file
+    // needing approval, so a constant-string stub would dead-end both.
+    const files = new Map<string, string>();
+    (ctx.fs as { readFile: unknown }).readFile = async (path: string) => files.get(path) ?? null;
+    (ctx.fs as { writeFile: unknown }).writeFile = async (path: string, content: string) => {
+      files.set(path, content);
+      return true;
+    };
     const outcome = await dispatchToolCall(writeCall("write_file"), ctx);
     expect(outcome.resultXml).toContain(">success<");
     expect(outcome.resultXml).not.toContain("no folder is open");

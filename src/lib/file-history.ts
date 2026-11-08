@@ -1,9 +1,7 @@
 // LAYER 1 — working/session history. Tracks all writes for undo/rollback.
 //
-// Durability: the history mirrors itself into sessionStorage so the undo
-// safety net survives a page reload — the same survival model as the task
-// snapshot/restore in useChatSession. (Server-side persistence would be the
-// next step; sessionStorage keeps this module dependency-free and sync.)
+// Durability: the history mirrors itself into localStorage and the workspace
+// history endpoint, so pending snapshots survive reloads and app restarts.
 //
 // This is still NOT git and NOT durable: a bounded, best-effort snapshot
 // buffer (50 changes, quota-capped) powering undo_last_change + the Changes
@@ -17,13 +15,14 @@ interface FileChange {
 }
 
 const history: FileChange[] = [];
-const MAX_HISTORY = 50;
+const MAX_HISTORY = 500;
 
-const STORAGE_KEY = "orplex.file-history.v1";
+const STORAGE_KEY = "orplex.file-history.v2";
+const listeners = new Set<() => void>();
 
 function storageAvailable(): boolean {
   try {
-    return typeof window !== "undefined" && !!window.sessionStorage;
+    return typeof window !== "undefined" && !!window.localStorage;
   } catch {
     return false; // storage access can throw in hardened browser contexts
   }
@@ -40,70 +39,102 @@ function isValidChange(c: unknown): c is FileChange {
   );
 }
 
-/** Restore entries persisted by a previous page load (same tab). */
+/** Restore entries persisted by a previous page load. */
 function hydrate(): void {
   if (!storageAvailable()) return;
   try {
-    const raw = window.sessionStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(STORAGE_KEY) ??
+      window.localStorage.getItem("orplex.file-history.v1") ??
+      window.sessionStorage?.getItem("orplex.file-history.v1");
     if (!raw) return;
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return;
     const restored = parsed.filter(isValidChange);
     history.length = 0;
     history.push(...restored);
+    if (!window.localStorage.getItem(STORAGE_KEY)) persist();
   } catch {
     // Corrupted snapshot — start fresh rather than poisoning undo.
   }
 }
 
-function persist(): void {
-  if (!storageAvailable()) return;
+function persist(): boolean {
+  if (!storageAvailable()) return false;
   try {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+    return true;
   } catch {
-    // Quota exceeded (large files): drop the oldest half and retry once.
-    // Undo degrades gracefully but never crashes the write path.
     try {
       const keep = Math.max(1, Math.ceil(history.length / 2));
       history.length = keep;
-      window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+      return true;
     } catch {
-      // Give up silently — in-memory undo still works for this session's writes.
+      return false;
     }
   }
 }
 
+function notify(): void {
+  for (const listener of listeners) listener();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("orplex:file-history-updated"));
+  }
+}
+
+export function subscribeFileHistory(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 hydrate();
 
-/** Record a file change (call BEFORE writing) */
-export function recordChange(path: string, previousContent: string | null, newContent: string) {
+/** Record a file change before applying it. */
+export async function recordChange(
+  path: string,
+  previousContent: string | null,
+  newContent: string,
+  mirrorToWorkspace = true,
+): Promise<void> {
   history.unshift({ path, previousContent, newContent, timestamp: Date.now() });
   if (history.length > MAX_HISTORY) history.pop();
-  persist();
-  mirrorToServer(path, previousContent, newContent);
+  const persisted = persist();
+  if (!persisted && storageAvailable()) {
+    throw new Error("Could not persist the file snapshot; the write was stopped to preserve undo.");
+  }
+  notify();
+  if (mirrorToWorkspace) await mirrorToServer(path, previousContent, newContent);
 }
 
 // --- Durable mirror (split-deployment aware) ---------------------------------
 // Fire-and-forget POST to /api/agent/history so undo survives machines and
 // tabs. Failures are silent by design: the local buffer stays authoritative
 // for this session; the server copy is the durable twin.
-let mirrorInFlight = 0;
-
-function mirrorToServer(path: string, prev: string | null, next: string): void {
-  if (mirrorInFlight >= 4) return; // backpressure: never queue a storm
-  mirrorInFlight++;
+async function mirrorToServer(path: string, prev: string | null, next: string): Promise<void> {
+  if (typeof window === "undefined") return;
   const body = JSON.stringify({ path, prev, next, t: Date.now() });
-  fetch("/api/agent/history", {
+  const response = await fetch("/api/agent/history", {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
     body,
-    signal: AbortSignal.timeout(4000),
-    keepalive: true,
-  })
-    .catch(() => {})
-    .finally(() => {
-      mirrorInFlight--;
-    });
+    signal: AbortSignal.timeout(20_000),
+  }).catch((error: unknown) => {
+    throw new Error(`Could not persist the workspace snapshot before writing ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  const result = await response.json().catch(() => null) as { recorded?: boolean; error?: string } | null;
+  if (!response.ok || !result?.recorded) {
+    throw new Error(`Could not persist the workspace snapshot before writing ${path}: ${result?.error || response.statusText || "history service unavailable"}`);
+  }
+}
+
+/** Drop accepted history entries from the local undo buffer after server Keep. */
+export function forgetChanges(paths: readonly string[]): void {
+  const accepted = new Set(paths);
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (accepted.has(history[i].path)) history.splice(i, 1);
+  }
+  persist();
+  notify();
 }
 
 /**
@@ -145,11 +176,44 @@ export function getRecentChanges(limit = 10): FileChange[] {
   return history.slice(0, limit);
 }
 
+export interface LocalPendingChange {
+  path: string;
+  previousContent: string | null;
+  newContent: string | null;
+}
+
+/** Current-session pending snapshots, collapsed to the first write per file. */
+export function getLocalPendingChanges(): LocalPendingChange[] {
+  const pending = new Map<string, LocalPendingChange>();
+  for (const change of [...history].reverse()) {
+    const first = pending.get(change.path);
+    pending.set(change.path, {
+      path: change.path,
+      previousContent: first ? first.previousContent : change.previousContent,
+      newContent: change.newContent,
+    });
+  }
+  return [...pending.values()].filter((item) => item.previousContent !== item.newContent);
+}
+
 /** Peek at the previous content without removing the history entry */
 export function getPreviousContent(path: string): string | null {
   const idx = history.findIndex(c => c.path === path);
   if (idx === -1) return null;
   return history[idx].previousContent;
+}
+
+export function getLatestChange(path: string): FileChange | null {
+  const change = history.find((entry) => entry.path === path);
+  return change ? { ...change } : null;
+}
+
+export function forgetHistoryEntry(path: string, timestamp: number): void {
+  const index = history.findIndex((entry) => entry.path === path && entry.timestamp === timestamp);
+  if (index < 0) return;
+  history.splice(index, 1);
+  persist();
+  notify();
 }
 
 /** Undo the last change to a specific file — returns the previous content */
@@ -159,6 +223,7 @@ export function undoLastChange(path: string): string | null {
   const change = history[idx];
   history.splice(idx, 1);
   persist();
+  notify();
   return change.previousContent;
 }
 

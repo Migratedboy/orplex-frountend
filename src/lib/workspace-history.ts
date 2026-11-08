@@ -17,7 +17,6 @@
 //
 // Pure functions over fs — unit-testable with a temp dir.
 
-import { appendFile, readFile, writeFile, mkdir, rename, stat } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 
 export interface HistoryEntry {
@@ -26,17 +25,20 @@ export interface HistoryEntry {
   path: string;
   /** null = the file was created by this change. */
   prev: string | null;
-  next: string;
+  /** null = the file was deleted by this change. */
+  next: string | null;
   /** Which machine/session recorded it (ORPLEX_MACHINE_ID or "browser"). */
   peer: string;
   /** Set on inverse entries created by undo. */
   undoOf?: string;
+  /** Keep markers share history.jsonl with the existing write/undo entries. */
+  event?: "change" | "keep";
+  /** Binary snapshots are base64 encoded; old entries default to UTF-8. */
+  encoding?: "utf8" | "base64";
 }
 
 export const MAX_ENTRIES = 200;
-export const MAX_FILE_BYTES = 8 * 1024 * 1024;
-const MAX_CONTENT_CHARS = 200_000; // per side; larger files skip content capture
-
+export const MAX_FILE_BYTES = 64 * 1024 * 1024;
 export function historyPath(root: string): string {
   return join(root, ".orplex", "history.jsonl");
 }
@@ -60,11 +62,6 @@ export function safeJoinWorkspace(root: string, p: string): string | null {
   return resolve(resolve(root), p);
 }
 
-function clamp(s: string | null): string | null {
-  if (s === null) return null;
-  return s.length > MAX_CONTENT_CHARS ? s.slice(0, MAX_CONTENT_CHARS) : s;
-}
-
 export function parseEntries(raw: string): HistoryEntry[] {
   const out: HistoryEntry[] = [];
   for (const line of raw.split("\n")) {
@@ -72,8 +69,21 @@ export function parseEntries(raw: string): HistoryEntry[] {
     if (!trimmed) continue;
     try {
       const e = JSON.parse(trimmed) as Partial<HistoryEntry>;
-      if (typeof e.t === "number" && typeof e.path === "string" && typeof e.next === "string" && ("prev" in e) && typeof e.peer === "string") {
-        out.push({ t: e.t, path: e.path, prev: e.prev ?? null, next: e.next, peer: e.peer, ...(e.undoOf ? { undoOf: e.undoOf } : {}) });
+      if (typeof e.t === "number" && typeof e.path === "string" && typeof e.peer === "string") {
+        if (e.event === "keep") {
+          out.push({ t: e.t, path: e.path, prev: null, next: null, peer: e.peer, event: "keep" });
+        } else if ("prev" in e && (typeof e.next === "string" || e.next === null)) {
+          out.push({
+            t: e.t,
+            path: e.path,
+            prev: e.prev ?? null,
+            next: e.next,
+            peer: e.peer,
+            ...(e.undoOf ? { undoOf: e.undoOf } : {}),
+            event: "change",
+            ...(e.encoding === "base64" ? { encoding: "base64" as const } : {}),
+          });
+        }
       }
     } catch {
       // Torn line from a crash mid-append — skip, never fail the read.
@@ -84,49 +94,123 @@ export function parseEntries(raw: string): HistoryEntry[] {
 
 /**
  * Append one entry. Streams a single write; never reads the file.
- * Returns false when the change is too large to record (content capture
- * disabled) — callers treat that as success (undo just won't cover it).
+ * Returns false when the change is too large to record. Mutating callers must
+ * refuse the write when this happens so they never create an un-undoable edit.
  */
 export async function appendHistory(
   root: string,
-  entry: Omit<HistoryEntry, "t" | "peer"> & { t?: number; peer?: string }
+  entry: Omit<HistoryEntry, "t" | "peer" | "event"> & { t?: number; peer?: string }
 ): Promise<boolean> {
   if (!isPathInsideWorkspace(root, entry.path)) return false;
-  const prev = clamp(entry.prev);
-  const next = clamp(entry.next);
-  if (prev === null && entry.prev !== null) return false;
-  if (next === null) return false;
+  // Snapshot cap: base64-inflated binaries must still fit — a 12MB extracted
+  // asset ≈ 16MB of base64 — while keeping history lines bounded (compaction
+  // via MAX_FILE_BYTES handles file growth). Beyond this the caller skips the
+  // write rather than create an un-recordable change.
+  if ((entry.prev?.length ?? 0) > 32_000_000 || (entry.next?.length ?? 0) > 32_000_000) return false;
   const full: HistoryEntry = {
     t: entry.t ?? Date.now(),
     path: entry.path,
-    prev,
-    next,
+    prev: entry.prev,
+    next: entry.next,
     peer: entry.peer ?? "server",
+    event: "change",
+    ...(entry.encoding === "base64" ? { encoding: "base64" as const } : {}),
     ...(entry.undoOf ? { undoOf: entry.undoOf } : {}),
   };
   const file = historyPath(root);
+  const { appendFile, mkdir } = await import("node:fs/promises");
   await mkdir(dirname(file), { recursive: true });
   await appendFile(file, JSON.stringify(full) + "\n", "utf8");
   return true;
+}
+
+/** Record acceptance in the same durable history used by tool undo. */
+export async function appendKeepMarker(root: string, path: string, peer = "browser"): Promise<boolean> {
+  if (!isPathInsideWorkspace(root, path)) return false;
+  return appendKeepMarkers(root, [path], peer);
+}
+
+export async function appendKeepMarkers(root: string, paths: readonly string[], peer = "browser"): Promise<boolean> {
+  if (paths.some((path) => !isPathInsideWorkspace(root, path))) return false;
+  if (paths.length === 0) return true;
+  const file = historyPath(root);
+  const { appendFile, mkdir } = await import("node:fs/promises");
+  await mkdir(dirname(file), { recursive: true });
+  const timestamp = Date.now();
+  await appendFile(
+    file,
+    paths.map((path) => JSON.stringify({ t: timestamp, path, peer, event: "keep" })).join("\n") + "\n",
+    "utf8",
+  );
+  return true;
+}
+
+export interface PendingHistoryChange {
+  path: string;
+  prev: string | null;
+  next: string | null;
+  encoding: "utf8" | "base64";
+}
+
+/** Collapse repeated writes to each path back to its first snapshot since Keep. */
+export function getPendingHistoryChanges(entries: readonly HistoryEntry[]): PendingHistoryChange[] {
+  const pending = new Map<string, PendingHistoryChange>();
+  for (const entry of entries) {
+    if (entry.event === "keep") {
+      pending.delete(entry.path);
+      continue;
+    }
+    const first = pending.get(entry.path);
+    pending.set(entry.path, {
+      path: entry.path,
+      prev: first ? first.prev : entry.prev,
+      next: entry.next,
+      encoding: first?.encoding ?? entry.encoding ?? "utf8",
+    });
+  }
+  return [...pending.values()].filter((item) => item.prev !== item.next);
 }
 
 /** Read all entries, oldest first, enforcing the quota by dropping the OLDEST overflow. */
 export async function readHistory(root: string, since?: number): Promise<HistoryEntry[]> {
   let raw: string;
   try {
+    const { readFile } = await import("node:fs/promises");
     raw = await readFile(historyPath(root), "utf8");
   } catch {
     return [];
   }
   let entries = parseEntries(raw);
   if (since != null) entries = entries.filter((e) => e.t > since);
-  if (entries.length > MAX_ENTRIES) entries = entries.slice(entries.length - MAX_ENTRIES);
+  if (entries.length > MAX_ENTRIES) {
+    const retained = new Set<number>();
+    for (let i = Math.max(0, entries.length - MAX_ENTRIES); i < entries.length; i++) retained.add(i);
+    for (const pending of getPendingHistoryChanges(entries)) {
+      let first = -1;
+      let last = -1;
+      for (let i = 0; i < entries.length; i++) {
+        const event = entries[i];
+        if (event.path !== pending.path) continue;
+        if (event.event === "keep") {
+          first = -1;
+          last = -1;
+          continue;
+        }
+        if (first === -1) first = i;
+        last = i;
+      }
+      if (first !== -1) retained.add(first);
+      if (last !== -1) retained.add(last);
+    }
+    entries = [...retained].sort((a, b) => a - b).map((index) => entries[index]);
+  }
   return entries;
 }
 
 /** Quota enforcement: rewrite the file keeping only the newest MAX_ENTRIES (and under MAX_FILE_BYTES). */
 async function compactHistory(root: string): Promise<number> {
   const file = historyPath(root);
+  const { mkdir, readFile, rename, stat, writeFile } = await import("node:fs/promises");
   let raw = "";
   try {
     const s = await stat(file);
@@ -159,14 +243,16 @@ async function compactHistory(root: string): Promise<number> {
 
 /**
  * The latest restorable entry for a path (newest first), skipping entries
- * whose content no longer matches `currentContent` (someone wrote after us).
- * Pass null to match anything.
+ * whose content no longer matches `currentContent`. Omit currentContent to
+ * match anything.
  */
-export function findUndoTarget(entries: HistoryEntry[], path: string, currentContent: string | null): HistoryEntry | null {
+export function findUndoTarget(entries: HistoryEntry[], path: string, currentContent?: string | null): HistoryEntry | null {
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
-    if (e.path !== path || e.undoOf) continue;
-    if (currentContent !== null && e.next !== currentContent) continue;
+    if (e.path !== path) continue;
+    if (e.event === "keep") return null;
+    if (e.undoOf) continue;
+    if (currentContent !== undefined && e.next !== currentContent) continue;
     return e;
   }
   return null;
@@ -178,8 +264,10 @@ export function inverseOf(target: HistoryEntry, machineId: string): HistoryEntry
     t: Date.now(),
     path: target.path,
     prev: target.next,
-    next: target.prev ?? "",
+    next: target.prev,
     peer: machineId,
+    event: "change",
+    ...(target.encoding ? { encoding: target.encoding } : {}),
     undoOf: `${target.t}:${target.path}`,
   };
 }

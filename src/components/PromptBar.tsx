@@ -454,6 +454,8 @@ export default function PromptBar({
   useEffect(() => {
     setRenderLimit(MODEL_CHUNK);
   }, [openMenu, modelQuery, query]);
+  const alignment: PromptMenuAlignment =
+    permissionOpen || openMenu === "model" || openMenu === "effort" ? "end" : "start";
   useLayoutEffect(() => {
     const menuElement = permissionOpen ? permissionMenuRef.current : menuRef.current;
     if (!menuElement) return;
@@ -466,8 +468,6 @@ export default function PromptBar({
           : openMenu === "effort"
             ? effortTriggerRef.current ?? modelTriggerRef.current
             : modelTriggerRef.current;
-    const alignment: PromptMenuAlignment =
-      permissionOpen || openMenu === "model" || openMenu === "effort" ? "end" : "start";
     const reposition = (recalculatePlacement = false) =>
       positionPromptMenu(anchor, menuElement, alignment, !recalculatePlacement);
     const onWindowScroll = (event: Event) => {
@@ -478,7 +478,9 @@ export default function PromptBar({
     const onResize = () => reposition(true);
     window.addEventListener("resize", onResize);
     window.addEventListener("scroll", onWindowScroll, true);
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reposition);
+    const observer = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(() => reposition());
     if (observer) {
       if (anchor) observer.observe(anchor);
     }
@@ -489,7 +491,7 @@ export default function PromptBar({
     };
   // Keep the dependency tuple at eight slots so Fast Refresh can update
   // already-mounted instances without tripping React's dependency-size check.
-  }, [null, filtered.length, modelQuery, openMenu, permissionOpen, query, renderLimit, token?.kind]);
+  }, [alignment, filtered.length, modelQuery, openMenu, permissionOpen, query, renderLimit, token?.kind]);
   useEffect(() => {
     if (openMenu !== "model" || filtered.length <= renderLimit) return;
     const menuElement = menuRef.current;

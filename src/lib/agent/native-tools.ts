@@ -444,7 +444,7 @@ export async function dispatchToolCall(
       }
 
       const prevContent = await ctx.fs.readFile?.(call.path).catch(() => null);
-      const existed = !!prevContent && !prevContent.startsWith("[Error");
+      const existed = typeof prevContent === "string" && !prevContent.startsWith("[Error");
       if (existed) {
         ctx.setStatus("awaiting_approval", `Waiting for approval: overwrite ${call.path}`);
         ctx.appendDisplay(`overwriting [${call.path}] — awaiting approval\n`);
@@ -647,14 +647,8 @@ export async function dispatchToolCall(
     }
     const newContent = existing + call.content;
     const totalLines = newContent.split("\n").length;
-    let success = false;
-    if (ctx.fs.writeFile) {
-      success = await ctx.fs.writeFile(call.path, newContent);
-    } else {
-      success = virtualFS.writeFile(call.path, newContent);
-    }
+    const success = await writeFileAudited(call.path, newContent, ctx.fs, ctx.counters);
     if (success) {
-      ctx.counters.writtenFiles.set(call.path, newContent);
       ctx.hooks.fileWritten(call.path, newContent);
     }
 
@@ -1262,27 +1256,38 @@ export async function dispatchToolCall(
     ctx.appendDisplay(`undoing [${call.path}]\n`);
     ctx.syncDisplay();
 
-    const { undoLastChange } = await import("../file-history");
-    const prevContent = undoLastChange(call.path);
-    if (prevContent !== null && ctx.fs.writeFile) {
-      // writeFile returns false on a failed write, a locked handle, the
-      // anti-clobber refusal, or "no file handle found". The boolean was
-      // discarded, so every one of those still reported success AND advanced
-      // the file-history/undo stack as if the restore had happened. Every
-      // sibling write path (write_file, write_file_chunk, edit_file) checks
-      // it; this one did not.
-      const restored = await ctx.fs.writeFile(call.path, prevContent);
-      if (restored === false) {
-        result(`<tool_result name="undo_last_change" path="${call.path}">error - the restore write failed (locked handle, or the file changed since the snapshot). The file is unchanged and the undo history still holds the previous version.</tool_result>\n`);
-        ctx.replaceStatus(`[FAIL] Could not restore \`${call.path}\` — write failed`);
-      } else {
-        ctx.hooks.fileWritten(call.path, prevContent);
+    try {
+      const response = await ctxFetch(
+        resolveApiUrl("/api/agent/history"),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: call.path }),
+        },
+        ctx,
+        15_000,
+      );
+      const body = await response.json() as { success?: boolean; action?: string; content?: string; error?: string };
+      if (!response.ok || !["delete-file", "restored"].includes(body.action ?? "")) {
+        throw new Error(body.error || "No restorable previous version was found, or the file changed on disk.");
+      }
+      const { forgetChanges } = await import("../file-history");
+      forgetChanges([call.path]);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("orplex:workspace-files-changed", { detail: [call.path] }));
+      }
+      if (body.action === "restored" && typeof body.content === "string") {
+        ctx.hooks.fileWritten(call.path, body.content);
         result(`<tool_result name="undo_last_change" path="${call.path}">success - restored previous version</tool_result>\n`);
         ctx.replaceStatus(`[OK] Undid change to \`${call.path}\` — restored previous version`);
+      } else {
+        result(`<tool_result name="undo_last_change" path="${call.path}">success - removed the created file</tool_result>\n`);
+        ctx.replaceStatus(`[OK] Undid creation of \`${call.path}\``);
       }
-    } else {
-      result(`<tool_result name="undo_last_change" path="${call.path}">error - no previous version found</tool_result>\n`);
-      ctx.replaceStatus(`[FAIL] No previous version of \`${call.path}\` to undo`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      result(`<tool_result name="undo_last_change" path="${call.path}">error - ${message}</tool_result>\n`);
+      ctx.replaceStatus(`[FAIL] Could not undo \`${call.path}\` — ${message}`);
     }
     ctx.syncDisplay();
     return { resultXml: toolResults, blocked: false };

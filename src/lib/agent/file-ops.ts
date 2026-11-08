@@ -5,6 +5,8 @@
 // typecheck-repair, swarm-repair, browser-repair) which drifted independently.
 
 import { recordChange } from "../file-history";
+import { serializeWrites } from "../write-queue";
+import { locateFirstRange } from "../edit-locate";
 import { virtualFS } from "../virtual-fs";
 import type { ToolCall } from "../stream-reader";
 
@@ -34,12 +36,46 @@ export interface FileOpsCounters {
 async function readCurrent(fs: FileOpsFs, path: string): Promise<string | null> {
   if (!fs.readFile) return null;
   const prev = await fs.readFile(path).catch(() => null);
-  return prev && !prev.startsWith("[Error") ? prev : null;
+  return prev !== null && !prev.startsWith("[Error") ? prev : null;
+}
+
+/**
+ * Post-write verification: re-read the file and make sure it holds exactly
+ * what was meant to be written (no partial content, no duplicated blocks
+ * from a retried stream, no leftover markers). Data changed by the write is
+ * large enough to skip it when the read would be a truncated "head window"
+ * (server-lane windowed reads): those writes are guarded up front by the
+ * anti-clobber probes instead.
+ */
+async function verifyWritten(
+  fs: FileOpsFs,
+  path: string,
+  expected: string
+): Promise<boolean> {
+  if (expected.length > 2_000_000) return true;
+  const after = await readCurrent(fs, path);
+  // Unreadable (absent, read error, or a stub harness that cannot know the
+  // new content) is NOT evidence of a bad write — fs.writeFile already
+  // returned true, and a partial write would read back as CONTENT, not as
+  // nothing. Failing the write here used to turn every stub-backed lane
+  // into "[ERROR] Failed to write" and silently starved writtenFiles.
+  if (after === null) return true;
+  return after === expected;
+}
+
+function bumpWriteCounters(counters: FileOpsCounters, path: string, content: string): void {
+  counters.bumpStat("toolCalls");
+  counters.setTotalWrites(counters.getTotalWrites() + 1);
+  counters.setFilesChanged(counters.getTotalWrites());
+  counters.writtenFiles.set(path, content);
 }
 
 /**
  * Write (create/overwrite) a file through the audited path.
- * Returns false when the write itself failed.
+ * Serialized per path — concurrent writes to the same file queue up in
+ * order; different files run in parallel.
+ * Returns false when the write itself failed or the on-disk verification
+ * found the file does not hold the written content.
  */
 export async function writeFileAudited(
   path: string,
@@ -47,26 +83,59 @@ export async function writeFileAudited(
   fs: FileOpsFs,
   counters: FileOpsCounters
 ): Promise<boolean> {
-  let ok = false;
-  if (fs.writeFile) {
-    const prevContent = await readCurrent(fs, path);
-    recordChange(path, prevContent, content);
-    ok = await fs.writeFile(path, content);
-  } else {
-    ok = virtualFS.writeFile(path, content);
-  }
-  if (ok) {
-    counters.bumpStat("toolCalls");
-    counters.setTotalWrites(counters.getTotalWrites() + 1);
-    counters.setFilesChanged(counters.getTotalWrites());
-    counters.writtenFiles.set(path, content);
-  }
+  return serializeWrites([path], async () => {
+    let ok = false;
+    if (fs.writeFile) {
+      const prevContent = await readCurrent(fs, path);
+      await recordChange(path, prevContent, content);
+      ok = await fs.writeFile(path, content);
+      if (ok) ok = await verifyWritten(fs, path, content);
+    } else {
+      const prevContent = virtualFS.readFile(path);
+      await recordChange(path, prevContent, content, false);
+      ok = virtualFS.writeFile(path, content);
+    }
+    if (ok) {
+      bumpWriteCounters(counters, path, content);
+    }
+    return ok;
+  });
+}
+
+/**
+ * Locate `oldText` inside current content: exact indexOf first, then a
+ * line-ending-insensitive re-location for the case where an earlier write
+ * left the file as CRLF while the model keeps sending \n. Returning the
+ * byte-range replacement keeps the effect identical to String.replace.
+ */
+async function locatedEdit(
+  path: string,
+  oldText: string,
+  newText: string,
+  prevContent: string,
+  fs: FileOpsFs,
+  counters: FileOpsCounters
+): Promise<boolean> {
+  const range = locateFirstRange(prevContent, oldText);
+  if (!range) return false;
+  const next = prevContent.slice(0, range.start) + newText + prevContent.slice(range.end);
+  await recordChange(path, prevContent, next);
+  if (!fs.writeFile) return false;
+  let ok = await fs.writeFile(path, next);
+  if (ok) ok = await verifyWritten(fs, path, next);
+  if (ok) bumpWriteCounters(counters, path, next);
   return ok;
 }
 
 /**
- * Edit a file through the audited path. Returns false when the edit failed
- * (text not found / no editor).
+ * Edit a file through the audited path. Serialized per path and applied
+ * against the file's CURRENT content — each edit re-reads the file inside
+ * the lock, so an agent re-editing the same code never applies stale text
+ * or corrupts an earlier attempt. When the exact target text is no longer
+ * present (line endings changed, target otherwise moved), the region is
+ * re-located; if it truly cannot be found the edit fails cleanly and the
+ * file is left untouched.
+ * Returns false when the edit failed (text not found / no editor).
  */
 export async function editFileAudited(
   path: string,
@@ -76,16 +145,30 @@ export async function editFileAudited(
   counters: FileOpsCounters
 ): Promise<boolean> {
   if (!fs.editFile) return false;
-  const ok = await fs.editFile(path, oldText, newText);
-  if (ok) {
-    counters.setTotalWrites(counters.getTotalWrites() + 1);
-    counters.setFilesChanged(counters.getTotalWrites());
-    if (fs.readFile) {
-      const after = await fs.readFile(path).catch(() => null);
-      if (after && !after.startsWith("[Error")) counters.writtenFiles.set(path, after);
+  const edit = fs.editFile;
+  return serializeWrites([path], async () => {
+    const prevContent = await readCurrent(fs, path);
+    if (prevContent === null) return false;
+
+    if (!prevContent.includes(oldText)) {
+      return locatedEdit(path, oldText, newText, prevContent, fs, counters);
     }
-  }
-  return ok;
+
+    await recordChange(path, prevContent, prevContent.replace(oldText, newText));
+    const ok = await edit(path, oldText, newText);
+    if (ok) {
+      // The in-app edit never returns a computed "next" — read it back so
+      // writtenFiles (and the verification) reflect what is actually on disk.
+      const after = await readCurrent(fs, path);
+      if (after !== null) {
+        if (fs.writeFile && !(await verifyWritten(fs, path, after))) return false;
+        bumpWriteCounters(counters, path, after);
+      } else {
+        bumpWriteCounters(counters, path, prevContent.replace(oldText, newText));
+      }
+    }
+    return ok;
+  });
 }
 
 export interface AppliedWriteResult {

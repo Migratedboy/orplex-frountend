@@ -1,69 +1,84 @@
 "use client";
 
-import { memo, useState } from "react";
-import { ErrorInline } from "../StateViews";
-import { IconMcp } from "../Icons";
-import { formatActivityTime, type ActivityStep } from "@/lib/activity";
+import { memo } from "react";
+import { type ActivityStep } from "@/lib/activity";
+import { ToolCallRow } from "../ToolCallDisplay";
 
-const KIND_ICON: Record<ActivityStep["kind"], string> = {
-  think: "psychology",
-  list: "folder_open",
-  search: "search",
-  read: "description",
-  edit: "edit",
-  run: "terminal",
-  browser: "language",
-  agent: "account_tree",
-  mcp: "extension",
-  other: "build",
-};
-
-function ActivityStepRow({ step, now }: { step: ActivityStep; now: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const hasBody = Boolean(step.body || step.detail);
-  const duration = step.startedAt > 0 && step.endedAt
-    ? formatActivityTime(step.endedAt - step.startedAt)
-    : step.startedAt > 0 && step.status === "live"
-      ? formatActivityTime(now - step.startedAt)
-      : "";
+function ActivityStepRow({
+  step,
+  now,
+  fallbackStartedAt,
+  entryDelay,
+}: {
+  step: ActivityStep;
+  now: number;
+  fallbackStartedAt: number;
+  entryDelay: number;
+}) {
+  const isThinking = step.kind === "think";
+  const startedAt = step.startedAt || fallbackStartedAt;
+  const elapsed = step.endedAt
+    ? Math.max(0, step.endedAt - startedAt) / 1000
+    : step.status === "live"
+      ? Math.max(0, now - startedAt) / 1000
+      : undefined;
+  const state = step.status === "live"
+    ? "running"
+    : step.status === "approval"
+      ? "waiting"
+      : step.status === "error"
+        ? "failed"
+        : "done";
+  const thinkingText = step.detail || "";
+  const metadataIsStatus = /^(?:exit(?: code)?\s*-?\d+|serving|waiting for you|timed out|low risk|undoable|microvm|preview tab)$/i.test(step.meta || "");
+  const rowMeta = isThinking
+    ? state === "running"
+      ? ""
+      : `${Math.ceil(thinkingText.length / 4)} tokens`
+    : state === "running"
+      ? ""
+      : state === "failed" || metadataIsStatus
+        ? ""
+        : step.meta || "";
+  const statusText = state === "waiting"
+    ? "waiting for you"
+    : state === "failed"
+      ? step.meta || "failed"
+      : metadataIsStatus
+        ? step.meta || ""
+        : "";
+  const tool = step.tool || ({
+    think: "thinking",
+    list: "list_files",
+    search: "search_code",
+    read: "read_file",
+    edit: "edit_file",
+    run: "run_command",
+    browser: "browser_read",
+    agent: "spawn_subagent",
+    mcp: "mcp_call",
+    other: step.title,
+  } as const)[step.kind];
 
   return (
-    <div className={`tp-activity-step tp-activity-step-${step.status}`} data-kind={step.kind}>
-      <button
-        type="button"
-        className="tp-activity-step-trigger"
-        aria-expanded={hasBody ? expanded : undefined}
-        onClick={() => hasBody && setExpanded((value) => !value)}
-        disabled={!hasBody}
-      >
-        {step.kind === "mcp"
-          ? <IconMcp size={14} className="tp-activity-step-icon" />
-          : <span className="tp-activity-step-icon ms" aria-hidden="true">{KIND_ICON[step.kind]}</span>}
-        <span className="tp-activity-step-title">{step.title}</span>
-        {step.chip && <span className="tp-activity-step-chip" title={step.chip}>{step.chip}</span>}
-        {step.status === "live" && <span className="tp-activity-step-live" aria-label="In progress" />}
-        {step.status === "approval" && <span className="tp-activity-step-state">Needs approval</span>}
-        {step.status === "error" && <span className="tp-activity-step-state">Failed</span>}
-        {step.meta && <span className="tp-activity-step-meta">{step.meta}</span>}
-        {duration && <span className="tp-activity-step-duration">{duration}</span>}
-        {hasBody && (
-          <span className={`tp-activity-step-chevron ms${expanded ? " is-open" : ""}`} aria-hidden="true">
-            expand_more
-          </span>
-        )}
-      </button>
-      {hasBody && (
-        <div className="tp-activity-step-details" hidden={!expanded}>
-          {step.detail && <p className="tp-activity-step-description">{step.detail}</p>}
-          {step.status === "error" && <ErrorInline error={step.body || step.detail} />}
-          {step.body && (
-            <pre className="tp-activity-step-output" tabIndex={0}>
-              <code>{step.body}</code>
-            </pre>
-          )}
-        </div>
-      )}
-    </div>
+    <ToolCallRow
+      tool={tool}
+      title={step.title}
+      target={isThinking
+        ? state === "running" ? "" : elapsed !== undefined ? `for ${elapsed.toFixed(1)}s` : ""
+        : step.chip || ""}
+      meta={rowMeta}
+      statusText={statusText}
+      status={state}
+      rawBody={isThinking ? undefined : step.body}
+      result={isThinking ? thinkingText : step.detail}
+      thinkingText={isThinking ? thinkingText : undefined}
+      thinkingTokens={isThinking && state !== "running" ? Math.ceil(thinkingText.length / 4) : undefined}
+      startedAt={startedAt}
+      endedAt={step.endedAt}
+      now={now}
+      entryDelay={entryDelay}
+    />
   );
 }
 

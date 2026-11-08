@@ -578,24 +578,25 @@ export function ThoughtLineDemo() {
   let token = useRef(0);
   let [running, setRunning] = useState(false);
 
-  let play = async () => {
+  let play = async (isCancelled: () => boolean) => {
     let my = ++token.current;
+    let stale = () => isCancelled() || my !== token.current;
     clear();
     setRunning(true);
     for (let s of SCRIPT) {
-      if (my !== token.current) return;
+      if (stale()) return;
       let id = add({ text: s.text, kind: s.kind });
       let d = s.detail ?? '';
       for (let i = 0; i < d.length; i += 3) {
-        if (my !== token.current) return;
+        if (stale()) return;
         stream(id, d.slice(i, i + 3));
         await sleep(22);
       }
       await sleep(s.ms);
-      if (my !== token.current) return;
+      if (stale()) return;
       if (s.fail) fail(id);
     }
-    if (my !== token.current) return;
+    if (stale()) return;
     add({ text: 'Retry now lives in one place. All tests pass.', kind: 'result' });
     complete();
     setRunning(false);
@@ -608,9 +609,10 @@ export function ThoughtLineDemo() {
   };
 
   useEffect(() => {
-    play();
+    let cancelled = false;
+    void play(() => cancelled);
     return () => {
-      token.current++;
+      cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -663,7 +665,7 @@ export function ThoughtLineDemo() {
             type="button"
             style={{ ...btn, background: '#d94f00', borderColor: '#d94f00', color: '#ffffff', fontWeight: 600, opacity: running ? 0.5 : 1 }}
             disabled={running}
-            onClick={play}
+            onClick={() => void play(() => false)}
           >
             Run agent
           </button>

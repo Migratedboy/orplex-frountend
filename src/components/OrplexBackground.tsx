@@ -581,12 +581,17 @@ export const GradientASCII = ({
   };
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const onStatusRef = useRef(onStatus);
+
+  useEffect(() => {
+    onStatusRef.current = onStatus;
+  }, [onStatus]);
 
   useEffect(() => {
     const container = containerRef.current;
     const canvas = canvasRef.current;
     const report = (status: string) => {
-      try { onStatus?.(status); } catch {}
+      try { onStatusRef.current?.(status); } catch {}
     };
     if (!container || !canvas) { report('no container/canvas'); return undefined; }
     const gl = canvas?.getContext('webgl2', {

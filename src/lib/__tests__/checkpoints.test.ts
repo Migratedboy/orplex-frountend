@@ -120,13 +120,13 @@ describe("budgets", () => {
 });
 
 describe("workspace-history", () => {
-  it("appends and reads back (quota drops oldest)", async () => {
+  it("preserves every active snapshot when the history read window is exceeded", async () => {
     for (let i = 0; i < MAX_ENTRIES + 10; i++) {
       await appendHistory(dir, { path: `f${i}.txt`, prev: "a", next: "b" });
     }
     const entries = await readHistory(dir);
-    expect(entries.length).toBe(MAX_ENTRIES);
-    expect(entries[0].path).toBe(`f10.txt`); // oldest 10 dropped
+    expect(entries.length).toBe(MAX_ENTRIES + 10);
+    expect(entries[0].path).toBe("f0.txt"); // active snapshots are never dropped
     expect(entries[entries.length - 1].path).toBe(`f${MAX_ENTRIES + 9}.txt`);
   }, 20_000);
 

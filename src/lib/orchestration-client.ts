@@ -76,10 +76,11 @@ export async function executeOrchestratedWrites(
       let ok = false;
       if (ctx.fs.writeFile) {
         const prevContent = ctx.fs.readFile ? await ctx.fs.readFile(call.path).catch(() => null) : null;
-        const hasPrev = prevContent && !prevContent.startsWith("[Error");
-        recordChange(call.path, hasPrev ? prevContent : null, call.content);
+        const hasPrev = prevContent !== null && !prevContent.startsWith("[Error");
+        await recordChange(call.path, hasPrev ? prevContent : null, call.content);
         ok = await ctx.fs.writeFile(call.path, call.content);
       } else {
+        await recordChange(call.path, virtualFS.readFile(call.path), call.content, false);
         ok = virtualFS.writeFile(call.path, call.content);
       }
       if (ok) {

@@ -2,10 +2,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import ActivityGroup from "../activity/ActivityGroup";
 import type { ActivityGroup as ActivityGroupData } from "@/lib/activity";
 
-jest.mock("motion/react", () => ({ useReducedMotion: () => false }));
-
 describe("ActivityGroup", () => {
-  it("shows elapsed working status and the live thinking indicator before tool activity starts", () => {
+  it("keeps the working timer and shows the live thinking row before tool activity starts", () => {
     render(
       <ActivityGroup
         live
@@ -14,11 +12,12 @@ describe("ActivityGroup", () => {
     );
 
     expect(screen.getByText("Working for 0 seconds")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Thinking\.\.\./ })).toBeInTheDocument();
-    expect(document.querySelector(".tp-activity-summary-indicator.is-live")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Thinking/ })).toBeInTheDocument();
+    expect(document.querySelector(".otc-row.is-running")).toBeInTheDocument();
+    expect(document.querySelector(".tp-activity-card")).not.toBeInTheDocument();
   });
 
-  it("collapses completed activity and reveals a Read row's output on demand", () => {
+  it("collapses completed activity and expands a finished tool row on demand", () => {
     const activity: ActivityGroupData = {
       id: "activity-0",
       startedAt: 1000,
@@ -36,37 +35,45 @@ describe("ActivityGroup", () => {
     };
 
     render(<ActivityGroup activity={activity} />);
-    const pill = screen.getByRole("button", { name: /Worked for 1 second/ });
-    expect(pill).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("less than 1 second")).not.toBeInTheDocument();
-    expect(document.querySelector(".tp-activity-card")).toHaveAttribute("hidden");
+    const statusButton = screen.getByRole("button", { name: /Worked for 1 second/ });
+    expect(statusButton).toHaveAttribute("aria-expanded", "true");
+    const toolRow = screen.getByRole("button", { name: /Read src\/app\/page\.tsx/ });
+    expect(toolRow).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("export default function Page() {}")).not.toBeInTheDocument();
 
-    fireEvent.click(pill);
-    expect(pill).toHaveAttribute("aria-expanded", "true");
-    const summary = screen.getByRole("button", { name: /Read 1 file\. Expand details/ });
-    expect(screen.queryByText("Completed")).not.toBeInTheDocument();
-    expect(document.querySelector(".tp-activity-card")).not.toHaveAttribute("hidden");
-    expect(document.querySelector(".tp-activity-body")).toHaveAttribute("hidden");
+    fireEvent.click(toolRow);
+    expect(toolRow).toHaveAttribute("aria-expanded", "true");
+    expect(document.querySelector(".otc-pre")?.textContent).toContain("export default function Page() {}");
+    expect(document.querySelector(".otc-body")).toBeInTheDocument();
 
-    fireEvent.click(summary);
-    expect(pill).toHaveAttribute("aria-expanded", "true");
-    expect(summary).toHaveAttribute("aria-expanded", "true");
-    expect(document.querySelector(".tp-activity-body")).not.toHaveAttribute("hidden");
-    expect(document.querySelector(".tp-activity-step-done")).toBeInTheDocument();
+    fireEvent.click(statusButton);
+    expect(statusButton).toHaveAttribute("aria-expanded", "false");
+    expect(document.querySelector(".otc-feed")).toHaveAttribute("hidden");
+    fireEvent.click(statusButton);
+    expect(statusButton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /Read src\/app\/page\.tsx/ })).toHaveAttribute("aria-expanded", "true");
+  });
 
-    fireEvent.click(summary);
-    expect(pill).toHaveAttribute("aria-expanded", "true");
-    expect(summary).toHaveAttribute("aria-expanded", "false");
-    expect(document.querySelector(".tp-activity-card")).not.toHaveAttribute("hidden");
-    expect(document.querySelector(".tp-activity-body")).toHaveAttribute("hidden");
+  it("keeps completed rows collapsed and gives active rows a live timer without a body", () => {
+    const startedAt = Date.now();
+    const activity: ActivityGroupData = {
+      id: "activity-live",
+      startedAt,
+      steps: [{
+        id: "live-command",
+        kind: "run",
+        tool: "run_command",
+        title: "Ran",
+        chip: "npm test",
+        body: JSON.stringify({ command: "npm test" }),
+        status: "live",
+        startedAt,
+      }],
+    };
 
-    fireEvent.click(pill);
-    expect(pill).toHaveAttribute("aria-expanded", "false");
-    expect(document.querySelector(".tp-activity-card")).toHaveAttribute("hidden");
-    fireEvent.click(pill);
-    expect(pill).toHaveAttribute("aria-expanded", "true");
-    fireEvent.click(screen.getByRole("button", { name: /Read 1 file\. Expand details/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Read src\/app\/page\.tsx/ }));
-    expect(screen.getByText("export default function Page() {}")).toBeVisible();
+    render(<ActivityGroup activity={activity} live />);
+    expect(document.querySelector(".otc-row.is-running .otc-spinner")).toBeInTheDocument();
+    expect(document.querySelector(".otc-row.is-running .otc-body")).not.toBeInTheDocument();
+    expect(screen.getByText(/\d+\.\d+s/)).toBeInTheDocument();
   });
 });

@@ -46,7 +46,7 @@ function uncompressedSizeOf(entry: unknown): number | null {
 export interface ExtractEntry {
   path: string;
   bytes: number;
-  skipped?: "directory" | "too-large" | "blocked-name" | "escapes-root" | "symlink";
+  skipped?: "directory" | "too-large" | "blocked-name" | "escapes-root" | "symlink" | "snapshot-too-large";
 }
 
 export interface ExtractResult {
@@ -343,18 +343,37 @@ export async function extractZip(args: {
     }
 
     try {
-    const { mkdir, writeFile } = await import("node:fs/promises");
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, bytes);
+      const { mkdir, readFile, writeFile } = await import("node:fs/promises");
+      const previous = await readFile(target).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      const { appendHistory } = await import("../workspace-history");
+      const path = relative(rootAbs, target).replace(/\\/g, "/");
+      const recorded = await appendHistory(rootAbs, {
+        path,
+        prev: previous === null ? null : previous.toString("base64"),
+        next: bytes.toString("base64"),
+        encoding: "base64",
+        peer: "agent",
+      });
+      if (!recorded) {
+        skipped.push({ path: rel, bytes: bytes.length, skipped: "snapshot-too-large" });
+        continue;
+      }
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, bytes);
       totalOut += bytes.length;
       written.push({ path: rel, bytes: bytes.length });
     } catch (e) {
-      skipped.push({
-        path: rel,
-        bytes: 0,
-        skipped: "blocked-name",
-      });
-      void e;
+      return {
+        ok: false,
+        dest: destRel,
+        written,
+        skipped,
+        summary: `Extraction stopped before writing ${rel}: ${e instanceof Error ? e.message : String(e)}.`,
+        error: "snapshot-or-write-failed",
+      };
     }
   }
 

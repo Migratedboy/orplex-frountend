@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useToast } from "./Toast";
 import PromptBar, { type PromptBarMode, type PromptBarModel, type PromptBarSource } from "./PromptBar";
+import ChangesBar from "./ChangesBar";
 import { useFileProcessor, formatFileSize, getFileIcon } from "@/hooks/useFileProcessor";
 import { SKILL_CATEGORIES, type Skill } from "@/lib/skills";
 import ConnectorsPanel from "./ConnectorsPanel";
@@ -528,6 +529,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
                 <span style={{ fontSize: 11, fontWeight: 600 }}>Q</span>
               </button>
             )}
+            <ChangesBar isRunning={turnLive} />
             <PromptBar
             conversationState={isWorking ? "thinking" : lastUserMessage ? "chat" : "initial"}
             footerProject={<WorkspaceSwitcher />}

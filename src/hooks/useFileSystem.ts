@@ -202,6 +202,39 @@ export function useFileSystem() {
     });
   }, []);
 
+  const refreshPaths = useCallback(async (paths: string[]) => {
+    if (!directoryHandle || paths.length === 0) return;
+    fileHandlesRef.current.clear();
+    const tree = await scanDirectory(directoryHandle);
+    setFileTree(tree);
+
+    const refreshed: Record<string, string> = {};
+    for (const path of paths) {
+      const handle = fileHandlesRef.current.get(path);
+      if (!handle) continue;
+      const file = await handle.getFile();
+      if (file.size <= MAX_CACHE_ENTRY_CHARS) refreshed[path] = await file.text();
+    }
+    setFileContents((previous) => {
+      const next = { ...previous };
+      for (const path of paths) delete next[path];
+      return { ...next, ...refreshed };
+    });
+  }, [directoryHandle, scanDirectory]);
+
+  useEffect(() => {
+    const onFilesChanged = (event: Event) => {
+      const paths = (event as CustomEvent<unknown>).detail;
+      if (Array.isArray(paths) && paths.every((path) => typeof path === "string")) {
+        void refreshPaths(paths).catch((error: unknown) => {
+          console.error("Could not refresh workspace files after undo", error);
+        });
+      }
+    };
+    window.addEventListener("orplex:workspace-files-changed", onFilesChanged);
+    return () => window.removeEventListener("orplex:workspace-files-changed", onFilesChanged);
+  }, [refreshPaths]);
+
   /**
    * Bulk-read was REMOVED (Freebuff model): eager indexing read up to 120
    * files on every folder open and dominated memory on big workspaces. The
@@ -536,6 +569,7 @@ export function useFileSystem() {
           return next;
         });
       }
+      window.dispatchEvent(new CustomEvent("orplex:file-history-updated"));
       return true;
     } catch (err: any) {
       console.error(err);
@@ -609,6 +643,7 @@ export function useFileSystem() {
 
       // Disk holds the truth; the cache copy stays under the byte budget.
       setFileContents(prev => insertWithBudget(prev, filePath, content));
+      window.dispatchEvent(new CustomEvent("orplex:file-history-updated"));
       return true;
     } catch (err: any) {
       console.error(err);
@@ -630,5 +665,6 @@ export function useFileSystem() {
     readFile,
     writeFile,
     editFile,
+    refreshPaths,
   };
 }

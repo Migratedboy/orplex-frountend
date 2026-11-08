@@ -7,10 +7,12 @@ jest.mock("../MarkdownRenderer", () => ({
 }));
 
 describe("MessageContent live activity", () => {
-  it("shows a thinking pill for an empty live message outside the thinking phase", () => {
+  it("shows the unchanged working timer with a flat live thinking row", () => {
     render(<MessageContent content="" runLive />);
 
     expect(screen.getByRole("button", { name: /Working for 0 seconds/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Thinking\.\.\./ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Thinking/ })).toBeInTheDocument();
+    expect(document.querySelector(".otc-row.is-running")).toBeInTheDocument();
+    expect(document.querySelector(".tp-pill")).not.toBeInTheDocument();
   });
 });

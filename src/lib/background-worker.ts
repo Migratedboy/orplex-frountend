@@ -4,6 +4,8 @@
 // Self-review: static quality check + one self-repair turn after the loop
 
 import { recordChange, computeDiff } from "./file-history";
+import { serializeWrites } from "./write-queue";
+import { locateFirstRange } from "./edit-locate";
 import { analyzeCodeQuality } from "./code-quality-checker";
 import { quickQualityCheck } from "./reflection-loop";
 import { requestApproval, type ApprovalType } from "./approval-store";
@@ -225,6 +227,55 @@ export function setFileSystemAccess(
   _fileTree = fileTree;
   _fileContents = fileContents;
   _directoryName = directoryName;
+}
+
+async function editFileWithHistory(path: string, oldText: string, newText: string): Promise<boolean> {
+  if (!_editFile) return false;
+  const edit = _editFile;
+  const write = _writeFile;
+  // Serialize per file with the shared write queue (write-queue.ts) and
+  // re-read current content inside the lock, so re-edits of the same file
+  // never clobber each other or apply stale text.
+  return serializeWrites([path], async () => {
+    let previous = _readFile ? await _readFile(path).catch(() => null) : null;
+    if (previous !== null && previous.startsWith("[Error")) previous = null;
+    if (previous !== null && !previous.includes(oldText)) {
+      // Exact target text is gone — re-locate it (line-ending differences).
+      const range = locateFirstRange(previous, oldText);
+      if (!range || !write) return false;
+      const next = previous.slice(0, range.start) + newText + previous.slice(range.end);
+      await recordChange(path, previous, next);
+      return write(path, next);
+    }
+    if (previous !== null) {
+      await recordChange(path, previous, previous.replace(oldText, newText));
+    }
+    return edit(path, oldText, newText);
+  });
+}
+
+/**
+ * Serialized write_file for the background lanes. Records history inside the
+ * per-file queue and verifies the file on disk afterwards (small files only —
+ * oversized files are guarded by the anti-clobber probes instead).
+ */
+async function writeWorkspaceFile(path: string, content: string): Promise<boolean> {
+  const write = _writeFile;
+  if (!write) return virtualFS.writeFile(path, content);
+  return serializeWrites([path], async () => {
+    let previous = _readFile ? await _readFile(path).catch(() => null) : null;
+    if (previous !== null && previous.startsWith("[Error")) previous = null;
+    await recordChange(path, previous, content);
+    let ok = await write(path, content);
+    if (ok && content.length <= 2_000_000) {
+      let after = _readFile ? await _readFile(path).catch(() => null) : null;
+      // Unreadable is NOT a failed write: a partial write would read back as
+      // CONTENT, not as nothing. Only a readable-and-different file fails.
+      if (after !== null && after.startsWith("[Error")) after = null;
+      if (after !== null && after !== content) ok = false;
+    }
+    return ok;
+  });
 }
 
 function listFilesUnderPath(path: string): string {
@@ -1903,15 +1954,7 @@ export async function runInBackground(
           if (abortSignal?.aborted || !isCurrentTask(taskId)) return;
           if (call.name === "write_file" && call.path && call.content !== undefined) {
             updateTaskStatus("tool_executing", `Fixing ${call.path}...`);
-            let ok = false;
-            if (_writeFile) {
-              const prevContent = _readFile ? await _readFile(call.path).catch(() => null) : null;
-              const hasPrev = prevContent && !prevContent.startsWith("[Error");
-              recordChange(call.path, hasPrev ? prevContent : null, call.content);
-              ok = await _writeFile(call.path, call.content);
-            } else {
-              ok = virtualFS.writeFile(call.path, call.content);
-            }
+            const ok = await writeWorkspaceFile(call.path, call.content);
             if (ok) {
               bumpStat("toolCalls");
               totalWrites++;
@@ -1922,7 +1965,7 @@ export async function runInBackground(
             setDisplayContent(fullDisplayContent);
           } else if (call.name === "edit_file" && call.path && call.old_text && call.new_text && _editFile) {
             updateTaskStatus("tool_executing", `Fixing ${call.path}...`);
-            const ok = await _editFile(call.path, call.old_text, call.new_text);
+            const ok = await editFileWithHistory(call.path, call.old_text, call.new_text);
             if (ok) {
               setFilesChanged(totalWrites + 1);
               if (_readFile) {
@@ -1968,15 +2011,7 @@ export async function runInBackground(
         for (const call of recheckStream.toolCalls) {
           if (abortSignal?.aborted || !isCurrentTask(taskId)) return;
           if (call.name === "write_file" && call.path && call.content !== undefined) {
-            let ok = false;
-            if (_writeFile) {
-              const prevContent = _readFile ? await _readFile(call.path).catch(() => null) : null;
-              const hasPrev = prevContent && !prevContent.startsWith("[Error");
-              recordChange(call.path, hasPrev ? prevContent : null, call.content);
-              ok = await _writeFile(call.path, call.content);
-            } else {
-              ok = virtualFS.writeFile(call.path, call.content);
-            }
+            const ok = await writeWorkspaceFile(call.path, call.content);
             if (ok) {
               bumpStat("toolCalls");
               totalWrites++;
@@ -1985,7 +2020,7 @@ export async function runInBackground(
             }
             fullDisplayContent = replaceLastStatus(fullDisplayContent, ok ? `[SUCCESS] Fixed \`${call.path}\`` : `[ERROR] Fix failed for \`${call.path}\``);
           } else if (call.name === "edit_file" && call.path && call.old_text && call.new_text && _editFile) {
-            const ok = await _editFile(call.path, call.old_text, call.new_text);
+            const ok = await editFileWithHistory(call.path, call.old_text, call.new_text);
             if (ok) {
               const after = await _readFile?.(call.path).catch(() => null);
               if (after && !after.startsWith("[Error")) writtenFiles.set(call.path, after);
@@ -2293,15 +2328,7 @@ export async function runInBackground(
           if (abortSignal?.aborted || !isCurrentTask(taskId)) return;
           if (call.name === "write_file" && call.path && call.content !== undefined) {
             updateTaskStatus("tool_executing", `Fixing ${call.path}...`);
-            let ok = false;
-            if (_writeFile) {
-              const prevContent = _readFile ? await _readFile(call.path).catch(() => null) : null;
-              const hasPrev = prevContent && !prevContent.startsWith("[Error");
-              recordChange(call.path, hasPrev ? prevContent : null, call.content);
-              ok = await _writeFile(call.path, call.content);
-            } else {
-              ok = virtualFS.writeFile(call.path, call.content);
-            }
+            const ok = await writeWorkspaceFile(call.path, call.content);
             if (ok) {
               bumpStat("toolCalls");
               totalWrites++;
@@ -2311,7 +2338,7 @@ export async function runInBackground(
             fullDisplayContent = replaceLastStatus(fullDisplayContent, ok ? `[SUCCESS] Fixed \`${call.path}\`` : `[ERROR] Fix failed for \`${call.path}\``);
           } else if (call.name === "edit_file" && call.path && call.old_text && call.new_text && _editFile) {
             updateTaskStatus("tool_executing", `Fixing ${call.path}...`);
-            const ok = await _editFile(call.path, call.old_text, call.new_text);
+            const ok = await editFileWithHistory(call.path, call.old_text, call.new_text);
             if (ok) {
               totalWrites++;
               setFilesChanged(totalWrites);
@@ -2322,7 +2349,7 @@ export async function runInBackground(
           } else if (call.name === "batch_edit" && Array.isArray(call.edits)) {
             for (const e of call.edits as { path: string; old_text: string; new_text: string }[]) {
               if (_editFile) {
-                const ok = await _editFile(e.path, e.old_text, e.new_text);
+                const ok = await editFileWithHistory(e.path, e.old_text, e.new_text);
                 if (ok) {
                   totalWrites++;
                   setFilesChanged(totalWrites);
@@ -2405,15 +2432,7 @@ export async function runInBackground(
           for (const call of swarmStream.toolCalls) {
             if (abortSignal?.aborted || !isCurrentTask(taskId)) return;
             if (call.name === "write_file" && call.path && call.content !== undefined) {
-              let ok = false;
-              if (_writeFile) {
-                const prevContent = _readFile ? await _readFile(call.path).catch(() => null) : null;
-                const hasPrev = prevContent && !prevContent.startsWith("[Error");
-                recordChange(call.path, hasPrev ? prevContent : null, call.content);
-                ok = await _writeFile(call.path, call.content);
-              } else {
-                ok = virtualFS.writeFile(call.path, call.content);
-              }
+              const ok = await writeWorkspaceFile(call.path, call.content);
               if (ok) {
                 bumpStat("toolCalls");
                 totalWrites++;
@@ -2422,7 +2441,7 @@ export async function runInBackground(
               }
               fullDisplayContent = replaceLastStatus(fullDisplayContent, ok ? `[SUCCESS] Fixed \`${call.path}\` (code review)` : `[ERROR] Review fix failed for \`${call.path}\``);
             } else if (call.name === "edit_file" && call.path && call.old_text && call.new_text && _editFile) {
-              const ok = await _editFile(call.path, call.old_text, call.new_text);
+              const ok = await editFileWithHistory(call.path, call.old_text, call.new_text);
               if (ok) {
                 totalWrites++;
                 setFilesChanged(totalWrites);
@@ -2577,15 +2596,7 @@ export async function runInBackground(
               if (abortSignal?.aborted || !isCurrentTask(taskId)) return;
               if (call.name === "write_file" && call.path && call.content !== undefined) {
                 updateTaskStatus("tool_executing", `Fixing ${call.path}…`);
-                let ok = false;
-                if (_writeFile) {
-                  const prevContent = _readFile ? await _readFile(call.path).catch(() => null) : null;
-                  const hasPrev = prevContent && !prevContent.startsWith("[Error");
-                  recordChange(call.path, hasPrev ? prevContent : null, call.content);
-                  ok = await _writeFile(call.path, call.content);
-                } else {
-                  ok = virtualFS.writeFile(call.path, call.content);
-                }
+                const ok = await writeWorkspaceFile(call.path, call.content);
                 if (ok) {
                   bumpStat("toolCalls");
                   totalWrites++;
@@ -2595,7 +2606,7 @@ export async function runInBackground(
                 fullDisplayContent = replaceLastStatus(fullDisplayContent, ok ? `[SUCCESS] Fixed \`${call.path}\` (browser verification)` : `[ERROR] Fix failed for \`${call.path}\``);
               } else if (call.name === "edit_file" && call.path && call.old_text && call.new_text && _editFile) {
                 updateTaskStatus("tool_executing", `Fixing ${call.path}…`);
-                const ok = await _editFile(call.path, call.old_text, call.new_text);
+                const ok = await editFileWithHistory(call.path, call.old_text, call.new_text);
                 if (ok) {
                   totalWrites++;
                   setFilesChanged(totalWrites);
@@ -2714,8 +2725,12 @@ export async function runInBackground(
 
         // Write to local FS if a folder is open, otherwise to virtual FS
         if (_writeFile) {
+          const previous = _readFile ? await _readFile(fileName).catch(() => null) : null;
+          const before = previous !== null && !previous.startsWith("[Error") ? previous : null;
+          await recordChange(fileName, before, code);
           await _writeFile(fileName, code);
         } else {
+          await recordChange(fileName, virtualFS.readFile(fileName), code, false);
           virtualFS.writeFile(fileName, code);
         }
         extractedFiles++;
