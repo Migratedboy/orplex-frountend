@@ -1,7 +1,7 @@
 "use client";
 
 import { memo } from "react";
-import { type ActivityStep } from "@/lib/activity";
+import { type ActivityStep, formatActivityTime } from "@/lib/activity";
 import { ToolCallRow } from "../ToolCallDisplay";
 
 function ActivityStepRow({
@@ -65,7 +65,7 @@ function ActivityStepRow({
       tool={tool}
       title={step.title}
       target={isThinking
-        ? state === "running" ? "" : elapsed !== undefined ? `for ${elapsed.toFixed(1)}s` : ""
+        ? state === "running" ? "" : elapsed !== undefined ? `for ${elapsed > 0 ? formatActivityTime(elapsed * 1000) || "<0.1s" : "<0.1s"}` : ""
         : step.chip || ""}
       meta={rowMeta}
       statusText={statusText}

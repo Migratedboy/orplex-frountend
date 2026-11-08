@@ -47,6 +47,5 @@ export const DEFAULT_MODELS: DefaultModelRow[] = [
   { key: "xingchen-agi/xing4.0-29b-a4b:free", name: "Xing 4.0 29B A4B", tag: "OpenRouter", detail: "free · 262K · tools", group: "Default Models" },
   { key: "openrouter/free", name: "Free Models Router", tag: "OpenRouter", detail: "free · 200K · tools · always available", group: "Default Models" },
   { key: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", name: "Nemotron 3 Nano Omni", tag: "OpenRouter", detail: "free · 256K · vision", group: "Default Models" },
-  { key: "cohere/north-mini-code:free", name: "North Mini Code", tag: "OpenRouter", detail: "free · 256K · coding", group: "Default Models" },
   { key: "liquid/lfm-2.5-2.6b:free", name: "LFM 2.5 2.6B", tag: "OpenRouter", detail: "free · 66K · compact", group: "Default Models" },
 ];

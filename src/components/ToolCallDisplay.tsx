@@ -918,12 +918,12 @@ export function ToolCallRow({
       ? Math.max(0, endedAt - startedAt) / 1000
       : undefined;
   const rowTarget = isThinking
-    ? status === "running" ? "" : elapsed !== undefined ? `for ${elapsed.toFixed(1)}s` : target
+    ? status === "running" ? "" : elapsed !== undefined ? `for ${elapsed < 0.1 ? "<0.1" : elapsed.toFixed(1)}s` : target
     : target;
   const body = getBody(tool, args, thinkingText ?? result, rawBody, rowTarget || target, bodyData);
   const count = thinkingTokens ?? Math.ceil((thinkingText ?? String(body.text ?? "")).length / 4);
   const rowMeta = status === "running"
-    ? `${elapsed?.toFixed(1) ?? "0.0"}s`
+    ? `${elapsed !== undefined && elapsed < 0.1 ? "<0.1" : (elapsed?.toFixed(1) ?? "0.0")}s`
     : isThinking
       ? `${count} tokens`
       : meta;
