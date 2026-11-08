@@ -59,6 +59,7 @@ jobs:
       # then advertises a version the app never reports, and installed apps
       # see themselves as up to date.
       - name: Align version with tag
+        shell: bash
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
 
       # The installer packages .next/standalone + electron-dist/main.js —
