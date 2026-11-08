@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: "20"
+  NODE_VERSION: "22"
 
 jobs:
   # ──────────────────────────────────────────────────────────────────
@@ -29,7 +29,15 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # Electron's binary download (via got) can 504 from the mirror;
+        # retry up to 3 times instead of failing the whole job.
+        run: |
+          for i in 1 2 3; do
+            if npm ci; then break; fi
+            echo "npm ci failed (attempt $i of 3), waiting 15s before retry…"
+            sleep 15
+            if [ "$i" = "3" ]; then exit 1; fi
+          done
 
       - name: Lint
         run: npm run lint
@@ -65,7 +73,15 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # Electron's binary download (via got) can 504 from the mirror;
+        # retry up to 3 times instead of failing the whole job.
+        run: |
+          for i in 1 2 3; do
+            if npm ci; then break; fi
+            echo "npm ci failed (attempt $i of 3), waiting 15s before retry…"
+            sleep 15
+            if [ "$i" = "3" ]; then exit 1; fi
+          done
 
       - name: Run tests
         run: |

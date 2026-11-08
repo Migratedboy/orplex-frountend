@@ -38,11 +38,19 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # Electron's binary download (via got) can 504 from the mirror;
+        # retry up to 3 times instead of failing the whole release.
+        run: |
+          for i in 1 2 3; do
+            if npm ci; then break; fi
+            echo "npm ci failed (attempt $i of 3), waiting 15s before retry…"
+            sleep 15
+            if [ "$i" = "3" ]; then exit 1; fi
+          done
 
       # The tag is the source of truth for the version. Without this, a tag
       # pushed without a matching package.json bump ships installers whose
