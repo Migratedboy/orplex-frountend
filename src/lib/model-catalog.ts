@@ -5,8 +5,9 @@
  * registry def whose keyEnvVar is set in .env), then LIVE-PROBES each
  * one with a tiny chat completion. Only models that actually answer are
  * returned, so the picker can never offer a dead id (the DeepSeek-free-tier
- * incident). Results are cached in memory (5 min) and on disk (30 min) so
- * the probe cost is paid at most a few times a day.
+ * incident). Results are cached in memory (5 min) and on disk as a TEMP file
+ * with a 24h life (verified at most once a day; the file is deleted once it
+ * expires), so probe churn can never flip a picked model's health.
  *
  * Probe scope: OpenRouter free models (:free suffix) are probed individually;
  * paid OpenRouter models are probed at a small sample (first 12 by context)
@@ -20,7 +21,7 @@ import { listProviderDefs, getProviderDef, type ProviderDef } from "./provider-r
 export interface CatalogModel {
   id: string;
   name: string;
-  /** Registry provider id ("groq" | "openrouter" | "nvidia" | "anthropic" | …). */
+  /** Registry provider id ("openrouter" | "nvidia" | "anthropic" | …). */
   provider: string;
   /** true when the probe actually answered (all listed models replied) */
   verified: true;
@@ -100,9 +101,15 @@ export function modelHealth(m: CatalogModel, nowMs: number = Date.now()): "green
 }
 
 const MEM_TTL_MS = 5 * 60 * 1000;
-const DISK_TTL_MS = 30 * 60 * 1000;
+/**
+ * The disk cache is a TEMP file with a one-day life: models are verified at
+ * most once a day (fresh-verified models skip probing entirely), and the
+ * file is deleted once it passes 24h, so a stale verdict can never outlive
+ * its validity window.
+ */
+const DISK_TTL_MS = FRESH_VERIFIED_MS; // 24h
 /** After this age a cached list is still served, but a background sweep kicks off. */
-const SOFT_TTL_MS = 10 * 60 * 1000;
+const SOFT_TTL_MS = DISK_TTL_MS;
 const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_CONCURRENCY = 6;
 const OPENROUTER_PAID_SAMPLE = 12;
@@ -219,7 +226,12 @@ function readDiskCache(): CatalogResult | null {
   try {
     const raw = libs.fs.readFileSync(cachePath(libs), "utf8");
     const parsed = JSON.parse(raw) as CatalogResult;
-    if (Date.now() - new Date(parsed.probedAt).getTime() > DISK_TTL_MS) return null;
+    if (Date.now() - new Date(parsed.probedAt).getTime() > DISK_TTL_MS) {
+      // Expired temp file: delete it so the next sweep starts clean and a
+      // stale verdict never lingers past its 24h validity.
+      try { libs.fs.unlinkSync(cachePath(libs)); } catch {}
+      return null;
+    }
     return parsed;
   } catch {
     return null;
@@ -266,7 +278,7 @@ interface RawModel {
 export const NON_CHAT_RE = /(prompt-guard|safeguard|content-safety|guard-|whisper|orpheus|riva|tts|transcribe|embed|rerank|moderation|safety|parse|ocr)/i;
 
 /** Smallest usable chat context. The app's system prompt + tools alone are
- *  ~8k tokens, so a model with a smaller window (e.g. Groq allam-2-7b @ 4096)
+ *  ~8k tokens, so a model with a smaller window (e.g. a 4096-context NIM build)
  *  answers every probe but 400s on every real request — never list it. */
 const MIN_CONTEXT_TOKENS = 8192;
 
@@ -489,10 +501,7 @@ export async function probeModel(
     // reasoning — finish_reason "length"), which still proves the model works.
     return Array.isArray(json.choices) && json.choices.length > 0 ? "ok" : "dead";
   } catch (err) {
-    // Timeouts land here. Two very different causes:
-    //  - Groq queues under token-budget pressure — queued-then-served is
-    //    still proof of life, hence the generous budget.
-    //  - NVIDIA build.farm cold-loads model functions: a freshly listed
+    // Timeouts land here. NVIDIA build.farm cold-loads model functions: a freshly listed
     //    model can hang past ANY timeout on its first invocations, then
     //    work fine minutes later (kimi-k3 did exactly this). Treating that
     //    as dead permanently removes working models from the picker.
@@ -521,15 +530,15 @@ export async function probeModel(
 
 /** Map-limited parallel runner preserving input order.
  *
- *  Provider-aware pacing: a provider with probeSpacingMs set (Groq: 1500ms —
- *  its free tier rejects parallel bursts) runs strictly serially with a gap
- *  between starts; everything else shares the concurrency pool. */
+ *  Provider-aware pacing: a provider with probeSpacingMs set (OpenRouter:
+ *  1500ms — its free tier rejects parallel bursts) runs strictly serially
+ *  with a gap between starts; everything else shares the concurrency pool. */
 type ProbeJob = { provider: string; id: string; key: string };
 
 /**
  * Verdicts are keyed per (provider, id) — the same model id can be listed by
- * several providers (gpt-oss-20b: Groq AND NVIDIA), and one provider's dead
- * endpoint must never erase another's proof of life.
+ * several providers (e.g. shared NVIDIA/OpenRouter listings), and one
+ * provider's dead endpoint must never erase another's proof of life.
  */
 const jobKey = (j: Pick<ProbeJob, "provider" | "id">) => `${j.provider}::${j.id}`;
 
@@ -777,7 +786,7 @@ async function sweepCatalogInner(): Promise<CatalogResult> {
   if (freshSkipped > 0) console.log(`[model-catalog] sweep: ${freshSkipped} model(s) verified <24h ago — skipping their probes`);
 
   let verdicts = await probeAll(jobs);
-  // Retry pass: busy free tiers (Groq especially) rate-limit bursts; models
+  // Retry pass: busy free tiers rate-limit bursts; models
   // that came back 429 get one more chance after a cool-down before final
   // verdict. A still-throttled model never actually replied, so it does not
   // make the picker — the user asked for "only models proven to work".
@@ -795,8 +804,8 @@ async function sweepCatalogInner(): Promise<CatalogResult> {
   );
 
   // Collapse per-(provider,id) verdicts into one per id: best wins, in .env
-  // priority order (jobs were pushed groq-first). Groq proving gpt-oss-20b
-  // works outranks NVIDIA's copy of the same id timing out.
+  // priority order. A provider proving the id works outranks another's copy
+  // timing out.
   const verdictsById = new Map<string, ProbeVerdict[]>();
   for (const j of jobs) {
     const v = verdicts.get(jobKey(j));
@@ -819,7 +828,7 @@ async function sweepCatalogInner(): Promise<CatalogResult> {
   const out: CatalogModel[] = [];
   const throttledOut: CatalogModel[] = [];
   const seenIds = new Set<string>();
-  // Listing order follows .env priority (groq → openrouter → nvidia), so the
+  // Listing order follows .env priority, so the
   // first provider to list an id wins its tag; /api/chat still picks the
   // serving provider itself by model match.
   for (const l of listing) {
@@ -831,7 +840,7 @@ async function sweepCatalogInner(): Promise<CatalogResult> {
       if (prior && isFreshlyVerified(prior)) {
         seenIds.add(m.id);
         // Preserve a previously-known contextWindow when the listing omits it.
-        // Groq and NVIDIA don't report context_length, so `m.contextWindow`
+        // NVIDIA doesn't report context_length, so `m.contextWindow`
         // is undefined for most models — assigning it directly ERASED the
         // value every sweep, which silently degraded both the picker's "131k"
         // badge and every context-window consumer downstream.
@@ -1161,41 +1170,6 @@ export function runSweepForTests(): Promise<CatalogResult> {
   return sweepCatalog();
 }
 
-/**
- * Pick the next verified model after a failure (auto-retry helper).
- *
- * @param failedModels ids that already failed this conversation (most recent first)
- * @param currentModel the model that just failed — always excluded, even when
- *   the failed list omits it (a retry never lands on the same row)
- * Everything probe-verified is eligible except the failed set — cross-provider
- * failover is the point (a dead provider's whole list is skipped by exclusion,
- * not by proximity). Ordered green (freshly verified) first, then stable
- * catalog order. Returns null when the catalog has nothing beyond the failed
- * set — the caller keeps the user's pick rather than inventing a model.
- */
-export async function pickRetryModel(
-  failedModels: string[],
-  currentModel?: string | null
-): Promise<string | null> {
-  try {
-    const { models } = await getVerifiedModels();
-    if (models.length === 0) return null;
-    // Bare-id comparison: the picker's saved key and the failure trail may
-    // carry either form ("vendor/x" vs "vendor/x:free") while the catalog
-    // lists only one. Exact matching would exclude the WRONG form and hand
-    // back the very model that just failed.
-    const bare = (s: string) => s.replace(/:free$/, "");
-    const failed = new Set(failedModels.filter(Boolean).map(bare));
-    if (currentModel) failed.add(bare(currentModel));
-    const candidates = models.filter((m) => !failed.has(bare(m.id)));
-    if (candidates.length === 0) return null;
-    // Stable sort: green (freshly verified) before amber (proof of life aged
-    // out), catalog order preserved within each group.
-    candidates.sort((a, b) => (isFreshlyVerified(a) ? 0 : 1) - (isFreshlyVerified(b) ? 0 : 1));
-    return candidates[0].id;
-  } catch {
-    return null;
-  }
-}
+
 
 

@@ -10,8 +10,9 @@
 // (control chars stripped, bounded), and are capped per workspace. The user
 // can inspect and forget entries via /api/agent/memory.
 
-import { createHash } from "crypto";
-import { prisma } from "./prisma";
+import { createHash, randomUUID } from "crypto";
+import { mkdir, readFile, rename, writeFile } from "fs/promises";
+import { dirname, join } from "path";
 import { getWorkspaceKey } from "./run-ledger";
 
 export type MemoryKind = "pattern" | "stack" | "decision" | "pitfall";
@@ -163,23 +164,20 @@ export async function rememberFact(workspaceKey: string, fact: string): Promise<
   const content = sanitizeText(fact).slice(0, MAX_CONTENT_CHARS);
   if (!content) return false;
   try {
-    await prisma.workspaceMemory.upsert({
-      where: {
-        workspaceKey_kind_contentHash: {
-          workspaceKey,
-          kind: "decision",
-          contentHash: hashContent(content),
-        },
-      },
-      update: { count: { increment: 1 }, lastSeenAt: new Date() },
-      create: {
-        workspaceKey,
-        kind: "decision",
-        content,
-        contentHash: hashContent(content),
-        files: [],
-        evidence: { pinned: true, source: "user" },
-      },
+    const hash = hashContent(content);
+    await wsWithStore(async (file) => {
+      const rows = file.workspaces[workspaceKey] || [];
+      file.workspaces[workspaceKey] = rows;
+      const hit = rows.find((r) => r.kind === "decision" && r.contentHash === hash);
+      if (hit) {
+        hit.count += 1;
+        hit.lastSeenAt = wsIso();
+      } else {
+        rows.push(
+          wsNewRow(workspaceKey, "decision", content, [], { pinned: true, source: "user" })
+        );
+      }
+      return { out: true, changed: true };
     });
     return true;
   } catch {
@@ -193,23 +191,18 @@ export async function captureWorkspaceMemories(input: CaptureInput): Promise<num
   let stored = 0;
   for (const m of derived) {
     try {
-      await prisma.workspaceMemory.upsert({
-        where: {
-          workspaceKey_kind_contentHash: {
-            workspaceKey: input.workspaceKey,
-            kind: m.kind,
-            contentHash: hashContent(m.content),
-          },
-        },
-        update: { count: { increment: 1 }, lastSeenAt: new Date() },
-        create: {
-          workspaceKey: input.workspaceKey,
-          kind: m.kind,
-          content: m.content,
-          contentHash: hashContent(m.content),
-          files: m.files,
-          evidence: m.evidence as object,
-        },
+      const hash = hashContent(m.content);
+      await wsWithStore(async (file) => {
+        const rows = file.workspaces[input.workspaceKey] || [];
+        file.workspaces[input.workspaceKey] = rows;
+        const hit = rows.find((r) => r.kind === m.kind && r.contentHash === hash);
+        if (hit) {
+          hit.count += 1;
+          hit.lastSeenAt = wsIso();
+        } else {
+          rows.push(wsNewRow(input.workspaceKey, m.kind, m.content, m.files, m.evidence));
+        }
+        return { out: true, changed: true };
       });
       stored++;
     } catch {
@@ -222,20 +215,141 @@ export async function captureWorkspaceMemories(input: CaptureInput): Promise<num
   // honours pins (they outrank statistics and skip stale-eviction); eviction
   // must not contradict it by deleting the pin the prompt then promises.
   try {
-    const rows = await prisma.workspaceMemory.findMany({
-      where: { workspaceKey: input.workspaceKey },
-      orderBy: { lastSeenAt: "desc" },
-      select: { id: true, evidence: true },
+    await wsWithStore(async (file) => {
+      const rows = file.workspaces[input.workspaceKey];
+      if (!rows || rows.length === 0) return { out: null, changed: false };
+      const newestFirst = rows.slice().sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt));
+      const { victimIds } = selectOverflowVictims(newestFirst, MAX_ENTRIES_PER_WORKSPACE);
+      if (victimIds.length === 0) return { out: null, changed: false };
+      const victim = new Set(victimIds);
+      file.workspaces[input.workspaceKey] = rows.filter((r) => !victim.has(r.id));
+      return { out: null, changed: true };
     });
-    const { victimIds } = selectOverflowVictims(rows, MAX_ENTRIES_PER_WORKSPACE);
-    if (victimIds.length > 0) {
-      await prisma.workspaceMemory.deleteMany({
-        where: { id: { in: victimIds } },
-      });
-    }
   } catch {}
 
   return stored;
+}
+
+// ── JSON file store (Category B: plain file, playbook-style) ─────────────────
+// Same contract as playbook.ts: one atomic file, read-through in-memory
+// cache, serialized read-modify-write, corrupt file degrades to empty.
+
+interface WsMemRow {
+  id: string;
+  workspaceKey: string;
+  kind: MemoryKind;
+  content: string;
+  contentHash: string;
+  files: string[];
+  evidence: Record<string, unknown>;
+  embedding?: number[] | null;
+  count: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+interface WsMemFile {
+  version: 1;
+  workspaces: Record<string, WsMemRow[]>;
+}
+
+function wsMemFilePath(): string {
+  return (
+    process.env.ORPLEX_WORKSPACE_MEMORY_FILE ||
+    join(process.cwd(), ".orplex", "workspace-memory.json")
+  );
+}
+
+let wsCached: WsMemFile | null = null;
+
+async function wsLoad(): Promise<WsMemFile> {
+  if (wsCached) return wsCached;
+  try {
+    const parsed = JSON.parse(await readFile(wsMemFilePath(), "utf8")) as WsMemFile;
+    const workspaces: Record<string, WsMemRow[]> = {};
+    if (parsed && typeof parsed === "object" && parsed.workspaces && typeof parsed.workspaces === "object") {
+      for (const [key, rows] of Object.entries(parsed.workspaces)) {
+        if (Array.isArray(rows)) workspaces[key] = rows;
+      }
+    }
+    wsCached = { version: 1, workspaces };
+  } catch {
+    wsCached = { version: 1, workspaces: {} };
+  }
+  return wsCached;
+}
+
+async function wsPersist(file: WsMemFile): Promise<void> {
+  try {
+    const filePath = wsMemFilePath();
+    await mkdir(dirname(filePath), { recursive: true });
+    const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tmp, JSON.stringify(file, null, 1), "utf8");
+    await rename(tmp, filePath);
+  } catch {
+    // A read-only disk must never take the chat lane down — the in-memory
+    // store keeps working; persistence just degrades.
+  }
+}
+
+let wsWriteChain: Promise<unknown> = Promise.resolve();
+
+function wsWithStore<T>(
+  mutator: (file: WsMemFile) => Promise<{ out: T; changed: boolean }>
+): Promise<{ out: T; changed: boolean }> {
+  const run = wsWriteChain.then(async () => {
+    const file = await wsLoad();
+    const result = await mutator(file);
+    if (result.changed) {
+      wsCached = file;
+      await wsPersist(file);
+    }
+    return result;
+  });
+  wsWriteChain = run.catch(() => {});
+  return run;
+}
+
+/** Test hook: drop the in-memory cache so each test starts from its file. */
+export function resetWorkspaceMemoryCacheForTests(): void {
+  wsCached = null;
+  wsWriteChain = Promise.resolve();
+}
+
+// ── row helpers (in-memory; Prisma-shaped callers are gone) ──
+
+async function wsRows(workspaceKey: string): Promise<WsMemRow[]> {
+  const file = await wsLoad();
+  return (file.workspaces[workspaceKey] || [])
+    .slice()
+    .sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt));
+}
+
+function wsIso(): string {
+  return new Date().toISOString();
+}
+
+function wsNewRow(
+  workspaceKey: string,
+  kind: MemoryKind,
+  content: string,
+  files: string[],
+  evidence: Record<string, unknown>
+): WsMemRow {
+  const now = wsIso();
+  return {
+    id: randomUUID(),
+    workspaceKey,
+    kind,
+    content,
+    contentHash: hashContent(content),
+    files,
+    evidence,
+    embedding: null,
+    count: 1,
+    firstSeenAt: now,
+    lastSeenAt: now,
+  };
 }
 
 /** True when a row's evidence marks a user-pinned fact (/remember). */
@@ -293,13 +407,7 @@ export async function retrieveWorkspaceMemories(
   task: string,
   limit = 5
 ): Promise<RetrievedMemory[]> {
-  const rows = await prisma.workspaceMemory
-    .findMany({
-      where: { workspaceKey },
-      orderBy: { lastSeenAt: "desc" },
-      take: MAX_ENTRIES_PER_WORKSPACE,
-    })
-    .catch(() => []);
+  const rows = (await wsRows(workspaceKey)).slice(0, MAX_ENTRIES_PER_WORKSPACE);
 
   if (rows.length === 0) return [];
 
@@ -323,13 +431,13 @@ export async function retrieveWorkspaceMemories(
   const fresh = rows.filter((r) => {
     // Pinned facts (user /remember) are never stale-evicted.
     const pinned = !!(r.evidence as { pinned?: boolean } | null)?.pinned;
-    return pinned || now - r.lastSeenAt.getTime() < STALE_MS;
+    return pinned || now - Date.parse(r.lastSeenAt) < STALE_MS;
   });
   const scored: RetrievedMemory[] = [];
   for (const r of fresh) {
     let score = 0;
     const pinned = !!(r.evidence as { pinned?: boolean } | null)?.pinned;
-    const ageDays = (now - r.lastSeenAt.getTime()) / 86_400_000;
+    const ageDays = (now - Date.parse(r.lastSeenAt)) / 86_400_000;
     score += Math.max(0, 2 - ageDays / 7); // fresh for ~2 weeks, decays after
     score += Math.min(2, Math.log2(1 + r.count)); // reinforced entries rank up
     if (pinned) score += 3; // user-pinned facts outrank statistics
@@ -380,11 +488,24 @@ export async function retrieveWorkspaceMemories(
   // Persist backfilled vectors (fire-and-forget; a failure is invisible here
   // and simply re-derives on the next retrieval).
   if (backfills.length > 0) {
-    for (const b of backfills) {
-      void prisma.workspaceMemory
-        .update({ where: { id: b.id }, data: { embedding: Array.from(b.vector) } })
-        .catch(() => {});
-    }
+    void (async () => {
+      try {
+        const byId = new Map(backfills.map((b) => [b.id, Array.from(b.vector) as number[]]));
+        await wsWithStore(async (file) => {
+          let changed = false;
+          for (const rows of Object.values(file.workspaces)) {
+            for (const r of rows) {
+              const vec = byId.get(r.id);
+              if (vec) {
+                r.embedding = vec;
+                changed = true;
+              }
+            }
+          }
+          return { out: null, changed };
+        });
+      } catch {}
+    })();
   }
   if (semanticHits > 0 && process.env.ORPLEX_DEBUG_MEM === "1") {
     console.log(`[workspace-memory] semantic term contributed for ${semanticHits}/${rows.length} row(s)`);
@@ -417,20 +538,19 @@ export function formatMemoriesForPrompt(memories: RetrievedMemory[]): string | n
 
 /** For the "What I remember" UI surface. */
 export async function listMemories(workspaceKey: string) {
-  return prisma.workspaceMemory
-    .findMany({
-      where: { workspaceKey },
-      orderBy: { lastSeenAt: "desc" },
-      take: 100,
-    })
-    .catch(() => []);
+  return (await wsRows(workspaceKey)).slice(0, 100);
 }
 
 export async function forgetMemory(id: string, workspaceKey: string): Promise<boolean> {
-  const res = await prisma.workspaceMemory
-    .deleteMany({ where: { id, workspaceKey } })
-    .catch(() => null);
-  return !!res && res.count > 0;
+  const { out } = await wsWithStore(async (file) => {
+    const rows = file.workspaces[workspaceKey];
+    if (!rows) return { out: false, changed: false };
+    const next = rows.filter((r) => r.id !== id);
+    const deleted = next.length !== rows.length;
+    if (deleted) file.workspaces[workspaceKey] = next;
+    return { out: deleted, changed: deleted };
+  });
+  return out;
 }
 
 /**

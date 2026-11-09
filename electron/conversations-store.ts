@@ -112,9 +112,28 @@ function normalizeIncomingMessage(m: { role?: unknown; content?: unknown; activi
   };
 }
 
+/** First-prompt title: clean the first meaningful line of the first user
+ *  message (markup off, word-boundary cap) so sidebar rows read well. */
+export function cleanTitleText(raw: string | undefined, cap = TITLE_MAX): string | null {
+  if (!raw) return null;
+  const line =
+    raw.split("\n").map((s) => s.trim()).find((s) => s.length > 1) ?? "";
+  const clean = line
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[#*>`_~]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return null;
+  if (clean.length <= cap) return clean;
+  const cut = clean.slice(0, cap);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > 20 ? cut.slice(0, lastSpace) : cut).trim()}…`;
+}
+
 function titleFromMessages(messages: StoredMessage[], fallback = "New Chat"): string {
   const first = messages.find((m) => m.role === "user");
-  return first && first.content ? first.content.slice(0, TITLE_MAX) : fallback;
+  return cleanTitleText(first?.content) ?? fallback;
 }
 
 export interface LocalConversationStore {

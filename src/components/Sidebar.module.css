@@ -17,7 +17,7 @@
 
 /* .sb is the positioned rail (flex child of AppLayout .app-root) */
 .sb {
-  height:100%; background:var(--side); position:relative; flex:none; overflow:hidden;
+  height:100vh; background:var(--side); position:sticky; top:0; flex:none; overflow:hidden;
   border-right:1px solid var(--border);
   transition:width .22s ease;
   font-family:var(--sans); color:var(--text); font-size:14px;
@@ -77,7 +77,10 @@
 .empty { padding:6px 10px 6px 38px; color:var(--muted); font-size:13px; }
 .link { padding:6px 10px 6px 38px; color:var(--muted); font-size:13px; text-decoration:underline; text-underline-offset:3px; cursor:pointer; display:block; width:100%; text-align:left; }
 .link:hover { color:var(--text); }
-.chev { width:14px !important; height:14px !important; transition:transform .15s; }
+.chev { width:14px !important; height:14px !important; transition:transform .15s; transform:rotate(0deg); }
+.label[aria-expanded="true"] .chev { transform:rotate(90deg); }
+.label { cursor:pointer; font:inherit; background:none; border:0; width:100%; text-align:left; border-radius:8px; }
+.label:hover { color:var(--text); }
 .kids { display:grid; grid-template-rows:0fr; transition:grid-template-rows .2s ease; }
 .kids.open { grid-template-rows:1fr; }
 .kids > div { overflow:hidden; }

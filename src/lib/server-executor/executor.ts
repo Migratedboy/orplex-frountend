@@ -84,7 +84,7 @@ const TURN_LIMIT = 60;
 // Transcript budget for compaction, used ONLY when a model's real context
 // window is unknown.
 //
-// This used to be a fixed 3100 tokens (an 8k Groq free-tier artifact: 8000
+// This used to be a fixed 3100 tokens (an old 8k free-tier artifact: 8000
 // minus prompt/tool/scratchpad overhead). Applied unconditionally it summarized
 // away the context of a 200k-context paid model roughly every two turns —
 // and each compaction is an extra BILLED model call, so the paid lane both
@@ -318,7 +318,7 @@ export function buildNativeToolDefs(mcpTools: McpToolDef[], remoteTools: Builder
 }
 
 // ── Failover chain (opt-in, executor only) ───────────────────────────────────────
-// AI_FAILOVER="groq,openrouter" — tried in order after the configured primary
+// AI_FAILOVER="nvidia,openrouter" - tried in order after the configured primary
 // when it fails with a rate/quota error. Filtering (primary, unknown,
 // keyless) lives in executor-config.ts where it is unit-testable.
 
@@ -887,7 +887,7 @@ const kept = content.slice(0, 2000);
     try {
       const { memoryList } = await import("../memory-store");
       const prefix = typeof call.path_prefix === "string" ? call.path_prefix : undefined;
-      const files = await memoryList(prefix);
+      const files = await memoryList(mcpExtras?.userId ?? "default", prefix);
       return files.length ? files.map((f) => `- ${f.path} - ${f.description}${f.aliases.length ? ` (aliases: ${f.aliases.join(", ")})` : ""}`).join("\n") : "No memory files yet.";
     } catch (err) {
       return `error: ${(err as Error).message}`;
@@ -897,7 +897,7 @@ const kept = content.slice(0, 2000);
     try {
       const { memoryRead } = await import("../memory-store");
       const paths = Array.isArray(call.paths) ? (call.paths as string[]) : (typeof call.path === "string" ? [call.path] : []);
-      const files = await memoryRead(paths);
+      const files = await memoryRead(paths, mcpExtras?.userId ?? "default");
       if (!files.length) return "No matching memory files.";
       return files.map((f) => `### ${f.path} (version ${f.version})\n${f.content}`).join("\n\n");
     } catch (err) {
@@ -908,7 +908,7 @@ const kept = content.slice(0, 2000);
     try {
       const { memoryWrite } = await import("../memory-store");
       if (typeof call.path !== "string" || typeof call.content !== "string") return "error: path and content are required";
-      const r = await memoryWrite(call.path, call.content, call.if_version as any);
+      const r = await memoryWrite(call.path, call.content, call.if_version as any, mcpExtras?.userId ?? "default");
       if (r.conflict) return `conflict: file changed. Current (v${r.current?.version}):\n${r.current?.content}\nMerge and retry with if_version=${r.current?.version}.`;
       return `saved ${call.path} (version ${r.version})`;
     } catch (err) {
@@ -919,7 +919,7 @@ const kept = content.slice(0, 2000);
     try {
       const { memoryStrReplace } = await import("../memory-store");
       if (typeof call.path !== "string" || typeof call.old_str !== "string" || typeof call.new_str !== "string") return "error: path, old_str, new_str are required";
-      const r = await memoryStrReplace(call.path, call.old_str, call.new_str, call.if_version as any);
+      const r = await memoryStrReplace(call.path, call.old_str, call.new_str, call.if_version as any, mcpExtras?.userId ?? "default");
       if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
       if (!r.ok) return `error: ${r.reason}`;
       return `updated ${call.path} (version ${r.version})`;
@@ -931,7 +931,7 @@ const kept = content.slice(0, 2000);
     try {
       const { memoryAppend } = await import("../memory-store");
       if (typeof call.path !== "string" || typeof call.content !== "string") return "error: path and content are required";
-      const r = await memoryAppend(call.path, call.content, call.if_version as any);
+      const r = await memoryAppend(call.path, call.content, call.if_version as any, mcpExtras?.userId ?? "default");
       if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
       return `appended to ${call.path} (version ${r.version})`;
     } catch (err) {
@@ -942,7 +942,7 @@ const kept = content.slice(0, 2000);
     try {
       const { memoryDelete } = await import("../memory-store");
       if (typeof call.path !== "string") return "error: path is required";
-      const r = await memoryDelete(call.path, call.if_version as any);
+      const r = await memoryDelete(call.path, call.if_version as any, mcpExtras?.userId ?? "default");
       if (r.conflict) return `conflict: current (v${r.current?.version}):\n${r.current?.content}\nretry with if_version=${r.current?.version}.`;
       if (!r.ok) return `error: ${(r as any).reason || "failed"}`;
       return `deleted ${call.path}`;
@@ -1683,7 +1683,7 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
           chainIdx++;
           const from = servedProvider;
           // Do NOT carry the primary's model id to a different provider: an
-          // id chosen for Groq (e.g. "openai/gpt-oss-120b") is a 404 on
+          // id chosen for a different provider is a 404 on
           // OpenRouter, and a 404 is not a rate limit — so the chain died at
           // the first hop and the fallback could never actually fire. Only an
           // override we can attribute to THIS provider survives; otherwise the

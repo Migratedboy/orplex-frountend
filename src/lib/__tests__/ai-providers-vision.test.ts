@@ -13,7 +13,18 @@
  * parts intact.
  */
 
-import { OpenRouterAdapter, GroqAdapter, OpenAICompatibleAdapter } from "@/lib/ai-providers";
+import { OpenRouterAdapter, OpenAICompatibleAdapter } from "@/lib/ai-providers";
+
+/** Text-only OpenAI-compatible adapter (former GroqAdapter slot — removed). */
+function textOnlyAdapter(): OpenAICompatibleAdapter {
+  return new OpenAICompatibleAdapter({
+    name: "nvidia",
+    apiKey: "k",
+    apiKeyEnvVar: "NVIDIA_API_KEY",
+    model: "nvidia/nemotron-3-super-120b-a12b",
+    baseUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
+  } as never);
+}
 
 const PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -55,8 +66,8 @@ const MESSAGES = [
 describe("adapter multimodal passthrough", () => {
   it("flags which providers accept images", () => {
     expect(new OpenRouterAdapter("k", "google/gemini-2.0-flash").supportsVision).toBe(true);
-    // Groq's chat surface is text-only for the models we route there.
-    expect(new GroqAdapter("k", "llama-3.3-70b").supportsVision).toBe(false);
+    // Text-only providers flatten images instead of rejecting the request.
+    expect(textOnlyAdapter().supportsVision).toBe(false);
   });
 
   it("sends image_url parts intact to a vision provider", async () => {
@@ -71,7 +82,7 @@ describe("adapter multimodal passthrough", () => {
   });
 
   it("flattens to text for a text-only provider so the request stays valid", async () => {
-    const body = await captureBody(new GroqAdapter("k", "llama-3.3-70b"), MESSAGES as never);
+    const body = await captureBody(textOnlyAdapter(), MESSAGES as never);
 
     const user = body.messages.find((m) => m.role === "user")!;
     expect(typeof user.content).toBe("string");

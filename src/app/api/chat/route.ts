@@ -16,7 +16,7 @@ import {
 } from "@/lib/chat-middleware";
 import { sseTransform } from "@/lib/ai-providers";
 import { isMockAiEnabled, createMockProviderStream, buildMockActivityReplyText } from "@/lib/mock-ai";
-import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS } from "@/lib/tool-definitions";
+import { M3_TOOL_DEFINITIONS, LEAN_TOOL_DEFINITIONS } from "@/lib/tool-definitions";
 import { buildSystemPrompt } from "@/lib/master-prompt";
 import { buildMcpRoster, mcpPromptSection, toOpenAiFunctions, type BuilderTool } from "@/lib/mcp/tool-builder";
 import { listSnapshotToolsByServer } from "@/lib/mcp/tool-snapshot";
@@ -154,7 +154,7 @@ export async function POST(request: NextRequest) {
     // --- Step 7: Select providers and fetch stream ---
     // The prompt-bar choice rides along: OpenRouter providers are re-pointed
     // at the requested model inside getProviderConfigs (any id works there);
-    // fixed-model providers (Groq, NVIDIA NIM) keep theirs and only match or
+    // fixed-model providers (NVIDIA NIM) keep theirs and only match or
     // not below. Absent choice → unchanged auto-routing.
     const requestedModel = parsed.model?.trim();
     const providerConfigs = await getProviderConfigs(userId, requestedModel || undefined);
@@ -260,17 +260,11 @@ const routedSupportsVision = canSendImageParts(
       // Round-trip clock for this attempt (telemetry) — loop-local so
       // concurrent requests never share it.
       const attemptT0 = Date.now();
-      // Groq's free tier enforces a tight tokens-per-minute cap per model
-      // (~8k TPM); the full master prompt + tool definitions alone exceed it
-      // and every request dies with HTTP 413. The compact profile + reduced
-      // completion budget fits comfortably under the cap.
-      const isGroq = provider.name.toLowerCase().includes("groq");
-      // The 2048-token ceiling exists to fit the PLATFORM's shared Groq TPM
-      // budget. A user paying Groq with their OWN key is not consuming that
-      // budget, so starving them to 2048 was silently crippling a paid model.
-      // Compact prompt + compact tools stay for every Groq lane (a smaller
-      // payload only helps), but the output cap is per-payer.
-      const onPlatformGroqBudget = isGroq && provider.lane !== "personal";
+      // Platform-budget guard (Groq removed 2026-11-09). Previously a
+      // platform free tier's tight TPM cap forced a compact prompt + reduced
+      // completion budget; no current lane has that cap, so the output budget
+      // is per-model only.
+      const onPlatformGroqBudget = false;
       // Output budget must fit the model ACTUALLY picked, not the effort tier.
       // Asking a 16k-output paid model for the premium tier's 65536 returns an
       // HTTP 400 outright — which is what made paid models look broken. Cap to
@@ -283,7 +277,7 @@ const routedSupportsVision = canSendImageParts(
         contextWindowFor(provider.model)
       );
     // Per-attempt image gating. Routing picked ONE vision-capable provider, but
-    // a failure can fall through the ladder to a text-only one (Groq), which
+    // a failure can fall through the ladder to a text-only one (e.g. NVIDIA), which
     // rejects a multimodal body outright. The adapter's flattening safety net
     // does not apply here because this loop builds the payload itself, so strip
     // the image parts for any non-vision attempt.
@@ -302,7 +296,7 @@ const routedSupportsVision = canSendImageParts(
         );
 
     // ── ONE prompt, ONE roster, EVERY provider ──────────────────────────
-    // This block used to branch on the provider name: Groq/NVIDIA got a
+    // This block used to branch on the provider name: NVIDIA got a
     // 605-char "compact" prompt AND a trimmed 29-tool roster that did not
     // include run_in_sandbox or verify_app. Same model, same app, different
     // agent — so on those lanes the agent literally could not reach the
@@ -319,14 +313,17 @@ const routedSupportsVision = canSendImageParts(
       capabilities: { browser: true },
       task: userPrompt,
       projectId: userId,
+      userId,
       mcpSection,
     });
 
     // Ask mode is read-only, not tool-less: a summary of the user's project
     // cannot be written without reading the project. Reads and web search are
     // the whole surface; every mutating tool stays out (native-tools enforces
-    // the same boundary server-side).
-    const ASK_TOOL_NAMES = ["read_file", "list_files", "search_code", "code_search", "web_search", "extract_archive"];
+    // the same boundary server-side). Memory READS ride along so the AI can
+    // actually use what it remembers in plain chat (write tools stay in
+    // code/plan mode with the full doctrine).
+    const ASK_TOOL_NAMES = ["read_file", "list_files", "search_code", "code_search", "web_search", "extract_archive", "memory_list", "memory_read", "playbook_search"];
     const askTools = M3_TOOL_DEFINITIONS.filter((t: any) => ASK_TOOL_NAMES.includes(t?.function?.name));
 
     const buildRequestBody = (
@@ -370,12 +367,13 @@ const routedSupportsVision = canSendImageParts(
           profile: "compact",
           capabilities: { browser: true },
           projectId: userId,
+          userId,
           mcpSection,
         });
         const tools = mode === "ask"
           ? askTools
           : [
-              ...GROQ_TOOL_DEFINITIONS,
+              ...LEAN_TOOL_DEFINITIONS,
               ...toOpenAiFunctions([...mcpRoster.metaDefs]),
             ];
         leanPayload = { prompt, tools };

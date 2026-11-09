@@ -17,9 +17,9 @@
 import { updateTaskStatus } from "./background-chat";
 
 // === Token budget & TPM pacing ===
-// Groq's free tier for gpt-oss-120b allows 8,000 tokens/MINUTE. The agent's
-// stacked prompts + tool results can exceed that (requests of 8.4k-27k were
-// observed), so every turn died with HTTP 413. Two protections:
+// Historical: a previous free tier capped requests at ~8,000 tokens/MINUTE
+// and stacked prompts (8.4k-27k observed) died with HTTP 413. That tier was
+// removed (2026-11-09). Two protections remain for any future capped tier:
 //   1. fitMessagesToBudget - trim older messages before every model call
 //   2. reserveTokenWindow - pace requests so a 60s window is never exceeded
 
@@ -30,8 +30,28 @@ const CHARS_PER_TOKEN = 4;
 // timing via reserveTokenWindow — it must never size the transcript. Deriving
 // the message budget from it produced MSG_BUDGET_TOKENS = 2500, so compaction
 // fired after ~3 messages and the divider read "6k -> 2k".
-const TPM_LIMIT = 8000; // Groq free tier (gpt-oss-120b, on_demand)
+const TPM_LIMIT = 8000; // legacy ceiling value; no lane maps to it now
 const TPM_SAFETY = 400; // counting-error margin
+
+/**
+ * Effective TPM ceiling for a model. Only models with a KNOWN per-minute
+ * token ceiling are paced; everything else is unlimited here and relies on
+ * the provider's own 429 + Retry-After handling.
+ */
+const KNOWN_TPM_MODELS: Record<string, number> = {
+  // No remaining lane has a known per-minute token ceiling (Groq free tier
+  // removed 2026-11-09). The pacer therefore always finds "unlimited" and
+  // returns immediately; the provider's own 429 + Retry-After is the
+  // authority. Add an entry here if a future free tier actually caps TPM.
+};
+
+export function tpmLimitForModel(model?: string): number {
+  const env = Number(process.env.ORPLEX_TPM_LIMIT);
+  if (Number.isFinite(env) && env > 0) return Math.floor(env);
+  if (!model) return Number.POSITIVE_INFINITY; // no lane is paced (Groq removed 2026-11-09)
+  const bare = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model;
+  return KNOWN_TPM_MODELS[model] ?? KNOWN_TPM_MODELS[bare] ?? Number.POSITIVE_INFINITY;
+}
 
 // Real per-model context window, resolved from the model catalog (the same
 // `contextWindow` the picker already shows). There is deliberately NO global
@@ -148,38 +168,58 @@ export function fitMessagesToBudget(
  * Pace requests so the tokens sent in any rolling 60s window stay under the
  * provider's TPM limit. Sleeps (with a status update) when the window is full.
  */
-  export async function reserveTokenWindow(tokens: number, abortSignal?: AbortSignal | null): Promise<void> {
-    const now = Date.now();
-    for (let i = SENT_LOG.length - 1; i >= 0; i--) {
-      if (now - SENT_LOG[i].t > 60_000) SENT_LOG.splice(i, 1);
-    }
-    const used = SENT_LOG.reduce((s, e) => s + e.tokens, 0);
-    const overflow = used + tokens - (TPM_LIMIT - TPM_SAFETY);
-    if (overflow > 0) {
-      const waitMs = Math.min(65_000, Math.ceil((overflow / TPM_LIMIT) * 60_000) + 1_000);
-      updateTaskStatus("streaming", `Rate limit: waiting ${Math.ceil(waitMs / 1000)}s for the token window to reset...`);
-      // The sleep had no abort check, so pressing Stop during a rate-limit
-      // wait did not unwind for up to 65s. Wait in slices and bail on abort.
-      const deadline = Date.now() + waitMs;
-      while (Date.now() < deadline) {
-        if (abortSignal?.aborted) return;
-        await new Promise((r) => setTimeout(r, Math.min(250, deadline - Date.now())));
-      }
-      if (abortSignal?.aborted) return;
-      // The old code pushed unconditionally after the wait, so two concurrent
-      // runs could both observe overflow, both sleep, and both push - putting
-      // up to 2x the intended tokens in one 60s window, which is exactly the
-      // HTTP 413 storm this function exists to prevent. It also stamped the
-      // entry AFTER the sleep, attributing it to a later window than the one
-      // that was checked.
-    }
-    // Reserve against the post-wait truth.
-    const postWaitUsed = SENT_LOG.reduce((s, e) => (Date.now() - e.t <= 60_000 ? s + e.tokens : s), 0);
-    // Still full: do NOT reserve optimistically (that is what caused double-counts).
-    // Fail open - the caller proceeds and the provider's 413 path already has a
-    // retry with backoff, which is better than deadlocking here.
-    if (postWaitUsed + tokens > TPM_LIMIT) return;
+  /**
+ * Reserve `tokens` against the rolling 60s window and wait (with status
+ * updates) exactly until the window has room — no invented provider reset,
+ * the wait is computed from OUR OWN accounting.
+ */
+export async function reserveTokenWindow(tokens: number, abortSignal?: AbortSignal | null, model?: string): Promise<void> {
+  const limit = tpmLimitForModel(model);
+  // No known per-minute ceiling for this lane — pacing here would be
+  // throttling against nothing. The provider's own 429/Retry-After is the
+  // authority (handled by the retry ladders).
+  if (!Number.isFinite(limit)) return;
+  const pruned = prunedLog();
+  const used = pruned.reduce((s, e) => s + e.tokens, 0);
+  if (used + tokens <= limit - TPM_SAFETY) {
     SENT_LOG.push({ t: Date.now(), tokens });
+    return;
   }
+  // Sliding window: walk oldest-first and find when enough tokens have aged
+  // out. Honest math replaces the old uniform-rate guess + arbitrary 65s cap.
+  let remaining = used;
+  let waitMs = 0;
+  for (const e of [...pruned].sort((a, b) => a.t - b.t)) {
+    remaining -= e.tokens;
+    waitMs = 60_000 - (Date.now() - e.t);
+    if (remaining + tokens <= limit - TPM_SAFETY) break;
+  }
+  waitMs = Math.max(0, Math.min(waitMs, 60_000));
+  updateTaskStatus("streaming", `Queued: waiting ${Math.ceil(waitMs / 1000)}s (our token budget, ${limit}/min)...`);
+  console.info(JSON.stringify({
+    event: "token_window_wait", level: "info", waitMs,
+    used, requested: tokens, limit, logSize: pruned.length,
+  }));
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    if (abortSignal?.aborted) return;
+    await new Promise((r) => setTimeout(r, Math.min(250, deadline - Date.now())));
+  }
+  if (abortSignal?.aborted) return;
+  // Fail open if our accounting still shows no room: the provider's own
+  // 413 path (with retry + backoff) is the authority, not our estimate.
+  const postWaitUsed = prunedLog().reduce((s, e) => s + e.tokens, 0);
+  if (postWaitUsed + tokens > limit) return;
+  SENT_LOG.push({ t: Date.now(), tokens });
+}
+
+/** Rolling 60s view of the sent log (prunes expired entries in place). */
+export function prunedLog(now = Date.now()): Array<{ t: number; tokens: number }> {
+  for (let i = SENT_LOG.length - 1; i >= 0; i--) {
+    // A token exactly 60s old is outside the rolling window.
+    if (now - SENT_LOG[i].t >= 60_000) SENT_LOG.splice(i, 1);
+  }
+  return SENT_LOG;
+}
 
 export const TOKEN_LIMIT_RE = /tokens per minute|Request too large|\b413\b/i;

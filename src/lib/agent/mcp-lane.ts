@@ -163,7 +163,7 @@ export async function tryMcpDispatch(
   }
 
   // ── Universal MCP caller (mcp_call) — available on EVERY provider. ───────
-  // A lean/unknown provider (groq, nvidia, any BYOK endpoint) doesn't get the
+  // A lean/unknown provider (nvidia, any BYOK endpoint) doesn't get the
   // server's per-tool MCP definitions in its function-calling array, so the
   // model can't emit a direct mcp__ call — but it CAN emit mcp_call with the
   // server id + tool name + args it learned from the prompt section /

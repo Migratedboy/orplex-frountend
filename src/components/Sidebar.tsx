@@ -34,7 +34,6 @@ const PATHS: Record<string, string> = {
   panel: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
   newchat: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a1 1 0 0 1 3 3l-9 9a2 2 0 0 1-.9.5l-2.9.8a.5.5 0 0 1-.6-.6l.8-2.9a2 2 0 0 1 .5-.9z"/>',
   newproj: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.6 3.9A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/><path d="M12 10v6M9 13h6"/>',
-  history: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
   flow: '<rect x="3" y="3" width="8" height="8" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect x="13" y="13" width="8" height="8" rx="2"/>',
   board: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/>',
   plug: '<path d="M12 22v-5M9 8V2M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/>',
@@ -45,6 +44,7 @@ const PATHS: Record<string, string> = {
   chat: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/>',
   branch: '<path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  chev: '<path d="m9 18 6-6-6-6"/>',
   dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   edit: '<path d="M12 20h9"/><path d="M16.4 3.6a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   trash: '<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
@@ -175,6 +175,8 @@ export default function Sidebar() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [tip, setTip] = useState<{ chat: ChatLike; rect: DOMRect } | null>(null);
   const [openProjects, setOpenProjects] = useState<Set<string>>(new Set());
+  const [projectsOpen, setProjectsOpen] = useState(true);
+  const [chatsOpen, setChatsOpen] = useState(true);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [quota, setQuota] = useState<{ used: number; limit: number } | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -185,14 +187,26 @@ export default function Sidebar() {
   useEffect(() => {
     try {
       const w = Number(localStorage.getItem("orplex.sidebarWidth"));
-      if (Number.isFinite(w) && w >= 220 && w <= 420) setWidth(w);
+      if (Number.isFinite(w) && w >= 220 && w <= 420) {
+        setWidth(w);
+        // TopBar is position:fixed — its left offset tracks the rail width.
+        document.documentElement.style.setProperty("--sb-w", `${w}px`);
+      }
       const open = JSON.parse(localStorage.getItem("orplex.sidebarOpenProjects") ?? "[]") as unknown;
       if (Array.isArray(open)) setOpenProjects(new Set(open.filter((x): x is string => typeof x === "string")));
+      setProjectsOpen(localStorage.getItem("orplex.sidebarProjectsOpen.v2") !== "0");
+      setChatsOpen(localStorage.getItem("orplex.sidebarChatsOpen.v2") !== "0");
     } catch {}
   }, []);
   useEffect(() => {
     try { localStorage.setItem("orplex.sidebarOpenProjects", JSON.stringify([...openProjects])); } catch {}
   }, [openProjects]);
+  useEffect(() => {
+    try { localStorage.setItem("orplex.sidebarProjectsOpen.v2", projectsOpen ? "1" : "0"); } catch {}
+  }, [projectsOpen]);
+  useEffect(() => {
+    try { localStorage.setItem("orplex.sidebarChatsOpen.v2", chatsOpen ? "1" : "0"); } catch {}
+  }, [chatsOpen]);
 
   // Active chat follows the ?c= query (same contract as TopBar/History).
   useEffect(() => {
@@ -305,6 +319,7 @@ export default function Sidebar() {
     const move = (ev: MouseEvent) => {
       const w = Math.max(220, Math.min(420, ev.clientX));
       setWidth(w);
+      document.documentElement.style.setProperty("--sb-w", `${w}px`);
     };
     const up = () => {
       setDrag(false);
@@ -361,7 +376,6 @@ export default function Sidebar() {
         {!ql && <>
           <NavRow icon="newchat" label="New Chat" active={pathname === "/"} onClick={newChat} />
           <NavRow icon="newproj" label="New project" onClick={() => { void openFolder(); setMobileOpen(false); }} />
-          <NavRow icon="history" label="History" active={pathname === "/history"} onClick={() => { router.push("/history"); setMobileOpen(false); }} />
           <NavRow icon="plug" label="Plugins" active={pathname === "/plugins"} onClick={() => { router.push("/plugins"); setMobileOpen(false); }} />
           <NavRow icon="mem" label="Memory" active={pathname === "/memory"} onClick={() => { router.push("/memory"); setMobileOpen(false); }} />
           <div className={styles.label}>Agents</div>
@@ -379,28 +393,36 @@ export default function Sidebar() {
           </button>
         ) : null}
 
-        <div className={styles.label}>Projects</div>
-        {projects.map((p) => {
-          const all = conversations.filter((c) => c.workspaceName === p.name);
-          const live = all.filter(match);
-          if (ql && !live.length) return null;
-          const open = openProjects.has(p.name) || !!ql;
-          return (
-            <div key={p.name}>
-              <button className={`${styles.row} ${open ? styles.active : ""}`} onClick={() => toggleProject(p.name)}>
-                <Icon n={open ? "folderopen" : "folder"} /><span className={styles.lbl}>{projectLabel(p.name, p.displayName)}</span>
-              </button>
-              <div className={`${styles.kids} ${open ? styles.open : ""}`}><div className={styles.chats}>
-                {!live.length && <div className={styles.empty}>No chats yet</div>}
-                {live.map(renderChat)}
-              </div></div>
-            </div>
-          );
-        })}
+        <button className={styles.label} onClick={() => setProjectsOpen((o) => !o)} aria-expanded={projectsOpen}>
+          Projects
+          <Icon n="chev" className={styles.chev} />
+        </button>
+        <div className={`${styles.kids} ${projectsOpen ? styles.open : ""}`}><div>
+          {projects.map((p) => {
+            const all = conversations.filter((c) => c.workspaceName === p.name);
+            const live = all.filter(match);
+            if (ql && !live.length) return null;
+            const open = openProjects.has(p.name) || !!ql;
+            return (
+              <div key={p.name}>
+                <button className={`${styles.row} ${open ? styles.active : ""}`} onClick={() => toggleProject(p.name)} aria-expanded={open}>
+                  <Icon n={open ? "folderopen" : "folder"} /><span className={styles.lbl}>{projectLabel(p.name, p.displayName)}</span>
+                </button>
+                <div className={`${styles.kids} ${open ? styles.open : ""}`}><div className={styles.chats}>
+                  {!live.length && <div className={styles.empty}>No chats yet</div>}
+                  {live.map(renderChat)}
+                </div></div>
+              </div>
+            );
+          })}
+        </div></div>
 
         {ungrouped.length > 0 && <>
-          <div className={styles.label}>Chats</div>
-          <div className={styles.chats}>{ungrouped.map(renderChat)}</div>
+          <button className={styles.label} onClick={() => setChatsOpen((o) => !o)} aria-expanded={chatsOpen}>
+            Chats
+            <Icon n="chev" className={styles.chev} />
+          </button>
+          <div className={`${styles.kids} ${chatsOpen ? styles.open : ""}`}><div className={styles.chats}>{ungrouped.map(renderChat)}</div></div>
         </>}
         {ql && !ungrouped.length && !projects.some((p) => conversations.some((c) => c.workspaceName === p.name && match(c))) &&
           <div className={styles.empty} style={{ paddingLeft: 10 }}>No matches</div>}

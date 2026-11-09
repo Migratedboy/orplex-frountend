@@ -56,7 +56,6 @@ function closeArtifactPanel() {
 
 const ROUTE_TITLES: Record<string, string> = {
   "/": "New Chat",
-  "/history": "History",
   "/packages": "Packages",
   "/settings": "Settings",
 };
@@ -257,7 +256,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
     <>
       <div className={`app-root ${rightPanelOpen ? "left-hidden" : ""} ${sidebarCollapsed ? "sb-collapsed" : ""}`}>
         <SidebarInner />
-        <TopBarInner title={title} onBugReport={() => setBugReportOpen(true)} onShowShortcuts={() => setShortcutsOpen(true)} onTogglePanel={() => setRightPanelOpen(!rightPanelOpen)} panelOpen={rightPanelOpen} onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed} />
+        <TopBarInner title={title} onBugReport={() => setBugReportOpen(true)} onShowShortcuts={() => setShortcutsOpen(true)} onTogglePanel={() => setRightPanelOpen(!rightPanelOpen)} panelOpen={rightPanelOpen} />
         {sidebarCollapsed && (
           <button className="sb-expand-fab" onClick={toggleSidebar} title="Expand sidebar (Ctrl+\)" aria-label="Expand sidebar">
             <span className="ms">left_panel_open</span>

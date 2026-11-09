@@ -30,8 +30,9 @@
 // every write is scheduled to flush through. maxRows caps keep telemetry
 // collections from ever filling the disk (oldest evicted).
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, unlinkSync, copyFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // Model metadata
@@ -136,7 +137,8 @@ export const MODEL_DEFS: Record<string, ModelDef> = {
   }),
   taskRun: M({ maxRows: 1000 }),
   taskFailure: M({ compositeUniques: [["workspaceKey", "kind", "detailHash"]], maxRows: 2000 }),
-  workspaceMemory: M({ compositeUniques: [["workspaceKey", "kind", "contentHash"]], maxRows: 2000 }),
+  // workspaceMemory is OWNED by the plain-JSON store (.orplex/workspace-memory.json
+  // via workspace-memory.ts) — it must NOT live here, or local DB doubles it.
   projectRecord: M({ compositeUniques: [["userId", "name"]] }),
   mcpServerConfig: M({ compositeUniques: [["userId", "serverId"]] }),
   mcpConnection: M({ compositeUniques: [["userId", "serverId"]] }),
@@ -153,11 +155,63 @@ export const MODEL_DEFS: Record<string, ModelDef> = {
     maxRows: 500,
   }),
   verificationToken: M({ compositeUniques: [["identifier", "token"]], maxRows: 200 }),
-  memoryFile: M({ uniques: ["path"], maxRows: 2000 }),
+  memoryFile: M({ compositeUniques: [["userId", "path"]], maxRows: 2000 }),
   memorySetting: M({ uniques: ["userId"] }),
+  // Playbook (Learning) fallback — cloud-owned, local only so offline playbook works.
+  learning: M({ compositeUniques: [["projectId", "pattern"]], maxRows: 2000 }),
 };
 
 export const KNOWN_MODELS = Object.keys(MODEL_DEFS);
+
+/**
+ * Ownership filter — one owner per model, no doubling.
+ * - CLOUD_OWNED: identity + playbook. Local copies exist ONLY as offline
+ *   fallback (cloud down / no DATABASE_URL). When the cloud is healthy, the
+ *   local copies are pruned so local never doubles the cloud.
+ * - LOCAL_OWNED: everything else. Cloud never sees it.
+ */
+export const CLOUD_OWNED_MODELS = new Set([
+  "user",
+  "account",
+  "session",
+  "verificationToken",
+  "learning",
+]);
+export const LOCAL_OWNED_MODELS = new Set(
+  Object.keys(MODEL_DEFS).filter((m) => !CLOUD_OWNED_MODELS.has(m))
+);
+export const isCloudOwnedModel = (m: string): boolean => CLOUD_OWNED_MODELS.has(m);
+export const isLocalOwnedModel = (m: string): boolean => LOCAL_OWNED_MODELS.has(m);
+
+/**
+ * Delete local rows whose id already exists in the cloud. Cloud is the
+ * source of truth for CLOUD_OWNED_MODELS; local is a cache of last resort,
+ * not a mirror. Fire-and-forget from prisma.ts on first healthy cloud
+ * contact. Local-only rows (created while offline) are kept — they sync
+ * on next write via the hybrid delegate.
+ */
+export async function pruneCloudDuplicates(
+  cloud: Record<string, { findMany: (a: unknown) => Promise<{ id: string }[]> } | undefined>,
+  local: LocalDbClient
+): Promise<Record<string, number>> {
+  const report: Record<string, number> = {};
+  for (const model of CLOUD_OWNED_MODELS) {
+    try {
+      const delegate = cloud[model];
+      if (!delegate?.findMany) continue;
+      const cloudRows = await delegate.findMany({ select: { id: true } });
+      const ids = cloudRows.map((r) => r.id).filter(Boolean);
+      if (ids.length === 0) continue;
+      const localDelegate = (local as Record<string, { deleteMany: (a: unknown) => Promise<{ count: number }> }>)[model];
+      if (!localDelegate?.deleteMany) continue;
+      const res = await localDelegate.deleteMany({ where: { id: { in: ids } } });
+      if (res.count > 0) report[model] = res.count;
+    } catch {
+      /* best-effort — a dead cloud leaves the fallback untouched */
+    }
+  }
+  return report;
+}
 
 // ---------------------------------------------------------------------------
 // Errors — the P2002 contract retry loops check for
@@ -182,6 +236,155 @@ function dbDir(): string {
   const override = process.env.ORPLEX_LOCAL_DB_DIR;
   if (override && override.trim()) return resolve(override.trim());
   return join(process.cwd(), ".orplex", "db");
+}
+
+/**
+ * GUARANTEE: the local DB is always available when the app runs. It is NOT
+ * a localhost server (no port, no process to die) — it is JSON files inside
+ * the app folder. This just makes sure the folder exists and the engine can
+ * always open. Never throws: even a read-only disk keeps in-memory state.
+ */
+export function ensureLocalDbDir(): { dir: string; ok: boolean } {
+  const dir = dbDir();
+  try {
+    mkdirSync(dir, { recursive: true });
+    return { dir, ok: true };
+  } catch {
+    return { dir, ok: false };
+  }
+}
+
+/**
+ * Integrity scan: every model file parses, or is explainably absent/good.
+ * Returns per-model status — call at startup in dev, or from a health route.
+ */
+export function verifyLocalDb(): { ok: boolean; dir: string; models: Record<string, string>; corrupt: string[] } {
+  const { dir } = ensureLocalDbDir();
+  const models: Record<string, string> = {};
+  const corrupt: string[] = [];
+  for (const m of KNOWN_MODELS) {
+    const f = fileFor(m);
+    if (!existsSync(f)) {
+      models[m] = "absent (never written)";
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(readFileSync(f, "utf8"));
+      if (!Array.isArray(parsed)) {
+        models[m] = "not-an-array";
+        corrupt.push(m);
+      } else {
+        models[m] = `ok (${parsed.length} rows)`;
+      }
+    } catch {
+      models[m] = "CORRUPT";
+      corrupt.push(m);
+    }
+  }
+  return { ok: corrupt.length === 0, dir, models, corrupt };
+}
+
+/**
+ * Portable migration bundle: one JSON file holding every model's rows +
+ * a manifest (engine version, createdAt, per-file SHA-256). Move the bundle
+ * to another device / backup cold storage, then importSnapshot() to restore.
+ * Filenames are model names only — safe on any OS.
+ */
+export interface DbSnapshot {
+  engine: "orplex-localdb";
+  version: 1;
+  createdAt: string;
+  models: Record<string, { rows: Record<string, unknown>[]; sha256: string }>;
+}
+const snapshotSha = (s: string): string => createHash("sha256").update(s).digest("hex");
+
+export function exportSnapshot(outPath?: string): string {
+  ensureLocalDbDir();
+  const models: DbSnapshot["models"] = {};
+  for (const m of KNOWN_MODELS) {
+    const f = fileFor(m);
+    if (!existsSync(f)) continue;
+    const raw = readFileSync(f, "utf8");
+    try {
+      const rows = JSON.parse(raw) as Record<string, unknown>[];
+      if (!Array.isArray(rows)) continue;
+      models[m] = { rows, sha256: snapshotSha(JSON.stringify(rows)) };
+    } catch {
+      /* corrupt file — export .bak instead if it parses */
+      const bak = `${f}.bak`;
+      if (existsSync(bak)) {
+        try {
+          const rows = JSON.parse(readFileSync(bak, "utf8")) as Record<string, unknown>[];
+          if (Array.isArray(rows)) models[m] = { rows, sha256: snapshotSha(JSON.stringify(rows)) };
+        } catch { /* skip */ }
+      }
+    }
+  }
+  const bundle: DbSnapshot = {
+    engine: "orplex-localdb",
+    version: 1,
+    createdAt: new Date().toISOString(),
+    models,
+  };
+  const dest =
+    outPath && outPath.trim()
+      ? resolve(outPath.trim())
+      : join(dbDir(), "..", `orplex-db-export-${Date.now()}.json`);
+  writeFileSync(dest, JSON.stringify(bundle), "utf8");
+  return dest;
+}
+
+/** Restore a migration bundle. Validates checksums; atomic per-model write. */
+export function importSnapshot(bundlePath: string): { restored: Record<string, number>; skipped: string[] } {
+  const bundle = JSON.parse(readFileSync(resolve(bundlePath), "utf8")) as DbSnapshot;
+  if (bundle?.engine !== "orplex-localdb") throw new Error("not an orplex-localdb snapshot");
+  ensureLocalDbDir();
+  const restored: Record<string, number> = {};
+  const skipped: string[] = [];
+  for (const [m, entry] of Object.entries(bundle.models || {})) {
+    if (!KNOWN_MODELS.includes(m)) {
+      skipped.push(`${m} (unknown model)`);
+      continue;
+    }
+    const expect = snapshotSha(JSON.stringify(entry.rows));
+    if (expect !== entry.sha256) {
+      skipped.push(`${m} (checksum mismatch)`);
+      continue;
+    }
+    const f = fileFor(m);
+    const tmp = `${f}.import-${Date.now()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(entry.rows), "utf8");
+    try {
+      renameSync(tmp, f);
+    } catch {
+      if (existsSync(f)) unlinkSync(f);
+      renameSync(tmp, f);
+    }
+    try {
+      copyFileSync(f, `${f}.bak`);
+    } catch { /* best-effort */ }
+    // Reset the in-memory collection so the next read loads migrated rows.
+    collections.delete(m);
+    restored[m] = entry.rows.length;
+  }
+  return { restored, skipped };
+}
+
+/** Diagnostics / health probe: where local data lives and whether it is live. */
+export function localDbStatus(): {
+  dir: string;
+  ok: boolean;
+  models: number;
+  files: number;
+} {
+  const { dir, ok } = ensureLocalDbDir();
+  let files = 0;
+  try {
+    for (const m of KNOWN_MODELS) if (existsSync(fileFor(m))) files++;
+  } catch {
+    /* ignore */
+  }
+  return { dir, ok, models: KNOWN_MODELS.length, files };
 }
 
 interface ModelFileOverrides {
@@ -233,11 +436,31 @@ function collect(model: string): Collection {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;
       if (code !== "ENOENT") {
-        // Corrupt or unreadable file → quarantine it, serve from empty.
-        try {
-          renameSync(fileFor(model), `${fileFor(model)}.corrupt-${Date.now()}`);
-        } catch {
-          /* best-effort */
+        // Corrupt file → RESTORE last-good .bak first, never serve empty.
+        // Only if the backup is also bad do we quarantine + serve empty.
+        const bak = `${fileFor(model)}.bak`;
+        let restored = false;
+        if (existsSync(bak)) {
+          try {
+            const bakRows = JSON.parse(readFileSync(bak, "utf8")) as Record<string, unknown>[];
+            if (Array.isArray(bakRows)) {
+              c.rows = bakRows.map((r) => reviveInto({ ...r }));
+              try {
+                copyFileSync(bak, fileFor(model));
+              } catch { /* best-effort */ }
+              restored = true;
+            }
+          } catch { /* bak also corrupt — fall through */ }
+        }
+        if (restored) {
+          console.warn(`[local-db] ${model}.json was corrupt — restored from last-good .bak (${c.rows.length} rows)`);
+        } else {
+          console.warn(`[local-db] ${model}.json corrupt and no good .bak — quarantining, serving empty`, String((err as Error)?.message).slice(0, 120));
+          try {
+            renameSync(fileFor(model), `${fileFor(model)}.corrupt-${Date.now()}`);
+          } catch {
+            /* best-effort */
+          }
         }
       }
     }
@@ -245,7 +468,9 @@ function collect(model: string): Collection {
   return c;
 }
 
-/** Atomic write-through: tmp + rename, Date-safe serialization. */
+/** Atomic write-through: tmp + rename, Date-safe serialization.
+ *  Every successful flush also snapshots a `.bak` (last-good) copy, so ONE
+ *  corrupt file never loses data: collect() restores from .bak. */
 function flush(model: string): void {
   try {
     const c = collect(model);
@@ -265,6 +490,12 @@ function flush(model: string): void {
       } catch (inner) {
         void inner;
       }
+    }
+    // Last-good backup — corruption insurance. Cheap: one file copy per flush.
+    try {
+      copyFileSync(target, `${target}.bak`);
+    } catch {
+      /* best-effort */
     }
   } catch {
     /* disk unavailable — memory stays authoritative for this session */
@@ -1052,6 +1283,9 @@ export interface LocalDbClient {
 }
 
 export function buildLocalDbClient(): LocalDbClient {
+  // Guarantee: local DB folder always exists before any delegate runs.
+  // (The engine is a file store, not a server — no connection can fail.)
+  ensureLocalDbDir();
   const client = Object.create(null) as LocalDbClient;
   for (const model of KNOWN_MODELS) {
     client[model] = buildDelegate(model) as unknown as Record<string, (args: Row) => LazyAction<unknown>>;

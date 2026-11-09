@@ -182,7 +182,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
    *
    * This used to be `flattenContent()` unconditionally, which threw away every
    * `image_url` part for EVERY provider — the shared adapter is inherited by
-   * OpenRouter/NVIDIA/Groq, so a user could pick a vision model and still send
+   * OpenRouter/NVIDIA, so a user could pick a vision model and still send
    * no image at all.
    *
    * Now: a message that carries image parts is passed through in the OpenAI
@@ -438,24 +438,8 @@ export class InMemoryAdapter implements AIProviderAdapter {
   }
 }
 
-// === Groq Adapter (extends base) ===
-
-export class GroqAdapter extends OpenAICompatibleAdapter {
-  constructor(apiKey?: string, model?: string) {
-    super({
-      name: "groq",
-      apiKey: apiKey || "",
-      apiKeyEnvVar: "GROQ_API_KEY",
-      // Same registry-sourced default: this literal used to differ from
-    // provider-registry's Groq fallbackModel, so chat and background runs used
-    // different models for the same provider.
-    model: model || process.env.GROQ_MODEL || getProviderDef("groq")!.fallbackModel,
-      baseUrl: "https://api.groq.com/openai/v1/chat/completions",
-      streamTitle: "Groq",
-      completeTitle: "Groq",
-    });
-  }
-}
+// (GroqAdapter removed 2026-11-09 — Groq provider dropped; OpenRouter +
+// NVIDIA NIM cover the lanes. Custom endpoint below stays for BYOK.)
 
 // === Custom OpenAI-compatible endpoint (BYOK frontier mode) ===
 //
@@ -524,13 +508,12 @@ export interface ProviderSelection {
  * @deprecated Pre-dates the provider registry and only covers 4 of the 12
  * providers. Use `getProviderDef(id).keyEnvVar` (or `failoverKeyEnvMap()`)
  * instead — this map was the wrong source that made the status badge report
- * NVIDIA models and NVIDIA_API_KEY for every non-Groq/OpenRouter provider.
+ * NVIDIA models and NVIDIA_API_KEY for every non-OpenRouter provider.
  * Kept exported for callers outside src; do not add new reads.
  */
 export const PROVIDER_KEY_ENV: Record<string, string> = {
   nvidia: "NVIDIA_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
-  groq: "GROQ_API_KEY",
   custom: "AI_API_KEY",
 };
 
@@ -628,8 +611,6 @@ export function createAdapterForProvider(
       return createCiFixtureAdapter(override);
     case "openrouter":
       return new OpenRouterAdapter(keyFor("OPENROUTER_API_KEY"), override);
-    case "groq":
-      return new GroqAdapter(keyFor("GROQ_API_KEY"), override);
     case "custom":
       return new CustomAdapter(keyFor("AI_API_KEY"), override);
     case "in-memory":
@@ -686,7 +667,7 @@ export function adapterModelId(adapter: AIProviderAdapter): string {
  *
  * Resolved through the REGISTRY, not a local 4-entry lookup. It used to fall
  * back to `NVIDIA_MODEL` / "nvidia/nemotron-…" for every provider outside
- * {nvidia, openrouter, groq, custom}, so with AI_PROVIDER=anthropic the badge
+ * {nvidia, openrouter, custom}, so with AI_PROVIDER=anthropic the badge
  * reported an NVIDIA model id for an Anthropic run, `keyPresent: false` even
  * with ANTHROPIC_API_KEY set, and pointed the operator at NVIDIA_API_KEY.
  */

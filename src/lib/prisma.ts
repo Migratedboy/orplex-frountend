@@ -1,4 +1,8 @@
-// prisma.ts — THE persistence seam. HYBRID: cloud for identity, local for the rest.
+// prisma.ts — THE persistence seam. HYBRID, one owner per model (no doubling):
+// CLOUD owns identity + playbook (user/account/session/verificationToken/
+// learning); LOCAL owns everything else (conversations, messages, keys, runs,
+// events, quota, MCP, telemetry) and holds only an offline FALLBACK for the
+// cloud models, pruned automatically when the cloud is healthy.
 //
 // USER DECISION (2026-11-06): users' email + login/signup info and the
 // playbook (Learning) persist in the CLOUD database; EVERYTHING ELSE —
@@ -17,12 +21,13 @@
 //   their exact prisma call shapes (payload types, include, P2002 races).
 
 import { PrismaClient } from "@prisma/client";
-import { buildLocalDbClient, type LocalDbClient, LocalDbError } from "./local-db";
+import { buildLocalDbClient, pruneCloudDuplicates, CLOUD_OWNED_MODELS, type LocalDbClient, LocalDbError } from "./local-db";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
-/** Models that MUST live in the cloud (identity + playbook). */
-const CLOUD_MODELS = new Set(["user", "account", "session", "verificationToken", "learning"]);
+/** Models that MUST live in the cloud (identity + playbook). Single source of
+ *  truth in local-db.ts (CLOUD_OWNED_MODELS) so the two seams can't drift. */
+const CLOUD_MODELS = CLOUD_OWNED_MODELS;
 
 function buildCloudClient(): PrismaClient | null {
   const DATABASE_URL = process.env.DATABASE_URL;
@@ -104,11 +109,24 @@ function buildHybridClient(): PrismaClient {
   const local = buildLocalDbClient();
   let cloud: PrismaClient | null = null;
   let cloudBuildFailed = false;
+  let pruned = false;
   const cloudOnce = (): PrismaClient | null => {
     if (cloud || cloudBuildFailed) return cloud;
     try {
       cloud = buildCloudClient();
       cloudBuildFailed = cloud === null;
+      // Cloud is up: prune local duplicates so local never doubles the
+      // cloud for identity + playbook. Once per process, fire-and-forget.
+      if (cloud && !pruned) {
+        pruned = true;
+        void pruneCloudDuplicates(
+          cloud as unknown as Record<string, { findMany: (a: unknown) => Promise<{ id: string }[]> } | undefined>,
+          local
+        ).then((report) => {
+          const total = Object.values(report).reduce((a, b) => a + b, 0);
+          if (total > 0) console.log("[prisma-hybrid] pruned", total, "local duplicate(s)", report);
+        });
+      }
     } catch (e) {
       cloudBuildFailed = true;
       console.warn("[prisma-hybrid] cloud client unavailable → identity models run LOCAL:", String((e as Error)?.message).slice(0, 140));

@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
     const prefix = searchParams.get("prefix") || undefined;
 
     if (op === "list") {
-      const files = await memoryList(prefix);
+      const files = await memoryList(session.user.id, prefix);
       const setting = await memorySettingGet(session.user.id);
       logRequest("GET", "/api/memory", start, 200);
       return successResponse({ files, setting });
@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
       const pathsParam = searchParams.get("paths") || searchParams.get("path") || "";
       const paths = pathsParam.includes(",") ? pathsParam.split(",").map((s) => s.trim()).filter(Boolean) : [pathsParam].filter(Boolean);
       if (paths.length === 0) throw new ValidationError("path required", [{ field: "path", message: "required" }]);
-      const files = await memoryRead(paths);
+      const files = await memoryRead(paths, session.user.id);
       logRequest("GET", "/api/memory", start, 200);
       return successResponse({ files });
     }
@@ -61,25 +61,25 @@ export async function POST(request: NextRequest) {
     if (op === "write") {
       const { path, content, if_version } = body;
       if (!path || typeof content !== "string") throw new ValidationError("path+content required", [{ field: "path", message: "required" }]);
-      const r = await memoryWrite(path, content, if_version ?? "new");
+      const r = await memoryWrite(path, content, if_version ?? "new", session.user.id);
       logRequest("POST", "/api/memory", start, 200);
       return successResponse(r);
     }
     if (op === "str_replace") {
       const { path, old_str, new_str, if_version } = body;
-      const r = await memoryStrReplace(path, old_str, new_str, if_version ?? "new");
+      const r = await memoryStrReplace(path, old_str, new_str, if_version ?? "new", session.user.id);
       logRequest("POST", "/api/memory", start, 200);
       return successResponse(r);
     }
     if (op === "append") {
       const { path, content, if_version } = body;
-      const r = await memoryAppend(path, content, if_version ?? "new");
+      const r = await memoryAppend(path, content, if_version ?? "new", session.user.id);
       logRequest("POST", "/api/memory", start, 200);
       return successResponse(r);
     }
     if (op === "delete") {
       const { path, if_version } = body;
-      const r = await memoryDelete(path, if_version ?? "new");
+      const r = await memoryDelete(path, if_version ?? "new", session.user.id);
       logRequest("POST", "/api/memory", start, 200);
       return successResponse(r);
     }

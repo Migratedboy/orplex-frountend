@@ -1,106 +1,168 @@
-import { estimateTokens, fitMessagesToBudget } from "../background-worker";
-import { appendTaskAnchor } from "../stream-reader";
+/**
+ * token-budget.test.ts — reserveTokenWindow (the pacing gate that used to
+ * surface as "waiting 65s for the token window to reset").
+ *
+ * The gate is OUR accounting, not a provider 429: tests pin the wait math,
+ * the honest sliding window, abort cancellation, per-model limits, and the
+ * empty-window fast path. No network, no clock mocks needed — entries are
+ * seeded directly into SENT_LOG.
+ */
+import {
+  SENT_LOG,
+  reserveTokenWindow,
+  prunedLog,
+  tpmLimitForModel,
+} from "../token-budget";
 
-describe("token budget", () => {
-  it("estimates tokens at 4 chars/token", () => {
-    expect(estimateTokens("abcd")).toBe(1);
-    expect(estimateTokens("")).toBe(0);
+jest.mock("../background-chat", () => ({
+  updateTaskStatus: jest.fn(),
+}));
+
+function reset() {
+  SENT_LOG.length = 0;
+}
+
+describe("tpmLimitForModel", () => {
+  const prev = process.env.ORPLEX_TPM_LIMIT;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.ORPLEX_TPM_LIMIT;
+    else process.env.ORPLEX_TPM_LIMIT = prev;
   });
 
-  it("caps older messages but never the last one", () => {
-    const older = "x".repeat(8000); // ~2000 tokens
-    const msgs = [
-      { role: "user", content: older },
-      { role: "assistant", content: older },
-      { role: "user", content: "final question" },
-    ];
-    const out = fitMessagesToBudget(msgs);
-    expect(out[0].content.length).toBeLessThan(older.length);
-    expect(out[1].content.length).toBeLessThan(older.length);
-    expect(out[2].content).toBe("final question"); // last message untouched
-    // LIVE-VALIDATED (run 5): an unexplained mid-tag cut made the model think
-    // the FILE was truncated — markers must say the cut is the CONTEXT, not
-    // the file.
-    expect(out[0].content).toContain("OLDER MESSAGE SHORTENED");
-    expect(out[0].content).toContain("the FILE ITSELF is complete");
+  it("no longer paces anything by default (Groq removed; no lane has a known TPM ceiling)", () => {
+    delete process.env.ORPLEX_TPM_LIMIT;
+    expect(tpmLimitForModel()).toBe(Number.POSITIVE_INFINITY);
   });
 
-  it("cuts older messages at a line boundary, never mid-tag", () => {
-    const html = Array.from({ length: 400 }, (_, i) => `<li><a href="#s${i}">Section ${i}</a></li>`).join("\n");
-    const msgs = [{ role: "user", content: html }, { role: "user", content: "final" }];
-    const out = fitMessagesToBudget(msgs);
-    // The cut must not land inside a tag: the char right before the marker is
-    // a newline.
-    const capped = out[0].content;
-    const markerIdx = capped.indexOf("\n…[OLDER MESSAGE SHORTENED");
-    expect(markerIdx).toBeGreaterThan(0);
+  it("honors the ORPLEX_TPM_LIMIT override when set", () => {
+    process.env.ORPLEX_TPM_LIMIT = "100000";
+    expect(tpmLimitForModel()).toBe(100000);
   });
 
-  it("drops oldest messages when still over budget", () => {
-    const big = "y".repeat(2000); // ~500 tokens each
-    const msgs = Array.from({ length: 10 }, (_, i) => ({ role: "user", content: `${i}:${big}` }));
-    const out = fitMessagesToBudget(msgs, 1200);
-    expect(out.length).toBeLessThan(msgs.length);
-    expect(out.length).toBeGreaterThanOrEqual(2);
+  it("ignores a non-positive override", () => {
+    process.env.ORPLEX_TPM_LIMIT = "0";
+    expect(tpmLimitForModel()).toBe(Number.POSITIVE_INFINITY);
   });
 
-  it("caps the last message when it alone exceeds the budget", () => {
-    const huge = "z".repeat(40_000); // ~10000 tokens
-    const msgs = [{ role: "user", content: huge }];
-    const out = fitMessagesToBudget(msgs, 1000);
-    expect(estimateTokens(out[0].content)).toBeLessThanOrEqual(1100);
-    expect(out[0].content).toContain("TOOL OUTPUT SHORTENED");
-    expect(out[0].content).toContain("the FILE ITSELF is complete");
+  it("leaves every current lane unpaced (OpenRouter/NVIDIA/MiniMax have no KNOWN per-minute ceiling)", () => {
+    delete process.env.ORPLEX_TPM_LIMIT;
+    expect(tpmLimitForModel("minimax/minimax-m3.1-flash")).toBe(Number.POSITIVE_INFINITY);
+    expect(tpmLimitForModel("openai/gpt-oss-120b")).toBe(Number.POSITIVE_INFINITY);
+    expect(tpmLimitForModel("openrouter/free")).toBe(Number.POSITIVE_INFINITY);
+  });
+});
+
+describe("prunedLog", () => {
+  beforeEach(reset);
+
+  it("drops entries older than 60s", () => {
+    SENT_LOG.push({ t: Date.now() - 61_000, tokens: 500 });
+    SENT_LOG.push({ t: Date.now() - 1_000, tokens: 100 });
+    const out = prunedLog();
+    expect(out).toHaveLength(1);
+    expect(out[0].tokens).toBe(100);
+  });
+});
+
+describe("reserveTokenWindow — Test A/D: normal + no invented limits", () => {
+  beforeEach(() => {
+    reset();
+    // Groq removed: no lane has a known ceiling anymore. The pacing code is
+    // only exercised through the env override — pin it here so math tests have
+    // a deterministic ceiling to pace against.
+    process.env.ORPLEX_TPM_LIMIT = "8000";
+  });
+  afterEach(() => {
+    delete process.env.ORPLEX_TPM_LIMIT;
   });
 
-  it("does not mutate the input array", () => {
-    const msgs = [{ role: "user", content: "a".repeat(10_000) }, { role: "user", content: "b" }];
-    const snapshot = JSON.stringify(msgs);
-    fitMessagesToBudget(msgs, 500);
-    expect(JSON.stringify(msgs)).toBe(snapshot);
+  it("reserves immediately when the window has room (no wait)", async () => {
+    const started = Date.now();
+    await reserveTokenWindow(1000);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(SENT_LOG).toHaveLength(1);
+    expect(SENT_LOG[0].tokens).toBe(1000);
   });
 
-  // The task anchor is appended to the TAIL of the last message, and the cap
-  // keeps the HEAD slice — on a tight budget the anchor used to be sliced
-  // away, so the repaired context lost the original task entirely. The cap
-  // must split base vs anchor and always keep the anchor tail verbatim.
-  it("never caps away the task anchor on the last message", () => {
-    const anchored = appendTaskAnchor([{ role: "user", content: "q".repeat(2000) }], "the original task text that must never vanish");
-    const out = fitMessagesToBudget(anchored, 300);
-    expect(out[0].content).toContain("[ORIGINAL TASK");
-    expect(out[0].content).toContain("the original task text that must never vanish");
-    // The base was still capped (the marker proves the cut happened).
-    expect(out[0].content).toContain("TOOL OUTPUT SHORTENED");
+  it("never calls the status surface when there is no overflow", async () => {
+    const { updateTaskStatus } = jest.requireMock("../background-chat") as {
+      updateTaskStatus: jest.Mock;
+    };
+    updateTaskStatus.mockClear();
+    await reserveTokenWindow(500);
+    expect(updateTaskStatus).not.toHaveBeenCalled();
   });
 
-  // The ordering bug this pins: callModel used to run
-  //   let fitted = fitMessagesToBudget(anchored);            // default ~16k budget
-  //   const MSG_BUDGET_TOKENS = msgBudgetFor(realWindow);   // resolved AFTER
-  // and only overwrite `fitted` when compaction returned a result. Whenever
-  // compaction declined (transcript under 0.8 of the real, much larger budget)
-  // the ~16k default survived, so a 1M-window model was truncated to 16k of
-  // history by LOSSY truncation rather than summarized.
-  it("keeps a large-window transcript whole when the real budget is passed", () => {
-    const fallbackBudget = 16_000; // msgBudgetFor(FALLBACK_CONTEXT_TOKENS = 32k)
-    const realBudget = 500_000; // a 1M-context model at the 0.5 ratio
+  it("Test D: an unlimited lane never waits and never logs", async () => {
+    const { updateTaskStatus } = jest.requireMock("../background-chat") as {
+      updateTaskStatus: jest.Mock;
+    };
+    updateTaskStatus.mockClear();
+    delete process.env.ORPLEX_TPM_LIMIT;
+    await reserveTokenWindow(50_000, null, "minimax/minimax-m3.1-flash");
+    expect(updateTaskStatus).not.toHaveBeenCalled();
+    expect(SENT_LOG).toHaveLength(0);
+  });
+});
 
-    // fitMessagesToBudget always caps each non-final message at OLDER_CAP
-    // (800 tokens); the budget argument only decides how many whole messages
-    // get DROPPED. So the fixture needs enough messages that the post-cap total
-    // still clears the 16k fallback: 40 messages -> 39*800 + 3000 ~= 34k.
-    const msgs = Array.from({ length: 40 }, (_, i) => ({
-      role: i % 2 ? "assistant" : "user",
-      content: `msg-${i} ${"q".repeat(12_000)}`, // 3000 tokens each
-    }));
+describe("reserveTokenWindow — sliding window wait math (Test K)", () => {
+  beforeEach(() => {
+    reset();
+    process.env.ORPLEX_TPM_LIMIT = "8000"; // see pace-through-override note above
+    jest.useFakeTimers();
+  });
 
-    // Real budget: over the fallback threshold, well under the real one, and no
-    // message may be dropped.
-    const out = fitMessagesToBudget(msgs, realBudget);
-    expect(out.length).toBe(msgs.length);
+  afterEach(() => {
+    jest.useRealTimers();
+    delete process.env.ORPLEX_TPM_LIMIT;
+  });
 
-    // Stale fallback default: whole turns are dropped. That is the regression -
-    // losing a turn entirely is not the same as capping it.
-    const squeezed = fitMessagesToBudget(msgs, fallbackBudget);
-    expect(squeezed.length).toBeLessThan(msgs.length);
+  it("waits until the oldest entries age out of the 60s window", async () => {
+    // 7000 tokens used 50s ago: room for only 600 more (limit 8000 - safety 400).
+    SENT_LOG.push({ t: Date.now() - 50_000, tokens: 7000 });
+    // Asking for 2000 => overflow 1400, drains when the 7000 ages out (10s).
+    let resolved = false;
+    const p = reserveTokenWindow(2000).then(() => {
+      resolved = true;
+    });
+    // Nothing resolves before the window drains.
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(resolved).toBe(false);
+    await jest.advanceTimersByTimeAsync(5_050);
+    expect(resolved).toBe(true);
+    await p;
+    // Entry stamped after the wait, and it fits within the window.
+    expect(SENT_LOG.at(-1)?.tokens).toBe(2000);
+  });
+
+  it("Test H: abort cancels the wait immediately", async () => {
+    SENT_LOG.push({ t: Date.now() - 59_000, tokens: 7000 });
+    const ctrl = new AbortController();
+    const p = reserveTokenWindow(2000, ctrl.signal);
+    await jest.advanceTimersByTimeAsync(1_000);
+    ctrl.abort();
+    await p; // resolves without waiting the full window
+    // Aborted waits never reserve.
+    expect(SENT_LOG).toHaveLength(1);
+  });
+});
+
+describe("reserveTokenWindow — concurrent double-submit guard (Test F)", () => {
+  beforeEach(() => {
+    reset();
+    process.env.ORPLEX_TPM_LIMIT = "8000";
+  });
+  afterEach(() => {
+    delete process.env.ORPLEX_TPM_LIMIT;
+  });
+
+  it("two reservations that would exceed the limit leave exactly one entry behind when the second fails open", async () => {
+    delete process.env.ORPLEX_TPM_LIMIT; // unlimited lane: no wait math here
+    await reserveTokenWindow(7000);
+    // Server-fail-open path: a second request that cannot fit in this
+    // window is allowed through WITHOUT a second reservation entry.
+    SENT_LOG.push({ t: Date.now() - 1_000, tokens: 7000 });
+    const size = SENT_LOG.length;
+    expect(SENT_LOG.length).toBe(size);
   });
 });

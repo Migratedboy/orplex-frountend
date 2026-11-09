@@ -13,7 +13,8 @@ describe("PromptBar conversation states", () => {
     render(<PromptBar conversationState="initial" modes={MODES} models={MODELS} defaultModel={MODELS[0].key} />);
 
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("placeholder", "How can I help you today?");
-    expect(screen.getByText("Orplex Agent can make mistakes. Verify important information.")).toBeVisible();
+    // The disclaimer moved to the welcome surface (page.tsx), out of the
+    // composer — the prompt bar itself never renders it.
   });
 
   it("changes the prompt when the user chooses Code mode", () => {

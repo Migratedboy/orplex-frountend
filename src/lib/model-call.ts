@@ -15,9 +15,7 @@ import {
 } from "./model-retry-ladder";
 import { recordPromptCall } from "./prompt-meter";
 import {
-  SENT_LOG,
   TOKEN_LIMIT_RE,
-  OUTPUT_RESERVE,
   contextWindowForModel,
   estimateTokens,
   fitMessagesToBudget,
@@ -99,7 +97,7 @@ export async function callModel(
     runState.taskCompactor ||= createHierarchicalCompactor(async (prompt, maxTokens) => {
       // Pace summarization like every other model call; failure still resolves
       // null in compactTranscript, so compaction never blocks the task.
-      await reserveTokenWindow(estimateTokens(prompt), signal);
+      await reserveTokenWindow(estimateTokens(prompt), signal, model);
       const res = await readStream(
         [{ role: "user", content: prompt }],
         null,
@@ -190,7 +188,7 @@ export async function callModel(
       }));
     }
   } catch {}
-  await reserveTokenWindow(estimate(fitted), signal);
+  await reserveTokenWindow(estimate(fitted), signal, model);
   // Retry transient provider blips with the visible 20-attempt worker ladder.
   const attempt = async (msgs: { role: string; content: string }[]): Promise<StreamResult> => {
     let cacheHit: { response: string; toolsUsed: string[] } | null = null;
@@ -247,12 +245,14 @@ export async function callModel(
   } catch (err) {
     const msg = String((err as Error)?.message || err);
     if (!TOKEN_LIMIT_RE.test(msg) || signal?.aborted) throw err;
-    SENT_LOG.push({ t: Date.now(), tokens: OUTPUT_RESERVE + 1000 });
+    // NOTE: no extra SENT_LOG push here — the original reservation at
+    // reserveTokenWindow() (above) already counts this request. A second
+    // push double-counted every 413 and kept the window full ~60s longer.
     const tighter = appendTaskAnchor(
       fitMessagesToBudget(apiMessages, Math.floor(MSG_BUDGET_TOKENS / 2)),
       runState.anchorTaskMessage
     );
-    await reserveTokenWindow(estimate(tighter), signal);
+    await reserveTokenWindow(estimate(tighter), signal, model);
     return await attempt(tighter);
   }
 }

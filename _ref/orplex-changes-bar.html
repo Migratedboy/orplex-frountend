@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Changes Bar</title>
+<style>
+:root{
+  --bg:#0b0b0d; --panel:#111114; --raise:#18181c; --line:#232329; --line2:#30303a;
+  --text:#ededf0; --mute:#8e8e99; --dim:#5b5b66; --acc:#ff6a1a;
+  --err:#ff5c6c; --add:#3fb97a; --del:#ff6b6b; --warn:#ffd24c;
+  --c-edit:#ff8a3d; --c-file:#3fd0a4;
+  --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;min-height:100vh;padding:20px 16px 40px;gap:28px}
+svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+button{all:unset;box-sizing:border-box;cursor:pointer}
+button:focus-visible{outline:1.5px solid var(--acc);outline-offset:1px}
+
+/* ---------- demo switcher (NOT part of the component) ---------- */
+.demo{position:fixed;top:12px;left:0;right:0;z-index:10;display:flex;gap:6px;flex-wrap:wrap;justify-content:center;font:11.5px var(--mono);color:var(--dim)}
+.demo button{padding:4px 10px;border:1px solid var(--line);border-radius:5px;color:var(--mute)}
+.demo button:hover{border-color:var(--line2);color:var(--text)}
+#slot{width:100%;max-width:640px;position:relative}
+
+/* ---------- changes bar ---------- */
+.cb{
+  border:1px solid var(--line2);border-bottom:0;
+  border-radius:8px 8px 0 0;           /* flat bottom: docks flush onto the prompt bar */
+  background:var(--panel);overflow:hidden;
+  animation:up .32s cubic-bezier(.2,.8,.2,1) both;
+}
+@keyframes up{from{opacity:0;transform:translateY(8px)}}
+.cb-h{display:flex;align-items:center;gap:10px;padding:0 8px 0 4px;min-height:36px}
+.cb-t{display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:7px 6px;font-size:13px;color:var(--mute);border-radius:6px}
+.cb-t:hover{color:var(--text)}
+.chev{color:var(--dim);transition:transform .2s;transform:rotate(-90deg)}
+.cb.open .chev{transform:rotate(0);color:var(--mute)}
+.cb-t b{font-weight:500;color:var(--text);white-space:nowrap}
+.a{color:var(--add)} .d{color:var(--del)}
+.cnt{font:12px var(--mono);display:flex;gap:7px}
+
+.cb-act{display:flex;align-items:center;gap:6px}
+.btn{padding:3px 9px;border:1px solid var(--line2);border-radius:5px;font:500 12px var(--sans);color:var(--text);transition:background .15s,border-color .15s,color .15s}
+.btn:hover{background:var(--raise);border-color:var(--dim)}
+.btn.keep:hover{border-color:var(--add);color:var(--add)}
+.btn.undo:hover{border-color:var(--del);color:var(--del)}
+.btn.ico{padding:3px 6px;display:grid;place-items:center}
+.btn[disabled],.cb.run .btn:not(.ico){opacity:.35;pointer-events:none}
+
+/* running */
+.spin{width:13px;height:13px;border-radius:50%;border:1.5px solid var(--line2);border-top-color:var(--acc);animation:rot .7s linear infinite;flex:none;margin:0 3px 0 6px}
+@keyframes rot{to{transform:rotate(360deg)}}
+.shim{background:linear-gradient(90deg,var(--mute) 30%,#fff 50%,var(--mute) 70%);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:sh 1.6s linear infinite}
+@keyframes sh{from{background-position:120% 0}to{background-position:-120% 0}}
+
+/* body (file list) */
+.cb-b{display:grid;grid-template-rows:0fr;transition:grid-template-rows .28s cubic-bezier(.2,.8,.2,1)}
+.cb.open .cb-b{grid-template-rows:1fr}
+.cb-b>.in{overflow:hidden;min-height:0}
+.files{border-top:1px solid var(--line);padding:4px 0;max-height:220px;overflow-y:auto}
+.f{display:flex;align-items:center;gap:9px;padding:5px 8px 5px 14px;font-size:12.5px;position:relative}
+.f:hover{background:var(--raise)}
+.f .ic{color:var(--c-edit);display:grid;place-items:center;width:18px}
+.f.new .ic{color:var(--c-file)} .f.del .ic{color:var(--del)}
+.f .nm{color:var(--text);font-weight:500;white-space:nowrap}
+.f .dir{font:11.5px var(--mono);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.f .sp{flex:1}
+.f .tag{font:700 9px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--c-file)}
+.f.del .tag{color:var(--del)}
+.f .fa{display:flex;gap:2px;opacity:0;transition:opacity .15s}
+.f:hover .fa,.f:focus-within .fa{opacity:1}
+.ib{width:22px;height:22px;display:grid;place-items:center;border-radius:5px;color:var(--mute)}
+.ib:hover{background:var(--line);color:var(--text)}
+.ib.k:hover{color:var(--add)} .ib.u:hover{color:var(--del)}
+.f.kept,.f.undone{opacity:.55}
+.f.undone .nm{text-decoration:line-through;text-decoration-color:rgba(255,107,107,.5)}
+.f .st{font:600 11px var(--sans);color:var(--dim)}
+.f.kept .st{color:var(--add)}
+
+/* resolved one-liner */
+.done{display:flex;align-items:center;gap:9px;padding:9px 14px;font-size:13px;color:var(--mute)}
+.done svg{color:var(--add)} .done.u svg{color:var(--del)}
+.done .sp{flex:1}
+.done .btn{font-size:11.5px}
+
+/* ---------- view all edits panel ---------- */
+.rv{position:absolute;left:0;right:0;bottom:calc(100% + 8px);z-index:5;max-height:min(62vh,440px);display:flex;flex-direction:column;border:1px solid var(--line2);border-radius:10px;background:var(--panel);box-shadow:0 18px 50px rgba(0,0,0,.55);overflow:hidden;animation:up .28s cubic-bezier(.2,.8,.2,1) both}
+.rv-h{display:flex;align-items:center;gap:10px;padding:8px 8px 8px 14px;border-bottom:1px solid var(--line);font-size:13px}
+.rv-h b{font-weight:600}
+.rv-h .sp{flex:1}
+.rv-b{overflow-y:auto;min-height:0}
+.rv.run .btn,.rv.run .ib.k,.rv.run .ib.u{opacity:.35;pointer-events:none}
+.rf{border-bottom:1px solid var(--line)}
+.rf:last-child{border-bottom:0}
+.rf-h{display:flex;align-items:center;gap:8px;padding:2px 8px 2px 4px;background:var(--panel);position:sticky;top:0;z-index:1}
+.rf-t{display:flex;align-items:center;gap:9px;flex:1;min-width:0;padding:7px 6px;font-size:12.5px;border-radius:6px}
+.rf-t .chev{transform:rotate(0);color:var(--mute)}
+.rf.col .rf-t .chev{transform:rotate(-90deg)}
+.rf .ic{color:var(--c-edit);display:grid;place-items:center;width:18px}
+.rf.new .ic{color:var(--c-file)} .rf.del .ic{color:var(--del)}
+.rf .nm{color:var(--text);font-weight:500;white-space:nowrap}
+.rf .dir{font:11.5px var(--mono);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.rf .tag{font:700 9px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--c-file)}
+.rf.del .tag{color:var(--del)}
+.rf .fa{display:flex;gap:2px}
+.rf .st{font:600 11px var(--sans);color:var(--dim)}
+.rf.kept .st{color:var(--add)}
+.rf.kept,.rf.undone{opacity:.6}
+.rf.undone .nm{text-decoration:line-through;text-decoration-color:rgba(255,107,107,.5)}
+.rf-d{margin:0;padding:6px 0;font:12px/1.65 var(--mono);overflow-x:auto;border-top:1px solid var(--line);background:var(--bg)}
+.rf.col .rf-d{display:none}
+.ln{display:flex;white-space:pre;min-width:max-content;padding-right:12px}
+.ln i{font-style:normal;color:var(--dim);width:42px;flex:none;text-align:right;padding-right:12px;user-select:none}
+.ln.p{background:rgba(63,185,122,.10);box-shadow:inset 2px 0 var(--add)}
+.ln.m{background:rgba(255,107,107,.09);box-shadow:inset 2px 0 var(--del)}
+.ln.m span{text-decoration:line-through;text-decoration-color:rgba(255,107,107,.5);opacity:.85}
+.ln.h{padding:1px 12px 1px 54px;color:var(--dim);background:var(--raise);font-style:italic}
+.hk{color:#ff9d5c}.hs{color:#8fe3b4}.hn{color:#c9a8ff}.hc{color:var(--dim);font-style:italic}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="demo" aria-label="demo only">
+  <button data-s="one">1 file</button>
+  <button data-s="many">3 files</button>
+  <button data-s="run">agent editing</button>
+</div>
+
+<div id="slot"></div>
+
+<script>
+const I={
+ chev:'<svg class="chev" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg>',
+ file:'<svg viewBox="0 0 16 16"><path d="M10.5 2.5l3 3L6 13l-3.5.5L3 10z"/></svg>',
+ newf:'<svg viewBox="0 0 16 16"><path d="M4 1.5h5L12.5 5v9a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5ZM9 1.5V5h3.5M8 8v4M6 10h4"/></svg>',
+ trash:'<svg viewBox="0 0 16 16"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.5 8.5h6l.5-8.5"/></svg>',
+ check:'<svg viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7"/></svg>',
+ undo:'<svg viewBox="0 0 16 16"><path d="M5 3L2.5 5.5 5 8"/><path d="M2.5 5.5H10a3.5 3.5 0 0 1 0 7H6"/></svg>',
+ close:'<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+ review:'<svg viewBox="0 0 16 16"><path d="M4 1.5h5L12.5 5v9a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5ZM9 1.5V5h3.5M6 8.5h4M6 11h4"/></svg>'
+};
+const SCEN={
+ one:[{n:'ToolCallDisplay.tsx',d:'src/components/',k:'mod',l:[
+  ['h','','@@ −38,7 +38,9 @@'],
+  ['c',38,'export function ToolCallDisplay({ call }: Props) {'],
+  ['m',39,'  return <div className="pill">{call.name}</div>'],
+  ['p',39,'  const def = TOOL_REGISTRY[call.name] ?? FALLBACK'],
+  ['p',40,'  return ('],
+  ['p',41,'    <div className="otc-row">'],
+  ['p',42,'      <ToolIcon name={def.icon} />'],
+  ['p',43,'    </div>'],
+  ['p',44,'  )'],
+  ['c',45,'}']]}],
+ many:[
+  {n:'route.ts',d:'src/app/api/chat/',k:'mod',l:[
+   ['h','','@@ −212,5 +212,9 @@'],
+   ['c',212,'  const providers = resolveProviders(settings)'],
+   ['p',213,'  const payload = buildPayload(messages, tools)'],
+   ['p',214,'  if (sizeOf(payload) > MAX_PAYLOAD_BYTES) {'],
+   ['p',215,'    return budgetGuard(payload, MAX_PAYLOAD_BYTES)'],
+   ['p',216,'  }'],
+   ['c',217,'  for (const p of providers) {'],
+   ['m',218,'    const res = await callProvider(p, requestBody)'],
+   ['p',218,'    const res = await callProvider(p, payload)']]},
+  {n:'prompt-budget.ts',d:'src/app/api/chat/',k:'new',l:[
+   ['h','','@@ new file @@'],
+   ['p',1,'export const MAX_PAYLOAD_BYTES = 900_000'],
+   ['p',2,''],
+   ['p',3,'export function sizeOf(payload: unknown) {'],
+   ['p',4,'  return Buffer.byteLength(JSON.stringify(payload))'],
+   ['p',5,'}']]},
+  {n:'old-guard.ts',d:'src/lib/',k:'del',l:[
+   ['h','','@@ deleted file @@'],
+   ['m',1,'export function oldGuard(body: string) {'],
+   ['m',2,'  if (body.length > 500_000) throw new Error("too big")'],
+   ['m',3,'  return body'],
+   ['m',4,'}']]}
+ ]
+};
+let files=[],open=false,rvOpen=false,running=false,mode='one';
+const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function hl(t){return t.replace(/(\/\/.*$)|('[^']*'|"[^"]*"|`[^`]*`)|\b(export|const|let|return|if|else|for|of|await|async|function|new|throw)\b|\b(\d[\d_]*)\b|[&<>]/g,(m,c,q,kw,nu)=>c?`<span class="hc">${esc(c)}</span>`:q?`<span class="hs">${esc(q)}</span>`:kw?`<span class="hk">${kw}</span>`:nu?`<span class="hn">${nu}</span>`:esc(m))}
+const cnt=(f)=>f.l.reduce((o,x)=>(x[0]==='p'?o.a++:x[0]==='m'&&o.r++,o),{a:0,r:0});
+const slot=document.getElementById('slot');
+const pend=()=>files.filter(f=>f.s==='pending');
+
+function row(f,i){
+  const ic=f.k==='new'?I.newf:f.k==='del'?I.trash:I.file;
+  const tag=f.k==='new'?'<span class="tag">new</span>':f.k==='del'?'<span class="tag">deleted</span>':'';
+  const right=f.s==='pending'
+    ?`<span class="cnt"><span class="a">+${f.a}</span><span class="d">−${f.r}</span></span><span class="fa"><button class="ib k" data-k="${i}" aria-label="Keep ${f.n}">${I.check}</button><button class="ib u" data-u="${i}" aria-label="Undo ${f.n}">${I.undo}</button></span>`
+    :`<span class="st">${f.s==='kept'?'Kept':'Undone'}</span>`;
+  return `<div class="f ${f.k} ${f.s==='pending'?'':f.s}"><span class="ic">${ic}</span><span class="nm">${f.n}</span><span class="dir">${f.d}</span>${tag}<span class="sp"></span>${right}</div>`;
+}
+
+function panel(){
+  if(!rvOpen)return '';
+  const p=pend(),A=p.reduce((s,f)=>s+f.a,0),R=p.reduce((s,f)=>s+f.r,0);
+  const secs=files.map((f,i)=>{
+    const ic=f.k==='new'?I.newf:f.k==='del'?I.trash:I.file;
+    const tag=f.k==='new'?'<span class="tag">new</span>':f.k==='del'?'<span class="tag">deleted</span>':'';
+    const right=f.s==='pending'
+      ?`<span class="cnt"><span class="a">+${f.a}</span><span class="d">−${f.r}</span></span><span class="fa"><button class="ib k" data-k="${i}" aria-label="Keep ${f.n}">${I.check}</button><button class="ib u" data-u="${i}" aria-label="Undo ${f.n}">${I.undo}</button></span>`
+      :`<span class="st">${f.s==='kept'?'Kept':'Undone'}</span>`;
+    const lines=f.l.map(([t,n,x])=>t==='h'?`<div class="ln h">${esc(x)}</div>`:`<div class="ln ${t==='c'?'':t}"><i>${n}</i><span>${hl(x)}</span></div>`).join('');
+    return `<section class="rf ${f.k} ${f.s==='pending'?'':f.s} ${f.c?'col':''}"><div class="rf-h"><button class="rf-t" data-c="${i}" aria-expanded="${!f.c}">${I.chev}<span class="ic">${ic}</span><span class="nm">${f.n}</span><span class="dir">${f.d}</span>${tag}<span style="flex:1"></span></button>${right}</div><pre class="rf-d">${lines}</pre></section>`;
+  }).join('');
+  return `<div class="rv ${running?'run':''}" role="dialog" aria-label="All edits"><div class="rv-h"><b>All edits</b><span class="cnt"><span class="a">+${A}</span><span class="d">−${R}</span></span><span class="sp"></span><button class="btn keep" data-ka>Keep all</button><button class="btn undo" data-ua>Undo all</button><button class="ib" data-rv aria-label="Close all edits">${I.close}</button></div><div class="rv-b">${secs}</div></div>`;
+}
+
+function render(){
+  if(!files.length){slot.innerHTML='';return}
+  const p=pend();
+  if(!running&&!p.length){
+    rvOpen=false;
+    const undone=files.every(f=>f.s==='undone');
+    slot.innerHTML=`<div class="cb"><div class="done ${undone?'u':''}">${undone?I.undo:I.check}<span>${undone?'Changes undone':'Changes kept'}</span><span class="sp"></span><button class="btn" data-x>Dismiss</button></div></div>`;
+    return;
+  }
+  const A=p.reduce((s,f)=>s+f.a,0),R=p.reduce((s,f)=>s+f.r,0),n=p.length;
+  const title=running?`<span class="spin"></span><b class="shim">Editing ${files[files.length-1].n}</b>`:`${I.chev}<b>${n} file${n>1?'s':''} changed</b>`;
+  slot.innerHTML=`${panel()}<div class="cb ${open?'open':''} ${running?'run':''}">
+    <div class="cb-h">
+      <button class="cb-t" data-t aria-expanded="${open}">${title}<span class="cnt"><span class="a">+${A}</span><span class="d">−${R}</span></span></button>
+      <div class="cb-act"><button class="btn keep" data-ka>Keep</button><button class="btn undo" data-ua>Undo</button><button class="btn ico" data-rv title="View all edits" aria-label="View all edits" aria-expanded="${rvOpen}">${I.review}</button></div>
+    </div>
+    <div class="cb-b"><div class="in"><div class="files">${files.map(row).join('')}</div></div></div>
+  </div>`;
+}
+
+slot.addEventListener('click',e=>{
+  const g=s=>e.target.closest(s);
+  if(g('[data-rv]')){rvOpen=!rvOpen;render();return}
+  const c=g('[data-c]');if(c){const f=files[+c.dataset.c];f.c=!f.c;render();return}
+  if(g('[data-t]')&&!running){open=!open;render();return}
+  if(g('[data-ka]')){files.forEach(f=>{if(f.s==='pending'){f.s='kept';f.c=true}});render();return}
+  if(g('[data-ua]')){files.forEach(f=>{if(f.s==='pending'){f.s='undone';f.c=true}});render();return}
+  const k=g('[data-k]');if(k){files[+k.dataset.k].s='kept';files[+k.dataset.k].c=true;render();return}
+  const u=g('[data-u]');if(u){files[+u.dataset.u].s='undone';files[+u.dataset.u].c=true;render();return}
+  if(g('[data-x]')){files=[];render()}
+});
+
+function load(s){
+  mode=s;running=s==='run';
+  const src=s==='run'?'many':s;
+  files=SCEN[src].map(f=>({...f,...(x=>({a:x.a,r:x.r}))(cnt(f)),s:'pending',c:false}));
+  rvOpen=false;
+  open=s==='many';
+  render();
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&rvOpen){rvOpen=false;render()}});
+document.querySelector('.demo').addEventListener('click',e=>{const b=e.target.closest('[data-s]');if(b)load(b.dataset.s)});
+load('one');
+</script>
+</body>
+</html>

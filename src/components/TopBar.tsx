@@ -106,7 +106,7 @@ function notifIcon(type: string) {
   return "ℹ";
 }
 
-export default function TopBar({ title = "Orplex Code", onBugReport, onShowShortcuts, onTogglePanel, panelOpen, onToggleSidebar, sidebarCollapsed }: { title?: string; onBugReport?: () => void; onShowShortcuts?: () => void; onTogglePanel?: () => void; panelOpen?: boolean; onToggleSidebar?: () => void; sidebarCollapsed?: boolean }) {
+export default function TopBar({ title = "Orplex Code", onBugReport, onShowShortcuts, onTogglePanel, panelOpen }: { title?: string; onBugReport?: () => void; onShowShortcuts?: () => void; onTogglePanel?: () => void; panelOpen?: boolean }) {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [showResults, setShowResults] = useState(false);
@@ -203,19 +203,7 @@ export default function TopBar({ title = "Orplex Code", onBugReport, onShowShort
   return (
     <header className="topbar-header">
       <div className="topbar-left">
-        {/* Sidebar toggle only while the sidebar is open — when collapsed,
-            the floating expand button (sb-expand-fab) takes over. */}
-        {onToggleSidebar && !sidebarCollapsed && (
-          <button
-            onClick={onToggleSidebar}
-            className="topbar-icon-btn topbar-sidebar-toggle"
-            title={sidebarCollapsed ? "Expand sidebar (Ctrl+\)" : "Collapse sidebar (Ctrl+\)"}
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            <span className="ms ms-sm">{sidebarCollapsed ? "left_panel_open" : "left_panel_close"}</span>
-          </button>
-        )}
-        <h1 className="topbar-title">{title}</h1>
+        <h1 className="topbar-title">{openId ? conversations.find(c => c.id === openId)?.title ?? title : title}</h1>
       </div>
       <div className="topbar-actions">
         {/* Fork the currently open thread into a new on-device copy. Only in

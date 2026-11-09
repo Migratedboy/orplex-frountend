@@ -96,8 +96,8 @@ export function buildFrontmatter(fm: Partial<MemoryFrontmatter> & { name: string
   ].join("\n");
 }
 
-export async function memoryList(prefix?: string): Promise<Array<{ path: string; name: string; description: string; aliases: string[] }>> {
-  const rows = (await prisma.memoryFile.findMany({})) as Array<{ path: string; content: string }>;
+export async function memoryList(userId: string, prefix?: string): Promise<Array<{ path: string; name: string; description: string; aliases: string[] }>> {
+  const rows = (await prisma.memoryFile.findMany({ where: { userId } })) as Array<{ path: string; content: string }>;
   const out: Array<{ path: string; name: string; description: string; aliases: string[] }> = [];
   for (const r of rows) {
     if (prefix && !r.path.startsWith(prefix)) continue;
@@ -107,12 +107,12 @@ export async function memoryList(prefix?: string): Promise<Array<{ path: string;
   return out.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-export async function memoryRead(paths: string | string[]): Promise<Array<{ path: string; content: string; version: number }>> {
+export async function memoryRead(paths: string | string[], userId: string): Promise<Array<{ path: string; content: string; version: number }>> {
   const list = Array.isArray(paths) ? paths : [paths];
   const out: Array<{ path: string; content: string; version: number }> = [];
   for (const p of list) {
     const v = validatePath(p);
-    const row = (await prisma.memoryFile.findUnique({ where: { path: v } })) as { path: string; content: string; version: number } | null;
+    const row = (await prisma.memoryFile.findUnique({ where: { userId_path: { userId, path: v } } })) as { path: string; content: string; version: number } | null;
     if (row) out.push({ path: row.path, content: row.content, version: row.version });
   }
   return out;
@@ -125,38 +125,40 @@ export interface WriteResult {
   current?: { content: string; version: number };
 }
 
-async function upsertWithLock(path: string, content: string, ifVersion: MemoryVersion): Promise<WriteResult> {
+async function upsertWithLock(path: string, content: string, ifVersion: MemoryVersion, userId: string): Promise<WriteResult> {
   const v = validatePath(path);
-  const existing = (await prisma.memoryFile.findUnique({ where: { path: v } })) as { path: string; content: string; version: number } | null;
+  const where = { userId_path: { userId, path: v } };
+  const existing = (await prisma.memoryFile.findUnique({ where })) as { path: string; content: string; version: number } | null;
 
   if (ifVersion === "new") {
     if (existing) {
       return { ok: false, conflict: true, current: { content: existing.content, version: existing.version } };
     }
-    const created = (await prisma.memoryFile.create({ data: { path: v, content, version: 1 } })) as { version: number };
+    const created = (await prisma.memoryFile.create({ data: { userId, path: v, content, version: 1 } })) as { version: number };
     return { ok: true, version: created.version };
   }
 
   const expected = typeof ifVersion === "number" ? ifVersion : parseInt(String(ifVersion), 10);
   if (!existing) {
     // file gone — treat as conflict with "new" semantics: allow create at version 1
-    const created = (await prisma.memoryFile.create({ data: { path: v, content, version: 1 } })) as { version: number };
+    const created = (await prisma.memoryFile.create({ data: { userId, path: v, content, version: 1 } })) as { version: number };
     return { ok: true, version: created.version };
   }
   if (existing.version !== expected) {
     return { ok: false, conflict: true, current: { content: existing.content, version: existing.version } };
   }
-  const updated = (await prisma.memoryFile.update({ where: { path: v }, data: { content, version: existing.version + 1 } })) as { version: number };
+  const updated = (await prisma.memoryFile.update({ where, data: { content, version: existing.version + 1 } })) as { version: number };
   return { ok: true, version: updated.version };
 }
 
-export async function memoryWrite(path: string, content: string, ifVersion: MemoryVersion): Promise<WriteResult> {
-  return upsertWithLock(path, content, ifVersion);
+export async function memoryWrite(path: string, content: string, ifVersion: MemoryVersion, userId: string): Promise<WriteResult> {
+  return upsertWithLock(path, content, ifVersion, userId);
 }
 
-export async function memoryStrReplace(path: string, oldStr: string, newStr: string, ifVersion: MemoryVersion): Promise<WriteResult & { replaced?: boolean; reason?: string }> {
+export async function memoryStrReplace(path: string, oldStr: string, newStr: string, ifVersion: MemoryVersion, userId: string): Promise<WriteResult & { replaced?: boolean; reason?: string }> {
   const v = validatePath(path);
-  const existing = (await prisma.memoryFile.findUnique({ where: { path: v } })) as { content: string; version: number } | null;
+  const where = { userId_path: { userId, path: v } };
+  const existing = (await prisma.memoryFile.findUnique({ where })) as { content: string; version: number } | null;
   if (!existing) return { ok: false, conflict: true, reason: "file not found" };
   if (ifVersion !== "new" && existing.version !== (typeof ifVersion === "number" ? ifVersion : parseInt(String(ifVersion), 10))) {
     return { ok: false, conflict: true, current: { content: existing.content, version: existing.version } };
@@ -165,35 +167,37 @@ export async function memoryStrReplace(path: string, oldStr: string, newStr: str
   if (count === 0) return { ok: false, reason: "old_str not found" };
   if (count > 1) return { ok: false, reason: "old_str matches multiple locations — make it more specific" };
   const content = existing.content.replace(oldStr, newStr);
-  const updated = (await prisma.memoryFile.update({ where: { path: v }, data: { content, version: existing.version + 1 } })) as { version: number };
+  const updated = (await prisma.memoryFile.update({ where, data: { content, version: existing.version + 1 } })) as { version: number };
   return { ok: true, version: updated.version, replaced: true };
 }
 
-export async function memoryAppend(path: string, content: string, ifVersion: MemoryVersion): Promise<WriteResult> {
+export async function memoryAppend(path: string, content: string, ifVersion: MemoryVersion, userId: string): Promise<WriteResult> {
   const v = validatePath(path);
-  const existing = (await prisma.memoryFile.findUnique({ where: { path: v } })) as { content: string; version: number } | null;
+  const where = { userId_path: { userId, path: v } };
+  const existing = (await prisma.memoryFile.findUnique({ where })) as { content: string; version: number } | null;
   if (!existing) {
     // create new
-    const created = (await prisma.memoryFile.create({ data: { path: v, content, version: 1 } })) as { version: number };
+    const created = (await prisma.memoryFile.create({ data: { userId, path: v, content, version: 1 } })) as { version: number };
     return { ok: true, version: created.version };
   }
   if (ifVersion !== "new" && existing.version !== (typeof ifVersion === "number" ? ifVersion : parseInt(String(ifVersion), 10))) {
     return { ok: false, conflict: true, current: { content: existing.content, version: existing.version } };
   }
   const newContent = existing.content.endsWith("\n") ? existing.content + content : existing.content + "\n" + content;
-  const updated = (await prisma.memoryFile.update({ where: { path: v }, data: { content: newContent, version: existing.version + 1 } })) as { version: number };
+  const updated = (await prisma.memoryFile.update({ where, data: { content, version: existing.version + 1 } })) as { version: number };
   return { ok: true, version: updated.version };
 }
 
-export async function memoryDelete(path: string, ifVersion: MemoryVersion): Promise<WriteResult> {
+export async function memoryDelete(path: string, ifVersion: MemoryVersion, userId: string): Promise<WriteResult> {
   const v = validatePath(path);
-  const existing = (await prisma.memoryFile.findUnique({ where: { path: v } })) as { version: number } | null;
+  const where = { userId_path: { userId, path: v } };
+  const existing = (await prisma.memoryFile.findUnique({ where })) as { version: number } | null;
   if (!existing) return { ok: false, reason: "not found" } as WriteResult;
   if (ifVersion !== "new" && existing.version !== (typeof ifVersion === "number" ? ifVersion : parseInt(String(ifVersion), 10))) {
-    const full = (await prisma.memoryFile.findUnique({ where: { path: v } })) as { content: string; version: number };
+    const full = (await prisma.memoryFile.findUnique({ where })) as { content: string; version: number };
     return { ok: false, conflict: true, current: { content: full.content, version: full.version } };
   }
-  await prisma.memoryFile.delete({ where: { path: v } });
+  await prisma.memoryFile.delete({ where });
   return { ok: true };
 }
 
@@ -215,11 +219,11 @@ export async function memorySettingSet(userId: string, patch: { enabled?: boolea
 export async function loadMemoryContext(userId: string): Promise<{ profile: string; preferences: string; listing: string } | null> {
   const setting = await memorySettingGet(userId);
   if (!setting.enabled || setting.incognito) return null;
-  const files = await memoryList();
+  const files = await memoryList(userId);
   const profileRow = files.find((f) => f.path === "/profile.md");
   const prefRow = files.find((f) => f.path === "/preferences.md");
-  const profileRead = profileRow ? await memoryRead("/profile.md") : [];
-  const prefRead = prefRow ? await memoryRead("/preferences.md") : [];
+  const profileRead = profileRow ? await memoryRead("/profile.md", userId) : [];
+  const prefRead = prefRow ? await memoryRead("/preferences.md", userId) : [];
   const profile = profileRead[0]?.content ?? "";
   const preferences = prefRead[0]?.content ?? "";
   const listing = files.map((f) => `- ${f.path} — ${f.description}${f.aliases.length ? ` (aliases: ${f.aliases.join(", ")})` : ""}`).join("\n");

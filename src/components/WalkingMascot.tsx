@@ -38,9 +38,9 @@ type PathPoint = { x: number; y: number; dir: -1 | 0 | 1; seg: number };
 // Straight segments: 0 top edge →, 2 right edge ↓, 4 bottom edge ←, 6 left edge ↑.
 const MOON_SEGS = [0, 4]; // moonwalk relaxed only on horizontal edges
 
-/** Feet line within the inline SVG: viewBox y=-18..302, feet bottom at y=258
- *  → (258 + 18) / 320 = 86.25% of the rendered height. */
-const FEET_PCT = 86.25;
+/** Center line used to ride the border stroke: the creature's middle
+ *  (screen x = 50% of viewBox width) sits on the outline, half in / half out. */
+const FEET_PCT = 50;
 
 /** The inlined creature — same geometry as public/logo.svg, but the `.leg`
  *  groups are motion elements so the real legs step, and the arms are back:
@@ -200,7 +200,7 @@ export default function WalkingMascot() {
   const layerRef = useRef<HTMLDivElement>(null); // absolute inset-0 over the bar
   const walkerRef = useRef<HTMLDivElement>(null); // moves along the border
   const flipRef = useRef<HTMLDivElement>(null); // faces the travel direction
-  const stRef = useRef({ w: 0, h: 0, r: 14, s: 0, paused: false, sitUntil: 0, moonSeg: -1, lastDir: 1 });
+  const stRef = useRef({ w: 0, h: 0, r: 14, s: 0, paused: false, sitUntil: 0, moonSeg: -1, lastDir: 1, ox: 0, oy: 0 });
   // Pose state — set only when it CHANGES (a few times per lap), so React
   // doesn't re-render every frame; positions stay imperative.
   const [sit, setSit] = useState(false);
@@ -227,14 +227,35 @@ export default function WalkingMascot() {
     let moonOn = false;
 
     const measure = () => {
-      st.w = layer.clientWidth;
-      st.h = layer.clientHeight;
+      // Patrol the VISIBLE prompt-box outline, not the whole prompt-bar
+      // wrapper (the wrapper also spans the footer controls, which put the
+      // bottom edge below the box — on the disclaimer text). Rects are used
+      // instead of offsetLeft: the two agree only when they share the same
+      // offsetParent, which is not guaranteed inside this overlay tree.
+      // The layer is a SIBLING of the prompt bar (both live in the relative
+      // wrapper) — query the wrapper, never the layer itself.
+      const box = layer.parentElement?.querySelector<HTMLElement>(".prompt-bar__box");
+      if (box) {
+        const lr = layer.getBoundingClientRect();
+        const br = box.getBoundingClientRect();
+        st.w = box.clientWidth;
+        st.h = box.clientHeight;
+        st.ox = br.left - lr.left;
+        st.oy = br.top - lr.top;
+      } else {
+        st.w = layer.clientWidth;
+        st.h = layer.clientHeight;
+        st.ox = 0;
+        st.oy = 0;
+      }
       // Corner radius: never exceed what the bar's box can hold.
       st.r = Math.min(14, st.w / 3, st.h / 3);
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(layer);
+    const boxEl = layer.parentElement?.querySelector<HTMLElement>(".prompt-bar__box");
+    if (boxEl) ro.observe(boxEl);
 
     // Perimeter walk, clockwise, starting mid-top-edge. Each segment returns
     // the feet position (x, y in layer space), horizontal travel direction
@@ -258,10 +279,14 @@ export default function WalkingMascot() {
       ];
       let rem = ((s % total) + total) % total;
       for (const seg of segs) {
-        if (rem <= seg.len) return seg.f(rem / Math.max(seg.len, 1e-6));
+        if (rem <= seg.len) {
+          const p = seg.f(rem / Math.max(seg.len, 1e-6));
+          return { ...p, x: p.x + st.ox, y: p.y + st.oy };
+        }
         rem -= seg.len;
       }
-      return segs[0].f(0);
+      const p0 = segs[0].f(0);
+      return { ...p0, x: p0.x + st.ox, y: p0.y + st.oy };
     };
 
     const cornerAt = (s: number): boolean => {
@@ -309,8 +334,8 @@ export default function WalkingMascot() {
         setPose(false, p.seg === st.moonSeg);
       }
       prevCorner = atCorner;
-      // Anchor the walker so its FEET (86.25% down the SVG) sit exactly on
-      // the border line.
+      // Anchor the walker so its CENTER (50% down the SVG) rides the
+      // border stroke — half the creature in, half out, on the outline.
       walker.style.transform = `translate(${p.x}px, ${p.y}px)`;
       // Moonwalk: body faces AWAY from travel (that's the glide look).
       const dir = p.dir !== 0 ? p.dir : st.lastDir;

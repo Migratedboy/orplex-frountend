@@ -2960,7 +2960,7 @@ export async function runInBackground(
       const errMsg = String((err as Error)?.message || "Unknown error");
       // Token-limit failures get an actionable message instead of a raw 413.
       const friendly = TOKEN_LIMIT_RE.test(errMsg)
-        ? "Groq's free tier allows 8,000 tokens per minute and this task exceeded it even after trimming the context. Start a new chat (shorter history), or add your own Groq API key in Settings → API Keys for larger limits."
+        ? "The free tier rate-limit was hit and this task exceeded it even after trimming the context. Start a new chat (shorter history), or add your own API key in Settings → API Keys for larger limits."
         : errMsg;
       // Low-memory failures explain themselves: append the live RAM percentage
       // when the machine is under pressure, and land the message IN the bubble

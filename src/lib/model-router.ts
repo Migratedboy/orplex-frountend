@@ -7,14 +7,15 @@
  *   Tier 3 (Complex): architecture, multi-file refactors, security
  *
  * HONESTY NOTE (read before quoting cost numbers):
- * By default ALL THREE tiers point at the same free Groq model, so routing
- * currently only varies maxTokens/temperature — there is no cost saving to
- * claim and `getCostStats().savings` will correctly report 0 while
- * `tiersDiverge` is false. To make routing real, configure per-tier models:
+ * By default ALL THREE tiers point at the same free OpenRouter model, so
+ * routing currently only varies maxTokens/temperature — there is no cost
+ * saving to claim and `getCostStats().savings` will correctly report 0
+ * while `tiersDiverge` is false. To make routing real, configure per-tier
+ * models:
  *
- *   TIER1_MODEL=llama-3.2-90b-text-preview   TIER1_COST_PER_1K=0
- *   TIER2_MODEL=openai/gpt-oss-120b          TIER2_COST_PER_1K=0
- *   TIER3_MODEL=<paid-model-id>              TIER3_COST_PER_1K=0.003
+ *   TIER1_MODEL=openrouter/free                     TIER1_COST_PER_1K=0
+ *   TIER2_MODEL=minimax/minimax-m3.1-flash          TIER2_COST_PER_1K=0.002
+ *   TIER3_MODEL=<paid-model-id>                     TIER3_COST_PER_1K=0.003
  *
  * (plus optional TIERn_BASE_URL / TIERn_API_KEY_ENV). Once tiers point at
  * different models with real prices, savings reporting becomes meaningful.
@@ -46,16 +47,16 @@ function envNum(name: string, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-const GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions";
-const DEFAULT_MODEL = "openai/gpt-oss-120b";
-const DEFAULT_API_KEY_ENV = "GROQ_API_KEY";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_MODEL = "openrouter/free";
+const DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY";
 
 function tierConfig(tier: Tier, name: string, maxTokens: number, temperature: number): ModelConfig {
   return {
     tier,
     name,
     model: envStr(`TIER${tier}_MODEL`, DEFAULT_MODEL),
-    baseUrl: envStr(`TIER${tier}_BASE_URL`, GROQ_BASE_URL),
+    baseUrl: envStr(`TIER${tier}_BASE_URL`, OPENROUTER_BASE_URL),
     apiKeyEnvVar: envStr(`TIER${tier}_API_KEY_ENV`, DEFAULT_API_KEY_ENV),
     maxTokens,
     temperature,

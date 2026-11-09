@@ -93,7 +93,6 @@ export interface PromptBarProps {
   placeholder?: string;
   conversationState?: "initial" | "chat" | "thinking";
   footerProject?: ReactNode;
-  quotaIndicator?: ReactNode;
   onOpenConnectors?: () => void;
   sources?: PromptBarSource[];
   commands?: PromptBarCommand[];
@@ -235,7 +234,6 @@ export default function PromptBar({
   placeholder = "Write a message...",
   conversationState,
   footerProject,
-  quotaIndicator,
   onOpenConnectors,
   sources = DEFAULT_SOURCES,
   commands = DEFAULT_COMMANDS,
@@ -964,7 +962,6 @@ export default function PromptBar({
       </div>
       <div className="foot">
         {uiState === "initial" && footerProject ? <div className="rel init-only proj">{footerProject}</div> : null}
-        {quotaIndicator ? <div className="prompt-bar__quota">{quotaIndicator}</div> : null}
         <div className="rel">
           <button type="button" className="chip prompt-bar__connector" onClick={() => onOpenConnectors?.()} aria-label="Open MCP connectors">
             <Icon name="plug" />
@@ -1023,9 +1020,7 @@ export default function PromptBar({
             </button>
           </div>
         ) : null}
-        {uiState === "initial" ? (
-          <p className="disc">Orplex Agent can make mistakes. Verify important information.</p>
-        ) : null}
+
       </div>
     </div>
   );

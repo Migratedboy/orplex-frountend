@@ -2,18 +2,18 @@
 //
 // The chat/fast route and other tiny completions (suggestion chips) both need
 // "the fastest configured provider that actually answers without costing
-// anything". This keeps that pick in ONE place: Groq first (gpt-oss-20b is
-// the fastest live-verified model, sub-second, works on a free key), then
-// NVIDIA NIM. The old OpenRouter 8b default 402s on a zero-credit key.
+// anything". This keeps that pick in ONE place: OpenRouter free router
+// first (always available, free key), then NVIDIA NIM. Groq was removed
+// (2026-11-09) — its fast lane is gone; OpenRouter free is the replacement.
 //
 // LIVE-VALIDATED failure (2026-11-06): the suggestions lane ONLY looked at the
-// env fast keys, and env keys go stale (all three of GROQ / NVIDIA /
-// OPENROUTER in the dev .env answered 401 "Invalid API Key" while the user's
-// in-app BYOK keys kept the chat working). fastCompletion used to return null
-// on the FIRST provider's failure, so the feature silently degraded to static
-// chips forever. The ladder below: every configured env fast provider is
-// tried in order, then the CALLER's own provider configs (the user's working
-// BYOK lanes), and a dead key can no longer kill the feature.
+// env fast keys, and env keys go stale (NVIDIA / OPENROUTER in the dev .env
+// answered 401 "Invalid API Key" while the user's in-app BYOK keys kept the
+// chat working). fastCompletion used to return null on the FIRST provider's
+// failure, so the feature silently degraded to static chips forever. The
+// ladder below: every configured env fast provider is tried in order, then
+// the CALLER's own provider configs (the user's working BYOK lanes), and a
+// dead key can no longer kill the feature.
 
 export interface FastProviderConfig {
   name: string;
@@ -28,13 +28,14 @@ export interface FastProviderConfig {
 /** All configured env fast providers, in try order. Empty = none configured. */
 export function getFastProviders(): FastProviderConfig[] {
   const out: FastProviderConfig[] = [];
-  const groqKey = process.env.GROQ_API_KEY || "";
-  if (groqKey) {
+  const orKey = process.env.OPENROUTER_API_KEY || "";
+  if (orKey) {
     out.push({
-      name: "Groq-Fast",
-      url: "https://api.groq.com/openai/v1/chat/completions",
-      apiKey: groqKey,
-      model: process.env.GROQ_FAST_MODEL || "openai/gpt-oss-20b",
+      name: "OpenRouter-Fast",
+      url: "https://openrouter.ai/api/v1/chat/completions",
+      apiKey: orKey,
+      model: "openrouter/free",
+      extraHeaders: { "HTTP-Referer": "https://orplex.tech", "X-Title": "Orplex" },
     });
   }
   const nvKey = process.env.NVIDIA_API_KEY || "";
@@ -61,7 +62,7 @@ export function getFastProvider(): FastProviderConfig | null {
 // take 10s+ — long enough that the user starts typing before the chips show.
 const FAST_MODEL_HINT =
   /(flash|flash.?lite|instant|\bmini\b|nano|\blite\b|small|\b8b\b|\b3b\b|\b7b\b|oss-20b|haiku|turbo|nemotron)/i;
-const FAST_ENDPOINT_HINT = /(groq|cerebras|fireworks|sambanova|nvidia|together)/i;
+const FAST_ENDPOINT_HINT = /(openrouter|cerebras|fireworks|sambanova|nvidia|together)/i;
 
 function speedScore(p: FastProviderConfig): number {
   const hay = `${p.name || ""} ${p.model || ""} ${p.url || ""}`;

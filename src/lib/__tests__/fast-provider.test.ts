@@ -23,18 +23,18 @@ describe("fastCommand ladder", () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
-    delete process.env.GROQ_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
     delete process.env.NVIDIA_API_KEY;
   });
 
   it("first dead key does not kill the call — the next provider answers", async () => {
-    process.env.GROQ_API_KEY = "dead-key";
+    process.env.OPENROUTER_API_KEY = "dead-key";
     process.env.NVIDIA_API_KEY = "live-key";
     const tried: string[] = [];
     global.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
       tried.push(url);
-      if (url.includes("api.groq.com")) {
+      if (url.includes("openrouter.ai")) {
         return new Response(JSON.stringify({ error: "Invalid API Key" }), { status: 401 });
       }
       return textBody("The answer from NVIDIA.");
@@ -43,15 +43,15 @@ describe("fastCommand ladder", () => {
     const out = await fastCompletion("system", [{ role: "user", content: "hi" }]);
     expect(out).toBe("The answer from NVIDIA.");
     // The ladder really moved past the dead first provider.
-    expect(tried.some((u) => u.includes("api.groq.com"))).toBe(true);
+    expect(tried.some((u) => u.includes("openrouter.ai"))).toBe(true);
     expect(tried.some((u) => u.includes("api.nvidia.com") || u.includes("integrate.api.nvidia.com"))).toBe(true);
   });
 
   it("a user's own lane (extras) answers when every env key is dead", async () => {
-    process.env.GROQ_API_KEY = "dead-key";
+    process.env.OPENROUTER_API_KEY = "dead-key";
     global.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes("api.groq.com")) {
+      if (url.includes("openrouter.ai")) {
         return new Response(JSON.stringify({ error: "Invalid API Key" }), { status: 401 });
       }
       return textBody("Suggested next steps.");
@@ -67,13 +67,13 @@ describe("fastCommand ladder", () => {
   });
 
   it("user's own lane LEADS over the built-in env keys (priority rule)", async () => {
-    process.env.GROQ_API_KEY = "live-env-key";
+    process.env.OPENROUTER_API_KEY = "live-env-key";
     const order: string[] = [];
     global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const auth = (init?.headers as Record<string, string>)?.Authorization || "";
-      order.push(url.includes("api.groq.com") ? "env" : auth.endsWith("live-byok") ? "byok" : "other");
-      if (url.includes("api.groq.com")) return textBody("from-env");
+      order.push(url.includes("openrouter.ai") ? "env" : auth.endsWith("live-byok") ? "byok" : "other");
+      if (url.includes("openrouter.ai")) return textBody("from-env");
       return textBody("from-byok");
     }) as typeof fetch;
 
@@ -89,7 +89,7 @@ describe("fastCommand ladder", () => {
   });
 
   it("all candidates dead → null (never throws)", async () => {
-    process.env.GROQ_API_KEY = "dead-key";
+    process.env.OPENROUTER_API_KEY = "dead-key";
     global.fetch = (async () =>
       new Response(JSON.stringify({ error: "nope" }), { status: 401 })) as typeof fetch;
     const out = await fastCompletion("system", [{ role: "user", content: "hi" }], undefined, [
@@ -99,10 +99,10 @@ describe("fastCommand ladder", () => {
   });
 
   it("getFastProviders lists every CONFIGURED env provider in order", () => {
-    process.env.GROQ_API_KEY = "g";
+    process.env.OPENROUTER_API_KEY = "or";
     process.env.NVIDIA_API_KEY = "n";
     const list = getFastProviders();
-    expect(list.map((p) => p.name)).toEqual(["Groq-Fast", "NVIDIA-Fast"]);
+    expect(list.map((p) => p.name)).toEqual(["OpenRouter-Fast", "NVIDIA-Fast"]);
   });
 
   it("rankBySpeed puts flash-class models first, equal scores keep order", () => {
@@ -110,9 +110,9 @@ describe("fastCommand ladder", () => {
       { name: "heavy", url: "https://api.example.com/v1", apiKey: "k", model: "o1-reasoning-pro" },
       { name: "minimax-flash", url: "https://byok.example/v1", apiKey: "k", model: "minimax/m3.1-flash" },
       { name: "mid", url: "https://api.example.com/v1", apiKey: "k", model: "gpt-4o" },
-      { name: "groq-lane", url: "https://api.groq.com/v1", apiKey: "k", model: "some/custom-model" },
+      { name: "openrouter-lane", url: "https://openrouter.ai/v1", apiKey: "k", model: "some/custom-model" },
     ]);
-    // Flash-class (model hint) and Groq-endpoint lanes lead; heavyweights trail.
-    expect(ranked.map((p) => p.name)).toEqual(["minimax-flash", "groq-lane", "heavy", "mid"]);
+    // Flash-class (model hint) and fast-endpoint lanes lead; heavyweights trail.
+    expect(ranked.map((p) => p.name)).toEqual(["minimax-flash", "openrouter-lane", "heavy", "mid"]);
   });
 });

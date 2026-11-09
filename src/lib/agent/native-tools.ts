@@ -212,7 +212,7 @@ export async function dispatchToolCall(
   if (mcpOutcome) return mcpOutcome;
 
   // ── extract_archive ───────────────────────────────────────────────────
-  // Available on EVERY lane (M3 + the lean Groq/NVIDIA set, and therefore
+  // Available on EVERY lane (M3 + the lean NVIDIA set, and therefore
   // every BYOK provider, which defaults to the full set). Extracting an
   // attached .zip is the only way its contents become readable, so gating it
   // to full-tier providers would dead-end the feature on free tiers.

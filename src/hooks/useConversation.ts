@@ -15,7 +15,7 @@ import type { ActivityTiming } from "@/lib/activity";
 
 export function useConversation(setMessages: (fn: (prev: Message[]) => Message[]) => void) {
   const { data: session } = useSession();
-  const { refresh } = useConversations();
+  const { refresh, renameConversation } = useConversations();
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [loadingConvo, setLoadingConvo] = useState(false);
   // Guards against a slow response for an OLD conversation overwriting the
@@ -141,7 +141,45 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
       // B while the next reply in B was appended to A, and B never recorded it.
       // Drop the write if the user navigated or started a new chat meanwhile.
       if (saveToken !== navTokenRef.current) return;
-      if (data.conversationId) setConversationId(data.conversationId);
+      if (data.conversationId) {
+        const isNewThread = !targetId;
+        const newId = data.conversationId;
+        setConversationId(newId);
+        // Give the new thread a shareable URL: TopBar derives its open
+        // conversation (and title) from ?c=, and without this the first
+        // message created a thread the URL never knew about, so the top
+        // bar kept showing "New Chat" for the whole session.
+        if (typeof window !== "undefined" && !new URLSearchParams(window.location.search).has("c")) {
+          const url = new URL(window.location.href);
+          url.searchParams.set("c", newId);
+          window.history.replaceState(null, "", url.toString());
+        }
+        window.dispatchEvent(
+          new CustomEvent(OPEN_CONVERSATION_EVENT, { detail: { id: newId } })
+        );
+        // Refine the title with the fast model in the background: the
+        // first-prompt title above is instant; this lands a real name
+        // (e.g. "hi" → "Greeting") without blocking the reply.
+        if (isNewThread) {
+          void (async () => {
+            try {
+              const res = await fetch("/api/conversations/title", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: userContent }),
+              });
+              if (!res.ok) return;
+              const j = (await res.json().catch(() => null)) as { title?: unknown } | null;
+              if (typeof j?.title === "string" && j.title.trim()) {
+                await renameConversation(newId, j.title.trim());
+                refresh();
+              }
+            } catch {
+              // Title refinement is best-effort; the prompt title stays.
+            }
+          })();
+        }
+      }
       // Refresh shared conversation cache so Sidebar + History page
       // see the new/updated conversation immediately.
       refresh();
@@ -155,7 +193,7 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
       onSaveError?.("Conversation not saved — the request failed.");
       throw e;
     }
-  }, [conversationId, refresh]);
+  }, [conversationId, refresh, renameConversation]);
 
   const newChat = useCallback(() => {
     // Invalidate any in-flight conversation load. loadConversation guards

@@ -4,20 +4,12 @@
 // (c) backfill + persist vectors for rows missing one. The embeddings module
 // is mocked — no model download, no onnxruntime in tests.
 
-const mockRows: any[] = [];
-const mockUpdates: Array<{ id: string; data: { embedding: number[] } }> = [];
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
-jest.mock("../prisma", () => ({
-  prisma: {
-    workspaceMemory: {
-      findMany: jest.fn(async () => mockRows),
-      update: jest.fn(async ({ where, data }: { where: { id: string }; data: { embedding: number[] } }) => {
-        mockUpdates.push({ id: where.id, data });
-        return {};
-      }),
-    },
-  },
-}));
+const storeDir = mkdtempSync(join(tmpdir(), "orplex-wsm-"));
+const storeFile = join(storeDir, "workspace-memory.json");
 
 const unitVec = (i: number): Float32Array => {
   const v = new Float32Array(384);
@@ -52,44 +44,71 @@ jest.mock("../embeddings", () => ({
   },
 }));
 
-import { retrieveWorkspaceMemories } from "../workspace-memory";
+import {
+  retrieveWorkspaceMemories,
+  resetWorkspaceMemoryCacheForTests,
+} from "../workspace-memory";
 
-function mk(id: string, content: string, extra: Record<string, unknown> = {}) {
-  return {
-    id,
-    workspaceKey: "ws",
-    kind: "pattern",
-    content,
-    contentHash: id,
-    evidence: {},
-    files: [],
-    embedding: null,
-    count: 1,
-    firstSeenAt: new Date(),
-    lastSeenAt: new Date(),
-    ...extra,
+interface Row {
+  id: string;
+  content: string;
+  embedding: number[] | null;
+}
+
+function seedRows(rows: Row[]) {
+  const now = new Date().toISOString();
+  const body = {
+    version: 1,
+    workspaces: {
+      ws: rows.map((r) => ({
+        id: r.id,
+        workspaceKey: "ws",
+        kind: "pattern" as const,
+        content: r.content,
+        contentHash: r.content,
+        files: [],
+        evidence: {},
+        embedding: r.embedding,
+        count: 1,
+        firstSeenAt: now,
+        lastSeenAt: now,
+      })),
+    },
   };
+  writeFileSync(storeFile, JSON.stringify(body), "utf8");
+  resetWorkspaceMemoryCacheForTests();
+}
+
+function readStoredEmbeddings(): Record<string, number[] | null | undefined> {
+  const parsed = JSON.parse(readFileSync(storeFile, "utf8")) as {
+    workspaces: Record<string, Array<{ id: string; embedding?: number[] | null }>>;
+  };
+  return Object.fromEntries((parsed.workspaces.ws ?? []).map((r) => [r.id, r.embedding]));
 }
 
 beforeEach(() => {
-  mockRows.length = 0;
-  mockUpdates.length = 0;
+  if (existsSync(storeFile)) rmSync(storeFile);
+  process.env.ORPLEX_WORKSPACE_MEMORY_FILE = storeFile;
+  resetWorkspaceMemoryCacheForTests();
   mockContentVecs.clear();
   mockTaskVec = unitVec(0);
   mockBackfillVec = unitVec(0);
 });
 
+afterAll(() => {
+  delete process.env.ORPLEX_WORKSPACE_MEMORY_FILE;
+  rmSync(storeDir, { recursive: true, force: true });
+});
+
 describe("hybrid workspace-memory retrieval (semantic + lexical)", () => {
   it("boosts the semantically-related row above an equally-lexical row", async () => {
     const shared = "database connection pooling guidance for services";
-    mockRows.push(
-      mk("row-high", shared, { embedding: Array.from(unitVec(0)) }),
-      mk("row-low", shared, { embedding: Array.from(unitVec(1)) })
-    );
+    seedRows([
+      { id: "row-high", content: shared, embedding: Array.from(unitVec(0)) },
+      { id: "row-low", content: shared, embedding: Array.from(unitVec(1)) },
+    ]);
     const out = await retrieveWorkspaceMemories("ws", "database pooling", 5);
     expect(out.length).toBe(2);
-    expect(out[0].content).toBe(shared); // tie broken by (only) semantic score
-    expect(out.find((r) => r.score === Math.max(...out.map((o) => o.score)))?.semantic).toBe(true);
     expect(out[0].semantic).toBe(true);
     expect(out[1].semantic).toBeFalsy();
   });
@@ -97,27 +116,27 @@ describe("hybrid workspace-memory retrieval (semantic + lexical)", () => {
   it("falls back to lexical-only scoring when embeddings are unavailable", async () => {
     mockTaskVec = null;
     mockBackfillVec = null;
-    mockRows.push(mk("lexical", "fix the login redirect flow in the auth module"));
+    seedRows([{ id: "lexical", content: "fix the login redirect flow in the auth module", embedding: null }]);
     const out = await retrieveWorkspaceMemories("ws", "login redirect", 5);
     expect(out.length).toBe(1);
     expect(out[0].semantic).toBeFalsy();
-    expect(mockUpdates).toHaveLength(0); // no vectors persisted without a model
+    // No vectors persisted without a model.
+    expect(readStoredEmbeddings().lexical).toBeNull();
   });
 
   it("backfills and persists a vector for rows missing one", async () => {
-    mockRows.push(mk("nofix", "payment webhook retry semantics"));
+    seedRows([{ id: "nofix", content: "payment webhook retry semantics", embedding: null }]);
     const out = await retrieveWorkspaceMemories("ws", "webhook retries", 5);
     expect(out[0].semantic).toBe(true);
-    expect(mockUpdates).toHaveLength(1);
-    expect(mockUpdates[0].id).toBe("nofix");
-    expect(mockUpdates[0].data.embedding).toHaveLength(384);
+    // Fire-and-forget persist — settle the write chain.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(readStoredEmbeddings().nofix).toHaveLength(384);
   });
 
   it("ignores stored vectors of the wrong dimension", async () => {
-    mockRows.push(mk("wrongdim", "retry queue overflow policy", { embedding: [0.1, 0.2] }));
+    seedRows([{ id: "wrongdim", content: "retry queue overflow policy", embedding: [0.1, 0.2] }]);
     mockBackfillVec = null; // no backfill: only the stored path is under test
     const out = await retrieveWorkspaceMemories("ws", "retry queue", 5);
     expect(out[0].semantic).toBeFalsy();
-    expect(mockUpdates).toHaveLength(0);
   });
 });

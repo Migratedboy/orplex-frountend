@@ -7,7 +7,7 @@
  * existing graceful-degradation tests (agent-browser-session.test.ts).
  */
 import { runBrowserOp, activeSessionCount, resolveRefSelector, evaluateAttempts, pushNetworkEvent, type NetworkEvent } from "../agent-browser-session";
-import { M3_TOOL_DEFINITIONS, GROQ_TOOL_DEFINITIONS, GROQ_TOOL_NAMES, usesCompactTools } from "../tool-definitions";
+import { M3_TOOL_DEFINITIONS, LEAN_TOOL_DEFINITIONS, LEAN_TOOL_NAMES, usesCompactTools } from "../tool-definitions";
 import { buildNativeToolDefs } from "../server-executor/executor";
 
 jest.mock("@/lib/browser-verification", () => ({
@@ -143,10 +143,10 @@ describe("tool rosters advertise the advanced browser ops", () => {
     expect(shot?.function?.parameters?.properties ?? {}).toHaveProperty("viewpoint");
   });
 
-  it("GROQ_TOOL_DEFINITIONS keeps every verb family incl. browser core (no silent amputation)", () => {
-    const names = GROQ_TOOL_DEFINITIONS.map((t: any) => t.function?.name);
+  it("LEAN_TOOL_DEFINITIONS keeps every verb family incl. browser core (no silent amputation)", () => {
+    const names = LEAN_TOOL_DEFINITIONS.map((t: any) => t.function?.name);
     // Every name in the allowlist must resolve to a real schema.
-    expect(names).toHaveLength(GROQ_TOOL_NAMES.length);
+    expect(names).toHaveLength(LEAN_TOOL_NAMES.length);
     // Browsing must stay callable on tight-TPM providers — a model without
     // these tools truthfully answers "I can't help with that".
     for (const n of ["browser_navigate", "browser_read", "browser_find", "browser_click", "browser_type", "browser_wait_for", "browser_screenshot"]) {
@@ -166,15 +166,16 @@ describe("tool rosters advertise the advanced browser ops", () => {
   it("code_search is offered (dispatcher handles it; doctrine orders it FIRST)", () => {
     const m3 = M3_TOOL_DEFINITIONS.map((t: any) => t.function?.name);
     expect(m3).toContain("code_search");
-    const groq = GROQ_TOOL_DEFINITIONS.map((t: any) => t.function?.name);
+    const groq = LEAN_TOOL_DEFINITIONS.map((t: any) => t.function?.name);
     expect(groq).toContain("code_search");
     const def = M3_TOOL_DEFINITIONS.find((t: any) => t.function?.name === "code_search");
     expect(def?.function?.parameters?.required).toContain("query");
   });
 
   it("usesCompactTools covers every provider incl. BYOK keys", () => {
-    // Explicitly lean: tight-TPM free tiers whose full schema array 413s.
-    for (const n of ["groq", "Groq", "groq-personal", "groq-pool", "nvidia", "NVIDIA NIM", "nvidia-pool", "nvidia-personal"]) {
+    // Explicitly lean: tight-TPM free tier whose full schema array 413s.
+    // (Groq removed 2026-11-09 — only NVIDIA remains.)
+    for (const n of ["nvidia", "NVIDIA NIM", "nvidia-pool", "nvidia-personal"]) {
       expect(usesCompactTools(n)).toBe(true);
     }
     // Known full-tier providers (platform + BYOK personal keys via OpenRouter, etc.) → full set.

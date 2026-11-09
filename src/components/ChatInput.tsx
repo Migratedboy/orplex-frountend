@@ -12,7 +12,6 @@ import ConnectorsPanel from "./ConnectorsPanel";
 import { IconMcp } from "./Icons";
 import type { AttachedFile } from "@/hooks/useFileProcessor";
 import { Attachment01Icon, SparklesIcon } from "@hugeicons/core-free-icons";
-import QuotaIndicator from "./QuotaIndicator";
 import WalkingMascot from "./WalkingMascot";
 import WorkspaceSwitcher from "./WorkspaceSwitcher";
 import { QuickActions } from "./ui";
@@ -49,12 +48,6 @@ interface ChatInputProps {
   onQueueClear?: () => void;
   /** Active conversation id — scopes picker persistence per chat */
   conversationId?: string | null;
-  /** Models that failed in THIS conversation (most recent first) — arms the one-shot auto-retry swap. */
-  failedModels?: string[];
-  /** Clears the failure trail after the composer consumed it (one-shot). */
-  clearFailedModels?: () => void;
-  /** Re-arms the picker with the swapped model (persists per conversation). */
-  onRetryModelSwap?: (nextModelId: string, failedModelIds: string[]) => void;
   /** True after the user pressed Stop — the composer acknowledges it without
    *  blocking the next send (the input stays live). */
   stopped?: boolean;
@@ -159,7 +152,7 @@ function savePickers(conversationId: string | null | undefined, state: PickerSta
  */
 export const droppedFilesBridge: { add: ((files: AttachedFile[]) => void) | null } = { add: null };
 
-export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, runPhase = "idle", requestStartedAt, agentEvents = [], turnActive, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, failedModels, clearFailedModels, onRetryModelSwap, stopped = false }: ChatInputProps) {
+export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, runPhase = "idle", requestStartedAt, agentEvents = [], turnActive, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, stopped = false }: ChatInputProps) {
   const files = useFileProcessor();
   // Publish the attach bridge (page-level drag-and-drop) and release it on unmount.
   useEffect(() => {
@@ -308,59 +301,24 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
     return draft + inlineBlocks(textFiles);
   };
 
-  // === One-shot auto-retry model swap ===================================
-  // A failed conversation carries its failed-model ids (useChatSession
-  // records them per conversation, most recent first). The swap arms only
-  // when the model about to be sent IS the one that failed (bare-id match:
-  // "vendor/x" ≡ "vendor/x:free") — a model the user deliberately re-picked
-  // is never overridden. It fires ONCE: the trail is cleared immediately,
-  // and any later failure re-arms it with that model. With no catalog
-  // (offline / still sweeping) the swap silently doesn't happen; the
-  // server's sibling-id failover still applies.
-  const pendingFailed = failedModels ?? [];
-  const consumeFailure = useRef(false);
-  const bareKey = (s: string) => s.replace(/:free$/, "");
-  if (pendingFailed.length > 0) {
-    const armed = pickerState.modelKey;
-    consumeFailure.current = !!armed && bareKey(armed) === bareKey(pendingFailed[0]);
-  }
-  const swapForRetry = async (picked: PromptBarModel | undefined): Promise<PromptBarModel | undefined> => {
-    if (!consumeFailure.current || pendingFailed.length === 0) return picked;
-    consumeFailure.current = false;
-    clearFailedModels?.();
-    const currentKey = picked?.key ?? pickerState.modelKey;
-    try {
-      const { pickRetryModel } = await import("@/lib/model-catalog");
-      const nextId = await pickRetryModel(pendingFailed, currentKey);
-      if (!nextId) return picked; // nothing verified beyond the failed set — keep the pick
-      const next = models.find((m) => m.key === nextId);
-      if (!next) return picked;
-      // Re-arm the picker + persist per conversation so the WHOLE task runs
-      // on the replacement (a mid-run provider swap isn't possible).
-      setPickerState({ ...pickerState, modelKey: next.key });
-      savePickers(conversationId, { ...pickerState, modelKey: next.key });
-      setRecents(pushRecent(next.key));
-      onRetryModelSwap?.(next.key, pendingFailed);
-      return next;
-    } catch {
-      return picked;
-    }
-  };
-
+  // The picker NEVER migrates on failure: a failed turn stamps [FAILED] with
+  // a one-click retry on the SAME model, and the server's sibling-id failover
+  // covers provider 429s in-request. The old one-shot auto-swap (migrated the
+  // persisted pick to gpt-oss-120b after one failure — the reported
+  // "it keeps switching back to default" bug) is gone.
   const metaToSend = async (text: string, meta: { mode?: PromptBarMode; effort?: string; model?: PromptBarModel }) => {
     const msg = text.trim();
     const textFiles = files.getTextFiles();
     const imageFiles = files.getImageFiles().map((f) => ({ name: f.name, dataUrl: f.dataUrl!, size: f.size }));
     if (!msg && textFiles.length === 0 && imageFiles.length === 0) return;
     const mode: AgentMode = (MODES.find((m) => m.key === meta.mode?.key)?.agentMode ?? agentMode);
-    // Clear BEFORE the await. swapForRetry can await a dynamic import of
-    // model-catalog (hundreds of ms on a cold chunk, seconds on first load
-    // after boot) and nothing disables the attach button, the file input or the
-    // paste listener meanwhile — so anything attached in that window was
-    // dropped by clearFiles() after the send had already snapshotted the file
-    // list, and the chip vanished with no indication it had ever been added.
+    // Clear BEFORE the await. Nothing disables the attach button, the file
+    // input or the paste listener while awaiting — so anything attached in
+    // that window would be dropped by clearFiles() after the send had already
+    // snapshotted the file list, and the chip vanished with no indication it
+    // had ever been added.
     files.clearFiles();
-    const model = await swapForRetry(meta.model);
+    const model = meta.model;
     emit(msg, textFiles, imageFiles, mode, meta.effort?.toLowerCase(), model?.key);
     clearRef.current?.();
   };
@@ -533,7 +491,6 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             <PromptBar
             conversationState={isWorking ? "thinking" : lastUserMessage ? "chat" : "initial"}
             footerProject={<WorkspaceSwitcher />}
-            quotaIndicator={<QuotaIndicator />}
             onOpenConnectors={() => setMcpOpen(true)}
             modes={MODES}
             defaultMode={agentMode}

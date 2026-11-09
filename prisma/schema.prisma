@@ -773,12 +773,17 @@ model McpTool {
 
 model MemoryFile {
   id        String   @id @default(cuid())
-  path      String   @unique
+  userId    String
+  path      String
   content   String   @db.Text
   version   Int      @default(1)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Per-user namespace: one user's files can never collide with or be read
+  // as another's (previously a global `path` key leaked across users).
+  @@unique([userId, path])
+  @@index([userId])
   @@map("memory_files")
 }
 

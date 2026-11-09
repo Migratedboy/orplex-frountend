@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { IconSearch, IconChat, IconHistory, IconSettings, IconAgent, IconTerminal, IconPlugins } from "./Icons";
+import { IconSearch, IconChat, IconSettings, IconAgent, IconTerminal, IconPlugins } from "./Icons";
 
 import { apiFetch } from "@/lib/api-base";
 // === Command model ===
@@ -37,7 +37,6 @@ interface CommandPaletteProps {
 // Flat icon helpers
 const NAV_ICONS: Record<string, React.ReactNode> = {
   "/": <IconChat size={14} />,
-  "/history": <IconHistory size={14} />,
   "/runs": <IconAgent size={14} />,
   "/plugins": <IconPlugins size={14} />,
   "/settings": <IconSettings size={14} />,
@@ -86,7 +85,6 @@ export default function CommandPalette({ open, onClose, onOpenPanel, onOpenRun }
     const navTargets: Array<[string, string, string]> = [
       ["/", "New Chat", "chat"],
       ["/runs", "Runs Board", "board kanban manager"],
-      ["/history", "History", "conversations past"],
       ["/plugins", "Plugins", "extensions"],
       ["/settings", "Settings", "preferences config"],
       ["/admin/system", "System Status", "admin hardware memory janitor pacer watchdog"],

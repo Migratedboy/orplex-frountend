@@ -19,6 +19,7 @@ const FilePreviewModal = dynamic(() => import("@/components/FilePreviewModal"), 
 const TodoBar = dynamic(() => import("@/components/TodoBar"), { ssr: false });
 const QuestionCard = dynamic(() => import("@/components/QuestionCard"), { ssr: false });
 const FirstRunExperience = dynamic(() => import("@/components/FirstRunExperience"), { ssr: false, loading: () => <WelcomeSkeleton /> });
+const WelcomeActions = dynamic(() => import("@/components/WelcomeActions"), { ssr: false });
 function LoadingMessages() {
   return (
     <div className="messages-scroll">
@@ -207,41 +208,9 @@ export default function ChatPage() {
         }}
       >
         {session.isEmpty ? (
-          <FirstRunExperience />
-        ) : (
-          <Suspense fallback={<LoadingMessages />}>
-            <MessageList
-              messages={session.messages}
-              agentEvents={session.agentEvents}
-              agentRunning={session.agentRunning}
-              runActive={session.isStreaming || fastLoading}
-              agentStatus={fastLoading ? "Fast model answering…" : session.agentStatus}
-              runPhase={fastLoading ? "streaming" : session.runPhase}
-              runLabel={fastLoading ? "Fast model answering…" : session.runLabel}
-              clarification={session.clarification}
-              clarificationAskCount={session.clarificationAskCount}
-              onAnswerClarification={session.answerQuestion}
-              onSkipClarification={session.skipClarification}
-              onFastAnswer={handleFastAnswer}
-              onRetryMessage={handleRetry}
-              retryingIdx={retryingIdx}
-            />
-          </Suspense>
-        )}
-
-        <TodoBar items={session.todos} />
-
-        {session.question && (
-          <QuestionCard
-            question={session.question.question}
-            options={session.question.options}
-            allowFreeText={session.question.allowFreeText}
-            onAnswer={(answer) => session.answerQuestion(answer)}
-            onSkip={() => session.answerQuestion("(skipped)")}
-          />
-        )}
-
-        <ChatInput
+          <div className="welcome-group">
+            <FirstRunExperience />
+            <ChatInput
           onSend={handleSend}
           onStop={session.stop}
           loading={session.loading}
@@ -260,14 +229,67 @@ export default function ChatPage() {
           onQueueAdd={session.addToQueue}
           onQueueRemove={session.removeFromQueue}
           onQueueClear={session.clearQueue}
-          failedModels={session.failedModels}
-          clearFailedModels={session.clearFailedModels}
           stopped={session.stopped}
-          onRetryModelSwap={(nextId, failed) => {
-            const label = failed[0] ?? "the previous model";
-            toast(`Model failed — retrying with ${nextId.split("/").pop() ?? nextId} (was ${label.split("/").pop() ?? label})`, "info");
-          }}
-        />
+            />
+            <WelcomeActions />
+            <p className="welcome-disc">Orplex Agent can make mistakes. Verify important information.</p>
+          </div>
+        ) : (
+          <>
+            <Suspense fallback={<LoadingMessages />}>
+              <MessageList
+                messages={session.messages}
+                agentEvents={session.agentEvents}
+                agentRunning={session.agentRunning}
+                runActive={session.isStreaming || fastLoading}
+                agentStatus={fastLoading ? "Fast model answering…" : session.agentStatus}
+                runPhase={fastLoading ? "streaming" : session.runPhase}
+                runLabel={fastLoading ? "Fast model answering…" : session.runLabel}
+                clarification={session.clarification}
+                clarificationAskCount={session.clarificationAskCount}
+                onAnswerClarification={session.answerQuestion}
+                onSkipClarification={session.skipClarification}
+                onFastAnswer={handleFastAnswer}
+                onRetryMessage={handleRetry}
+                retryingIdx={retryingIdx}
+              />
+            </Suspense>
+
+            <TodoBar items={session.todos} />
+
+            {session.question && (
+              <QuestionCard
+                question={session.question.question}
+                options={session.question.options}
+                allowFreeText={session.question.allowFreeText}
+                onAnswer={(answer) => session.answerQuestion(answer)}
+                onSkip={() => session.answerQuestion("(skipped)")}
+              />
+            )}
+
+            <ChatInput
+              onSend={handleSend}
+              onStop={session.stop}
+              loading={session.loading}
+              agentRunning={session.agentRunning}
+              isStreaming={session.isStreaming}
+              runPhase={session.runPhase}
+              requestStartedAt={session.bgTask?.startedAt}
+              agentEvents={session.agentEvents}
+              turnActive={session.turnActive}
+              agentMode={agentMode}
+              onModeChange={setAgentMode}
+              conversationId={session.conversationId}
+              onFastAnswer={handleFastAnswer}
+              lastUserMessage={session.messages.filter(m => m.role === "user").pop()?.content}
+              queue={session.queue}
+              onQueueAdd={session.addToQueue}
+              onQueueRemove={session.removeFromQueue}
+              onQueueClear={session.clearQueue}
+              stopped={session.stopped}
+            />
+          </>
+        )}
 
       {showPreview && <FilePreviewModal files={[]} onRemove={() => {}} onClose={() => setShowPreview(false)} />}
 

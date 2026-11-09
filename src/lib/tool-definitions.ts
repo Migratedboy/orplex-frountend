@@ -767,13 +767,13 @@ export const M3_TOOL_DEFINITIONS = [
  * family (inspect, create, execute, plan, lookup, browse) with the cheapest
  * schemas, so constrained models stay fully capable.
  */
-export const COMPACT_TOOL_PROVIDERS = ["groq", "nvidia"];
+export const COMPACT_TOOL_PROVIDERS = ["nvidia"];
 
 /**
  * Providers known to handle the full schema array (large context / billed
  * tiers). Everything NOT in this list OR in COMPACT_TOOL_PROVIDERS gets the
- * lean set. Lean is now safe for MCP: every provider (including lean groq/
- * nvidia and any BYOK endpoint) still gets the generic mcp_call built-in +
+ * lean set. Lean is now safe for MCP: every provider (including lean nvidia
+ * and any BYOK endpoint) still gets the generic mcp_call built-in +
  * the search/describe discovery tools, so MCP is never blind on any provider.
  * Default-compact for truly-unknown endpoints is deliberate (unknown TPM
  * ceiling), but MCP capability is preserved via mcp_call.
@@ -795,29 +795,35 @@ export const FULL_TOOL_PROVIDERS = [
 /** Which schema array a provider config gets. Matches platform keys, key-pool
  *  entries ("<id>-pool"), BYOK personal keys ("<id>-personal"), display
  *  labels ("NVIDIA NIM") — known full-tier ids get the full set.
- * Anything in COMPACT_TOOL_PROVIDERS (groq, nvidia) gets the lean set.
+ * Anything in COMPACT_TOOL_PROVIDERS (nvidia) gets the lean set.
  * Everything else (incl. BYOK providers served via OpenRouter, or unknown
- * endpoints) gets the full set — EXCEPT groq/nvidia, which are explicitly
- * lean because their free-tier TPM cap (~8k/min) 413s the full schema array.
+ * endpoints) gets the full set.
  * Lean providers still get mcp_call + discovery tools, so MCP always works.
  */
 export function usesCompactTools(providerName: string): boolean {
   const n = (providerName || "").toLowerCase();
   // Known full-tier providers (incl. OpenRouter — the path for most BYOK).
   if (FULL_TOOL_PROVIDERS.some((p) => n.includes(p))) return false;
-  // Explicitly lean: tight-TPM free tiers where the full schema array 413s.
+  // Explicitly lean: tight-TPM free tier where the full schema array 413s.
   if (COMPACT_TOOL_PROVIDERS.some((p) => n.includes(p))) return true;
   // Default-full for any other endpoint (incl. unknown/custom BYOK):
   // MCP is fully available (per-tool defs + mcp_call + discovery), and the
   // lean-set safety net (mcp_call) is there if a future endpoint turns out
-  // to be TPM-constrained. Only groq/nvidia are forced lean.
+  // to be TPM-constrained. Only nvidia is forced lean (Groq removed 2026-11).
   return false;
 }
-export const GROQ_TOOL_NAMES = [
+
+/**
+ * Lean roster for tight-TPM lanes (NVIDIA NIM free tier). Every entry is
+ * text-light, matches the prompt's capabilities, and keeps MCP reachable via
+ * the universal `mcp_call` + discovery tools. Formerly `GROQ_TOOL_NAMES`
+ * (kept behaviour, de-branded when Groq was removed).
+ */
+export const LEAN_TOOL_NAMES = [
   "read_file",
   // Archive extraction is text-light (path in, a short file list out) and is
   // the ONLY way an attached .zip becomes usable, so lean lanes must have it
-  // too — otherwise attaching a zip dead-ends on Groq/NVIDIA.
+  // too — otherwise attaching a zip dead-ends on NVIDIA.
   "extract_archive",
   "list_files",
   "write_file",
@@ -847,9 +853,9 @@ export const GROQ_TOOL_NAMES = [
   "browser_wait_for",
   // Screenshot stays callable on lean lanes too: captures auto-attach inline
   // in chat + feed the vision channel, so "take a screenshot" never dead-ends
-  // on Groq/NVIDIA the way browsing used to.
+  // on NVIDIA the way browsing used to.
   "browser_screenshot",
-  // Universal MCP caller — always available, even on lean/groq/nvidia and
+  // Universal MCP caller — always available, even on lean/nvidia and
   // any BYOK endpoint, so MCP is never blind on any provider. Takes a
   // connected server id + tool name + arguments and dispatches through the
   // same risk gate + lane as a direct mcp__ call. Use mcp_search_tools /
@@ -867,6 +873,6 @@ export const GROQ_TOOL_NAMES = [
   "spawn_subagent",
 ] as const;
 
-export const GROQ_TOOL_DEFINITIONS = M3_TOOL_DEFINITIONS.filter((t: any) =>
-  (GROQ_TOOL_NAMES as readonly string[]).includes(t?.function?.name)
+export const LEAN_TOOL_DEFINITIONS = M3_TOOL_DEFINITIONS.filter((t: any) =>
+  (LEAN_TOOL_NAMES as readonly string[]).includes(t?.function?.name)
 );

@@ -1,115 +1,26 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useFileSystemContext } from "./FileSystemProvider";
+import { useSession } from "next-auth/react";
 
-// FirstRunExperience.tsx — the empty-chat hero, Codex-style.
+// FirstRunExperience.tsx — the empty-chat hero, Claude-style composition.
 //
-// Deliberately almost empty: centered logo, "Let's build with Orplex", and
-// one quiet pill. The pill IS the first-run action — "Open folder" until a
-// workspace is mapped, then it becomes the project chip. Advanced tools
-// (Manager, browser, terminal) stay discoverable behind a muted toggle.
-// The prompt bar, MCP controls, and the project control beside it are
-// untouched — this component only owns the empty state above them.
-
-// One-click openers for the empty state. Each drops its text straight into the
-// composer (see the orplex:prefill-prompt listener in PromptBar) so the first
-// action is a click, not a blank box to stare at.
-const STARTERS = [
-  { icon: "bolt", label: "Build a Pomodoro timer", text: "Build a Pomodoro timer with adjustable focus and break lengths." },
-  { icon: "account_tree", label: "Map this repo", text: "Map this repository: entry points, the main modules, and how data flows between them." },
-  { icon: "bug_report", label: "Find a bug to fix", text: "Look through this project for the highest-impact bug and show me the fix." },
-];
-
-const ADVANCED_ITEMS = [
-  { id: "manager", icon: "dashboard", label: "Agent Manager", hint: "Run parallel agents on a board", href: "/manager" },
-  { id: "preview", icon: "language", label: "Built-in browser", hint: "Real Chromium the agent can drive", panel: "preview" },
-  { id: "terminal", icon: "terminal", label: "Terminal", hint: "A real shell in the sidebar", panel: "terminal" },
-];
+// Mascot + personal greeting ("Back at it, {name}") centred above the
+// untouched prompt composer; the quick-action toolbar lives BELOW the
+// composer (WelcomeActions, rendered by page.tsx). The old starter pills,
+// Explore-advanced toggle and Take-the-tour button are gone from this
+// surface (the tour still auto-runs once via AppLayout).
 
 export default function FirstRunExperience() {
-  const { directoryName, openFolder } = useFileSystemContext();
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
-  // Ctrl+O opens the folder from the hero pill's keyboard hint.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {
-        e.preventDefault();
-        void openFolder();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [openFolder]);
-
-  const hasWorkspace = Boolean(directoryName);
+  const { data: session } = useSession();
+  const firstName = session?.user?.name?.trim().split(" ")[0];
+  const greeting = firstName ? `Back at it, ${firstName}` : "Back at it";
 
   return (
     <div className="empty-hero">
-      <div className="empty-hero-center">
+      <div className="empty-hero-center empty-hero-greeting">
         {/* eslint-disable-next-line @next/next/no-img-element -- SVG logo: next/image cannot optimize SVG without dangerouslyAllowSVG, which Next.js advises against */}
         <img src="/logo.svg" alt="" aria-hidden="true" className="empty-hero-logo" width={44} height={44} />
-        <h1 className="empty-hero-title">Let&apos;s build with Orplex</h1>
-
-        <button
-          className={`empty-hero-pill ${hasWorkspace ? "empty-hero-pill--project" : ""}`}
-          onClick={() => { if (!hasWorkspace) void openFolder(); }}
-          title={hasWorkspace ? `${directoryName} is mapped — the AI can read and edit it` : "Choose a project folder for the AI to work in"}
-        >
-          <span className="ms ms-sm">{hasWorkspace ? "folder_open" : "create_new_folder"}</span>
-          <span className="empty-hero-pill-label">{hasWorkspace ? directoryName : "Open folder"}</span>
-          {!hasWorkspace && <kbd className="empty-hero-kbd">Ctrl+O</kbd>}
-        </button>
-
-        <div className="empty-hero-starters">
-          {STARTERS.map((s) => (
-            <button
-              key={s.label}
-              type="button"
-              className="empty-hero-starter"
-              onClick={() => window.dispatchEvent(new CustomEvent("orplex:prefill-prompt", { detail: { text: s.text } }))}
-            >
-              <span className="ms ms-sm">{s.icon}</span>
-              <span>{s.label}</span>
-            </button>
-          ))}
-        </div>
-
-        <div className="empty-hero-advanced">
-          <button className="empty-hero-advanced-toggle" onClick={() => setShowAdvanced(s => !s)}>
-            <span className="ms ms-sm">{showAdvanced ? "expand_less" : "expand_more"}</span>
-            {showAdvanced ? "Hide advanced tools" : "Explore the advanced tools"}
-          </button>
-          {showAdvanced && (
-            <div className="empty-hero-advanced-grid">
-              {ADVANCED_ITEMS.map(item => (
-                <a
-                  key={item.id}
-                  className="empty-hero-advanced-item"
-                  href={item.href}
-                  onClick={(e) => {
-                    if (item.panel) {
-                      e.preventDefault();
-                      window.dispatchEvent(new CustomEvent("orplex:open-panel", { detail: { tab: item.panel } }));
-                    }
-                  }}
-                >
-                  <span className="ms ms-sm">{item.icon}</span>
-                  <span>
-                    <strong>{item.label}</strong>
-                    <em>{item.hint}</em>
-                  </span>
-                </a>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <button className="empty-hero-advanced-toggle" onClick={() => window.dispatchEvent(new CustomEvent("orplex:open-tutorial"))}>
-          <span className="ms ms-sm">explore</span>
-          Take the tour
-        </button>
+        <h1 className="empty-hero-title">{greeting}</h1>
       </div>
     </div>
   );

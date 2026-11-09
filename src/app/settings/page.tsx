@@ -265,7 +265,7 @@ export default function SettingsPage() {
                     </div>
                     <div className="settings-about-item">
                       <span className="settings-about-label">AI Backend</span>
-                      <span className="settings-about-value">Multi-provider (Groq, Claude, Gemini, +9)</span>
+                      <span className="settings-about-value">Multi-provider (OpenRouter, NVIDIA, Claude, Gemini)</span>
                     </div>
                   </div>
                   <UpdateCheckRow />

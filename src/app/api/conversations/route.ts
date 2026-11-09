@@ -180,7 +180,22 @@ export async function POST(request: NextRequest) {
       });
     } else {
       const firstUserMsg = messages.find((m: { role: string }) => m.role === "user");
-      const title = firstUserMsg?.content?.slice(0, 60) || "New Chat";
+      // First-prompt title (mirrors cleanTitleText in the on-device store):
+      // first meaningful line, markup stripped, word-boundary cap.
+      const rawTitle = firstUserMsg?.content ?? "";
+      const firstLine =
+        rawTitle.split("\n").map((s: string) => s.trim()).find((s: string) => s.length > 1) ?? "";
+      const cleanedTitle = firstLine
+        .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
+        .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+        .replace(/[#*>`_~]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      const capped =
+        cleanedTitle.length > 60
+          ? `${(cleanedTitle.lastIndexOf(" ", 60) > 20 ? cleanedTitle.slice(0, cleanedTitle.lastIndexOf(" ", 60)) : cleanedTitle.slice(0, 60)).trim()}…`
+          : cleanedTitle;
+      const title = capped || "New Chat";
       conv = await prisma.conversation.create({
         data: {
           title,

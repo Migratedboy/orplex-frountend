@@ -215,19 +215,9 @@ export function useChatSession() {
 
   const queueRef = useRef<QueuedPrompt[]>([]);
   const thinkingRef = useRef(false);
-  // === Auto-retry after a model failure ===================================
-  // When a task fails, the model it ran on is recorded HERE (per conversation,
-  // most recent first). The composer consumes the list ONCE: on the next
-  // send it swaps the failed model for the next probe-verified model
-  // (pickRetryModel) and clears the entry. Cleared on success, Stop, and
-  // new task — a working conversation never carries a stale failure.
-  const [failedModels, setFailedModels] = useState<Record<string, string[]>>({});
-  const failedModelsRef = useRef<Record<string, string[]>>({});
-
   // Keep refs in sync
   useEffect(() => { queueRef.current = queue; }, [queue]);
   useEffect(() => { thinkingRef.current = thinking; }, [thinking]);
-  useEffect(() => { failedModelsRef.current = failedModels; }, [failedModels]);
   convoIdRef.current = convo.conversationId; // render-time sync — always current
   useEffect(() => { convoIdRef.current = convo.conversationId; }, [convo.conversationId]);
 
@@ -445,28 +435,6 @@ export function useChatSession() {
             }
             return updated;
           });
-        }
-
-        // Record / clear model failures for the auto-retry. Only REAL model
-        // failures count (not user Stops, not cancellations); any later
-        // success, stop, or new task wipes the trail so a healthy
-        // conversation never swaps the user's model without cause.
-        if (task && (task.status === "done" || task.status === "error" || !task)) {
-          const convoKey = task?.conversationId ?? convoIdRef.current ?? "";
-          if (task?.status === "error" && !task.aborted && task.model) {
-            setFailedModels(prev => {
-              const list = prev[convoKey] ?? [];
-              if (list[0] === task.model) return prev; // already recorded
-              return { ...prev, [convoKey]: [task.model!, ...list].slice(0, 4) };
-            });
-          } else if (convoKey && failedModelsRef.current[convoKey]) {
-            setFailedModels(prev => {
-              if (!(convoKey in prev)) return prev;
-              const next = { ...prev };
-              delete next[convoKey];
-              return next;
-            });
-          }
         }
 
         // Auto-dequeue: send the next prompt if one is queued — but NOT when
@@ -996,7 +964,6 @@ setRunLabel("No response — run stopped");
     agentStatus: bgTask?.statusDetail || agentStatus,
     newChat: () => {
     convo.newChat(); msg.clearMessages(); setAgentStatus(""); cancelQueue();
-      setFailedModels({}); // fresh chat → no failure trail anywhere
     },
     sendMessage,
     stop: () => {
@@ -1029,9 +996,6 @@ setRunLabel("No response — run stopped");
         setRunLabel("");
         phaseTimerRef.current = null;
       }, 1500);
-      // User pressed Stop — whatever failed before, THIS stop is the latest
-      // word. The auto-retry swap must not fire on the next send.
-      setFailedModels({});
     },
     agentEvents,
     agentRunning: (bgTask?.status === "streaming" || bgTask?.status === "tool_executing"),
@@ -1076,16 +1040,6 @@ setRunLabel("No response — run stopped");
     addToQueue,
     removeFromQueue,
     clearQueue,
-    // Auto-retry: models that failed in THIS conversation (most recent first)
-    // and a one-shot clearer the composer calls after consuming the swap.
-    failedModels: failedModels[convo.conversationId ?? ""] ?? [],
-    clearFailedModels: () => setFailedModels(prev => {
-      const key = convo.conversationId ?? "";
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    }),
     // One-click Retry: resend a failed exchange's ORIGINAL prompt (with its
     // stamped mode/effort/model/files). Uses the PUBLIC sendMessage so a
     // retry while another task runs queues instead of clobbering it. The old

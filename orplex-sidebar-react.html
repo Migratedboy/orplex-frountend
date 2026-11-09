@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orplex Code – Sidebar (React)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+:root{
+  --side:#1b1c1c; --main:#141515; --raise:#2c2d2d; --hover:#242525; --border:#2a2b2b;
+  --text:#e8e8e6; --muted:#8d8f8e; --accent:#F97316; --accent-soft:rgba(249,115,22,.18); --accent-text:#fdba74;
+  --pop:#222323; --shadow:0 8px 24px rgba(0,0,0,.45); --danger:#f87171;
+  --sans:Inter,"Segoe UI",system-ui,-apple-system,sans-serif;
+}
+:root[data-theme="light"]{
+  --side:#f6f5f3; --main:#ffffff; --raise:#e9e6e1; --hover:#eeece8; --border:#e4e1dc;
+  --text:#1c1c1b; --muted:#77756f; --accent-soft:rgba(249,115,22,.14); --accent-text:#c2410c;
+  --pop:#ffffff; --shadow:0 8px 24px rgba(0,0,0,.14); --danger:#dc2626;
+}
+*{box-sizing:border-box;margin:0}
+html,body,#root{height:100%}
+body{font-family:var(--sans);background:var(--main);color:var(--text);font-size:14px;overflow:hidden}
+svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+.app{display:flex;height:100%}
+.app.drag{cursor:col-resize;user-select:none}
+
+.sidebar{height:100%;background:var(--side);position:relative;flex:none;overflow:hidden;border-right:1px solid var(--border);
+  transition:width .22s ease}
+.app.drag .sidebar{transition:none}
+.sb-inner{height:100%;display:flex;flex-direction:column;padding:14px 10px 10px;min-width:220px}
+.grip{position:absolute;top:0;right:-3px;width:6px;height:100%;cursor:col-resize;z-index:5}
+.grip:hover,.app.drag .grip{background:var(--accent-soft)}
+
+.head{display:flex;align-items:center;gap:8px;padding:4px 6px 14px}
+.logo{display:flex;align-items:center;gap:9px;flex:1;min-width:0}
+.logo svg{width:26px;height:26px;shape-rendering:crispEdges}
+/* ---- 3D wordmark (subtle, upright) ---- */
+.wm{--tx:#f2f2f0;--ex:#3b3c3c;--exo:#8f3b06;--sh:rgba(0,0,0,.5);
+  font-size:19px;font-weight:800;letter-spacing:-.4px;white-space:nowrap;display:inline-flex;gap:.26em;
+  isolation:isolate;padding-bottom:4px;user-select:none}
+:root[data-theme="light"] .wm{--tx:#1c1c1b;--ex:#cbc7bf;--exo:#b8500c;--sh:rgba(0,0,0,.18)}
+.wm .w{position:relative;display:inline-block}
+.wm .w::before{content:attr(data-t);position:absolute;left:0;top:0;z-index:-1;pointer-events:none}
+.wm .w:not(.c){color:var(--tx)}
+.wm .w:not(.c)::before{color:var(--ex);text-shadow:1px 1px 0 var(--ex),2px 2px 0 var(--ex)}
+.wm .w.c{color:transparent;-webkit-text-fill-color:transparent;-webkit-background-clip:text;background-clip:text;
+  background-image:linear-gradient(180deg,#ffa75a 0%,#F97316 55%,#ea5f0b 100%)}
+.wm .w.c::before{-webkit-text-fill-color:var(--exo);color:var(--exo);
+  text-shadow:1px 1px 0 var(--exo),2px 2px 0 var(--exo),3px 4px 3px var(--sh)}
+.ibtn{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--muted);flex:none}
+.ibtn:hover{background:var(--hover);color:var(--text)}
+.search{margin:0 4px 8px}
+.search input{width:100%;height:34px;border-radius:8px;border:1px solid var(--border);background:var(--main);color:var(--text);padding:0 10px;font:inherit;outline:none}
+.search input:focus{border-color:var(--accent)}
+
+.scroll{flex:1;overflow-y:auto;overflow-x:hidden;margin:0 -4px;padding:0 4px}
+.scroll::-webkit-scrollbar{width:6px}
+.scroll::-webkit-scrollbar-thumb{background:var(--raise);border-radius:6px}
+
+.row{display:flex;align-items:center;gap:10px;width:100%;height:34px;padding:0 10px;border-radius:8px;text-align:left;color:var(--text);position:relative;cursor:pointer;outline:none}
+.row:hover,.row:focus-visible{background:var(--hover)}
+.row.active{background:var(--raise)}
+.row:focus-visible{box-shadow:0 0 0 2px var(--accent) inset}
+.row .lbl{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row>.i{color:var(--muted)}
+.row:hover>.i,.row.active>.i{color:var(--text)}
+.row mark{background:var(--accent-soft);color:var(--accent-text);border-radius:3px}
+.row.dim{color:var(--muted)}
+.row input{flex:1;min-width:0;height:24px;border-radius:6px;border:1px solid var(--accent);background:var(--main);color:var(--text);font:inherit;padding:0 6px;outline:none}
+.badge{font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;background:var(--accent-soft);color:var(--accent-text)}
+.label{font-size:13px;color:var(--muted);padding:18px 10px 6px;display:flex;align-items:center}
+.label .ibtn{width:22px;height:22px;margin-left:auto}
+.chats{padding-left:6px}
+.chats .row{height:32px}
+.br{width:15px!important;height:15px!important;opacity:.55}
+.more{width:24px;height:24px;border-radius:6px;display:none;place-items:center;color:var(--muted)}
+.more:hover{background:var(--raise);color:var(--text)}
+.row:hover .more,.row.menu .more{display:grid}
+.row:hover .br,.row.menu .br{display:none}
+.empty{padding:6px 10px 6px 38px;color:var(--muted);font-size:13px}
+.link{padding:6px 10px 6px 38px;color:var(--muted);font-size:13px;text-decoration:underline;text-underline-offset:3px;cursor:pointer;display:block;width:100%;text-align:left}
+.link:hover{color:var(--text)}
+.chev{width:14px!important;height:14px!important;transition:transform .15s}
+.kids{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}
+.kids.open{grid-template-rows:1fr}
+.kids>div{overflow:hidden}
+
+.foot{padding-top:8px}
+.usage{display:flex;flex-direction:column;gap:6px;padding:8px 10px 10px}
+.usage .t{display:flex;justify-content:space-between;font-size:12.5px;color:var(--muted)}
+.bar{height:4px;border-radius:4px;background:var(--raise);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);border-radius:4px;min-width:3px}
+.user{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px}
+.user:hover{background:var(--hover)}
+.av{width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:700;font-size:13px}
+.user .n{flex:1;line-height:1.15;min-width:0}
+.user .n b{display:block;font-size:13.5px}
+.user .n small{color:var(--muted);font-size:11.5px}
+
+.tip,.menu{position:fixed;z-index:30;background:var(--pop);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}
+.tip{min-width:230px;pointer-events:none;animation:fade .12s}
+.tip .a{padding:11px 14px;font-weight:600;font-size:13.5px;display:flex;gap:10px;align-items:center}
+.tip .b{padding:10px 14px;border-top:1px solid var(--border);color:var(--muted);font-size:13px;display:flex;gap:10px;align-items:center}
+.tip svg,.menu svg{width:15px;height:15px}
+.menu{min-width:170px;padding:5px;animation:fade .1s}
+.menu button{display:flex;gap:10px;align-items:center;width:100%;padding:8px 10px;border-radius:7px;font-size:13.5px;text-align:left}
+.menu button:hover{background:var(--hover)}
+.menu button.del{color:var(--danger)}
+@keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.top{height:52px;display:flex;align-items:center;gap:10px;padding:0 14px}
+.top .sp{flex:1}
+.stage{flex:1;display:grid;place-items:center;color:var(--muted);text-align:center;padding:20px}
+.stage h1{color:var(--text);font-size:22px;margin-bottom:6px}
+kbd{font:inherit;font-size:12px;border:1px solid var(--border);border-radius:5px;padding:1px 6px;background:var(--hover)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo, useRef, useCallback, Fragment } = React;
+
+/* ================= data (swap with real store) ================= */
+const INIT_PROJECTS = [
+  { id: 'p1', name: 'terminal', open: true },
+  { id: 'p2', name: 'orplex-web', open: false },
+  { id: 'p3', name: 'qwen coder', open: false },
+];
+const INIT_CHATS = [
+  { id: 'c1', pid: 'p1', t: 'Fix terminal.js read error', branch: true },
+  { id: 'c2', pid: 'p1', t: 'Model rejected the request', branch: true },
+  { id: 'c3', pid: 'p1', t: 'Electron self-update', branch: true },
+  { id: 'c4', pid: 'p3', t: 'Old qwen experiment', archived: true },
+  { id: 'c5', pid: null, t: 'Explain this repo' },
+];
+const AGENTS = [
+  { id: 'am', label: 'Agent Manager', icon: 'flow' },
+  { id: 'rb', label: 'Runs Board', icon: 'board' },
+];
+const NAV = [
+  { id: 'new', label: 'New Chat', icon: 'newchat' },
+  { id: 'proj', label: 'New project', icon: 'newproj' },
+  { id: 'hist', label: 'History', icon: 'history' },
+  { id: 'plug', label: 'Plugins', icon: 'plug' },
+  { id: 'mem', label: 'Memory', icon: 'mem' },
+];
+
+/* ================= helpers ================= */
+const store = {
+  get: (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const uid = () => Math.random().toString(36).slice(2, 9);
+
+const PATHS = {
+  search:'<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  panel:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
+  newchat:'<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a1 1 0 0 1 3 3l-9 9a2 2 0 0 1-.9.5l-2.9.8a.5.5 0 0 1-.6-.6l.8-2.9a2 2 0 0 1 .5-.9z"/>',
+  newproj:'<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.6 3.9A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/><path d="M12 10v6M9 13h6"/>',
+  history:'<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+  flow:'<rect x="3" y="3" width="8" height="8" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect x="13" y="13" width="8" height="8" rx="2"/>',
+  board:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/>',
+  plug:'<path d="M12 22v-5M9 8V2M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/>',
+  mem:'<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>',
+  gear:'<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4"/>',
+  folder:'<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.6 3.9A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/>',
+  folderopen:'<path d="m6 14 1.5-2.9A2 2 0 0 1 9.2 10H20a2 2 0 0 1 1.9 2.5l-1.5 6a2 2 0 0 1-1.9 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H18a2 2 0 0 1 2 2v2"/>',
+  chat:'<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/>',
+  branch:'<path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+  clock:'<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  dots:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  edit:'<path d="M12 20h9"/><path d="M16.4 3.6a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  archive:'<rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/>',
+  trash:'<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
+  out:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+};
+const Icon = ({ n, className = '' }) => (
+  <svg className={'i ' + className} viewBox="0 0 24 24" dangerouslySetInnerHTML={{ __html: PATHS[n] }} />
+);
+
+/* swap this for your real orplex-mascot.svg if you want the exact one */
+const MASCOT = ['.....o.....','.....o.....','.ooooooooo.','ooooooooooo','ookoooookoo','ooooooooooo','.ooooooooo.','..o.....o..','..oo...oo..'];
+const Mascot = () => (
+  <svg viewBox="0 0 11 9">
+    {MASCOT.flatMap((r, y) => [...r].map((c, x) => c === '.' ? null :
+      <rect key={x + '-' + y} x={x} y={y} width="1.02" height="1.02" fill={c === 'k' ? '#1b1c1c' : '#F97316'} />))}
+  </svg>
+);
+
+const W = ({ t, c = '' }) => <span className={'w ' + c} data-t={t}>{t}</span>;
+
+const Hl = ({ text, q }) => {
+  if (!q) return text;
+  const i = text.toLowerCase().indexOf(q.toLowerCase());
+  if (i < 0) return text;
+  return <>{text.slice(0, i)}<mark>{text.slice(i, i + q.length)}</mark>{text.slice(i + q.length)}</>;
+};
+
+/* ================= pieces ================= */
+function NavRow({ icon, label, active, onClick, badge }) {
+  return (
+    <button className={'row' + (active ? ' active' : '')} onClick={onClick}>
+      <Icon n={icon} /><span className="lbl">{label}</span>
+      {badge && <span className="badge">{badge}</span>}
+    </button>
+  );
+}
+
+function ChatRow({ chat, q, active, menuOpen, renaming, onSelect, onMenu, onRename, onHover }) {
+  const [val, setVal] = useState(chat.t);
+  const key = e => {
+    if (e.key === 'Enter') onRename(chat.id, val.trim() || chat.t);
+    if (e.key === 'Escape') onRename(chat.id, chat.t);
+  };
+  return (
+    <div
+      className={'row' + (active ? ' active' : '') + (menuOpen ? ' menu' : '') + (chat.archived ? ' dim' : '')}
+      tabIndex={0} role="button"
+      onClick={() => !renaming && onSelect(chat.id)}
+      onKeyDown={e => e.key === 'Enter' && !renaming && onSelect(chat.id)}
+      onContextMenu={e => { e.preventDefault(); onMenu(chat.id, e.clientX, e.clientY); }}
+      onMouseEnter={e => onHover(chat, e.currentTarget.getBoundingClientRect())}
+      onMouseLeave={() => onHover(null)}
+    >
+      <Icon n="chat" />
+      {renaming
+        ? <input autoFocus value={val} onChange={e => setVal(e.target.value)} onKeyDown={key}
+            onBlur={() => onRename(chat.id, val.trim() || chat.t)} onClick={e => e.stopPropagation()} />
+        : <span className="lbl"><Hl text={chat.t} q={q} /></span>}
+      {!renaming && chat.branch && <Icon n="branch" className="br" />}
+      {!renaming && (
+        <button className="more" aria-label="Chat actions"
+          onClick={e => { e.stopPropagation(); const b = e.currentTarget.getBoundingClientRect(); onMenu(chat.id, b.left, b.bottom + 4); }}>
+          <Icon n="dots" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ChatMenu({ pos, chat, onAct, onClose }) {
+  useEffect(() => {
+    const close = () => onClose();
+    window.addEventListener('mousedown', close);
+    window.addEventListener('blur', close);
+    return () => { window.removeEventListener('mousedown', close); window.removeEventListener('blur', close); };
+  }, []);
+  const x = Math.min(pos.x, window.innerWidth - 190), y = Math.min(pos.y, window.innerHeight - 170);
+  return (
+    <div className="menu" style={{ left: x, top: y }} onMouseDown={e => e.stopPropagation()}>
+      <button onClick={() => onAct('rename')}><Icon n="edit" />Rename</button>
+      <button onClick={() => onAct('fork')}><Icon n="branch" />Fork chat</button>
+      <button onClick={() => onAct('archive')}><Icon n="archive" />{chat.archived ? 'Restore' : 'Archive'}</button>
+      <button className="del" onClick={() => onAct('delete')}><Icon n="trash" />Delete</button>
+    </div>
+  );
+}
+
+/* ================= sidebar ================= */
+function Sidebar({ width, collapsed, onCollapse, onResizeStart, theme, onTheme }) {
+  const [projects, setProjects] = useState(() => store.get('orp.projects', INIT_PROJECTS));
+  const [chats, setChats] = useState(() => store.get('orp.chats', INIT_CHATS));
+  const [activeId, setActiveId] = useState('c1');
+  const [nav, setNav] = useState('new');
+  const [searchOn, setSearchOn] = useState(false);
+  const [q, setQ] = useState('');
+  const [menu, setMenu] = useState(null);       // {id,x,y}
+  const [renamingId, setRenamingId] = useState(null);
+  const [tip, setTip] = useState(null);         // {chat,rect}
+  const [showArchived, setShowArchived] = useState({});
+  const tipTimer = useRef();
+  const searchRef = useRef();
+
+  useEffect(() => store.set('orp.projects', projects), [projects]);
+  useEffect(() => store.set('orp.chats', chats), [chats]);
+
+  /* shortcuts */
+  useEffect(() => {
+    const k = e => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); onCollapse(false); setSearchOn(true); setTimeout(() => searchRef.current?.focus(), 30); }
+      if (e.key === 'Escape') { setMenu(null); if (searchOn) { setSearchOn(false); setQ(''); } }
+    };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [searchOn]);
+
+  const onHover = useCallback((chat, rect) => {
+    clearTimeout(tipTimer.current);
+    if (!chat) return setTip(null);
+    tipTimer.current = setTimeout(() => setTip({ chat, rect }), 350);
+  }, []);
+
+  const select = id => { setActiveId(id); setNav('new'); };
+  const newChat = () => {
+    const c = { id: uid(), pid: null, t: 'New chat' };
+    setChats(cs => [c, ...cs]); setActiveId(c.id); setNav('new'); setRenamingId(c.id);
+  };
+  const newProject = () => {
+    const name = window.prompt('Project name');
+    if (name && name.trim()) setProjects(ps => [...ps, { id: uid(), name: name.trim(), open: true }]);
+  };
+  const toggleProject = id => setProjects(ps => ps.map(p => p.id === id ? { ...p, open: !p.open } : p));
+  const rename = (id, t) => { setChats(cs => cs.map(c => c.id === id ? { ...c, t } : c)); setRenamingId(null); };
+  const menuAct = act => {
+    const id = menu.id; setMenu(null);
+    if (act === 'rename') setRenamingId(id);
+    if (act === 'fork') setChats(cs => { const c = cs.find(x => x.id === id); const n = { ...c, id: uid(), t: c.t + ' (fork)', branch: true, archived: false }; return [...cs.slice(0, cs.indexOf(c) + 1), n, ...cs.slice(cs.indexOf(c) + 1)]; });
+    if (act === 'archive') setChats(cs => cs.map(c => c.id === id ? { ...c, archived: !c.archived } : c));
+    if (act === 'delete') setChats(cs => cs.filter(c => c.id !== id));
+  };
+
+  const ql = q.trim().toLowerCase();
+  const match = c => !ql || c.t.toLowerCase().includes(ql);
+  const menuChat = menu && chats.find(c => c.id === menu.id);
+
+  const renderChat = c => (
+    <ChatRow key={c.id} chat={c} q={ql} active={c.id === activeId && nav === 'new'} menuOpen={menu?.id === c.id}
+      renaming={renamingId === c.id} onSelect={select}
+      onMenu={(id, x, y) => { setTip(null); setMenu({ id, x, y }); }} onRename={rename} onHover={onHover} />
+  );
+
+  const ungrouped = chats.filter(c => !c.pid && !c.archived && match(c));
+
+  return (
+    <aside className="sidebar" style={{ width: collapsed ? 0 : width, borderRightColor: collapsed ? 'transparent' : undefined }}>
+      <div className="sb-inner" style={{ width }}>
+        <div className="head">
+          <div className="logo"><Mascot /><b className="wm"><W t="Orplex" /><W t="Code" c="c" /></b></div>
+          <button className="ibtn" title="Search (Ctrl+K)" onClick={() => { setSearchOn(s => !s); setQ(''); setTimeout(() => searchRef.current?.focus(), 30); }}><Icon n="search" /></button>
+          <button className="ibtn" title="Collapse (Ctrl+B)" onClick={() => onCollapse(true)}><Icon n="panel" /></button>
+        </div>
+
+        {searchOn && (
+          <div className="search"><input ref={searchRef} value={q} onChange={e => setQ(e.target.value)} placeholder="Search conversations…" /></div>
+        )}
+
+        <div className="scroll" onScroll={() => setTip(null)}>
+          {!ql && <>
+            <NavRow icon="newchat" label="New Chat" active={nav === 'new' && false} onClick={newChat} />
+            <NavRow icon="newproj" label="New project" onClick={newProject} />
+            {NAV.slice(2).map(n => <NavRow key={n.id} icon={n.icon} label={n.label} active={nav === n.id} onClick={() => setNav(n.id)} />)}
+            <div className="label">Agents</div>
+            {AGENTS.map(a => <NavRow key={a.id} icon={a.icon} label={a.label} active={nav === a.id} onClick={() => setNav(a.id)} />)}
+          </>}
+
+          <div className="label">Projects</div>
+          {projects.map(p => {
+            const all = chats.filter(c => c.pid === p.id);
+            const live = all.filter(c => !c.archived && match(c));
+            const arch = all.filter(c => c.archived);
+            if (ql && !live.length) return null;
+            const open = p.open || !!ql;
+            return (
+              <div key={p.id}>
+                <button className="row" onClick={() => toggleProject(p.id)}>
+                  <Icon n={open ? 'folderopen' : 'folder'} /><span className="lbl">{p.name}</span>
+                </button>
+                <div className={'kids' + (open ? ' open' : '')}><div className="chats">
+                  {!live.length && <div className="empty">No chats yet</div>}
+                  {live.map(renderChat)}
+                  {!ql && arch.length > 0 && (
+                    <button className="link" onClick={() => setShowArchived(s => ({ ...s, [p.id]: !s[p.id] }))}>
+                      {arch.length} archived chat{arch.length > 1 ? 's' : ''}
+                    </button>
+                  )}
+                  {showArchived[p.id] && arch.map(renderChat)}
+                </div></div>
+              </div>
+            );
+          })}
+
+          {ungrouped.length > 0 && <>
+            <div className="label">Chats</div>
+            <div className="chats">{ungrouped.map(renderChat)}</div>
+          </>}
+          {ql && !ungrouped.length && !projects.some(p => chats.some(c => c.pid === p.id && !c.archived && match(c))) &&
+            <div className="empty" style={{ paddingLeft: 10 }}>No matches</div>}
+        </div>
+
+        <div className="foot">
+          <div className="usage">
+            <div className="t"><span>Daily requests</span><span>2/1000</span></div>
+            <div className="bar"><i style={{ width: '0.2%' }} /></div>
+          </div>
+          <NavRow icon="gear" label="Settings" active={nav === 'set'} onClick={() => setNav('set')} />
+          <div className="user">
+            <div className="av">C</div>
+            <div className="n"><b>chand</b><small>chandyash400</small></div>
+            <button className="ibtn" title="Theme" onClick={onTheme}><Icon n="sun" /></button>
+            <button className="ibtn" title="Log out"><Icon n="out" /></button>
+          </div>
+        </div>
+      </div>
+
+      {!collapsed && <div className="grip" onMouseDown={onResizeStart} />}
+
+      {tip && !menu && (
+        <div className="tip" style={{ left: tip.rect.right + 14, top: tip.rect.top - 6 }}>
+          <div className="a"><Icon n="chat" /><span>{tip.chat.t}</span></div>
+          <div className="b"><Icon n="clock" /><span>Stored on this device</span></div>
+        </div>
+      )}
+      {menu && menuChat && <ChatMenu pos={menu} chat={menuChat} onAct={menuAct} onClose={() => setMenu(null)} />}
+    </aside>
+  );
+}
+
+/* ================= app shell (demo) ================= */
+function App() {
+  const [collapsed, setCollapsed] = useState(() => store.get('orp.collapsed', false));
+  const [width, setWidth] = useState(() => store.get('orp.width', 272));
+  const [theme, setTheme] = useState(() => store.get('orp.theme', 'dark'));
+  const [drag, setDrag] = useState(false);
+
+  useEffect(() => { document.documentElement.dataset.theme = theme; store.set('orp.theme', theme); }, [theme]);
+  useEffect(() => store.set('orp.collapsed', collapsed), [collapsed]);
+  useEffect(() => store.set('orp.width', width), [width]);
+  useEffect(() => {
+    const k = e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); setCollapsed(c => !c); } };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, []);
+
+  const startResize = e => {
+    e.preventDefault(); setDrag(true);
+    const move = ev => setWidth(Math.max(220, Math.min(420, ev.clientX)));
+    const up = () => { setDrag(false); window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+  };
+
+  return (
+    <div className={'app' + (drag ? ' drag' : '')}>
+      <Sidebar width={width} collapsed={collapsed} onCollapse={setCollapsed} onResizeStart={startResize}
+        theme={theme} onTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />
+      <div className="main">
+        <div className="top">
+          {collapsed && <button className="ibtn" title="Open sidebar (Ctrl+B)" onClick={() => setCollapsed(false)}><Icon n="panel" /></button>}
+          <div className="sp" />
+        </div>
+        <div className="stage"><div>
+          <h1>New Chat</h1>
+          <p>Hover a chat · right-click or <b>⋯</b> for actions · drag the edge to resize<br /><br />
+            <kbd>Ctrl</kbd>+<kbd>K</kbd> search &nbsp; <kbd>Ctrl</kbd>+<kbd>B</kbd> collapse</p>
+        </div></div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

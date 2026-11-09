@@ -13,8 +13,10 @@ export const FREE_TIER = {
   DAILY_LIMIT: FREE_TIER_DAILY_LIMIT,
   /** Max tokens per prompt */
   MAX_TOKENS_PER_PROMPT: 4096,
-  /** Allowed models (free tier only gets the verified-live Groq flagship) */
-  ALLOWED_MODELS: ["openai/gpt-oss-120b"] as const,
+  /** Allowed models (free tier: the always-free router only. Groq removed
+   * 2026-11-09 — the old Groq flagship id is PAID on OpenRouter now, so it
+   * must never be the free default.) */
+  ALLOWED_MODELS: ["openrouter/free"] as const,
   /** Max file uploads per prompt */
   MAX_FILE_UPLOADS: 5,
   /** Max conversation length */

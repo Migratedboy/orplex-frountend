@@ -60,19 +60,9 @@ export interface ProviderDef {
 }
 
 const PROVIDERS: ProviderDef[] = [
-  {
-    id: "groq",
-    label: "Groq",
-    tagline: "Blazing LPU inference, generous free tier",
-    baseUrl: "https://api.groq.com/openai/v1",
-    authStyle: "bearer",
-    keyEnvVar: "GROQ_API_KEY",
-    keyPrefix: "gsk_",
-    keyHintUrl: "https://console.groq.com/keys",
-    fallbackModel: "openai/gpt-oss-120b",
-    free: true,
-    probeSpacingMs: 1_500,
-  },
+  // NOTE: Groq was removed (2026-11-09) — free-tier lane dropped; OpenRouter
+  // (free router) + NVIDIA NIM cover the free/default path. MiniMax M3.1
+  // Flash is the user-requested opt-in row in default-models.ts.
   {
     id: "nvidia",
     label: "NVIDIA NIM",
@@ -98,11 +88,11 @@ const PROVIDERS: ProviderDef[] = [
     keyEnvVar: "OPENROUTER_API_KEY",
     keyPrefix: "sk-or-",
     keyHintUrl: "https://openrouter.ai/settings/keys",
-    fallbackModel: "qwen/qwen3.8-27b:free",
+    fallbackModel: "openrouter/free",
     extraHeaders: { "HTTP-Referer": "https://orplex.tech", "X-Title": "Orplex" },
     // OpenRouter was the ONLY provider without spacing, so its models were
     // swept in a 6-wide burst against a free tier with a very low RPM ceiling
-    // — a self-inflicted rate-limit storm. Space it like Groq.
+    // — a self-inflicted rate-limit storm. Keep probe spacing on.
     probeSpacingMs: 1_500,
     // OpenRouter aggregates 400+ models (paid AND :free). Never cap it low —
     // that is what used to hide free models from the picker.

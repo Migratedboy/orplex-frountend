@@ -9,7 +9,7 @@
  */
 import { parseContent } from "../message-content";
 import { CLARIFICATION_SKIP, deriveRunPhase, type BackgroundTask, type TaskStatus } from "../background-chat";
-import { M3_TOOL_DEFINITIONS, GROQ_TOOL_NAMES } from "../tool-definitions";
+import { M3_TOOL_DEFINITIONS, LEAN_TOOL_NAMES } from "../tool-definitions";
 
 function markerLine(payload: Record<string, unknown>): string {
   return `[CLARIFIED]:${JSON.stringify(payload)}`;
@@ -108,18 +108,18 @@ describe("tool roster", () => {
     const def = M3_TOOL_DEFINITIONS.find((t: any) => t.function?.name === "ask_clarification");
     expect(def).toBeDefined();
     expect(def?.function?.parameters?.required).toEqual(["question", "context"]);
-    expect(GROQ_TOOL_NAMES).toContain("ask_clarification");
+    expect(LEAN_TOOL_NAMES).toContain("ask_clarification");
   });
 
   it("exports a skip sentinel distinct from any real answer", () => {
     expect(CLARIFICATION_SKIP).toBe("__orplex_clarification_skip__");
   });
 
-  it("keeps the playbook tools in the lean (Groq/NVIDIA) set", () => {
+  it("keeps the playbook tools in the lean (NVIDIA) set", () => {
     // Lean lanes render the ## PLAYBOOK block, so the tools must be callable
     // there too — a typo here would silently drop them from the lean roster.
     for (const name of ["playbook_search", "skill_create", "session_search"]) {
-      expect(GROQ_TOOL_NAMES).toContain(name);
+      expect(LEAN_TOOL_NAMES).toContain(name);
       expect(M3_TOOL_DEFINITIONS.some((t: any) => t.function?.name === name)).toBe(true);
     }
   });

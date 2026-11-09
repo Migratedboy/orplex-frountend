@@ -198,7 +198,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 
 /* ===== TOPBAR ===== */
 /* Keep the header tint subtle while preserving the solid canvas beneath it. */
-.topbar-header { position:fixed; top:0; left:256px; right:0; height:64px; background:transparent; display:flex; align-items:center; justify-content:space-between; padding:0 24px;  z-index:40; border-bottom:none; box-shadow:none; --tb-tint:255,255,255; --tb-a1:.94; --tb-a2:.78; }
+.topbar-header { position:fixed; top:0; left:var(--sb-w, 272px); right:0; height:64px; background:transparent; display:flex; align-items:center; justify-content:space-between; padding:0 24px;  z-index:40; border-bottom:none; box-shadow:none; --tb-tint:255,255,255; --tb-a1:.94; --tb-a2:.78; }
 /* The glass is a FEATHERED layer, not a slab. Tint and blur both fade to
    nothing at the bottom edge, so the bar dissolves into the chat instead of
    drawing a line where blurred glyphs meet crisp ones. A border or shadow here
@@ -249,7 +249,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .notif-dropdown-time { font-size:10px; color:#5f5e5e; margin-top:4px; font-family:'JetBrains Mono',monospace; }
 
 /* ===== MAIN CONTENT ===== */
-.main-content { margin-left:256px; padding-top:64px; min-height:100vh; display:flex; flex-direction:column; flex:1; transition:margin-right 0.25s cubic-bezier(0.4,0,0.2,1), margin-left 0.25s cubic-bezier(0.4,0,0.2,1); }
+.main-content { margin-left:0; padding-top:64px; min-height:100vh; display:flex; flex-direction:column; flex:1; transition:margin-right 0.25s cubic-bezier(0.4,0,0.2,1), margin-left 0.25s cubic-bezier(0.4,0,0.2,1); }
 .main-content.rp-open { margin-right:var(--rp-w, 620px); }
 .main-content.rp-open.rp-resizing { transition:none; }
 
@@ -260,7 +260,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
    only — mobile already hides the sidebar. */
 @media (min-width: 768px) {
   .topbar-header { transition:left 0.25s cubic-bezier(0.4,0,0.2,1); }
-  .app-root.left-hidden .sidebar-nav { display:none; }
+  .app-root.left-hidden .app-sidebar { display:none; }
   .app-root.left-hidden .main-content { margin-left:0; }
   .app-root.left-hidden .topbar-header { left:0; }
 }
@@ -289,7 +289,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 /* flip carries translate(-50%,-86.25%) so the walker's feet line (the SVG's
    86.25% height mark) sits on the border point; scaleX(±1) is rewritten
    per-frame for the travel direction (moonwalk flips it upside-down-face). */
-.walking-mascot__flip { position:absolute; left:0; top:0; width:30px; height:30px; transform:translate(-50%,-86.25%); }
+.walking-mascot__flip { position:absolute; left:0; top:0; width:30px; height:30px; transform:translate(-50%,-50%); }
 .walking-mascot__svg { display:block; }
 
 @keyframes welcome-fade-up { from{opacity:0; transform:translateY(12px)} to{opacity:1; transform:translateY(0)} }
@@ -1573,14 +1573,7 @@ hr:has(+ .prompt-meter) { display:none; }
 .project-row-active .project-folder-icon { color:#a04100; }
 .project-row-ghost .project-name { color:#595959; }
 .project-row-ghost .project-name:hover { color:#5f5e5e; }
-.project-ghost-hint { font-size:9px; font-family:'JetBrains Mono',monospace; color:#595959; border:1px solid #e4e4e7; border-radius:8px; padding:1px 5px; white-space:nowrap; }
-.project-threads { display:flex; flex-direction:column; padding-left:24px; margin-bottom:4px; }
-.project-thread { font-size:11.5px; color:#52525b; background:none; border:none; text-align:left; padding:4px 8px; border-radius:4px; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:inherit; }
-.project-thread:hover { background:#f3f3f4; color:#1a1c1d; }
-.project-threads-empty { font-size:11px; color:#595959; font-style:italic; padding:4px 8px; }
-.project-load-threads { font-size:10.5px; color:#a04100; text-decoration:underline; padding:4px 8px; cursor:pointer; }
-.project-load-threads:hover { color:#e05500; }
-.history-clear-filter { background:none; border:none; color:#a04100; text-decoration:underline; cursor:pointer; font:inherit; padding:0; }
+
 
 /* ===== WORKSPACE SWITCHER (prompt-bar chip, Freebuff-style) ===== */
 .ws-switcher-row { display:flex; justify-content:flex-start; margin-bottom:8px; }
@@ -4115,63 +4108,55 @@ hr:has(+ .prompt-meter) { display:none; }
 .dark .offline-banner { background:#1c1c1c; }
 .dark .offline-banner-text { color:#c8c8c8; }
 
-/* === Empty-chat hero (FirstRunExperience.tsx) — Codex-style minimal ===== */
-/* Sized to fill the chat column minus the floating composer (64px topbar +
-   --composer-h), so the centred hero lands above the bar instead of under it. */
-.empty-hero { display:flex; align-items:center; justify-content:center; min-height:calc(100vh - 64px - var(--composer-h)); padding:24px; }
-.empty-hero-center { display:flex; flex-direction:column; align-items:center; text-align:center; gap:0; }
-.empty-hero-logo { width:44px; height:44px; opacity:0.9; margin-bottom:14px; }
-.empty-hero-title { font-size:20px; font-weight:600; color:#ffffff; margin:0 0 18px; letter-spacing:-0.01em; }
-.empty-hero-pill { display:inline-flex; align-items:center; gap:7px; padding:6px 14px; border-radius:999px; border:1px solid #3f3f46; background:#26282b; color:#d4d4d8; font-size:12px; font-weight:500; cursor:pointer; transition:border-color .15s, color .15s, background .15s; }
-.empty-hero-pill:hover { border-color:#ff6b00; color:#ffb693; background:#2c2e31; }
-.empty-hero-pill--project { color:#f4f4f5; border-color:#52525b; }
-.empty-hero-pill-label { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.empty-hero-pill .ms { font-size:14px; line-height:1; }
-.empty-hero-kbd { font-size:9px; font-weight:600; padding:1px 6px; border-radius:5px; border:1px solid #52525b; background:#1f2124; color:#a1a1aa; font-family:inherit; }
-.empty-hero-advanced { margin-top:26px; display:flex; flex-direction:column; align-items:center; }
-.empty-hero-advanced-toggle { font-size:11px; color:#ffffff; background:none; border:none; cursor:pointer; display:inline-flex; align-items:center; gap:3px; padding:4px 8px; border-radius:7px; }
-.empty-hero-advanced-toggle:hover { color:#ffffff; background:rgba(255,255,255,0.12); }
-.empty-hero-advanced-grid { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; justify-content:center; }
-.empty-hero-advanced-item { display:flex; gap:8px; align-items:center; padding:8px 12px; border-radius:10px; border:1px solid #3f3f46; background:#1f2124; text-decoration:none; }
-.empty-hero-advanced-item:hover { border-color:#ff6b00; }
-.empty-hero-advanced-item .ms { color:#ff6b00; }
-.empty-hero-advanced-item strong { display:block; font-size:11px; color:#f4f4f5; font-weight:600; text-align:left; }
-.empty-hero-advanced-item em { display:block; font-style:normal; font-size:11px; color:#a1a1aa; text-align:left; }
+/* === Empty-chat hero (FirstRunExperience.tsx) — greeting only === */
+/* Composition: mascot + "Back at it, {name}" centred above the untouched
+   composer; quick-action chips render below it (WelcomeActions). The hero
+   reserves the free column height minus composer + toolbar, so the whole
+   stack lands centred instead of the greeting floating under the topbar. */
+.empty-hero { display:flex; align-items:center; justify-content:center; padding:clamp(48px, 16vh, 200px) 24px 0; }
+.empty-hero-center { display:flex; flex-direction:column; align-items:center; text-align:center; }
+.empty-hero-greeting { flex-direction:row; align-items:center; gap:16px; }
+.empty-hero-logo { width:44px; height:44px; flex:none; }
+.empty-hero-title { font-family:'Fraunces',Georgia,serif; font-size:32px; font-weight:500; color:#ffffff; margin:0; letter-spacing:-0.015em; white-space:nowrap; }
 
-/* ── Empty state: a welcome that moves, and one click to start ───────────
-   A short staggered rise so the hero assembles instead of appearing, plus a
-   slow glow on the mark. The starter chips hand their text to the composer
-   (orplex:prefill-prompt), so the first action is a click, not a blank box. */
+/* —— Entrance: a short staggered rise plus a slow orange glow on the mark. */
 .empty-hero-logo { animation: hero-rise 520ms cubic-bezier(.23,1,.32,1) both, hero-glow 3.6s ease-in-out 600ms infinite; }
 .empty-hero-title { animation: hero-rise 520ms cubic-bezier(.23,1,.32,1) 60ms both; }
-.empty-hero-pill { animation: hero-rise 520ms cubic-bezier(.23,1,.32,1) 120ms both; }
-.empty-hero-starters { animation: hero-rise 520ms cubic-bezier(.23,1,.32,1) 180ms both; }
-.empty-hero-advanced { animation: hero-rise 520ms cubic-bezier(.23,1,.32,1) 240ms both; }
 @keyframes hero-rise { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
 @keyframes hero-glow {
-  0%, 100% { filter: drop-shadow(0 0 0 rgba(255,107,0,0)); }
-  50% { filter: drop-shadow(0 0 14px rgba(255,107,0,0.35)); }
+  0%, 100% { filter: drop-shadow(0 4px 18px rgba(249,115,22,0.18)); }
+  50% { filter: drop-shadow(0 6px 26px rgba(249,115,22,0.38)); }
 }
-.empty-hero-starters { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-top:18px; max-width:560px; }
-.empty-hero-starter { display:inline-flex; align-items:center; gap:6px; padding:7px 12px; border-radius:999px; border:1px solid rgba(255,255,255,0.14); background:rgba(11,11,13,0.55); color:rgba(255,255,255,0.9); font-size:12px; font-family:inherit; cursor:pointer; transition:border-color .16s, background .16s, color .16s, transform .16s; }
-.empty-hero-starter .ms { font-size:14px; line-height:1; color:#ffb693; }
-.empty-hero-starter:hover { border-color:rgba(255,107,0,0.6); background:rgba(20,20,23,0.82); color:#ffffff; transform:translateY(-1px); }
-.empty-hero-starter:active { transform:translateY(0); }
 @media (prefers-reduced-motion: reduce) {
-  .empty-hero-logo,
-  .empty-hero-title,
-  .empty-hero-pill,
-  .empty-hero-starters,
-  .empty-hero-advanced { animation:none; }
+  .empty-hero-logo, .empty-hero-title { animation:none; }
 }
-/* Light mode: same layout, light surfaces */
 html:not(.dark) .empty-hero-title { color:#18181b; }
-html:not(.dark) .empty-hero-pill { background:#f4f4f5; border-color:#e4e4e7; color:#3f3f46; }
-html:not(.dark) .empty-hero-pill:hover { border-color:#ff6b00; color:#c2410c; background:#fff7ed; }
-html:not(.dark) .empty-hero-kbd { background:#fff; color:#71717a; }
-html:not(.dark) .empty-hero-advanced-item { background:#fff; border-color:#e4e4e7; }
-html:not(.dark) .empty-hero-advanced-toggle { color:#3f3f46; }
-html:not(.dark) .empty-hero-advanced-toggle:hover { background:rgba(0,0,0,0.04); }
+
+/* === Welcome group: greeting + untouched composer + toolbar, one stack === */
+/* In the empty state the composer un-pins (live chat keeps bottom-pin) so
+   all three elements share one centred, flex-driven composition. */
+.welcome-group { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:calc(100vh - 64px - 48px); max-width:768px; width:100%; margin:0 auto; padding:24px; box-sizing:border-box; }
+.welcome-group .empty-hero { min-height:0; padding:0; margin-bottom:30px; }
+.welcome-group .chat-input-bar { position:static; width:100%; }
+.welcome-group .chat-input-bar::after { display:none; }
+
+/* Disclaimer sits under the toolbar (welcome only; active chats keep the
+   composer's own footer). Same voice as the old in-bar .disc. */
+.welcome-disc { margin:24px 0 0; color:var(--text-secondary, #71717a); font-size:13px; line-height:1.4; text-align:center; }
+
+/* === Quick-action toolbar under the welcome composer (WelcomeActions.tsx) === */
+.welcome-actions { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-top:12px; max-width:100%; }
+.welcome-action { display:inline-flex; align-items:center; gap:7px; padding:9px 15px; border-radius:999px; border:1px solid var(--border, #e4e1dc); background:transparent; color:var(--text-secondary, #6b6b73); font-size:13px; font-weight:500; font-family:inherit; cursor:pointer; transition:border-color .16s, background .16s, color .16s, transform .16s; }
+.welcome-action .ms { font-size:15px; line-height:1; color:#F97316; }
+.welcome-action:hover { border-color:#F97316; color:var(--text-primary, #18181b); background:rgba(249,115,22,0.07); transform:translateY(-1px); }
+.welcome-action:active { transform:translateY(0); }
+.welcome-action:focus-visible { outline:2px solid #F97316; outline-offset:2px; }
+html:not(.dark) .welcome-action { color:#6b6b73; }
+html:not(.dark) .welcome-action:hover { color:#18181b; }
+@media (prefers-reduced-motion: reduce) {
+  .welcome-action { transition:none; }
+  .welcome-action:hover { transform:none; }
+}
 
 /* === Left sidebar collapse (AppLayout sb-collapsed) ===================== */
 /* Reuses the existing left-hidden contract: hide the rail, zero the main
@@ -4207,19 +4192,9 @@ html:not(.dark) .sb-expand-fab:hover { color:#a04100; border-color:#fdba74; }
 .dark .sidebar-nav-badge { background:rgba(255,107,0,0.18); color:#ffb693; }
 .dark .sidebar-nav-badge-warn { background:rgba(217,119,6,0.22); color:#fbbf24; }
 
-/* Quiet ghost hint to match the flat reference rows — no outline box. */
-.project-ghost-hint { border:none; background:rgba(0,0,0,0.06); color:#595959; border-radius:999px; padding:2px 8px; font-size:9px; }
-.dark .project-ghost-hint { background:rgba(255,255,255,0.08); color:#a6a6a6; }
-.project-row-head { border-radius:10px; }
 
-/* === Project branched menu (ProjectBranchedMenu) ======================== */
-/* Threads under each project use the same tree language as the nav. Keep the
-   legacy .project-threads styles for the context menu's inner rows. */
-.project-branch { margin: 0 4px 2px 0; }
-.project-branch .branched-menu__head-label { font-size: 13px; font-weight: 500; }
-.project-branch .branched-menu__item { font-size: 12px; }
-.project-branch .branched-menu__item[data-active] .branched-menu__label { color: #ff6b00; }
-.project-branch .branched-menu__icon .ms { opacity: 0.75; }
+
+
 
 /* === Topbar dark-mode polish ============================================= */
 /* Flat header polish: active right-panel state, search placeholder contrast,
