@@ -41,6 +41,18 @@ jobs:
           node-version: "22"
           cache: npm
 
+      # electron-builder caches its helper binaries (fpm, nsis, winCodeSign,
+      # app-builder) here; caching them avoids re-hitting the flaky
+      # electron-builder-binaries mirror on every release.
+      - name: Cache electron-builder binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron-builder
+            ~\AppData\Local\electron-builder\Cache
+            ~/Library/Caches/electron-builder
+          key: eb-binaries-${{ matrix.os }}-v1
+
       - name: Install dependencies
         shell: bash
         env:
@@ -88,7 +100,20 @@ jobs:
         run: npm run electron:stage
 
       - name: Build + package (${{ matrix.os }})
-        run: npx electron-builder --projectDir .desktop-package --publish never ${{ matrix.args }}
+        shell: bash
+        # The electron-builder helper-binary mirror (electron-userland
+        # releases via got) intermittently 504s mid-package — retry a few
+        # times before failing the release; the cache step above makes
+        # retries after a first successful download nearly free.
+        run: |
+          for i in 1 2 3; do
+            if npx electron-builder --projectDir .desktop-package --publish never ${{ matrix.args }}; then
+              break
+            fi
+            echo "electron-builder failed (attempt $i of 3), waiting 20s before retry…"
+            sleep 20
+            if [ "$i" = "3" ]; then exit 1; fi
+          done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEXT_TELEMETRY_DISABLED: 1
