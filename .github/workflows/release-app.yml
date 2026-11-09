@@ -43,6 +43,11 @@ jobs:
 
       - name: Install dependencies
         shell: bash
+        env:
+          # Electron's postinstall binary download (via got) 504s from the
+          # mirror — a pure flake, and electron-builder fetches the runtime
+          # itself (with its own cache) at the packaging step anyway.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         # Electron's binary download (via got) can 504 from the mirror;
         # retry up to 3 times instead of failing the whole release.
         run: |
