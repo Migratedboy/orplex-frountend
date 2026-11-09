@@ -42,7 +42,7 @@ function ResetRecoveryTab({ toast }: { toast: (msg: string, type?: "info" | "err
     try {
       // Transient UI/agent state only — never conversations or files.
       for (const key of [
-        "orplex.rightPanel", "orplex.rightPanelTab", "orplex.tipShown", "orplex.tipIndex",
+        "orplex.rightPanel", "orplex.rightPanelTab", "orplex.rightPanelTabs", "orplex.tipShown", "orplex.tipIndex",
         "orplex.firstRun.v1", "orplex.whatsNewSeen.latest",
       ]) {
         try { localStorage.removeItem(key); } catch {}

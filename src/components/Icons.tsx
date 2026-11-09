@@ -106,6 +106,10 @@ export const IconMessage = (p: IconProps) => <Ms name="chat" {...p} />;
 export const IconFile = (p: IconProps) => <Ms name="description" {...p} />;
 export const IconFilePlus = (p: IconProps) => <Ms name="note_add" {...p} />;
 export const IconTerminal = (p: IconProps) => <Ms name="terminal" {...p} />;
+/** Right-panel tab icons (v2): browser laptop, queue list, scratch note. */
+export const IconLaptop = (p: IconProps) => <Ms name="laptop" {...p} />;
+export const IconList = (p: IconProps) => <Ms name="list" {...p} />;
+export const IconScratch = (p: IconProps) => <Ms name="edit_note" {...p} />;
 export const IconBrain = (p: IconProps) => <Ms name="neurology" {...p} />;
 export const IconChevronDown = (p: IconProps) => <Ms name="keyboard_arrow_down" {...p} />;
 /** Chevron up — paired with IconChevronDown for expand/collapse disclosure. */

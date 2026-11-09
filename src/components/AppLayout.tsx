@@ -129,9 +129,9 @@ export default function AppLayout({ children }: AppLayoutProps) {
   }, []);
 
   // === Left sidebar collapse ===
-  // User-controlled collapse (separate from the automatic left-hidden when
-  // the right panel opens). Persisted, and restored in an effect — never a
-  // storage read in useState (hydration mismatch).
+  // User-controlled collapse ONLY — the left sidebar and the right panel are
+  // independent: both may be open side by side (the right panel joins the
+  // layout to the right; the sidebar keeps its column at the left).
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   useEffect(() => {
     try { setSidebarCollapsed(localStorage.getItem("orplex.sidebarCollapsed") === "1"); } catch {}
@@ -164,15 +164,19 @@ export default function AppLayout({ children }: AppLayoutProps) {
 
   // Cross-component panel opening (FirstRunExperience advanced row, recovery
   // actions, tips): open the right panel directly to a tab.
+  const openRightPanelTab = useCallback((tab?: string) => {
+    setRightPanelOpen(true);
+    if (typeof tab === "string") setRightPanelTab(tab);
+  }, []);
+
   useEffect(() => {
     const handler = (e: Event) => {
       const tab = (e as CustomEvent).detail?.tab;
-      setRightPanelOpen(true);
-      if (typeof tab === "string") setRightPanelTab(tab);
+      openRightPanelTab(tab);
     };
     window.addEventListener("orplex:open-panel", handler);
     return () => window.removeEventListener("orplex:open-panel", handler);
-  }, []);
+  }, [openRightPanelTab]);
 
   // Keyboard shortcuts for right panel + command palette
   useEffect(() => {
@@ -184,8 +188,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
         setRightPanelTab(undefined); // default tab
       } else if (mod && e.key === "t") {
         e.preventDefault();
-        setRightPanelOpen(true);
-        setRightPanelTab("terminal");
+        openRightPanelTab("terminal");
       } else if (mod && e.key === "k") {
         // Command palette — intercepts Ctrl+K before TopBar search-focus handler
         e.preventDefault();
@@ -196,8 +199,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
         const tab = { "1": "queue", "2": "changes", "3": "files", "4": "preview", "5": "terminal", "6": "scratch" }[e.key];
         if (tab) {
           e.preventDefault();
-          setRightPanelOpen(true);
-          setRightPanelTab(tab);
+          openRightPanelTab(tab);
         }
       } else if (mod && e.key === "\\") {
         // Ctrl+\: collapse/expand the left sidebar.
@@ -212,9 +214,9 @@ export default function AppLayout({ children }: AppLayoutProps) {
     };
     document.addEventListener("keydown", handleKeyDown, true);
     return () => document.removeEventListener("keydown", handleKeyDown, true);
-    // toggleSidebar is a useCallback with no deps, so this stays a one-time
-    // document listener.
-  }, [toggleSidebar]);
+    // toggleSidebar + openRightPanelTab are useCallbacks with no deps, so this
+    // stays a one-time document listener.
+  }, [toggleSidebar, openRightPanelTab]);
 
   // Global chat shortcuts. Ctrl+K never reaches this hook — the document
   // capture handler above intercepts it (stopImmediatePropagation) and
@@ -254,7 +256,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
     return <>{children}</>;
   }  return (
     <>
-      <div className={`app-root ${rightPanelOpen ? "left-hidden" : ""} ${sidebarCollapsed ? "sb-collapsed" : ""}`}>
+      <div className={`app-root ${sidebarCollapsed ? "sb-collapsed" : ""}`}>
         <SidebarInner />
         <TopBarInner title={title} onBugReport={() => setBugReportOpen(true)} onShowShortcuts={() => setShortcutsOpen(true)} onTogglePanel={() => setRightPanelOpen(!rightPanelOpen)} panelOpen={rightPanelOpen} />
         {sidebarCollapsed && (
