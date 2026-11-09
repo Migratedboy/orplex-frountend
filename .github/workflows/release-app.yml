@@ -99,6 +99,40 @@ jobs:
       - name: Stage desktop package
         run: npm run electron:stage
 
+      # The dmgbuild toolset (mac DMG target) downloads from the
+      # electron-builder-binaries mirror, which intermittently 504s from both
+      # upstream and npmmirror. electron-builder supports OFFLINE seeding:
+      # placing the archive at <ELECTRON_BUILDER_CACHE>/dmg-builder@1.2.5/
+      # <filename> is enough — it checksum-verifies locally (no .state file
+      # needed). Fetch it with curl's own retry engine + URL fallbacks here.
+      - name: Pre-seed dmgbuild toolset (mirror 504 flake)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          case "$(uname -m)" in arm64) A=arm64 ;; *) A=x86_64 ;; esac
+          F="dmgbuild-bundle-${A}-75c8a6c.tar.gz"
+          case "$A" in
+            arm64)   WANT="793404d0c96687e27d5ee40a668d498c92e36a64d6c2906df511031adb33cbeb" ;;
+            x86_64)  WANT="1664972f9cc2d6e8fce3b63e42cd30078aff602669c5856939c4519921200433" ;;
+          esac
+          D="$HOME/Library/Caches/electron-builder/dmg-builder@1.2.5"
+          mkdir -p "$D"
+          if [ -f "$D/$F" ]; then echo "already seeded"; exit 0; fi
+          for u in \
+            "https://npmmirror.com/mirrors/electron-builder-binaries/dmg-builder%401.2.5/$F" \
+            "https://github.com/electron-userland/electron-builder-binaries/releases/download/dmg-builder%401.2.5/$F"; do
+            echo "trying $u"
+            if curl -fL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 -o "$D/$F.tmp" "$u"; then
+              break
+            fi
+            rm -f "$D/$F.tmp"
+          done
+          if [ ! -f "$D/$F.tmp" ]; then echo "all mirrors failed for $F"; exit 1; fi
+          GOT=$(shasum -a 256 "$D/$F.tmp" | cut -d' ' -f1)
+          if [ "$GOT" != "$WANT" ]; then echo "checksum mismatch: $GOT"; exit 1; fi
+          mv "$D/$F.tmp" "$D/$F"
+          echo "seeded $F (sha256 ok)"
+
       - name: Build + package (${{ matrix.os }})
         shell: bash
         # The electron-builder helper-binary mirror (electron-userland
