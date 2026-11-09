@@ -1,22 +1,25 @@
 "use client";
 
 /**
- * terminal-tab.tsx — the Terminal tab (SSE streaming), extracted verbatim from
- * RightPanel.tsx (Operation Modularity). Self-contained block: terminal lines,
- * SSE subscription, kill switch. The panel shell keeps tab routing.
+ * terminal-tab.tsx — the Terminal tab (SSE streaming). Right Panel v2 (P2):
+ * - Reference presentation (monospace surface, accent prompt) with the v1
+ *   behaviors preserved: persistent sessions, SSE, kill switch, server chips.
+ * - The prompt shows the REAL workspace cwd (resolved via the desktop
+ *   bridge), never a hard-coded `PS C:\orplex>` (spec §5.6).
+ * - Ctrl+C cancels the running command (Escape still does too).
+ * - Scroll-lock: auto-scroll pauses while the user scrolls up.
+ * - ANSI escape sequences are stripped before render (safe display).
  */
 import { useState, useEffect, useRef } from "react";
 import { useFileSystemContext } from "../FileSystemProvider";
+import { stripAnsi } from "@/lib/terminal-format";
 
-// === Terminal Tab (SSE streaming) ===
 interface TerminalLine {
   type: "cmd" | "stdout" | "stderr" | "info" | "error" | "done";
   text: string;
   ts?: number;
 }
 
-// Module scope: Date.now() during render trips the purity rule; these lines
-// are append-only afterwards (every update spreads into a new array).
 const INITIAL_TERMINAL_LINES: TerminalLine[] = [
   { type: "info", text: "$ Orplex Terminal — streaming output", ts: 0 },
   { type: "info", text: "Type a command and press Enter. Up/Down for history.", ts: 0 },
@@ -35,10 +38,30 @@ export function TerminalTab() {
   const outputRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Scroll-lock: only auto-scroll while pinned to the bottom.
+  const atBottomRef = useRef(true);
+  // Real workspace cwd for the prompt (absolute path via desktop bridge).
+  const [cwdLabel, setCwdLabel] = useState<string>("");
 
-  // Auto-scroll to bottom on new lines
+  // Resolve the absolute workspace path once per open-folder change. The
+  // bridge resolves a folder NAME to the device path the shell actually runs
+  // in (same source the session lane uses — workspace-cwd registry).
+  const { directoryName: activeDirName } = useFileSystemContext();
   useEffect(() => {
-    if (outputRef.current) {
+    if (!activeDirName) { setCwdLabel(""); return; }
+    const bridge = typeof window !== "undefined" ? window.orplexDesktop : undefined;
+    if (bridge?.getPathForDirectory) {
+      void bridge.getPathForDirectory(activeDirName)
+        .then((p) => { if (p) setCwdLabel(p); })
+        .catch(() => setCwdLabel(activeDirName));
+    } else {
+      setCwdLabel(activeDirName);
+    }
+  }, [activeDirName]);
+
+  // Auto-scroll to bottom on new lines — only while pinned (scroll-lock).
+  useEffect(() => {
+    if (outputRef.current && atBottomRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
   }, [lines]);
@@ -90,7 +113,7 @@ export function TerminalTab() {
   };
 
   // Active folder name → absolute device path for on-device execution.
-  const { directoryName: activeDirName } = useFileSystemContext();
+  const { directoryName: execDirName } = useFileSystemContext();
 
   const execManual = async (command: string) => {
     setRunning(true);
@@ -103,7 +126,7 @@ export function TerminalTab() {
       const { runTerminalCommand } = await import("@/lib/terminal-lane");
       await runTerminalCommand({
         command,
-        dirName: activeDirName ?? undefined,
+        dirName: execDirName ?? undefined,
         signal: aborter.signal,
         source: "user",
         quiet: false,
@@ -158,6 +181,15 @@ export function TerminalTab() {
         setHistoryIdx(newIdx);
         setCmd(history[newIdx]);
       }
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+      // Ctrl+C cancels the running command (spec §5.6). Echo ^C like a real
+      // shell, so the cancellation is visible rather than silent.
+      e.preventDefault();
+      if (abortRef.current) {
+        abortRef.current.abort();
+        pushLine({ type: "error", text: "^C", ts: Date.now() });
+      }
+      setRunning(false);
     } else if (e.key === "Escape") {
       if (abortRef.current) abortRef.current.abort();
       setRunning(false);
@@ -167,22 +199,28 @@ export function TerminalTab() {
     }
   };
 
+  const onScroll = () => {
+    const el = outputRef.current;
+    if (!el) return;
+    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  };
+
   return (
-    <div className="rp-terminal">
-      <div className="rp-terminal-header">
-        <span className="rp-terminal-title">Terminal</span>
-        <div className="rp-terminal-actions">
-          {running && <span className="rp-terminal-badge">running</span>}
-          <button className="rp-terminal-clear" onClick={clearTerminal} title="Clear (Ctrl+L)">clear</button>
+    <div className="rp-v2-term-wrap">
+      <div className="rp-v2-term-head">
+        <span className="rp-v2-term-title">Terminal</span>
+        <div className="rp-v2-term-actions">
+          {running && <span className="rp-v2-term-badge">running</span>}
+          <button className="rp-v2-term-clear" onClick={clearTerminal} title="Clear (Ctrl+L)">clear</button>
         </div>
       </div>
       {servers.length > 0 && (
-        <div className="rp-terminal-servers">
+        <div className="rp-v2-term-servers">
           {servers.map(s => (
-            <span key={s.id} className="rp-terminal-server" title={s.command}>
-              <span className="rp-terminal-server-dot" />{s.url ? s.url.replace("http://", ":") : `#${s.id} ${s.command.slice(0, 24)}`}
+            <span key={s.id} className="rp-v2-term-server" title={s.command}>
+              <span className="rp-v2-term-server-dot" />{s.url ? s.url.replace("http://", ":") : `#${s.id} ${s.command.slice(0, 24)}`}
               <button
-                className="rp-terminal-server-stop"
+                className="rp-v2-term-server-stop"
                 title={`Stop server ${s.id}`}
                 onClick={async () => {
                   try {
@@ -197,35 +235,41 @@ export function TerminalTab() {
         </div>
       )}
       {pendingConfirm && (
-        <div className="rp-terminal-confirm" role="alert">
-          <div className="rp-terminal-confirm-text">Blocked: {pendingConfirm.reason}. Run anyway?</div>
-          <div className="rp-terminal-confirm-actions">
-            <button className="rp-terminal-confirm-run" onClick={() => void runCmd(true)}>Run anyway</button>
-            <button className="rp-terminal-confirm-cancel" onClick={() => setPendingConfirm(null)}>Cancel</button>
+        <div className="rp-v2-term-confirm" role="alert">
+          <div className="rp-v2-term-confirm-text">Blocked: {pendingConfirm.reason}. Run anyway?</div>
+          <div className="rp-v2-term-confirm-actions">
+            <button className="rp-v2-term-confirm-run" onClick={() => void runCmd(true)}>Run anyway</button>
+            <button className="rp-v2-term-confirm-cancel" onClick={() => setPendingConfirm(null)}>Cancel</button>
           </div>
         </div>
       )}
-      <div className="rp-terminal-output" ref={outputRef}>
+      <div
+        className="rp-v2-term rp-v2-scroll"
+        ref={outputRef}
+        onScroll={onScroll}
+        onClick={() => inputRef.current?.focus()}
+      >
         {lines.map((line, i) => (
-          <div key={i} className={`rp-terminal-line rp-term-${line.type}`}>
-            {line.type === "cmd" && <span className="rp-terminal-prompt-char">$</span>}
-            {line.type === "stderr" && <span className="rp-terminal-prompt-char">!</span>}
-            {line.type === "error" && <span className="rp-terminal-prompt-char">x</span>}
-            <span className="rp-terminal-text">{line.text}</span>
+          <div key={i} className={`rp-v2-tm-o ${line.type === "error" ? "e" : ""}`}>
+            {line.type === "cmd" && <span className="rp-v2-tm-pr">$&nbsp;</span>}
+            {stripAnsi(line.text)}
           </div>
         ))}
-        {running && <div className="rp-terminal-cursor" />}
+        {running && <div className="rp-v2-tm-cursor" />}
       </div>
-      <div className="rp-terminal-input-row">
-        <span className="rp-terminal-prompt">$</span>
+      <div className="rp-v2-tm-pr">
+        <span className="rp-v2-tm-prompt" title="Workspace working directory">{cwdLabel ? `${cwdLabel}$ ` : "$ "}</span>
         <input
           ref={inputRef}
-          className="rp-terminal-input"
+          className="rp-v2-tm-input"
           value={cmd}
           onChange={e => setCmd(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={running ? "running..." : "Enter command..."}
+          placeholder={running ? "running…" : "Enter command…"}
+          spellCheck={false}
+          autoComplete="off"
           autoFocus
+          aria-label="Terminal input"
         />
       </div>
     </div>

@@ -122,5 +122,8 @@ export const IconMore = (p: IconProps) => <Ms name="more_vert" {...p} />;
 export const IconCircle = (p: IconProps) => <Ms name="radio_button_unchecked" {...p} />;
  const IconLoader = (p: IconProps) => <Ms name="progress_activity" {...p} />;
 export const IconRefresh = (p: IconProps) => <Ms name="refresh" {...p} />;
+/** Queue status glyphs (v2): running play / error stop. */
+export const IconPlay = (p: IconProps) => <Ms name="play_arrow" {...p} />;
+export const IconStop = (p: IconProps) => <Ms name="stop" {...p} />;
 /** Fork a conversation into a new on-device copy (History rows / TopBar). */
 export const IconFork = (p: IconProps) => <Ms name="call_split" {...p} />;
