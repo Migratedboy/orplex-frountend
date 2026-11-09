@@ -542,6 +542,27 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             {/* Fresh-chat patrol: until the first user message lands, the mascot
                 walks the border of the prompt bar (WalkingMascot.tsx). */}
             {!lastUserMessage && <WalkingMascot />}
+            {/* Lightning "Answer Now": pins to the wrapper's left edge at the
+                input row, directly below the Q queue button (user layout). */}
+            {onFastAnswer && lastUserMessage && isStreaming && (
+              <button
+                className="fast-answer-btn rail"
+                onClick={() => onFastAnswer(lastUserMessage)}
+                title="Answer Now — quick reply from a faster model"
+                aria-label="Answer Now — quick reply from a faster model"
+              >
+                {/* Lightning bolt: stroke icon in the app's icon style. */}
+                <svg
+                  className="fast-answer-bolt"
+                  width="16" height="16" viewBox="0 0 24 24"
+                  fill="none" stroke="currentColor" strokeWidth="1.9"
+                  strokeLinecap="round" strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
         {stopped && !isWorking && (
@@ -572,18 +593,6 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
                 </div>
               ))}
             </div>
-          </div>
-        )}
-        {onFastAnswer && lastUserMessage && isStreaming && (
-          <div className="fast-answer-bar">
-            <button
-              className="fast-answer-btn"
-              onClick={() => onFastAnswer(lastUserMessage)}
-              title="Get a quick answer from a faster model"
-            >
-              <span>Answer Now</span>
-              <span className="fast-answer-hint">— quick reply from a faster model</span>
-            </button>
           </div>
         )}
       </div>

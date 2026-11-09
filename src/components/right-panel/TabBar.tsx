@@ -60,7 +60,8 @@ export function TabBar({
   const popRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
-  const closed = closedTabs(openTabs);
+  // The bar renders even with no open tabs (reference: launcher state shows
+  // the "+" alone) so the panel reads as "open a tab", not a dead zone.
 
   const setPop = useCallback(
     (open: boolean) => {
@@ -109,7 +110,9 @@ export function TabBar({
     [openTabs, onActivate]
   );
 
-  if (openTabs.length === 0) return null;
+  // The bar renders even with no open tabs (reference: launcher state shows
+  // the "+" alone) so the panel reads as "open a tab", not a dead zone.
+  const closed = closedTabs(openTabs);
 
   return (
     <div className="rp-v2-tabs" role="tablist" aria-label="Right panel tabs">
