@@ -132,7 +132,7 @@ npm run eval:reliability
 | Piece | File | What it does |
 |---|---|---|
 | Main process | `electron/main.ts` (1,949 lines) | Owns the Next child, single-instance lock, port takeover, device-local conversation IPC, preview + agent-browser + terminal + MCP IPC, tray wiring, updater registration, crash-recovery marker, graceful teardown. All `handleAppIpc` handlers reject senders from outside the app's own loopback origin |
-| Preload bridge | `electron/preload.ts` | `window.orplexDesktop`: `preview.*`, `agentBrowser.*`, `terminal.*`, `conversations.*`, `auth.*`, `mcp.*`, `updates.*`, `openExternal`, `getPathForFile/Directory`, versions |
+| Preload bridge | `electron/preload.ts` | `window.orplexDesktop`: `preview.*`, `previewExtras.*`, `browserData.*`, `recording.*`, `fsOps.*`, `agentBrowser.*`, `terminal.*`, `conversations.*`, `auth.*`, `mcp.*`, `updates.*`, `openExternal`, `getPathForFile/Directory`, versions |
 | Conversations store | `electron/conversations-store.ts` | Local-first chat storage: one JSON file in userData is the source of truth; caps 50k chars/message, 200 messages/save, 60-char titles; atomic writes behind a 250 ms debounce; corrupt file **quarantined** (`.corrupt-<ts>`), never deleted; `fork` appends one " (fork)"; `importAll` is additive/idempotent for the one-time cloud import |
 | Dev-mode switch | `electron/dev-mode.ts` | `isDevRuntime()` — `ORPLEX_DEV=1` forces checkout semantics for the **branded dev electron** (`scripts/dev-branded-electron.mjs`), whose renamed binary would otherwise report `app.isPackaged === true` and fail to find a standalone bundle |
 | Loopback helper | `electron/loopback.ts` | `http://127.0.0.1:<port>` probe URLs. Windows resolves `localhost` to `::1` first, so the readiness probe must target the IPv4 address the child binds |
@@ -154,17 +154,34 @@ RightPanel viewport and positioned via IPC (`preview:setBounds`). Isolated
   favicons, `target=_blank` becomes a new preview tab.
 - **Omnibox**: Chrome-style normalization — search terms → real Google search
   (genuine browser fingerprints, real Google UI), bare hosts → https, localhost
-  → http.
+  → http **(v2: the renderer sends raw input; normalization is main-side only —
+  fixes the previously unreachable localhost branch, D3)**.
+- **Nav state is event-driven (D15)**: every `did-navigate` emits
+  `canGoBack`/`canGoForward` — the toolbar's disabled state + URL text follow
+  real navigation state, never local renderer history.
 - **New-tab page**: live port detection (`/api/localhost-probe` TCP probes
   **8 ports** — 3000, 5173, 8080, 4200, 3001, 8000, 5000, 4000) — click a
-  dotted port to open a running dev server with working HMR websockets (no
-  proxy involved). The polling cadence lives in the client caller, not the
-  route.
+  port to open a running dev server with working HMR websockets (no proxy
+  involved). Polled only while the empty state is visible.
 - **Failure surfaces**: `did-fail-load` error codes mapped to honest copy
   (DNS, refused, timeout, offline, SSL) with Retry / Open-in-Chrome actions,
   plus `preview.diag` for structured diagnostics.
 - **Agent mirror**: the agent's own browser view appears as an "Agent Browser"
   tab and can be watched live.
+- **v2 settings (`preview-extras.ts`, §5.4)**: private tabs (non-persistent
+  partitions, destroyed on close, never in history), detached DevTools,
+  hard reload, floating always-on-top window (bounds persisted, close docks),
+  recording (scoped display-media grant → canvas-cropped webm under
+  `userData/recordings/`), real recent-pages history (`userData/preview-history.json`,
+  cap 200, down-streamed, never in private views), and real profiles
+  (per-profile partitions; switch recreates views on the new partition).
+- **Overlay freeze (D14)**: DOM overlays can't paint above native views — while
+  an overlay is open, `preview:screenshot` paints a snapshot into the slot.
+- **Import browser data (`browser-data-import.ts`, §5.5)**: installed-browser
+  + profile detection, real extension enumeration, cookie decrypt (Firefox
+  plaintext; Chromium v10/v11 via `node:sqlite` + DPAPI key; **v20/App-Bound
+  Encryption skipped with the cookie-export notice**), Netscape/Cookie-Editor
+  cookie-file import; secrets never touch logs or the network.
 - Deliberately **no iframe/proxy fallback**: the desktop app renders everything
   natively; without the shell the panel says "Desktop app required".
 
@@ -607,7 +624,9 @@ Added in Phases 0–7 (see `docs/reliability/AUDIT.md`, `PHASE-0.md`,
 
 - **Persistent shell** (`shell-session.ts`, `/api/agent/terminal/session`):
   real shell **per user** — `cd`/env persist, servers keep running, SSE
-  streaming to the RightPanel Terminal tab.
+  streaming to the RightPanel Terminal tab **(v2: prompt shows the real
+  workspace cwd; Ctrl+C cancels the live command; scroll-lock when the user
+  scrolls up; ANSI stripped before render — src/lib/terminal-format.ts)**.
 - **Two execution lanes** (`terminal-lane.ts`): the single selector for both
   user-typed and agent commands — **(1)** the Electron desktop bridge, which
   runs the command on the **user's own device** (with the in-main argument-
@@ -660,10 +679,13 @@ Added in Phases 0–7 (see `docs/reliability/AUDIT.md`, `PHASE-0.md`,
 - **`src/proxy.ts` decides which routes stay on the device**. The local Next
   server is not just a proxy; these routes answer **locally** and are never
   forwarded to the cloud:
-  - `LOCAL_ONLY_API_ROUTES` (9): `/api/system/memory`, `/api/attachments`,
+  - `LOCAL_ONLY_API_ROUTES` (**13**): `/api/system/memory`, `/api/attachments`,
     `/api/attachments/extract`, `/api/agent/workspace-cwd`, `/api/files`,
-    `/api/conversations`, `/api/playbook`, `/api/agent/plugins`,
-    `/api/agent/plugin-library`.
+    `/api/session/clear`, `/api/conversations`, `/api/playbook`,
+    `/api/agent/plugins`, `/api/agent/plugin-library`, `/api/db`,
+    `/api/agent/fs` (Files-tab disk ops incl. per-directory listing),
+    `/api/agent/changes-git` (workspace git status/diff/numstat for the
+    Uncommitted/All pills) — all disk-local, never forwarded (D7/D8).
   - `LOCAL_ONLY_API_PREFIXES` (4): `/api/attachments/`, `/api/files/`,
     `/api/conversations/`, `/api/playbook/`.
   - Special case: `/api/models/available?local=1` (the picker's local-sweep
@@ -717,8 +739,21 @@ gate; force-opened in the OS browser by the shell), `/compaction-demo`
   ApprovalDialog, TodoBar, QuotaIndicator, PromptMeterStrip, WelcomeSection,
   FirstRunExperience, Onboarding, VirtualList, LatticeLoader, ProgressBar,
   Skeletons, ContextCompactedDivider, SessionInsightsPopup.
-- **RightPanel**: 6 tabs — **Queue · Changes · Files · Preview · Terminal ·
-  Scratch**. Resizable grip, tab persistence, per-tab error boundary.
+- **RightPanel** (Right Panel v2, Freebuff-style): open-tab bar (Queue ·
+  Changes · Local browser · Terminal · Files · Scratch) with `+` popover,
+  empty launcher, per-tab error boundaries, mount-resilient browser view
+  (hidden on tab/panel close, freed after 10 min idle), legacy persistence
+  migration (`preview` → `browser`). Per tab: **Queue** (task status + jump +
+  stop via `background-chat`), **Changes** (git Uncommitted/All pills from
+  `/api/agent/changes-git`, DiffView hunks, undo/checkpoint/restore,
+  history fallback on non-git), **Files** (lazy tree from `/api/agent/fs`,
+  create/upload/rename/trash/review viewer, content search), **Local browser**
+  (native Chromium: raw-input omnibox with fixed main-side normalization,
+  event-driven Back/Forward, overlay freeze snapshots, private views,
+  DevTools, floating window, recording, import dialog with cookies +
+  App-Bound-Encryption honesty, profiles/history/data clearing/extras),
+  **Terminal** (real-cwd prompt, Ctrl+C, scroll-lock, ANSI strip), **Scratch**
+  (live headed blocks, never persisted).
 - **Manager**: RunBoard, RunTimeline, RunLiveStatus, RunHealthStrip,
   QueueRunnerProvider, StepList, AgentProgress, AgentActivityLog, AgentManager.
 - **Review**: ReviewStrip, BranchReviewPanel, ArtifactCard, ArtifactPanel,
@@ -742,8 +777,9 @@ gate; force-opened in the OS browser by the shell), `/compaction-demo`
   QuickActions, TaskProgress), `loader/` (3 — BootGate, BrandSpinner,
   GeometricLoader).
 
-**Counts**: **83** components (`.tsx`, excluding tests; 85 files including
-`tutorial-steps.ts` and the `ui` barrel), **14** hooks.
+**Counts**: **107** components (`.tsx`, excluding tests; incl. **11** under
+`src/components/right-panel/`), **14** hooks, **255** test files (**247**
+`src/` + **8** `electron/__tests__/`).
 
 - **Hooks**: useChatSession, useBackgroundChat, useConversation, useMessages,
   useFileSystem, useFileProcessor, useHunkDecisions, useKeyboardShortcuts,
@@ -1021,6 +1057,11 @@ See §12. `gates`, `edit-lock`, `edit-ops`+`atomic-batch`, `path-jail`,
 | `project-memory.ts` | orplex.md injection |
 | `attachment-store.ts` / `client-attachments.ts` | Local content-addressed attachment store + its client half |
 | `project-{registry,sync,threads,menu,reopen}.ts` | Project CRUD, sync, threads, menus |
+| `panel-state.ts` | Right Panel v2 pure tab model (migration, add/close, popover set) |
+| `git-changes.ts` | Git working-tree parsers (status porcelain, numstat, merge) |
+| `fs-ops-validate.ts` | Files-tab write validation (reserved names, jail) |
+| `scratch-blocks.ts` | Scratchpad block parser + change-diff for the live pulse |
+| `terminal-format.ts` | ANSI strip for terminal display |
 
 ## `src/lib/` — Execution, servers, search
 
@@ -1051,7 +1092,7 @@ See §12. `gates`, `edit-lock`, `edit-ops`+`atomic-batch`, `path-jail`,
 | `agent-insights.ts` | Insights summary / pattern learning (`/api/agent/insights`) |
 | `storage` — **not present** | see §21 |
 
-## `src/components/` (83 .tsx)
+## `src/components/` (107 .tsx)
 
 Chat: `ChatInput`, `PromptBar`, `MessageList`, `MessageContent`,
 `MarkdownRenderer`, `ThinkingCard`, `ThoughtStream`, `ThoughtLine`,
@@ -1061,7 +1102,11 @@ Chat: `ChatInput`, `PromptBar`, `MessageList`, `MessageContent`,
 `DragDropZone`, `FilePreviewModal`, `ContextCompactedDivider`,
 `SessionInsightsPopup`.
 Artifacts: `SandboxArtifact`, `FileCard`.
-Right panel: `RightPanel`, `DiffView`, `MemoryPanel`.
+Right panel: `RightPanel` (thin re-export) + `right-panel/` (11 `.tsx` —
+`RightPanelShell`, `TabBar`, `EmptyLauncher`, `QueueTab`, `FilesTab`,
+`BrowserTab`, `BrowserMenu`, `ImportBrowserDataDialog`, `ChangesTab`,
+`TerminalTab`, `ScratchTab`; plus `hooks/useNativeViewBounds`,
+`hooks/useOverlayFreeze`), `DiffView`, `MemoryPanel`, `ChangesBar`.
 Runs: `AgentManager`, `RunBoard`, `RunTimeline`, `RunLiveStatus`,
 `RunHealthStrip`, `StepList`, `AgentProgress`, `AgentActivityLog`,
 `ReviewStrip`, `BranchReviewPanel`, `ArtifactCard`, `ArtifactPanel`,
@@ -1085,9 +1130,9 @@ Families: `ui/` (5 — `AgentStatus`, `KeyboardShortcuts`, `OnboardingTour`,
 `useChatSession`, `useBackgroundChat`, `useConversation`, `useMessages`,
 `useFileSystem`, `useFileProcessor`, `useHunkDecisions`,
 `useKeyboardShortcuts`, `useActiveRunCount`, `useBootProgress`,
-`useReducedMotion`, `useProjects`, `useScratchpad`, `useAppUpdater`.
+`useReducedMotion`, `useProjects`, `useScratchpad`, `useModelCatalog`.
 
-## API Routes (115 handlers)
+## API Routes (126 handlers)
 
 **Core (13)**: `/api/chat` (+`/chat/fast`, `/chat/suggestions`),
 `/api/conversations` (+`[id]`, `/migrate-from-cloud`),
@@ -1130,10 +1175,16 @@ members/update-member), `/api/workspaces/{create,destroy,merge}`,
 
 ## Electron, CLI, Extension, Scripts, E2E
 
-- `electron/` (15 files): `main.ts`, `preload.ts`, `tray.ts`, `updater.ts`,
+- `electron/` (20 files): `main.ts`, `preload.ts`, `tray.ts`, `updater.ts`,
   `auth-desktop.ts`, `terminal.ts`, `mcp-bridge.ts`,
   `conversations-store.ts`, `dev-mode.ts`, `loopback.ts`, `app-config.json`,
-  `tsconfig.json`, `__tests__/` (updater, loopback, conversations-store),
+  `preview-views.ts` + `preview-logic.ts` (native preview lanes),
+  `preview-extras.ts` (private tabs, devtools, floating window, profiles,
+  history, data clearing, extensions), `browser-data-import.ts`
+  (detect/decrypt/cookie files), `browser-recorder.ts` (`recording:save`),
+  `fs-ops.ts` (upload copy + trash), `safe-io.ts` (EPIPE guard),
+  `tsconfig.json`, `__tests__/` (updater, loopback, conversations-store,
+  preview-logic, browser-data-import),
   `assets/` (icon.icns, icon.ico, icon.png, icon32.png, tray.png).
 - `cli/`: TypeScript CLI (`src/commands`: chat, config, conversations, doctor,
   status).

@@ -219,7 +219,10 @@ export default function RightPanelShell({ open, onClose, defaultTab, onResizingC
     };
   }, [open]);
 
-  const { activeRuns } = useActiveRunCount(10_000);
+  // Badge polls only while the panel is open (§2.8): the Queue count is a
+  // 10s tick; closed, it's an hourly whisper (fresh enough on demand, not a
+  // runaway timer).
+  const { activeRuns } = useActiveRunCount(open ? 10_000 : 3_600_000);
 
   const onActivate = (id: TabId) => {
     setActiveTab(id);

@@ -298,13 +298,6 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
     return off;
   }, [native, nextTabId, patchTab]);
 
-  // Keep the native view positioned over the viewport placeholder (B23).
-  useNativeViewBounds(
-    native,
-    viewportRef,
-    useCallback(() => nativeMapRef.current.get(activeIdRef.current), [])
-  );
-
   // Overlay freeze: snapshot while an overlay is open (spec §2.2).
   const activeMainId = nativeMapRef.current.get(activeId);
   const ownOverlay = menuOpen || importOpen;
@@ -314,6 +307,15 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
   );
   const freeze = useOverlayFreeze(!!overlayOpen || ownOverlay, activeMainId, screenshotCb);
   const hideView = !panelActive || !!overlayOpen || ownOverlay;
+
+  // Keep the native view positioned over the viewport placeholder (B23).
+  // Ticks only run while the tab is visible (§2.8 budget).
+  useNativeViewBounds(
+    native,
+    viewportRef,
+    useCallback(() => nativeMapRef.current.get(activeIdRef.current), []),
+    !hideView
+  );
 
   // Show/hide native views: visible only while the browser tab is active,
   // the whole panel is open, and no overlay is freezing above it.

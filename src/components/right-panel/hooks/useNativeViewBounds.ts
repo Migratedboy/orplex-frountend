@@ -17,9 +17,11 @@ export function useNativeViewBounds(
   native: NativeBridge | null,
   viewportRef: React.RefObject<HTMLDivElement | null>,
   getMainId: () => number | undefined,
+  /** Bounds sync only runs while the tab is actually visible (§2.8). */
+  active = true,
 ): void {
   useEffect(() => {
-    if (!native) return;
+    if (!native || !active) return; // off-screen: no ticks, no IPC
     // Coalesce to one sync per frame. A raw capture-phase window handler
     // fired at display refresh rate — a forced getBoundingClientRect() plus
     // an IPC round-trip per call (~120 setBounds messages per second).
@@ -55,5 +57,5 @@ export function useNativeViewBounds(
       // A frame scheduled but never run must not fire against an unmounted view.
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [native, viewportRef, getMainId]);
+  }, [native, viewportRef, getMainId, active]);
 }

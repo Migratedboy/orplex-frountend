@@ -100,6 +100,13 @@ export function BrowserMenu(props: BrowserMenuProps) {
 
   if (!open || !bridge) return null;
 
+  const onMenuKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onClose();
+    }
+  };
+
   const act = (id: MenuAction) => {
     if (id === "recent" || id === "profiles" || id === "bdata") {
       setOpenSubs((prev) => {
@@ -245,7 +252,8 @@ export function BrowserMenu(props: BrowserMenuProps) {
   };
 
   return (
-    <div className="rp-v2-bm" role="menu" aria-label="Browser settings">
+    <div className="rp-v2-bm" role="menu" aria-label="Browser settings" onKeyDown={onMenuKey}>
+      {note && <div className="rp-v2-bm-note" aria-live="polite">{note}</div>}
       {ITEMS.map((item, i) => {
         if ("sep" in item) return <hr key={`hr-${i}`} className="rp-v2-bm-sep-hr" />;
         const { id } = item;
@@ -268,7 +276,6 @@ export function BrowserMenu(props: BrowserMenuProps) {
           </div>
         );
       })}
-      {note && <div className="rp-v2-bm-note" aria-live="polite">{note}</div>}
     </div>
   );
 }
