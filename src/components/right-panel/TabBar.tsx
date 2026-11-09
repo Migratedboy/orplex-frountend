@@ -11,20 +11,19 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { closedTabs, ALL_TABS, TAB_META, type TabId } from "@/lib/panel-state";
-import { IconPlus, IconClose, IconFork, IconFolder, IconTerminal, IconLaptop, IconList, IconScratch } from "../Icons";
+import { RIcon, type RefIconName } from "./ref-icons";
 
-const ICONS: Record<TabId, (p: { size?: number }) => React.ReactNode> = {
-  queue: IconList,
-  changes: IconFork,
-  browser: IconLaptop,
-  terminal: IconTerminal,
-  files: IconFolder,
-  scratch: IconScratch,
+const ICONS: Record<TabId, RefIconName> = {
+  queue: "queue",
+  changes: "branch",
+  browser: "laptop",
+  terminal: "term",
+  files: "folder",
+  scratch: "pen",
 };
 
 export function TabIcon({ id, size = 17 }: { id: TabId; size?: number }) {
-  const Icon = ICONS[id] ?? IconList;
-  return <Icon size={size} />;
+  return <RIcon name={ICONS[id] ?? "queue"} size={size} />;
 }
 
 export interface TabBadges {
@@ -152,7 +151,7 @@ export function TabBar({
                   onCloseTab(id);
                 }}
               >
-                <IconClose size={14} />
+                <RIcon name="x" size={14} />
               </button>
             )}
           </div>
@@ -168,13 +167,13 @@ export function TabBar({
         title="Open a tab"
         onClick={() => setPop(!popOpen)}
       >
-        <IconPlus size={18} />
+        <RIcon name="plus" size={18} />
       </button>
 
       <div className="rp-v2-spacer" />
 
       <button className="rp-v2-panel-close" aria-label="Close right panel" title="Close panel" onClick={onClosePanel}>
-        <IconClose size={16} />
+        <RIcon name="x" size={16} />
       </button>
 
       {popOpen && (

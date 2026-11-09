@@ -7,28 +7,25 @@
  * store), profiles (CRUD + switch), browser data (sizes + clear).
  */
 import { useCallback, useEffect, useState } from "react";
-import {
-  IconPlus, IconMask, IconCode, IconRefresh, IconPuzzle, IconVideo,
-  IconDownload, IconHistory, IconProfile, IconDatabase, IconChevronDown, IconCheck, IconX,
-} from "../Icons";
+import { RIcon } from "./ref-icons";
 
 type MenuAction = "new" | "private" | "devtools" | "hard" | "float" | "record" | "import" | "ext" | "recent" | "profiles" | "bdata";
 
 type ItemEntry = { id: MenuAction; icon: React.ReactNode; label: string; sub?: boolean | "profiles" } | { sep: true };
 const ITEMS: ItemEntry[] = [
-  { id: "new", icon: <IconPlus size={16} />, label: "New browser page" },
-  { id: "private", icon: <IconMask size={16} />, label: "Private tab" },
-  { id: "devtools", icon: <IconCode size={16} />, label: "Open DevTools" },
-  { id: "hard", icon: <IconRefresh size={16} />, label: "Hard reload" },
-  { id: "float", icon: <IconPuzzle size={16} />, label: "Toggle floating preview" },
-  { id: "record", icon: <IconVideo size={16} />, label: "Record browser" },
+  { id: "new", icon: <RIcon name="plus" size={16} />, label: "New browser page" },
+  { id: "private", icon: <RIcon name="mask" size={16} />, label: "Private tab" },
+  { id: "devtools", icon: <RIcon name="code" size={16} />, label: "Open DevTools" },
+  { id: "hard", icon: <RIcon name="reload" size={16} />, label: "Hard reload" },
+  { id: "float", icon: <RIcon name="puzzle" size={16} />, label: "Toggle floating preview" },
+  { id: "record", icon: <RIcon name="video" size={16} />, label: "Record browser" },
   { sep: true },
-  { id: "import", icon: <IconDownload size={16} />, label: "Import browser data…" },
-  { id: "ext", icon: <IconPuzzle size={16} />, label: "Extensions…" },
+  { id: "import", icon: <RIcon name="download" size={16} />, label: "Import browser data…" },
+  { id: "ext", icon: <RIcon name="puzzle" size={16} />, label: "Extensions…" },
   { sep: true },
-  { id: "recent", icon: <IconHistory size={16} />, label: "Recent pages", sub: true },
-  { id: "profiles", icon: <IconProfile size={16} />, label: "Profiles", sub: true },
-  { id: "bdata", icon: <IconDatabase size={16} />, label: "Browser data", sub: true },
+  { id: "recent", icon: <RIcon name="history" size={16} />, label: "Recent pages", sub: true },
+  { id: "profiles", icon: <RIcon name="user" size={16} />, label: "Profiles", sub: true },
+  { id: "bdata", icon: <RIcon name="db" size={16} />, label: "Browser data", sub: true },
 ];
 
 export interface BrowserMenuProps {
@@ -198,7 +195,7 @@ export function BrowserMenu(props: BrowserMenuProps) {
                   }
                 }}
               />
-              <button onClick={() => setCreatingProfile(false)} aria-label="Cancel"><IconX size={13} /></button>
+              <button onClick={() => setCreatingProfile(false)} aria-label="Cancel"><RIcon name="x" size={13} /></button>
             </div>
           ) : (
             <button className="rp-v2-bm-item" onClick={() => setCreatingProfile(true)}>+ New profile…</button>
@@ -270,7 +267,7 @@ export function BrowserMenu(props: BrowserMenuProps) {
               <span className="rp-v2-bm-ic">{item.icon}</span>
               {label}
               {id === "record" && props.recording && <span className="rp-v2-bm-rec" aria-hidden="true" />}
-              {item.sub && <span className={`rp-v2-bm-chev ${isOpen ? "open" : ""}`}><IconChevronDown size={15} /></span>}
+              {item.sub && <span className={`rp-v2-bm-chev ${isOpen ? "open" : ""}`}><RIcon name="chevd" size={15} /></span>}
             </button>
             {item.sub && isOpen && <div className="rp-v2-bm-sub">{renderSub(id)}</div>}
           </div>
@@ -308,10 +305,11 @@ function ProfilesRenameRow({ bridge, list, onDone }: {
             }}
             aria-label="Save renamed profile"
           >
-            <IconCheck size={13} />
+            <RIcon name="check" size={13} />
           </button>
         </>
       )}
     </div>
   );
 }
+

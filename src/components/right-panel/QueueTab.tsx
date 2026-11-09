@@ -15,7 +15,8 @@ import { useBackgroundChat } from "@/hooks/useBackgroundChat";
 import { abortCurrentTask } from "@/lib/background-chat";
 import { announceConversationOpen } from "@/lib/navigation-events";
 import { QueuePanelSkeleton } from "../PanelSkeletons";
-import { IconCheck, IconX, IconPlay, IconStop } from "../Icons";
+import { RIcon, type RefIconName } from "./ref-icons";
+import { IconStop } from "../Icons";
 
 type QState = "ok" | "err" | "run";
 
@@ -25,10 +26,10 @@ function stateOf(status: string): QState {
   return "run";
 }
 
-const Q_ICON: Record<QState, (p: { size?: number }) => React.ReactNode> = {
-  ok: IconCheck,
-  err: IconX,
-  run: IconPlay,
+const Q_ICON: Record<QState, RefIconName> = {
+  ok: "check",
+  err: "x",
+  run: "play",
 };
 
 export function QueueTab() {
@@ -51,7 +52,7 @@ export function QueueTab() {
   }
 
   const st = stateOf(task.status);
-  const Icon = Q_ICON[st];
+  const iconName = Q_ICON[st];
   const running = st === "run";
 
   const jumpTo = () => {
@@ -75,7 +76,7 @@ export function QueueTab() {
           }
         }}
       >
-        <span className={`rp-v2-qs ${st}`} aria-hidden="true"><Icon size={11} /></span>
+        <span className={`rp-v2-qs ${st}`} aria-hidden="true"><RIcon name={iconName} size={11} /></span>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="rp-v2-qm">{task.userMessage}</div>
           <div className={`rp-v2-qt ${running ? "dots" : ""}`}>{task.statusDetail || task.status}</div>

@@ -8,7 +8,7 @@
  * notice — see spec §5.5.
  */
 import { useEffect, useRef, useState } from "react";
-import { IconDownload, IconPuzzle, IconCookie, IconX, IconCheck, IconChevronDown } from "../Icons";
+import { RIcon } from "./ref-icons";
 
 interface BrowserOpt {
   id: string;
@@ -157,7 +157,7 @@ export function ImportBrowserDataDialog({ open, initialTab, onClose, onSwitchPro
   };
 
   const chk = (on: boolean) => (
-    <span className={`rp-v2-ck ${on ? "on" : ""}`} aria-hidden="true">{on ? <IconCheck size={13} /> : null}</span>
+    <span className={`rp-v2-ck ${on ? "on" : ""}`} aria-hidden="true">{on ? <RIcon name="check" size={13} /> : null}</span>
   );
 
   return (
@@ -169,9 +169,9 @@ export function ImportBrowserDataDialog({ open, initialTab, onClose, onSwitchPro
     >
       <div className="rp-v2-dlg" role="dialog" aria-modal="true" aria-label="Import browser data">
         <div className="rp-v2-mdh">
-          <span aria-hidden="true"><IconDownload size={22} /></span>
+          <span aria-hidden="true"><RIcon name="download" size={22} /></span>
           <h3>Import browser data</h3>
-          <button className="rp-v2-mdx" onClick={onClose} aria-label="Close dialog"><IconX size={18} /></button>
+          <button className="rp-v2-mdx" onClick={onClose} aria-label="Close dialog"><RIcon name="x" size={18} /></button>
         </div>
 
         <div className="rp-v2-seg" role="tablist" aria-label="Import section">
@@ -187,7 +187,7 @@ export function ImportBrowserDataDialog({ open, initialTab, onClose, onSwitchPro
             <button className="rp-v2-mdsel" onClick={() => setDdOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={ddOpen}>
               <span className="rp-v2-bi" aria-hidden="true" />
               {browser?.name} — {browser?.profileLabel}
-              <span className={`rp-v2-mdcv ${ddOpen ? "up" : ""}`} aria-hidden="true"><IconChevronDown size={16} /></span>
+              <span className={`rp-v2-mdcv ${ddOpen ? "up" : ""}`} aria-hidden="true"><RIcon name="chevd" size={16} /></span>
             </button>
             {ddOpen && (
               <div className="rp-v2-ddl" role="listbox" aria-label="Choose browser">
@@ -205,14 +205,14 @@ export function ImportBrowserDataDialog({ open, initialTab, onClose, onSwitchPro
           <>
             <div className="rp-v2-mdcard">
               <button className="rp-v2-mdrow" onClick={() => setCookies((c) => !c)} aria-pressed={cookies}>
-                <span aria-hidden="true"><IconCookie size={18} /></span>
+                <span aria-hidden="true"><RIcon name="cookie" size={18} /></span>
                 <span className="rp-v2-mdrow-t">Cookies &amp; sign-ins</span>
                 {chk(cookies)}
               </button>
               <button className="rp-v2-mdrow" onClick={() => setExtOpen((o) => !o)} aria-expanded={extOpen}>
-                <span aria-hidden="true"><IconPuzzle size={18} /></span>
+                <span aria-hidden="true"><RIcon name="puzzle" size={18} /></span>
                 <span className="rp-v2-mdrow-t">Extensions</span>
-                <span className={`rp-v2-mdcv ${extOpen ? "up" : ""}`} aria-hidden="true"><IconChevronDown size={16} /></span>
+                <span className={`rp-v2-mdcv ${extOpen ? "up" : ""}`} aria-hidden="true"><RIcon name="chevd" size={16} /></span>
               </button>
               {extOpen && (
                 exts.length === 0 ? (
@@ -310,3 +310,4 @@ export function ImportBrowserDataDialog({ open, initialTab, onClose, onSwitchPro
     </div>
   );
 }
+

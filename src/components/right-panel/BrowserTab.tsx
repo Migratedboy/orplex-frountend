@@ -28,7 +28,8 @@ import { useNativeViewBounds } from "./hooks/useNativeViewBounds";
 import { useOverlayFreeze } from "./hooks/useOverlayFreeze";
 import { BrowserMenu } from "./BrowserMenu";
 import { ImportBrowserDataDialog } from "./ImportBrowserDataDialog";
-import { IconBack, IconArrowRight, IconRefresh, IconOpenExternal, IconGlobe, IconMore, IconDownload, IconMask } from "../Icons";
+import { RIcon } from "./ref-icons";
+import { IconLock, IconWarn } from "../Icons";
 
 const AGENT_TAB_ID = 999999;
 /** Dev-server ports probed for the new-tab page (same 8 as ARCHITECTURE §2). */
@@ -509,7 +510,7 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
               <span className="rp-v2-br-tab-title">{t.title}</span>
               {t.private && (
                 <span className="rp-v2-br-private-chip" title="Private tab — nothing is saved or shared">
-                  <IconMask size={12} />
+                  <RIcon name="mask" size={12} />
                 </span>
               )}
               <button
@@ -523,15 +524,23 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
         </div>
       )}
 
-      {/* Toolbar (reference .br-bar): back / forward / reload / omnibox / external */}
+      {/* Toolbar (reference .br-bar): back / forward / reload / omnibox / external / more */}
       <div className="rp-v2-br-bar">
-        <button className="rp-v2-br-ib" disabled={!canBack} onClick={() => go(-1)} title="Back" aria-label="Back"><IconBack size={18} /></button>
-        <button className="rp-v2-br-ib" disabled={!canForward} onClick={() => go(1)} title="Forward" aria-label="Forward"><IconArrowRight size={18} /></button>
-        <button className="rp-v2-br-ib" onClick={reload} title="Reload" aria-label="Reload"><IconRefresh size={18} /></button>
+        <button className="rp-v2-br-ib" disabled={!canBack} onClick={() => go(-1)} title="Back" aria-label="Back"><RIcon name="back" size={18} /></button>
+        <button className="rp-v2-br-ib" disabled={!canForward} onClick={() => go(1)} title="Forward" aria-label="Forward"><RIcon name="fwd" size={18} /></button>
+        <button className="rp-v2-br-ib" onClick={reload} title="Reload" aria-label="Reload"><RIcon name="reload" size={18} /></button>
         <div className="rp-v2-br-url-wrap">
-          <span className={`rp-v2-br-shield ${isSecure ? "secure" : ""}`} aria-hidden="true">
-            {isSecure ? "🔒" : "⚠"}
-          </span>
+          {/* Security state only when a page is loaded: lock (secure) or the
+              warning/error glyph (insecure or failed) — never before load. */}
+          {currentUrl && (
+            activeTab?.error ? (
+              <span className="rp-v2-br-shield err" aria-hidden="true"><IconWarn size={12} /></span>
+            ) : isSecure ? (
+              <span className="rp-v2-br-shield secure" aria-hidden="true"><IconLock size={12} /></span>
+            ) : (
+              <span className="rp-v2-br-shield warn" aria-hidden="true"><IconWarn size={12} /></span>
+            )
+          )}
           <input
             className="rp-v2-br-url"
             value={omnibox}
@@ -550,7 +559,7 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
                 e.currentTarget.blur();
               }
             }}
-            placeholder="Search the web or enter a URL"
+            placeholder="Search or enter URL"
             spellCheck={false}
             aria-label="Browse address"
           />
@@ -565,7 +574,7 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
             </button>
           )}
         </div>
-        <button className="rp-v2-br-ib" disabled={!currentUrl} onClick={openExternal} title="Open this page in your real browser" aria-label="Open in real browser"><IconOpenExternal size={17} /></button>
+        <button className="rp-v2-br-ib" disabled={!currentUrl} onClick={openExternal} title="Open in external browser" aria-label="Open in external browser"><RIcon name="ext" size={17} /></button>
         <button
           className="rp-v2-br-ib"
           data-menu-btn
@@ -575,11 +584,11 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
           aria-haspopup="menu"
           aria-expanded={menuOpen}
         >
-          <IconMore size={17} />
+          <RIcon name="more" size={17} />
         </button>
         {activeTab?.private && (
           <span className="rp-v2-br-private-chip big" title="Private tab">
-            <IconMask size={12} /> Private
+            <RIcon name="mask" size={12} /> Private
           </span>
         )}
       </div>
@@ -625,7 +634,7 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
         )}
         {!native ? (
           <div className="rp-v2-br-empty">
-            <div className="rp-v2-br-empty-icon"><IconGlobe size={32} /></div>
+            <div className="rp-v2-br-empty-icon"><RIcon name="globe" size={32} /></div>
             <div className="rp-v2-br-empty-title">Desktop app required</div>
             <div className="rp-v2-br-empty-hint">
               The embedded browser runs on real Chromium inside the Orplex desktop app.
@@ -634,8 +643,11 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
           </div>
         ) : showNewTabPage ? (
           <div className="rp-v2-br-empty">
-            <div className="rp-v2-br-empty-icon breathing"><IconGlobe size={34} /></div>
+            <div className="rp-v2-br-empty-icon breathing"><RIcon name="globe" size={34} /></div>
             <h3 className="rp-v2-br-empty-h">Start browsing</h3>
+            <button className="rp-v2-br-import" onClick={() => { setImportTab("import"); setImportOpen(true); }}>
+              <RIcon name="download" size={17} /> Import browser data
+            </button>
             {livePorts.length > 0 && (
               <div className="rp-v2-br-ports">
                 {livePorts.map((p) => (
@@ -645,9 +657,6 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
                 ))}
               </div>
             )}
-            <button className="rp-v2-br-import" onClick={() => { setImportTab("import"); setImportOpen(true); }}>
-              <IconDownload size={17} /> Import browser data
-            </button>
           </div>
         ) : (
           <>

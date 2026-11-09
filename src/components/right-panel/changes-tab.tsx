@@ -19,14 +19,15 @@ import { apiFetch } from "@/lib/api-base";
 import { ChangesPanelSkeleton } from "../PanelSkeletons";
 import { useFileSystemContext } from "../FileSystemProvider";
 import { getPreviousContent, undoLastChange, subscribeFileHistory } from "@/lib/file-history";
-import { IconFilePlus, IconEdit, IconTrash, IconFork, IconUndo } from "../Icons";
+import { RIcon, type RefIconName } from "./ref-icons";
+import { IconUndo } from "../Icons";
 import type { GitChangeRow, GitChangeStatus } from "@/lib/git-changes";
 
-const STATUS_ICON: Record<GitChangeStatus, { Icon: (p: { size?: number }) => React.ReactNode; cls: string }> = {
-  added: { Icon: IconFilePlus, cls: "a" },
-  modified: { Icon: IconEdit, cls: "m" },
-  deleted: { Icon: IconTrash, cls: "x" },
-  renamed: { Icon: IconFork, cls: "m" },
+const STATUS_ICON: Record<GitChangeStatus, { name: RefIconName; cls: string }> = {
+  added: { name: "fadd", cls: "a" },
+  modified: { name: "fmod", cls: "m" },
+  deleted: { name: "fdel", cls: "x" },
+  renamed: { name: "branch", cls: "m" },
 };
 
 function splitPath(path: string): { dir: string; file: string } {
@@ -218,14 +219,14 @@ export function ChangesTab() {
           )}
           {truncated && <div className="rp-v2-ch-note">Showing first {rows.length} changed files.</div>}
           {rows.map((r) => {
-            const { Icon, cls } = STATUS_ICON[r.status] ?? STATUS_ICON.modified;
+            const { name, cls } = STATUS_ICON[r.status] ?? STATUS_ICON.modified;
             const { dir, file } = splitPath(r.path);
             const isOpen = expanded === r.path;
             const canUndo = getPreviousContent(r.path) !== null;
             return (
               <div key={r.path}>
                 <div className="rp-v2-row" onClick={() => void expandRow(r.path)} title={r.path}>
-                  <span className={`rp-v2-fi ${cls}`} aria-hidden="true"><Icon size={18} /></span>
+                  <span className={`rp-v2-fi ${cls}`} aria-hidden="true"><RIcon name={name} size={18} /></span>
                   <span className="rp-v2-p"><span className="rp-v2-dir">{dir}</span><span className="rp-v2-file">{file}</span></span>
                   <span className="rp-v2-n a">+{r.added}</span>
                   <span className={`rp-v2-n ${r.deleted ? "d" : "z"}`}>−{r.deleted}</span>
@@ -332,7 +333,7 @@ function HistoryFallback() {
         return (
           <div key={i} className="rp-v2-row" onClick={() => setExpanded(isExpanded ? null : i)}>
             <span className={`rp-v2-fi ${c.isNew ? "a" : "m"}`} aria-hidden="true">
-              {c.isNew ? <IconFilePlus size={18} /> : <IconEdit size={18} />}
+              <RIcon name={c.isNew ? "fadd" : "fmod"} size={18} />
             </span>
             <span className="rp-v2-p"><span className="rp-v2-file">{c.path.split("/").pop()}</span></span>
             <span className="rp-v2-n z">{c.lineCount}L</span>

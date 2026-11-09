@@ -22,10 +22,8 @@ import { useFileSystemContext } from "../FileSystemProvider";
 import { apiFetch } from "@/lib/api-base";
 import MarkdownRenderer from "../MarkdownRenderer";
 import { FilesPanelSkeleton } from "../PanelSkeletons";
-import {
-  IconSearch, IconChevronRight, IconFolder, IconFilePlus, IconFolderOpen,
-  IconFile, IconDownload, IconEdit, IconTrash, IconX,
-} from "../Icons";
+import { RIcon } from "./ref-icons";
+
 
 interface Entry {
   name: string;
@@ -364,7 +362,7 @@ export function FilesTab() {
     <div className="rp-v2-fl">
       <div className="rp-v2-fl-bar">
         <label className="rp-v2-fl-search">
-          <span className="rp-v2-fl-search-ic" aria-hidden="true"><IconSearch size={16} /></span>
+          <span className="rp-v2-fl-search-ic" aria-hidden="true"><RIcon name="search" size={16} /></span>
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -374,13 +372,13 @@ export function FilesTab() {
           />
         </label>
         <button className="rp-v2-fl-btn" title={`New file in ${selectedFolder || "workspace"}`} onClick={() => setCreating({ kind: "file", folder: selectedFolder })}>
-          <IconFilePlus size={18} />
+          <RIcon name="fileplus" size={18} />
         </button>
         <button className="rp-v2-fl-btn" title={`New folder in ${selectedFolder || "workspace"}`} onClick={() => setCreating({ kind: "folder", folder: selectedFolder })}>
-          <IconFolderOpen size={18} />
+          <RIcon name="folderplus" size={18} />
         </button>
         <button className="rp-v2-fl-btn" title={`Upload to ${selectedFolder || "workspace"}`} onClick={() => void doUpload()} disabled={busy}>
-          <IconDownload size={18} />
+          <RIcon name="upload" size={18} />
         </button>
         <input ref={fileInputRef} type="file" multiple hidden onChange={(e) => void onFilePicked(e.target.files)} />
       </div>
@@ -447,10 +445,10 @@ export function FilesTab() {
                 }}
               >
                 <span className={`rp-v2-fl-chev ${isOpen ? "open" : ""}`} aria-hidden="true">
-                  {isDir ? <IconChevronRight size={14} /> : null}
+                  {isDir ? <RIcon name="chev" size={14} /> : null}
                 </span>
                 <span className="rp-v2-fl-fi" aria-hidden="true">
-                  {isDir ? <IconFolder size={16} /> : <IconFile size={16} />}
+                  {isDir ? <RIcon name="folder" size={16} /> : <RIcon name="file" size={16} />}
                 </span>
                 <span className="rp-v2-fl-nm">{node.name}</span>
                 {isDir && node.children === null && <span className="rp-v2-fl-dim">(…)</span>}
@@ -549,15 +547,15 @@ function FilesContextMenu(props: {
   );
   return (
     <div className="rp-v2-fl-menu" style={{ left: Math.min(menu.x, window.innerWidth - 190), top: Math.min(menu.y, window.innerHeight - 260) }}>
-      {item("Open", <IconFile size={15} />, () => act(props.onOpen))}
-      {item("New file here…", <IconFilePlus size={15} />, () => { props.onNewFile(folderOf); onClose(); })}
-      {item("New folder here…", <IconFolderOpen size={15} />, () => { props.onNewFolder(folderOf); onClose(); })}
+      {item("Open", <RIcon name="file" size={15} />, () => act(props.onOpen))}
+      {item("New file here…", <RIcon name="fileplus" size={15} />, () => { props.onNewFile(folderOf); onClose(); })}
+      {item("New folder here…", <RIcon name="folderplus" size={15} />, () => { props.onNewFolder(folderOf); onClose(); })}
       <div className="rp-v2-fl-menu-sep" />
-      {item("Rename…", <IconEdit size={15} />, () => act(props.onRename))}
-      {item("Copy path", <IconFile size={15} />, () => { void props.onCopyPath(n); onClose(); })}
-      {item("Reveal in Explorer", <IconFolder size={15} />, () => { void props.onReveal(n); onClose(); }, !props.canReveal)}
+      {item("Rename…", <RIcon name="pen" size={15} />, () => act(props.onRename))}
+      {item("Copy path", <RIcon name="file" size={15} />, () => { void props.onCopyPath(n); onClose(); })}
+      {item("Reveal in Explorer", <RIcon name="folder" size={15} />, () => { void props.onReveal(n); onClose(); }, !props.canReveal)}
       <div className="rp-v2-fl-menu-sep" />
-      {item("Delete (to trash)…", <IconTrash size={15} />, () => { void props.onDelete(n); onClose(); })}
+      {item("Delete (to trash)…", <RIcon name="fdel" size={15} />, () => { void props.onDelete(n); onClose(); })}
     </div>
   );
 }
@@ -593,7 +591,7 @@ function FileViewer({ path, onClose, readText }: { path: string; onClose: () => 
           <span className="rp-v2-viewer-path" title={path}>
             {dir && <span className="rp-v2-viewer-dir">{dir}/</span>}{name}
           </span>
-          <button className="rp-v2-viewer-x" onClick={onClose} aria-label="Close viewer" title="Close (Esc)"><IconX size={16} /></button>
+          <button className="rp-v2-viewer-x" onClick={onClose} aria-label="Close viewer" title="Close (Esc)"><RIcon name="x" size={16} /></button>
         </div>
         <div className="rp-v2-viewer-body">
           {isImage ? (
@@ -611,3 +609,4 @@ function FileViewer({ path, onClose, readText }: { path: string; onClose: () => 
     </div>
   );
 }
+

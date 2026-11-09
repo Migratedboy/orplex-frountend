@@ -549,60 +549,41 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 @media(max-width:767px){ .rp-resize-grip { display:none; } }
 
 /* === Right Panel v2 (Freebuff-style) — scoped .orplex-rp root (§3/§11) === */
-/* Reference palettes (_ref/freebuff-right-panel.html) mapped onto the app's
-   theme tokens: light/dark follows the app's `.dark` class, never the OS.
-   Brand orange = --brand-vivid; semantic greens/reds stay semantic. */
+/* EXACT reference palette (_ref/freebuff-right-panel.html; visual fix pass
+   2026-11-10): dark is the default block, light lives under html:not(.dark)
+   (the app's theme class is `.dark`, never the OS). Panel type is the
+   app's sans UI stack (same as the sidebar), mono only in the terminal. */
 .orplex-rp {
-  --rp-bar: var(--well);
-  --rp-bg: var(--surface);
-  --rp-pill: var(--well);
-  --rp-pill2: var(--border);
-  --rp-hover: var(--well);
-  --rp-text: var(--text-primary);
-  --rp-dim: var(--text-secondary);
-  --rp-line: var(--border);
-  --rp-access: var(--brand-vivid);
-  --rp-brand: var(--brand-vivid);
-  --rp-accent: var(--brand-vivid);
-  --rp-btn-ink: #2a1604;
-  --rp-add: var(--success);
-  --rp-del: var(--danger);
-  --rp-mod: var(--brand-vivid);
-  --rp-okbg: var(--success-soft-surface, rgba(74, 222, 128, .15));
-  --rp-errbg: var(--danger-soft-surface, rgba(248, 113, 113, .15));
-  --rp-runbg: rgba(255, 107, 0, .15);
-  --rp-page: var(--canvas);
-  --rp-edge: var(--border);
-  --rp-tabhover: var(--well);
-  --rp-ibhover: var(--well);
-  --rp-pop: var(--surface);
-  --rp-popline: var(--border);
-  --rp-pophover: var(--well);
-  --rp-shadow: rgba(0, 0, 0, .5);
-  --rp-browse: var(--canvas);
-  --rp-term: var(--text-primary);
-  --rp-sel: var(--well);
-  --rp-scroll: var(--border);
-  --rp-toast: var(--surface);
-  --rp-card: var(--well);
-  --rp-mid: var(--text-secondary);
-  --rp-em: var(--text-secondary);
-  --rp-emhov: var(--text-primary);
-  --rp-fi: var(--text-secondary);
-  --rp-li: var(--text-primary);
-  --rp-bullet: var(--text-tertiary);
-  --rp-scrim: rgba(0, 0, 0, .65);
-  --rp-segon: #fff;
-  --rp-segink: #1f1f1e;
-  --rp-dlgin: var(--well);
+  --rp-bar:#171717; --rp-bg:#1e1e1e; --rp-pill:#2b2b2b; --rp-pill2:#333; --rp-hover:#272727;
+  --rp-text:#e8e8e8; --rp-dim:#8f8f8f; --rp-line:#2a2a2a;
+  --rp-access:#f2994a; --rp-brand:#f2994a; --rp-accent:#f2994a; --rp-btn-ink:#2a1604;
+  --rp-add:#8fd18a; --rp-del:#f07178; --rp-mod:#e8a15a;
+  --rp-okbg:#8fd18a26; --rp-errbg:#f0717826; --rp-runbg:#f28c3c26;
+  --rp-page:#121212; --rp-edge:#000; --rp-tabhover:#202020; --rp-ibhover:#2a2a2a;
+  --rp-pop:#262626; --rp-popline:#363636; --rp-pophover:#333; --rp-shadow:#0008;
+  --rp-browse:#202020; --rp-term:#d6d6d6; --rp-sel:#2a2a2a; --rp-scroll:#3a3a3a;
+  --rp-toast:#2e2e2e; --rp-card:#242424; --rp-mid:#a8a8a8; --rp-em:#b4b4b4; --rp-emhov:#fff;
+  --rp-fi:#b5b5b5; --rp-li:#cfcfcf; --rp-bullet:#555;
+  --rp-scrim:#000a; --rp-segon:#f3cba5; --rp-segink:#2a1604; --rp-dlgin:#1f201f;
   background: var(--rp-bg);
-  border-left: 1px solid var(--rp-edge);
-  overflow: hidden;
+  font-family:Inter,"Segoe UI",system-ui,-apple-system,sans-serif;
 }
-.dark .orplex-rp {
-  --rp-segon: var(--brand);
-  --rp-segink: #2a1604;
+.orplex-rp button, .orplex-rp input, .orplex-rp select, .orplex-rp textarea { font:inherit; }
+.orplex-rp button { background:none; border:0; cursor:pointer; color:inherit; padding:0; }
+html:not(.dark) .orplex-rp {
+  --rp-bar:#ebe9e4; --rp-bg:#f8f7f4; --rp-pill:#ebe9e4; --rp-pill2:#dedbd4; --rp-hover:#efede8;
+  --rp-text:#1f1f1e; --rp-dim:#707069; --rp-line:#e2e0da;
+  --rp-access:#c2570c; --rp-brand:#f5a05a; --rp-accent:#c2570c; --rp-btn-ink:#2b1505;
+  --rp-add:#2e8b3d; --rp-del:#d33f49; --rp-mod:#c9701a;
+  --rp-okbg:#2e8b3d1f; --rp-errbg:#d33f4920; --rp-runbg:#c2570c26;
+  --rp-page:#e4e2dd; --rp-edge:#d6d3cc; --rp-tabhover:#e2dfd8; --rp-ibhover:#e6e3dc;
+  --rp-pop:#fff; --rp-popline:#dcd9d2; --rp-pophover:#efede8; --rp-shadow:#0002;
+  --rp-browse:#f2f0ec; --rp-term:#262625; --rp-sel:#e8e5de; --rp-scroll:#c9c6be;
+  --rp-toast:#fff; --rp-card:#efede8; --rp-mid:#6a6a64; --rp-em:#5b5b55; --rp-emhov:#000;
+  --rp-fi:#6b6b64; --rp-li:#33332f; --rp-bullet:#b5b2aa;
+  --rp-scrim:#0005; --rp-segon:#fff; --rp-segink:#1f1f1e; --rp-dlgin:#f2f0ec;
 }
+.orplex-rp { border-left: 1px solid var(--rp-edge); overflow: hidden; }
 
 /* Tab bar (reference: .fb-tabs / .fb-tab) */
 .rp-v2-tabs { min-width:0; height:48px; background:var(--rp-bar); display:flex; align-items:flex-end; flex:none; padding-left:4px; position:relative; }
@@ -802,8 +783,10 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .rp-v2-br-ib:hover { background:var(--rp-ibhover); color:var(--rp-text); }
 .rp-v2-br-ib[disabled] { opacity:.35; pointer-events:none; }
 .rp-v2-br-url-wrap { flex:1; min-width:0; height:38px; border-radius:12px; background:var(--rp-pill); display:flex; align-items:center; gap:8px; padding:0 14px; margin:0 6px; }
-.rp-v2-br-shield { font-size:12px; color:var(--rp-dim); flex:none; }
-.rp-v2-br-shield.secure { color:var(--rp-add); }
+.rp-v2-br-shield { font-size:12px; color:var(--rp-mod); flex:none; display:inline-flex; align-items:center; }
+.rp-v2-br-shield.secure { color:var(--rp-dim); }
+.rp-v2-br-shield.warn { color:var(--rp-mod); }
+.rp-v2-br-shield.err { color:var(--rp-del); }
 .rp-v2-br-url { flex:1; min-width:0; height:100%; background:none; border:0; outline:0; font-size:14.5px; color:var(--rp-text); font-family:inherit; }
 .rp-v2-br-url::placeholder { color:var(--rp-dim); }
 .rp-v2-br-agent { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600; color:var(--rp-dim); background:var(--rp-card); border:0; border-radius:999px; padding:3px 9px; cursor:pointer; flex:none; }
@@ -815,7 +798,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 .rp-v2-br-native-placeholder { position:absolute; inset:0; background:var(--rp-browse); }
 .rp-v2-br-freeze { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
 .rp-v2-br-empty { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; color:var(--rp-dim); padding:20px; text-align:center; }
-.rp-v2-br-empty-icon { color:var(--rp-accent); }
+.rp-v2-br-empty-icon { color:var(--rp-dim); }
 .rp-v2-br-empty-icon.breathing { animation:rp-breathe 2.6s ease-in-out infinite; }
 /* Breathing idle: swell + glow. Honours prefers-reduced-motion. */
 @keyframes rp-breathe {

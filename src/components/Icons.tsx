@@ -110,6 +110,9 @@ export const IconProfile = (p: IconProps) => <Ms name="person" {...p} />;
 export const IconCookie = (p: IconProps) => <Ms name="cookie" {...p} />;
 export const IconBack = (p: IconProps) => <Ms name="arrow_back" {...p} />;
 export const IconOpenExternal = (p: IconProps) => <Ms name="open_in_new" {...p} />;
+/** Omnibox security states: secure lock vs insecure/failed warning. */
+export const IconLock = (p: IconProps) => <Ms name="lock" {...p} />;
+export const IconWarn = (p: IconProps) => <Ms name="warning" {...p} />;
 export const IconMenu = (p: IconProps) => <Ms name="menu" {...p} />;
 export const IconMessage = (p: IconProps) => <Ms name="chat" {...p} />;
 
