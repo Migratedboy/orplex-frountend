@@ -32,7 +32,12 @@ export async function POST(request: Request) {
       const keepPath = join(keepDir, "last-import.json");
       await copyFile(tmp, keepPath).catch(() => {});
       const result = imp(tmp);
-      const size = (await stat(keepPath)).size.catch(() => 0);
+      let size = 0;
+      try {
+        size = (await stat(keepPath)).size;
+      } catch {
+        size = 0;
+      }
       const total = Object.values(result.restored).reduce((a, b) => a + b, 0);
       return NextResponse.json({ ok: true, restored: result.restored, skipped: result.skipped, total, keptFile: keepPath, keptBytes: size });
     } finally {
