@@ -117,3 +117,6 @@ service-account*.json
 # Negation must come AFTER the .env* rule (last-match-wins).
 !.env.example
 .orplex/db/
+# Local assistant data — never commit workspace learnings.
+.orplex/workspace-memory.json
+site/
