@@ -14,7 +14,7 @@ describe("provider-registry", () => {
 
   it("exposes the curated elite set including Claude", () => {
     const ids = listProviderIds();
-    for (const required of ["groq", "nvidia", "openrouter", "anthropic", "gemini", "mistral", "deepseek", "together", "xai", "cerebras", "fireworks", "openai"]) {
+    for (const required of ["nvidia", "openrouter", "anthropic", "gemini", "mistral", "deepseek", "together", "xai", "cerebras", "fireworks", "openai"]) {
       expect(ids).toContain(required);
     }
   });
@@ -43,15 +43,15 @@ describe("provider-registry", () => {
   });
 
   it("lookup helpers agree with the list", () => {
-    expect(getProviderDef("groq")?.label).toBe("Groq");
+    expect(getProviderDef("openrouter")?.label).toBe("OpenRouter");
     expect(getProviderDef("nope")).toBeUndefined();
-    expect(providerLabel("groq")).toBe("Groq");
+    expect(providerLabel("openrouter")).toBe("OpenRouter");
     expect(providerLabel("mystery-provider")).toBe("mystery-provider");
   });
 
   it("derives the failover key-env map from the registry plus custom", () => {
     const map = failoverKeyEnvMap();
-    expect(map.groq).toBe("GROQ_API_KEY");
+    
     expect(map.nvidia).toBe("NVIDIA_API_KEY");
     expect(map.openrouter).toBe("OPENROUTER_API_KEY");
     expect(map.anthropic).toBe("ANTHROPIC_API_KEY");

@@ -52,11 +52,11 @@ beforeAll(async () => {
 
 const DEFAULT_KEYS = DEFAULT_MODELS.map((m) => m.key);
 
-/** The two ids that are served by Groq rather than OpenRouter. */
-const GROQ_KEYS = new Set(["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]);
+/** Ids served by NVIDIA NIM (not OpenRouter) — skip the OpenRouter checks. */
+const NON_OPENROUTER_KEYS = new Set(["minimaxai/minimax-m3.1-flash"]);
 
 /** Free ids that carry no `:free` suffix but are still priced 0/0 upstream. */
-const FREE_NO_SUFFIX = new Set(["openrouter/free", "stealth/crouton-alpha"]);
+const FREE_NO_SUFFIX = new Set(["openrouter/free", "stealth/crouton-alpha", "minimaxai/minimax-m3.1-flash"]);
 
 describe("default model ids exist upstream", () => {
   it("every DEFAULT_MODELS key is in the live OpenRouter catalogue", () => {
@@ -64,7 +64,7 @@ describe("default model ids exist upstream", () => {
       console.warn("[skipped] could not reach OpenRouter; id check not run");
       return;
     }
-    const missing = DEFAULT_KEYS.filter((k) => !ids!.has(k));
+    const missing = DEFAULT_KEYS.filter((k) => !NON_OPENROUTER_KEYS.has(k) && !ids!.has(k));
     expect(missing).toEqual([]);
   });
 
@@ -84,7 +84,7 @@ describe("default model ids exist upstream", () => {
       return;
     }
     const paid = DEFAULT_KEYS.filter((k) => {
-      if (GROQ_KEYS.has(k)) return false; // served by Groq, priced by Groq's free tier
+      if (NON_OPENROUTER_KEYS.has(k)) return false; // NIM row: free tier by provider
       const p = prices!.get(k);
       if (!p) return false; // missing from the catalogue is caught by the test above
       return p.prompt !== "0" || p.completion !== "0";
@@ -92,9 +92,9 @@ describe("default model ids exist upstream", () => {
     expect(paid).toEqual([]);
   });
 
-  it("labels every non-Groq default as free", () => {
+  it("labels every default as free", () => {
     for (const k of DEFAULT_KEYS) {
-      if (GROQ_KEYS.has(k)) continue;
+      if (NON_OPENROUTER_KEYS.has(k)) continue; // NIM free row — no OpenRouter price
       if (skipped || !prices) {
         expect(k.endsWith(":free") || FREE_NO_SUFFIX.has(k)).toBe(true);
         continue;

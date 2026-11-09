@@ -13,8 +13,8 @@
  * while `tiersDiverge` is false. To make routing real, configure per-tier
  * models:
  *
- *   TIER1_MODEL=openrouter/free                     TIER1_COST_PER_1K=0
- *   TIER2_MODEL=minimax/minimax-m3.1-flash          TIER2_COST_PER_1K=0.002
+ *   TIER1_MODEL=minimaxai/minimax-m3.1-flash        TIER1_COST_PER_1K=0
+ *   TIER2_MODEL=openrouter/free                     TIER2_COST_PER_1K=0
  *   TIER3_MODEL=<paid-model-id>                     TIER3_COST_PER_1K=0.003
  *
  * (plus optional TIERn_BASE_URL / TIERn_API_KEY_ENV). Once tiers point at

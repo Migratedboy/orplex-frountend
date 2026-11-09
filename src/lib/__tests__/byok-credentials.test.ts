@@ -53,7 +53,7 @@ describe("resolveRunCredential", () => {
   });
 
   it("flags a free-tier-only provider so free-tier shaping still applies", async () => {
-    mockUserApiKey.findMany.mockResolvedValue([row({ provider: "groq" })]);
+    mockUserApiKey.findMany.mockResolvedValue([row({ provider: "nvidia" })]);
     const c = await resolveRunCredential("u1");
     expect(c?.isFreeTier).toBe(true);
   });

@@ -2,7 +2,7 @@
 // apply to free-tier keys rather than to "any key exists".
 //
 // Regression cover for: ANY personal key used to waive the platform daily
-// quota — including a free-tier-only Groq/NVIDIA key, which let a user drain
+// quota — including a free-tier-only NVIDIA key, which let a user drain
 // the platform budget that funds everyone while their requests were actually
 // served by their own free key.
 
@@ -42,9 +42,9 @@ describe("enforceDailyQuota", () => {
   });
 
   it("does NOT waive the quota for a free-tier-only key", async () => {
-    // The platform cap funds everyone; a Groq free key does not lift it.
-    keys("groq", "nvidia");
-    expect(getProviderDef("groq")?.free).toBe(true);
+    // The platform cap funds everyone; an NVIDIA free key does not lift it.
+    keys("nvidia");
+    expect(getProviderDef("nvidia")?.free).toBe(true);
     const r = await enforceDailyQuota("u1");
     // With no UserQuota row the counter reads 0 of 1000, so this is allowed —
     // what matters is that the waiver no longer short-circuits for free keys.

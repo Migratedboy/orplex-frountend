@@ -17,11 +17,13 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PromptBarModel } from "@/components/PromptBar";
-import { DEFAULT_MODELS as DEFAULT_MODEL_ROWS } from "@/lib/default-models";
+import { DEFAULT_MODELS as DEFAULT_MODEL_ROWS, OPT_IN_MODELS as OPT_IN_MODEL_ROWS } from "@/lib/default-models";
 import { listProviderDefs } from "@/lib/provider-registry";
 import { apiFetch } from "@/lib/api-base";
 
-const DEFAULT_MODELS: PromptBarModel[] = DEFAULT_MODEL_ROWS;
+// Curated rows first (free defaults, always), then opt-in premium rows
+// (user-requested MiniMax — paid, clearly labelled, never a default).
+const DEFAULT_MODELS: PromptBarModel[] = [...DEFAULT_MODEL_ROWS, ...OPT_IN_MODEL_ROWS];
 
 // Registry labels as picker tags, so a new registry provider shows up here
 // with zero component changes.

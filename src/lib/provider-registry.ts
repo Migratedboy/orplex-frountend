@@ -74,7 +74,7 @@ const PROVIDERS: ProviderDef[] = [
     keyEnvVar: "NVIDIA_API_KEY",
     keyPrefix: "nvapi-",
     keyHintUrl: "https://build.nvidia.com",
-    fallbackModel: "nvidia/nemotron-3-super-120b-a12b",
+    fallbackModel: "minimaxai/minimax-m3.1-flash",
     free: true,
   },
   {

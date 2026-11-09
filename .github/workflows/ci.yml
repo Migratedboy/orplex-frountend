@@ -12,6 +12,9 @@ concurrency:
 
 env:
   NODE_VERSION: "22"
+  # Lint/typecheck/tests never launch Electron — skipping the binary download
+  # removes the top CI flake (npm ci 504s on the got mirror) entirely.
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
 
 jobs:
   # ──────────────────────────────────────────────────────────────────

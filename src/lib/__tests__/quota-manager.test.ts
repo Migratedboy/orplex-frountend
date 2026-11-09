@@ -14,7 +14,7 @@ describe("quota-manager", () => {
     });
 
     it("only allows minimax-m3", () => {
-      expect(FREE_TIER.ALLOWED_MODELS).toEqual(["openai/gpt-oss-120b"]);
+      expect(FREE_TIER.ALLOWED_MODELS).toEqual(["openrouter/free"]);
     });
 
     it("has correct max file uploads", () => {
@@ -44,8 +44,8 @@ describe("quota-manager", () => {
   // isModelAllowed
   // ---------------------------------------------------------------
   describe("isModelAllowed", () => {
-    it("allows gpt-oss-120b on free tier", () => {
-      expect(isModelAllowed("openai/gpt-oss-120b", "free")).toBe(true);
+    it("allows the free router on free tier", () => {
+      expect(isModelAllowed("openrouter/free", "free")).toBe(true);
     });
 
     it("blocks other models on free tier", () => {

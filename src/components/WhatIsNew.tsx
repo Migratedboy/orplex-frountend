@@ -204,6 +204,17 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "New: a subtle wave animation shows while suggestion chips are being generated",
     ],
   },
+  "1.2.8": {
+    title: "Groq is gone — MiniMax is the default",
+    items: [
+      "One fewer provider to babysit: Groq is removed, OpenRouter and NVIDIA carry everything",
+      "New default model: MiniMax M3.1 Flash (free, via NVIDIA) — opens every fresh chat",
+      "Free Models Router is the fallback default when no model is picked — you are never surprise-charged",
+      "Your conversations, memory and workspace learnings live locally and survive everything — cloud syncs only identity and the playbook",
+      "Every local file keeps a backup copy, so a single bad file can never wipe your data",
+      "Moved machines? Export your whole local database as one portable file and import it anywhere",
+    ],
+  },
 };
 
 /** "1.0.9" < "1.0.10" < "1.1.0" — plain numeric segment compare. */

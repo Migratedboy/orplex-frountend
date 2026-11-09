@@ -7,10 +7,10 @@
  * without them having chosen to. Groq was removed (2026-11): its free tier
  * is gone.
  *
- * ONE deliberate exception: `minimax/minimax-m3.1-flash` (verified live,
- * paid) is included as an explicitly-labelled opt-in row — MiniMax has no
- * `:free` variant on OpenRouter (checked 2026-11-09), so a paid id is the
- * only way to offer it. It is NOT first and is clearly tagged "paid".
+ * MiniMax M3.1 Flash's free serving lives on NVIDIA NIM
+ * (`minimaxai/minimax-m3.1-flash`, first row). OpenRouter only serves the
+ * same model as a paid id (checked live 2026-11-09) — the NIM row is the
+ * free route; the paid OpenRouter id is deliberately NOT offered.
  *
  * EVERY id was verified against OpenRouter's live /api/v1/models listing, not
  * a search engine. Free tiers rotate, so never add an id here without
@@ -32,10 +32,9 @@ export interface DefaultModelRow {
 
 export const DEFAULT_MODELS: DefaultModelRow[] = [
   // --- Default (free) — first row is the fresh-chat default ---
+  // NVIDIA NIM hosts MiniMax M3.1 Flash free (minimaxai/* namespace).
+  { key: "minimaxai/minimax-m3.1-flash", name: "MiniMax M3.1 Flash", tag: "NVIDIA", detail: "free · tools", group: "Default Models" },
   { key: "openrouter/free", name: "Free Models Router", tag: "OpenRouter", detail: "free · 200K · tools · always available", group: "Default Models" },
-
-  // --- User-requested premium row (paid, opt-in) ---
-  { key: "minimax/minimax-m3.1-flash", name: "MiniMax M3.1 Flash", tag: "OpenRouter", detail: "paid · opt-in", group: "Default Models" },
 
   // --- OpenRouter free tier: the strongest free models available ---
   { key: "stealth/crouton-alpha", name: "Crouton Alpha", tag: "OpenRouter", detail: "free · 1M · tools · vision", group: "Default Models" },
@@ -50,3 +49,11 @@ export const DEFAULT_MODELS: DefaultModelRow[] = [
   { key: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", name: "Nemotron 3 Nano Omni", tag: "OpenRouter", detail: "free · 256K · vision", group: "Default Models" },
   { key: "liquid/lfm-2.5-2.6b:free", name: "LFM 2.5 2.6B", tag: "OpenRouter", detail: "free · 66K · compact", group: "Default Models" },
 ];
+
+/**
+ * Opt-in paid rows. MiniMax M3.1 Flash ships FREE via NVIDIA NIM
+ * (`minimaxai/minimax-m3.1-flash`, in DEFAULT_MODELS above), so this is
+ * empty: no paid id needs offering while a free serving exists. Kept as the
+ * extension point for future explicitly-opted premium rows.
+ */
+export const OPT_IN_MODELS: DefaultModelRow[] = [];

@@ -27,11 +27,11 @@ describe("sweep resilience", () => {
     // A good sweep first: groq answers with one model.
     seedCatalogForTests({
       models: [
-        { id: "a/one", name: "One", provider: "groq", verified: true, lastVerifiedAt: new Date().toISOString() },
+        { id: "a/one", name: "One", provider: "nvidia", verified: true, lastVerifiedAt: new Date().toISOString() },
       ],
       throttledModels: [],
       probedAt: new Date().toISOString(),
-      providers: ["groq"],
+      providers: ["nvidia"],
     });
 
     // Next sweep: the listing endpoint 500s. The model must survive, because a
@@ -44,11 +44,11 @@ describe("sweep resilience", () => {
         headers: { "content-type": "application/json" },
       });
     });
-    process.env.GROQ_API_KEY = "gsk_test";
+    process.env.NVIDIA_API_KEY = "nvapi_test";
 
     const res = await runSweepForTests();
     fetchSpy.mockRestore();
-    delete process.env.GROQ_API_KEY;
+    delete process.env.NVIDIA_API_KEY;
 
     expect(ids(res.models)).toContain("a/one");
   });
@@ -63,7 +63,7 @@ describe("sweep resilience", () => {
         {
           id: "a/one",
           name: "One",
-          provider: "groq",
+          provider: "nvidia",
           verified: true,
           contextWindow: 131072,
           lastVerifiedAt: new Date().toISOString(),
@@ -71,7 +71,7 @@ describe("sweep resilience", () => {
       ],
       throttledModels: [],
       probedAt: new Date().toISOString(),
-      providers: ["groq"],
+      providers: ["nvidia"],
     });
 
     const fetchSpy = jest.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
@@ -88,11 +88,11 @@ describe("sweep resilience", () => {
         headers: { "content-type": "application/json" },
       });
     });
-    process.env.GROQ_API_KEY = "gsk_test";
+    process.env.NVIDIA_API_KEY = "nvapi_test";
 
     const res = await runSweepForTests();
     fetchSpy.mockRestore();
-    delete process.env.GROQ_API_KEY;
+    delete process.env.NVIDIA_API_KEY;
 
     expect(res.models.find((m) => m.id === "a/one")?.contextWindow).toBe(131072);
   });
@@ -137,11 +137,11 @@ describe("sweep resilience", () => {
         headers: { "content-type": "application/json" },
       });
     });
-    process.env.GROQ_API_KEY = "gsk_test";
+    process.env.NVIDIA_API_KEY = "nvapi_test";
 
     const res = await runSweepForTests();
     fetchSpy.mockRestore();
-    delete process.env.GROQ_API_KEY;
+    delete process.env.NVIDIA_API_KEY;
 
     const m = res.models.find((x) => x.id === "a/one");
     expect(m).toBeDefined();

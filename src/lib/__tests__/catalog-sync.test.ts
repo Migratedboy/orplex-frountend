@@ -114,7 +114,7 @@ describe("ensureCatalogsFresh", () => {
     mockUserApiKey.findMany.mockResolvedValue([{ id: "k1" }, { id: "k2" }]);
     mockUserApiKey.findFirst.mockImplementation(async ({ where }: { where: { id: string } }) => ({
       id: where.id,
-      provider: "groq",
+      provider: "openrouter",
       apiKey: "enc",
     }));
     mockList.mockResolvedValue({ ok: true, models: [{ id: "m" }], listedTotal: 1 });

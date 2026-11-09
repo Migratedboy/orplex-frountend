@@ -18,7 +18,6 @@ describe("provider factory", () => {
   it("maps every provider to its key env var", () => {
     expect(PROVIDER_KEY_ENV.nvidia).toBe("NVIDIA_API_KEY");
     expect(PROVIDER_KEY_ENV.openrouter).toBe("OPENROUTER_API_KEY");
-    expect(PROVIDER_KEY_ENV.groq).toBe("GROQ_API_KEY");
     expect(PROVIDER_KEY_ENV.custom).toBe("AI_API_KEY");
   });
 
@@ -29,11 +28,6 @@ describe("provider factory", () => {
     expect(a.name).toBe("openrouter");
   });
 
-  it("creates a groq adapter when selected", () => {
-    process.env.AI_PROVIDER = "groq";
-    process.env.GROQ_API_KEY = "test-key";
-    expect(createProviderAdapter().name).toBe("groq");
-  });
 
   it("custom adapter requires AI_BASE_URL", () => {
     process.env.AI_PROVIDER = "custom";

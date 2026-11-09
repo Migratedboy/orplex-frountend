@@ -39,9 +39,9 @@ const okList = (models: unknown[], extra: Record<string, unknown> = {}) => ({
 
 describe("buildListRequest", () => {
   it("uses Bearer auth for bearer-style providers", () => {
-    const def = getProviderDef("groq")!;
+    const def = getProviderDef("openrouter")!;
     const req = buildListRequest(def);
-    expect(req.url).toBe("https://api.groq.com/openai/v1/models");
+    expect(req.url).toBe("https://openrouter.ai/api/v1/models");
     expect(req.headers["Authorization"]).toBe("Bearer __KEY__");
     expect(req.headers["x-api-key"]).toBeUndefined();
   });
@@ -112,7 +112,7 @@ describe("listProviderModels", () => {
         { id: "vendor/paid", pricing: { prompt: 0.000002 } },
       ])
     );
-    const r = await listProviderModels("groq", "gsk-test");
+    const r = await listProviderModels("openrouter", "sk-or-test");
     const free = r.models.filter((m) => m.free === true).map((m) => m.id).sort();
     expect(free).toEqual(["vendor/flagged-free", "vendor/numeric-free", "vendor/string-free"]);
     expect(r.models.find((m) => m.id === "vendor/paid")?.free).toBe(false);
@@ -144,7 +144,7 @@ describe("listProviderModels", () => {
   it("maps 401 to a friendly error without echoing the key", async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 401 });
     const key = "super-secret-key-123";
-    const r = await listProviderModels("groq", key);
+    const r = await listProviderModels("openrouter", key);
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/rejected/i);
     expect(JSON.stringify(r)).not.toContain(key);
@@ -159,14 +159,14 @@ describe("listProviderModels", () => {
 
   it("caches per (provider, key) for repeat calls", async () => {
     fetchMock.mockResolvedValue(okList([{ id: "a-model" }]));
-    const first = await listProviderModels("groq", "gsk-cache");
-    const second = await listProviderModels("groq", "gsk-cache");
+    const first = await listProviderModels("openrouter", "sk-or-cache");
+    const second = await listProviderModels("openrouter", "sk-or-cache");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(second).toBe(first);
     // Different key → different cache entry.
-    await listProviderModels("groq", "gsk-other");
+    await listProviderModels("openrouter", "sk-or-other");
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(cacheKeyFor("groq", "gsk-cache")).not.toBe(cacheKeyFor("groq", "gsk-other"));
+    expect(cacheKeyFor("openrouter", "sk-or-cache")).not.toBe(cacheKeyFor("openrouter", "sk-or-other"));
   });
 
   it("treats empty listings as a soft failure with manual fallback hint", async () => {
@@ -187,7 +187,7 @@ describe("verifyProviderModels", () => {
       { id: "busy-model", name: "Busy" },
       { id: "alive-model", name: "Alive" },
     ];
-    const r = await verifyProviderModels("groq", "gsk-verify", models);
+    const r = await verifyProviderModels("openrouter", "sk-or-verify", models);
     expect(r.ok).toBe(true);
     expect(r.probedCount).toBe(3);
     expect(r.verifiedCount).toBe(2);
