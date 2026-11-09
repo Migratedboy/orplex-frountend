@@ -106,6 +106,12 @@ jobs:
         # times before failing the release; the cache step above makes
         # retries after a first successful download nearly free.
         run: |
+          # npmmirror override only for linux: the default binaries mirror
+          # hard-504s on the AppImage runtime, while it serves the mac/win
+          # helper binaries fine (npmmirror 504s those instead).
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            export ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
+          fi
           for i in 1 2 3; do
             if npx electron-builder --projectDir .desktop-package --publish never ${{ matrix.args }}; then
               break
@@ -117,10 +123,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEXT_TELEMETRY_DISABLED: 1
-          # The default electron-builder binaries mirror (appimage/fpm/nsis)
-          # has been hard-504ing; npmmirror hosts the same files and is the
-          # standard fallback. Harmless on OSes whose artifacts are cached.
-          ELECTRON_BUILDER_BINARIES_MIRROR: "https://npmmirror.com/mirrors/electron-builder-binaries/"
 
       - name: Upload build output (installers + updater metadata)
         # electron-updater's GitHub feed needs latest.yml/latest-mac.yml/
