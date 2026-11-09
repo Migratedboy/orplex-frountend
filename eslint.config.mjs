@@ -28,8 +28,9 @@ export default defineConfig([
   },
   // .cloud-fix/ is a stale, divergent snapshot of the app (not built, not
   // imported, not shipped) — linting it just hides the real findings.
+  // site/ is a nested repo with its own build output (.next) — never lint.
   // coverage/ is GENERATED test output (lcov-report/ contains vendored
   // prettify.js, sorter.js and block-navigation.js); linting it produced 3
   // "unused eslint-disable directive" warnings from files nobody edits.
-  globalIgnores([".next/**", "node_modules/**", "docs-site/.docusaurus/**", "docs-site/build/**", "logo/**", "electron-dist/**", ".desktop-package/**", "release/**", "tmp/**", ".cloud-fix/**", "coverage/**", ".localpg/**", "backups/**"]),
+  globalIgnores([".next/**", "node_modules/**", "docs-site/.docusaurus/**", "docs-site/build/**", "logo/**", "electron-dist/**", ".desktop-package/**", "release/**", "tmp/**", ".cloud-fix/**", "coverage/**", ".localpg/**", "backups/**", "site/**", ".orplex/**"]),
 ]);

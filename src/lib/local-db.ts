@@ -871,7 +871,6 @@ let jsonNullSentinels: unknown[] | null = null;
 function jsonSentinels(): unknown[] {
   if (jsonNullSentinels) return jsonNullSentinels;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- identity match requires the module
     const pkg = require("@prisma/client") as { Prisma?: { JsonNull?: unknown; DbNull?: unknown; AnyNull?: unknown } };
     const P = pkg?.Prisma;
     jsonNullSentinels = [P?.JsonNull, P?.DbNull, P?.AnyNull].filter((v) => v !== undefined) as unknown[];

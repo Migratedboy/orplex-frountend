@@ -16,7 +16,6 @@ import {
   MODEL_DEFS,
 } from "../local-db";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type DbAny = any;
 
 let dir: string;

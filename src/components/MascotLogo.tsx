@@ -105,7 +105,6 @@ export default function MascotLogo({
   }
 
   return (
-    // eslint-disable-next-line @next/next/no-img-element -- SVG logo: next/image cannot optimize SVG without dangerouslyAllowSVG, which Next.js advises against
     <motion.img
       key={move?.name ?? "idle"}
       src="/logo.svg"
