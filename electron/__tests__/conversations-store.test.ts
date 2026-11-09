@@ -100,7 +100,7 @@ describe("conversations-store", () => {
   });
 
   it("rename + remove update the store", () => {
-    const out = store.save({ messages: [makeUserMsg("t")] });
+    const out = store.save({ messages: [makeUserMsg("hello")] });
     const id = "conversationId" in out ? out.conversationId : "";
     expect(store.rename(id, "renamed title")).toBe(true);
     expect(store.get(id)?.title).toBe("renamed title");
@@ -111,13 +111,13 @@ describe("conversations-store", () => {
   });
 
   it("get returns a deep copy — renderer mutation cannot corrupt the store", () => {
-    const out = store.save({ messages: [makeUserMsg("t")] });
+    const out = store.save({ messages: [makeUserMsg("hello")] });
     const id = "conversationId" in out ? out.conversationId : "";
     const copy = store.get(id)!;
     copy.messages.push({ role: "assistant", content: "injected", createdAt: "now" });
     copy.title = "hacked";
     expect(store.get(id)!.messages).toHaveLength(1);
-    expect(store.get(id)!.title).toBe("t");
+    expect(store.get(id)!.title).toBe("hello");
   });
 
   it("importAll is additive and skips duplicates/malformed rows", () => {
