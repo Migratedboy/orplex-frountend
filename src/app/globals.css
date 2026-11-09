@@ -250,7 +250,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 
 /* ===== MAIN CONTENT ===== */
 .main-content { margin-left:0; padding-top:64px; min-height:100vh; display:flex; flex-direction:column; flex:1; transition:margin-right 0.25s cubic-bezier(0.4,0,0.2,1), margin-left 0.25s cubic-bezier(0.4,0,0.2,1); }
-.main-content.rp-open { margin-right:var(--rp-w, 620px); }
+.main-content.rp-open { margin-right:var(--rp-w, 460px); }
 .main-content.rp-open.rp-resizing { transition:none; }
 
 /* === Left sidebar hidden while the right panel is open ==================== */
@@ -539,7 +539,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 /* ===== RIGHT PANEL ===== */
 /* Fixed below the topbar (topbar is position:fixed, height 64px, z-index 40).
    Without this the panel starts at y=0 and its tab bar is hidden behind the topbar. */
-.right-panel { position:fixed; top:64px; right:0; bottom:0; width:min(var(--rp-w, 620px),100vw); background:#fff; border-left:1px solid #E4E4E7; display:flex; flex-direction:column; flex-shrink:0; overflow:hidden; z-index:35; }
+.right-panel { position:fixed; top:64px; right:0; bottom:0; width:min(var(--rp-w, 460px),100vw); background:#fff; border-left:1px solid #E4E4E7; display:flex; flex-direction:column; flex-shrink:0; overflow:hidden; z-index:35; }
 
 /* Resize grip — 8px hot zone, visual thumb appears on hover/drag */
 .rp-resize-grip { position:absolute; top:0; left:-4px; bottom:0; width:8px; cursor:col-resize; z-index:40; touch-action:none; outline:none; }
@@ -718,7 +718,7 @@ html:not(.dark) .orplex-rp {
 .rp-v2-fl-menu-item:disabled { opacity:.4; cursor:default; }
 .rp-v2-fl-menu-sep { height:1px; background:var(--rp-line); margin:4px 8px; }
 .rp-v2-viewer-overlay { position:fixed; inset:0; z-index:55; background:var(--rp-scrim); display:flex; align-items:flex-start; justify-content:flex-end; }
-.rp-v2-viewer { width:min(var(--rp-w, 620px), 100vw); height:100%; background:var(--rp-bg); border-left:1px solid var(--rp-edge); display:flex; flex-direction:column; }
+.rp-v2-viewer { width:min(var(--rp-w, 460px), 100vw); height:100%; background:var(--rp-bg); border-left:1px solid var(--rp-edge); display:flex; flex-direction:column; }
 .rp-v2-viewer-head { display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid var(--rp-line); flex:none; }
 .rp-v2-viewer-path { flex:1; min-width:0; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .rp-v2-viewer-dir { color:var(--rp-dim); }
@@ -2570,7 +2570,7 @@ hr:has(+ .prompt-meter) { display:none; }
 
 /* ===== MAIN CONTENT PANEL STATE ===== */
 .main-content.panel-open { margin-right:380px; transition:margin 0.25s cubic-bezier(0.4,0,0.2,1); }
-.main-content.panel-open.rp-open { margin-right:calc(380px + var(--rp-w, 620px)); }
+.main-content.panel-open.rp-open { margin-right:calc(380px + var(--rp-w, 460px)); }
 
 /* ===== MESSAGE CONTENT MIXED (tool blocks + markdown) ===== */
 .message-content-mixed { display:flex; flex-direction:column; gap:4px; }
@@ -4913,3 +4913,4 @@ html:not(.dark) .pb-meta {
 .dark .ctx-item-disabled {
   color:#a6a6a6;
 }
+

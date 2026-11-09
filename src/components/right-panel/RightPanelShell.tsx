@@ -78,7 +78,7 @@ export interface RightPanelShellProps {
   onResizingChange?: (resizing: boolean) => void;
 }
 
-const DEFAULT_RP_WIDTH = 620;
+const DEFAULT_RP_WIDTH = 460;
 const BROWSER_IDLE_FREE_MS = 10 * 60 * 1000;
 
 export default function RightPanelShell({ open, onClose, defaultTab, onResizingChange }: RightPanelShellProps) {
@@ -142,9 +142,8 @@ export default function RightPanelShell({ open, onClose, defaultTab, onResizingC
   }, [openTabs, activeTab, open, restored]);
 
   // === Resize (drag the left grip) — moved verbatim from RightPanel.tsx ===
-  // Panel width lives IN CODE (no persistence): 620px out of the box — a
-  // real browser width for the preview. Dragging resizes for the session;
-  // reload always returns to the coded default.
+  // Panel width lives IN CODE (no persistence): 460px out of the box — the
+  // reference's browser-friendly width. Reload always returns to default.
   const [width, setWidth] = useState<number>(DEFAULT_RP_WIDTH);
   const [resizing, setResizing] = useState(false);
   const widthRef = useRef(width);
@@ -247,7 +246,7 @@ export default function RightPanelShell({ open, onClose, defaultTab, onResizingC
       className="orplex-rp right-panel"
       style={{
         position: "fixed", top: 64, right: 0, bottom: 0,
-        width: "min(var(--rp-w, 620px), 100vw)", zIndex: 35,
+        width: "min(var(--rp-w, 460px), 100vw)", zIndex: 35,
         display: open ? "flex" : "none",
       }}
       data-resizing={resizing ? "" : undefined}
