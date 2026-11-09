@@ -103,7 +103,14 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
   const [watchMode, setWatchMode] = useState<"watch" | "takeover">("watch");
   const watchModeRef = useRef(watchMode);
   watchModeRef.current = watchMode;
-  const [nextTabId, setNextTabId] = useState(2);
+  // Mint from a REF: state-closure minting (`const id = nextTabId`) produces
+  // duplicate ids for rapid tab opens (stale closure), which React rejects
+  // with the duplicate-key crash.
+  const nextIdRef = useRef(2);
+  const mintTabId = useCallback(() => nextIdRef.current++, []);
+  const bumpNextTabId = useCallback((minNext: number) => {
+    if (nextIdRef.current < minNext) nextIdRef.current = minNext;
+  }, []);
   const [livePorts, setLivePorts] = useState<number[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -282,8 +289,7 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
           // target=_blank → a new preview tab (like a real browser).
           const url = String(event.url || "");
           if (url) {
-            const id = nextTabId;
-            setNextTabId(id + 1);
+            const id = mintTabId();
             setTabs((prev) => [...prev, { id, currentUrl: "", title: "New Tab", canGoBack: false, canGoForward: false, loading: false, error: null }]);
             setActiveId(id);
             void (async () => {
@@ -297,7 +303,7 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
       }
     });
     return off;
-  }, [native, nextTabId, patchTab]);
+  }, [native, patchTab, mintTabId]);
 
   // Overlay freeze: snapshot while an overlay is open (spec §2.2).
   const activeMainId = nativeMapRef.current.get(activeId);
@@ -348,8 +354,7 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
   };
 
   const newTab = () => {
-    const id = nextTabId;
-    setNextTabId(id + 1);
+    const id = mintTabId();
     setTabs((prev) => [...prev, { id, currentUrl: "", title: "New Tab", canGoBack: false, canGoForward: false, loading: false, error: null }]);
     setActiveId(id);
     setOmnibox("");
@@ -365,10 +370,11 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
     }
     const rest = tabs.filter((t) => t.id !== id);
     if (rest.length === 0) {
-      // Fresh replacement tab; CONSUME its id so the next "+" can't collide.
-      setTabs([{ id: nextTabId, currentUrl: "", title: "New Tab", canGoBack: false, canGoForward: false, loading: false, error: null }]);
-      setNextTabId(nextTabId + 1);
-      if (activeId === id) setActiveId(nextTabId);
+      // Fresh replacement tab; minting CONSUMES the id so the next "+"
+      // can't collide.
+      const replacement = mintTabId();
+      setTabs([{ id: replacement, currentUrl: "", title: "New Tab", canGoBack: false, canGoForward: false, loading: false, error: null }]);
+      if (activeId === id) setActiveId(replacement);
       return;
     }
     setTabs(rest);
@@ -390,7 +396,7 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
     nativeMapRef.current.set(id, id);
     setTabs((prev) => [...prev, { id, currentUrl: "", title: "Private tab", canGoBack: false, canGoForward: false, loading: false, error: null, private: true }]);
     setActiveId(id);
-    setNextTabId((n) => Math.max(n, id + 1));
+    bumpNextTabId(id + 1);
   };
 
   const toggleFloat = async () => {
