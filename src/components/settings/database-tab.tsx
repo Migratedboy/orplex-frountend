@@ -1,8 +1,10 @@
 // Settings → Database tab: export / import the whole local database as one
 // portable JSON bundle (moved machines? keep your chats, runs, memory).
+// Imported bundles are kept on disk (.orplex/last-import.json) and the
+// imported rows live in .orplex/db/ — used by the app all the time.
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api-base";
 import { useToast } from "@/components/Toast";
 
@@ -12,7 +14,34 @@ export function SettingsDatabaseTab() {
   const [importing, setImporting] = useState(false);
   const [lastExport, setLastExport] = useState<string | null>(null);
   const [lastImport, setLastImport] = useState<string | null>(null);
+  const [keptFile, setKeptFile] = useState<{ name: string; bytes: number } | null>(null);
+  const [verifyNote, setVerifyNote] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const refreshStatus = async () => {
+    try {
+      const res = await apiFetch("/api/db/status");
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        kept?: { name: string; bytes: number } | null;
+        verify?: { ok: boolean; corrupt: string[] };
+      };
+      setKeptFile(data.kept ?? null);
+      if (data.verify) {
+        setVerifyNote(
+          data.verify.ok
+            ? "Local data: integrity check passed."
+            : `Integrity issue in: ${data.verify.corrupt.join(", ")} — .bak restore will kick in.`
+        );
+      }
+    } catch {
+      /* best-effort */
+    }
+  };
+
+  useEffect(() => {
+    void refreshStatus();
+  }, []);
 
   const doExport = async () => {
     setExporting(true);
@@ -63,9 +92,10 @@ export function SettingsDatabaseTab() {
         data.skipped && data.skipped.length > 0 ? ` (skipped ${data.skipped.length}: ${data.skipped.join(", ")})` : "";
       setLastImport(`${data.total ?? 0} rows restored${skippedMsg}`);
       toast(`Imported ${data.total ?? 0} rows`, "success");
+      await refreshStatus();
       // The engine resets its in-memory collections on import — a reload
       // re-reads the migrated rows from disk.
-      setTimeout(() => window.location.reload(), 1200);
+      setTimeout(() => window.location.reload(), 2500);
     } catch (e) {
       toast(`Import failed: ${String((e as Error)?.message || e).slice(0, 120)}`, "error");
     } finally {
@@ -121,6 +151,13 @@ export function SettingsDatabaseTab() {
           />
         </div>
         {lastImport && <p className="settings-hint">Last import: {lastImport}</p>}
+        {keptFile && (
+          <p className="settings-hint">
+            Kept on this device: last-import.json ({(keptFile.bytes / 1024).toFixed(1)} KB) — the imported data is
+            live in .orplex/db/ and stays in use for every chat, run and memory lookup.
+          </p>
+        )}
+        {verifyNote && <p className="settings-hint">{verifyNote}</p>}
         <p className="settings-hint">
           Import replaces rows by model checksum — re-running the same file is a no-op for intact data.
         </p>

@@ -22,9 +22,19 @@ export async function POST(request: Request) {
     const tmp = join(tmpdir(), `orplex-import-${Date.now()}.json`);
     await writeFile(tmp, body, "utf8");
     try {
-      const result = importSnapshot(tmp);
+      // The uploaded bundle STAYS on disk (.orplex/last-import.json) so it is
+      // always available — and the imported rows already live in .orplex/db/,
+      // which every query reads all the time.
+      const { importSnapshot: imp } = await import("@/lib/local-db");
+      const { mkdir, copyFile, stat } = await import("fs/promises");
+      const keepDir = join(process.cwd(), ".orplex");
+      await mkdir(keepDir, { recursive: true }).catch(() => {});
+      const keepPath = join(keepDir, "last-import.json");
+      await copyFile(tmp, keepPath).catch(() => {});
+      const result = imp(tmp);
+      const size = (await stat(keepPath)).size.catch(() => 0);
       const total = Object.values(result.restored).reduce((a, b) => a + b, 0);
-      return NextResponse.json({ ok: true, restored: result.restored, skipped: result.skipped, total });
+      return NextResponse.json({ ok: true, restored: result.restored, skipped: result.skipped, total, keptFile: keepPath, keptBytes: size });
     } finally {
       await rm(tmp, { force: true }).catch(() => {});
     }
