@@ -25,9 +25,11 @@ import {
   filterFindMatches,
   formatConsoleLine,
   MAX_AGENT_TABS,
+  navStateOf,
   normalizePreviewUrl,
   resolveRefFromSnapshot,
 } from "./preview-logic";
+import { safeConsoleWrite } from "./safe-io";
 
 const PREVIEW_PARTITION = "persist:orplex-preview";
 const previewViews = new Map<number, WebContentsView>(); // renderer tabId -> view
@@ -90,9 +92,13 @@ function createPreviewView(): WebContentsView {
   wc.on("did-navigate", (_e, url) => {
     consoleBuffers.set(viewToId(view), []); // fresh page → fresh console
     agentFindSnapshot = null; // refs are per-page — stale after any navigation
-    emit("navigated", { url });
+    // Real nav state (v2 D15): Back/Forward disabled state + omnibox text
+    // come from these events, never from drum-beat local state.
+    emit("navigated", { url, ...navStateOf(wc.navigationHistory) });
   });
-  wc.on("did-navigate-in-page", (_e, url) => emit("navigated", { url, inPage: true }));
+  wc.on("did-navigate-in-page", (_e, url) =>
+    emit("navigated", { url, inPage: true, ...navStateOf(wc.navigationHistory) })
+  );
   wc.on("did-fail-load", (_e, errorCode, errorDescription, validatedURL) => {
     // Ignore subresource aborts (err_aborted -3) — only report real failures.
     if (errorCode !== -3) {
@@ -116,10 +122,10 @@ function createPreviewView(): WebContentsView {
   wc.on("did-finish-load", () => {
     const b = view.getBounds();
     const myId = [...previewViews.entries()].find(([, v]) => v === view)?.[0];
-    process.stdout.write(`[preview] did-finish-load url=${wc.getURL().slice(0, 60)} bounds=${JSON.stringify(b)} visible=${myId !== undefined && visiblePreviewTabs.has(myId)}\n`);
+    safeConsoleWrite(process.stdout, `[preview] did-finish-load url=${wc.getURL().slice(0, 60)} bounds=${JSON.stringify(b)} visible=${myId !== undefined && visiblePreviewTabs.has(myId)}\n`);
   });
   wc.on("render-process-gone", (_e, details) => {
-    process.stdout.write(`[preview] RENDERER GONE: ${details.reason}\n`);
+    safeConsoleWrite(process.stdout, `[preview] RENDERER GONE: ${details.reason}\n`);
   });
   return view;
 }
@@ -284,7 +290,7 @@ export function registerPreviewBrowser(deps: {
     // the page never paints into a 1×1 view.
     applyBounds(view, lastViewportRect.width > 1 ? lastViewportRect : { x: 0, y: 80, width: 800, height: 600 });
     void view.webContents.loadURL(url);
-    process.stdout.write(`[preview] navigate tab=${tabId} url=${url.slice(0, 80)} bounds=${JSON.stringify(view.getBounds())}\n`);
+    safeConsoleWrite(process.stdout, `[preview] navigate tab=${tabId} url=${url.slice(0, 80)} bounds=${JSON.stringify(view.getBounds())}\n`);
     return true;
   });
 
@@ -316,7 +322,7 @@ export function registerPreviewBrowser(deps: {
       url: v.webContents.getURL().slice(0, 60),
       inChildren: win ? win.contentView.children.includes(v) : false,
     }));
-    process.stdout.write(`[preview-diag] children=${children} ${JSON.stringify(views)}\n`);
+    safeConsoleWrite(process.stdout, `[preview-diag] children=${children} ${JSON.stringify(views)}\n`);
     return { children, views };
   });
 

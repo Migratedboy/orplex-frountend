@@ -98,6 +98,10 @@ export const IconAgent = (p: IconProps) => <Ms name="smart_toy" {...p} />;
 // === Misc ===
 
 export const IconArrowRight = (p: IconProps) => <Ms name="arrow_forward" {...p} />;
+/** Browser toolbar arrows + open-external; Globe for the empty-state. */
+export const IconGlobe = (p: IconProps) => <Ms name="language" {...p} />;
+export const IconBack = (p: IconProps) => <Ms name="arrow_back" {...p} />;
+export const IconOpenExternal = (p: IconProps) => <Ms name="open_in_new" {...p} />;
 export const IconMenu = (p: IconProps) => <Ms name="menu" {...p} />;
 export const IconMessage = (p: IconProps) => <Ms name="chat" {...p} />;
 

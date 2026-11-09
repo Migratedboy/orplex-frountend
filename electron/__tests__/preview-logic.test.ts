@@ -14,6 +14,7 @@ import {
   filterFindMatches,
   formatConsoleLine,
   MAX_AGENT_TABS,
+  navStateOf,
   normalizePreviewUrl,
   resolveRefFromSnapshot,
 } from "../preview-logic";
@@ -30,20 +31,15 @@ describe("normalizePreviewUrl — address bar semantics", () => {
     expect(normalizePreviewUrl("app.example.dev")).toBe("https://app.example.dev");
   });
 
-  it("rejects scheme-less localhost input — pinned real behavior (the inline localhost→http branch is unreachable)", () => {
-    // The bare-host pattern requires a dot, which a leading "localhost" can
-    // never satisfy ("localhost:3000"/"localhost/app" fail it; the search
-    // pattern also refuses ":" and "/"). The inline "localhost → http://"
-    // branch is therefore dead code in the original — pinned as-is, not
-    // "fixed" (behavior-preserving pass). The renderer sends fully-formed
-    // URLs anyway.
-    expect(normalizePreviewUrl("localhost:3000")).toBeNull();
-    expect(normalizePreviewUrl("localhost/app")).toBeNull();
-    // Bare "localhost" IS search-shaped (all word chars) → a Google search
-    // for "localhost", exactly as the inline original returned.
-    expect(normalizePreviewUrl("localhost")).toBe(
-      "https://www.google.com/search?q=localhost"
-    );
+  it("maps scheme-less localhost to http (v2: omnibox sends raw input, D3)", () => {
+    // The old behavior-preserving pin rejected localhost:port as unreachable
+    // because the renderer pre-normalized. With renderer raw input (v2), the
+    // unreachable localhost branch is now real: localhost → http per
+    // ARCHITECTURE §2.
+    expect(normalizePreviewUrl("localhost:3000")).toBe("http://localhost:3000");
+    expect(normalizePreviewUrl("localhost/app")).toBe("http://localhost/app");
+    expect(normalizePreviewUrl("localhost")).toBe("http://localhost");
+    expect(normalizePreviewUrl("LOCALHOST:5173")).toBe("http://LOCALHOST:5173");
   });
 
   it("turns non-URL text into a real Google search", () => {
@@ -189,5 +185,23 @@ describe("wait-for clamps", () => {
     expect(clampWaitTimeoutMs(1)).toBe(500); // below floor
     expect(clampWaitTimeoutMs(60_000)).toBe(15_000); // above ceiling
     expect(clampWaitTimeoutMs("8000")).toBe(8_000);
+  });
+});
+
+describe("navStateOf — did-navigate state for the toolbar (v2 D15)", () => {
+  it("reads canGoBack/canGoForward from the history object", () => {
+    expect(navStateOf({ canGoBack: () => true, canGoForward: () => false })).toEqual({
+      canGoBack: true,
+      canGoForward: false,
+    });
+  });
+
+  it("fails closed (no back/forward) for missing/throwing fns", () => {
+    expect(navStateOf(null)).toEqual({ canGoBack: false, canGoForward: false });
+    expect(navStateOf(undefined)).toEqual({ canGoBack: false, canGoForward: false });
+    expect(navStateOf({ canGoBack: () => { throw new Error("gone"); }, canGoForward: () => true })).toEqual({
+      canGoBack: false,
+      canGoForward: false,
+    });
   });
 });

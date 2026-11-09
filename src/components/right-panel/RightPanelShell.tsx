@@ -38,7 +38,7 @@ const TerminalTab = lazy(() => import("./terminal-tab").then((m) => ({ default: 
 const ScratchTab = lazy(() => import("./ScratchTab").then((m) => ({ default: m.ScratchTab })));
 // The native preview view can't be hidden by CSS; it stays mounted and its
 // visibility is toggled via preview:showTab (preview-tab handles that).
-const BrowserPreview = lazy(() => import("./preview-tab"));
+const BrowserPreview = lazy(() => import("./BrowserTab"));
 
 // Error boundary to prevent one tab crash from killing the whole panel
 // (moved verbatim from RightPanel.tsx).
@@ -221,10 +221,6 @@ export default function RightPanelShell({ open, onClose, defaultTab, onResizingC
 
   const { activeRuns } = useActiveRunCount(10_000);
 
-  // Popover open does NOT freeze the native view here — useOverlayFreeze (P4)
-  // is what hides the view under overlays; this state just toggles the menu.
-  void popoverOpen;
-
   const onActivate = (id: TabId) => {
     setActiveTab(id);
     if (id === "browser") setBrowserMounted(true);
@@ -313,7 +309,7 @@ export default function RightPanelShell({ open, onClose, defaultTab, onResizingC
           >
             <TabErrorBoundary tab="browser">
               <Suspense fallback={<RpTabFallback tab="browser" />}>
-                <BrowserPreview panelActive={browserVisible} />
+                <BrowserPreview panelActive={browserVisible} overlayOpen={popoverOpen} />
               </Suspense>
             </TabErrorBoundary>
           </div>

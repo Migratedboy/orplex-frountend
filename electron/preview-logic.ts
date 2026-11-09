@@ -55,9 +55,16 @@ export function normalizePreviewUrl(raw: string): string | null {
   const trimmed = (raw || "").trim();
   if (!trimmed) return null;
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  // Localhost must branch BEFORE the dotted-host pattern: "localhost:3000"
+  // has no dot, so the dotted check would miss it and it would fall through
+  // to the search catch-all (which rejects ":"). v2's omnibox sends raw
+  // input here (DECISIONS D3), so this must be real (ARCHITECTURE §2).
+  if (/^localhost(:\d+)?(\/|$)/i.test(trimmed)) {
+    return `http://${trimmed}`;
+  }
   // Bare host/localhost/URL-ish input gets https:// (http for localhost)
   if (/^[\w-]+(\.[\w-]+)+(\/|$|:\d)/.test(trimmed)) {
-    return /^localhost(:|\/|$)/.test(trimmed) ? `http://${trimmed}` : `https://${trimmed}`;
+    return /^localhost(:|\/|$)/i.test(trimmed) ? `http://${trimmed}` : `https://${trimmed}`;
   }
   // Not URL-shaped → treat as a web search.
   if (/^[\w\s+.-]{2,120}$/.test(trimmed)) {
@@ -105,4 +112,24 @@ export function clampFixedDelayMs(time: unknown): number {
 /** wait-for's timeout clamp (default 10s; bounded 500ms..15s). */
 export function clampWaitTimeoutMs(timeoutMs: unknown): number {
   return Math.min(Math.max(Number(timeoutMs) || 10000, 500), 15000);
+}
+
+/**
+ * Navigation state for the `navigated` emit (Right Panel v2 D15): the
+ * renderer's Back/Forward disabled state and omnibox text come from real
+ * `did-navigate` events, never local state. Pure reader — preview-views
+ * passes it a webContents-like {navigationHistory} pair.
+ */
+export function navStateOf(navigationHistory: {
+  canGoBack(): boolean;
+  canGoForward(): boolean;
+} | null | undefined): { canGoBack: boolean; canGoForward: boolean } {
+  try {
+    return {
+      canGoBack: !!navigationHistory?.canGoBack?.(),
+      canGoForward: !!navigationHistory?.canGoForward?.(),
+    };
+  } catch {
+    return { canGoBack: false, canGoForward: false };
+  }
 }
