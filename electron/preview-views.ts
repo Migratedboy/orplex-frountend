@@ -16,7 +16,9 @@
  * preview-logic.ts (unit-tested); everything here is WebContentsView wiring
  * moved verbatim.
  */
-import { BrowserWindow, session, WebContentsView } from "electron";
+import { app, BrowserWindow, session, WebContentsView } from "electron";
+import fs from "node:fs";
+import path from "node:path";
 import {
   AGENT_VIEWPORTS,
   clampFixedDelayMs,
@@ -34,6 +36,100 @@ import { safeConsoleWrite } from "./safe-io";
 const PREVIEW_PARTITION = "persist:orplex-preview";
 const previewViews = new Map<number, WebContentsView>(); // renderer tabId -> view
 let previewNextTabId = 1; // mirror of the renderer's tab ids (returned on create)
+// Floating tabs live in their own window (preview-extras, P5). showPreviewTab
+// must never re-add them to the main window while they float.
+const floatingTabIds = new Set<number>();
+// Private views: non-persistent partition, excluded from history (P5).
+const privateTabIds = new Set<number>();
+
+export function getPreviewView(tabId: number): WebContentsView | undefined {
+  return previewViews.get(tabId);
+}
+
+export function setFloatingTab(tabId: number, floating: boolean): void {
+  if (floating) floatingTabIds.add(tabId);
+  else floatingTabIds.delete(tabId);
+}
+
+export function markPrivateView(tabId: number): void {
+  privateTabIds.add(tabId);
+}
+
+export function registerPreviewView(tabId: number, view: WebContentsView): void {
+  previewViews.set(tabId, view);
+}
+
+/** Create-and-register a view on a custom partition (private/profile lanes). */
+export function createAndRegisterPreviewView(partition: string): number {
+  const tabId = previewNextTabId++;
+  const view = createPreviewView(partition);
+  previewViews.set(tabId, view);
+  return tabId;
+}
+
+/**
+ * Re-create the view backing `tabId` on a different partition (profile
+ * switch): the old view is destroyed and a fresh one takes the SAME renderer
+ * tab id so the renderer mapping stays intact (page state resets by design).
+ */
+export function recreatePreviewViewOn(tabId: number, partition: string): void {
+  const existing = previewViews.get(tabId);
+  if (existing) {
+    try {
+      const win = getMainWindow();
+      if (win && win.contentView.children.includes(existing)) {
+        win.contentView.removeChildView(existing);
+      }
+    } catch {}
+    try {
+      (existing.webContents as any).destroy?.();
+    } catch {}
+  }
+  const view = createPreviewView(partition);
+  previewViews.set(tabId, view);
+}
+
+// === Preview history store (P5: userData/preview-history.json) =============
+const HISTORY_CAP = 200;
+function historyFilePath(): string {
+  return path.join(app.getPath("userData"), "preview-history.json");
+}
+let historyCache: Array<{ url: string; at: number }> | null = null;
+async function readHistoryStore(): Promise<Array<{ url: string; at: number }>> {
+  if (historyCache) return historyCache;
+  try {
+    const raw = await fs.promises.readFile(historyFilePath(), "utf8");
+    const parsed = JSON.parse(raw);
+    historyCache = Array.isArray(parsed) ? parsed.filter((e) => e && typeof e.url === "string") : [];
+  } catch {
+    historyCache = [];
+  }
+  return historyCache;
+}
+async function writeHistoryStore(entries: Array<{ url: string; at: number }>): Promise<void> {
+  historyCache = entries;
+  try {
+    await fs.promises.mkdir(path.dirname(historyFilePath()), { recursive: true });
+    await fs.promises.writeFile(historyFilePath(), JSON.stringify(entries, null, 0), "utf8");
+  } catch {}
+}
+export async function listPreviewHistory(): Promise<Array<{ url: string; at: number }>> {
+  return readHistoryStore();
+}
+export async function clearPreviewHistory(): Promise<void> {
+  await writeHistoryStore([]);
+}
+/** Record a navigation (did-navigate). Skips blanks + private views. */
+export function recordPreviewHistory(tabId: number, url: string): void {
+  if (!url || url === "about:blank" || privateTabIds.has(tabId)) return;
+  void (async () => {
+    const entries = await readHistoryStore();
+    const last = entries[entries.length - 1];
+    if (last?.url === url) return;
+    const next = [...entries, { url, at: Date.now() }].slice(-HISTORY_CAP);
+    await writeHistoryStore(next);
+  })();
+}
 // Dedicated AGENT browser — the AI's own browsing session, separate from
 // the user's tabs (Antigravity-style). Created lazily on first agent tool use;
 // supports multiple agent tabs (see agent-browser:tabs).
@@ -61,10 +157,10 @@ function applyBounds(view: WebContentsView, rect: { x: number; y: number; width:
   view.setBounds(computeBounds(rect));
 }
 
-function createPreviewView(): WebContentsView {
+function createPreviewView(partition: string = PREVIEW_PARTITION): WebContentsView {
   const view = new WebContentsView({
     webPreferences: {
-      partition: PREVIEW_PARTITION,
+      partition,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -95,6 +191,7 @@ function createPreviewView(): WebContentsView {
     // Real nav state (v2 D15): Back/Forward disabled state + omnibox text
     // come from these events, never from drum-beat local state.
     emit("navigated", { url, ...navStateOf(wc.navigationHistory) });
+    recordPreviewHistory(viewToId(view), url);
   });
   wc.on("did-navigate-in-page", (_e, url) =>
     emit("navigated", { url, inPage: true, ...navStateOf(wc.navigationHistory) })
@@ -223,6 +320,8 @@ function showPreviewTab(tabId: number | null): void {
   const win = getMainWindow();
   if (!win) return;
   for (const [id, view] of previewViews) {
+    // Floating tabs live in their own window — never re-parent them here.
+    if (floatingTabIds.has(id)) continue;
     const active = id === tabId;
     if (active) {
       if (!win.contentView.children.includes(view)) {

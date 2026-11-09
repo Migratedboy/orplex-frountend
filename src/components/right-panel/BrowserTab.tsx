@@ -26,7 +26,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api-base";
 import { useNativeViewBounds } from "./hooks/useNativeViewBounds";
 import { useOverlayFreeze } from "./hooks/useOverlayFreeze";
-import { IconBack, IconArrowRight, IconRefresh, IconOpenExternal, IconGlobe } from "../Icons";
+import { BrowserMenu } from "./BrowserMenu";
+import { ImportBrowserDataDialog } from "./ImportBrowserDataDialog";
+import { IconBack, IconArrowRight, IconRefresh, IconOpenExternal, IconGlobe, IconMore, IconDownload, IconMask } from "../Icons";
 
 const AGENT_TAB_ID = 999999;
 /** Dev-server ports probed for the new-tab page (same 8 as ARCHITECTURE §2). */
@@ -40,6 +42,8 @@ interface BrowserTab {
   canGoForward: boolean;
   loading: boolean;
   error: { title: string; hint: string } | null;
+  /** Private (non-persistent partition) tabs: no history, no reuse. */
+  private?: boolean;
 }
 
 function faviconFor(u: string): string | null {
@@ -100,6 +104,22 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
   watchModeRef.current = watchMode;
   const [nextTabId, setNextTabId] = useState(2);
   const [livePorts, setLivePorts] = useState<number[]>([]);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importTab, setImportTab] = useState<"import" | "extensions">("import");
+  const [floating, setFloating] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [note, setNote] = useState("");
+  const recRef = useRef<{
+    stream: MediaStream; recorder: MediaRecorder; canvas: HTMLCanvasElement;
+    timer: () => void;
+  } | null>(null);
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashNote = useCallback((msg: string, ms = 4200) => {
+    setNote(msg);
+    if (noteTimer.current) clearTimeout(noteTimer.current);
+    noteTimer.current = setTimeout(() => setNote(""), ms);
+  }, []);
 
   const activeTab = tabs.find(t => t.id === activeId) ?? tabs[0];
   const currentUrl = activeTab?.currentUrl ?? "";
@@ -287,12 +307,13 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
 
   // Overlay freeze: snapshot while an overlay is open (spec §2.2).
   const activeMainId = nativeMapRef.current.get(activeId);
+  const ownOverlay = menuOpen || importOpen;
   const screenshotCb = useCallback(
     (tabId: number) => (native ? native.screenshot(tabId) : Promise.resolve(null)),
     [native]
   );
-  const freeze = useOverlayFreeze(!!overlayOpen, activeMainId, screenshotCb);
-  const hideView = !panelActive || !!overlayOpen;
+  const freeze = useOverlayFreeze(!!overlayOpen || ownOverlay, activeMainId, screenshotCb);
+  const hideView = !panelActive || !!overlayOpen || ownOverlay;
 
   // Show/hide native views: visible only while the browser tab is active,
   // the whole panel is open, and no overlay is freezing above it.
@@ -354,6 +375,117 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
   const canBack = !!activeTab?.canGoBack;
   const canForward = !!activeTab?.canGoForward;
 
+  // === Browser settings actions (previewExtras bridge) ======================
+  const mainIdOf = (rendererId: number) => nativeMapRef.current.get(rendererId);
+  const extras = typeof window !== "undefined" ? window.orplexDesktop?.previewExtras : undefined;
+
+  const openPrivate = async (): Promise<void> => {
+    if (!extras) throw new Error("Needs the desktop app");
+    const r = await extras.createPrivateTab();
+    if (!r.ok || !r.tabId) throw new Error(r.error || "Private tab failed");
+    const id = r.tabId;
+    nativeMapRef.current.set(id, id);
+    setTabs((prev) => [...prev, { id, currentUrl: "", title: "Private tab", canGoBack: false, canGoForward: false, loading: false, error: null, private: true }]);
+    setActiveId(id);
+    setNextTabId((n) => Math.max(n, id + 1));
+  };
+
+  const toggleFloat = async () => {
+    if (!extras) return;
+    const mainId = mainIdOf(activeId);
+    if (mainId === undefined) { flashNote("Open a page first, then float it"); return; }
+    const r = await extras.floatToggle(mainId);
+    if (r.ok) {
+      setFloating(r.floating === true);
+      flashNote(r.floating === true ? "Floating — drag the window, close it to dock" : "Docked back into the panel");
+    } else {
+      flashNote(r.error || "Floating failed");
+    }
+  };
+
+  const switchProfile = async (profileId: string) => {
+    if (!extras) { flashNote("Needs the desktop app"); return; }
+    // Main owns the views: give it every main-side view id + the private set;
+    // it re-creates them on the new profile partition (pages reset by design).
+    const mainIds = tabs.map((t) => nativeMapRef.current.get(t.id) ?? t.id);
+    const priv = tabs.filter((t) => t.private).map((t) => nativeMapRef.current.get(t.id) ?? t.id);
+    const r = await extras.switchProfile(profileId, mainIds, priv);
+    if (r?.ok) {
+      // Pages are fresh views — clear stale URLs/titles so tabs read clean.
+      setTabs((prev) => prev.map((t) => ({ ...t, currentUrl: "", title: t.private ? "Private tab" : "New Tab", canGoBack: false, canGoForward: false, loading: false, error: null })));
+      flashNote("Profile switched — tabs refreshed");
+    } else {
+      flashNote(r?.error || "Profile switch failed");
+    }
+  };
+
+  // Recording: capture the app window (scoped grant in main), crop to the
+  // preview viewport with a canvas stream, save webm (DECISIONS D9).
+  const toggleRecord = async () => {
+    if (recording) {
+      const rec = recRef.current;
+      if (!rec) return;
+      rec.timer();
+      const blob = await new Promise<Blob>((resolve) => {
+        rec.recorder.onstop = () => {
+          resolve(new Blob((rec as any).chunks as Blob[], { type: "video/webm" }));
+        };
+        rec.recorder.stop();
+      });
+      rec.stream.getTracks().forEach((t) => t.stop());
+      recRef.current = null;
+      setRecording(false);
+      try {
+        const bridge = window.orplexDesktop?.recording;
+        const buf = await blob.arrayBuffer();
+        const saved = await bridge?.save(buf);
+        if (saved?.ok) flashNote(`Saved recording: ${saved.name} (Reveal in browser-data menu)`);
+        else flashNote(saved?.error || "Save failed");
+      } catch (e) {
+        flashNote((e as Error).message);
+      }
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false } as DisplayMediaStreamOptions);
+      const track = stream.getVideoTracks()[0];
+      if (!track) throw new Error("No video track granted");
+      const settings = track.getSettings();
+      const srcW = settings.width || window.innerWidth;
+      const srcH = settings.height || window.innerHeight;
+      const canvas = document.createElement("canvas");
+      const rect = viewportRef.current?.getBoundingClientRect() ?? { left: 0, top: 0, width: canvas.width, height: canvas.height };
+      canvas.width = Math.max(320, Math.round(rect.width));
+      canvas.height = Math.max(240, Math.round(rect.height));
+      const video = document.createElement("video");
+      video.muted = true;
+      video.srcObject = stream;
+      void video.play();
+      const sx = (rect.left * srcW) / Math.max(1, window.innerWidth);
+      const sy = (rect.top * srcH) / Math.max(1, window.innerHeight);
+      const sw = (rect.width * srcW) / Math.max(1, window.innerWidth);
+      const sh = (rect.height * srcH) / Math.max(1, window.innerHeight);
+      const chunks: Blob[] = [];
+      const timer = () => {
+        try {
+          const ctx = canvas.getContext("2d");
+          if (ctx && video.readyState >= 2) ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+        } catch {}
+      };
+      const iv = setInterval(timer, 1000 / 30);
+      const mstream = canvas.captureStream(30);
+      timer();
+      const recorder = new MediaRecorder(mstream, { mimeType: MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : undefined });
+      recorder.ondataavailable = (e: BlobEvent) => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.start(1000);
+      recRef.current = { stream, recorder, canvas, timer: () => clearInterval(iv), chunks } as any;
+      setRecording(true);
+      flashNote("Recording… click Record again to stop");
+    } catch (e) {
+      flashNote((e as Error).message || "Recording denied");
+    }
+  };
+
   return (
     <div className="rp-v2-br">
       {/* Per-view tab strip */}
@@ -373,6 +505,11 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
                 <span className="rp-v2-br-favicon rp-v2-br-favicon-empty" aria-hidden="true" />
               )}
               <span className="rp-v2-br-tab-title">{t.title}</span>
+              {t.private && (
+                <span className="rp-v2-br-private-chip" title="Private tab — nothing is saved or shared">
+                  <IconMask size={12} />
+                </span>
+              )}
               <button
                 className="rp-v2-br-tab-close"
                 aria-label="Close browser tab"
@@ -427,7 +564,49 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
           )}
         </div>
         <button className="rp-v2-br-ib" disabled={!currentUrl} onClick={openExternal} title="Open this page in your real browser" aria-label="Open in real browser"><IconOpenExternal size={17} /></button>
+        <button
+          className="rp-v2-br-ib"
+          data-menu-btn
+          onClick={() => setMenuOpen((o) => !o)}
+          title="Browser settings"
+          aria-label="Browser settings"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+        >
+          <IconMore size={17} />
+        </button>
+        {activeTab?.private && (
+          <span className="rp-v2-br-private-chip big" title="Private tab">
+            <IconMask size={12} /> Private
+          </span>
+        )}
       </div>
+      {note && <div className="rp-v2-br-note" aria-live="polite">{note}</div>}
+      {menuOpen && (
+        <BrowserMenu
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
+          tabId={activeId}
+          tabIds={tabs.map((t) => nativeMapRef.current.get(t.id) ?? t.id)}
+          privateIds={tabs.filter((t) => t.private).map((t) => nativeMapRef.current.get(t.id) ?? t.id)}
+          floating={floating}
+          recording={recording}
+          onNew={newTab}
+          onPrivate={openPrivate}
+          onFloat={() => void toggleFloat()}
+          onRecord={() => void toggleRecord()}
+          onImport={(ext) => { setImportTab(ext ? "extensions" : "import"); setImportOpen(true); }}
+          onNavigate={(url) => navigateTo(url)}
+          onSwitchProfile={(id) => void switchProfile(id)}
+        />
+      )}
+      {importOpen && (
+        <ImportBrowserDataDialog
+          open={importOpen}
+          initialTab={importTab}
+          onClose={() => setImportOpen(false)}
+        />
+      )}
       {activeTab?.loading && <div className="rp-v2-br-progress" />}
 
       {/* Viewport */}
@@ -464,6 +643,9 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
                 ))}
               </div>
             )}
+            <button className="rp-v2-br-import" onClick={() => { setImportTab("import"); setImportOpen(true); }}>
+              <IconDownload size={17} /> Import browser data
+            </button>
           </div>
         ) : (
           <>

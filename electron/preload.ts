@@ -141,6 +141,48 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
     },
   },
   /**
+   * BROWSER SETTINGS (preview-extras): private tabs, devtools, hard reload,
+   * floating window, history, profiles, data clearing, extensions.
+   */
+  previewExtras: {
+    createPrivateTab: () => ipcRenderer.invoke("preview:create-private-tab") as Promise<{ ok: boolean; tabId?: number; private?: boolean; error?: string }>,
+    openDevTools: (tabId: number) => ipcRenderer.invoke("preview:open-devtools", { tabId }) as Promise<{ ok: boolean; error?: string }>,
+    hardReload: (tabId: number) => ipcRenderer.invoke("preview:hard-reload", { tabId }) as Promise<{ ok: boolean; error?: string }>,
+    floatToggle: (tabId: number) => ipcRenderer.invoke("preview:float-toggle", { tabId }) as Promise<{ ok: boolean; floating?: boolean; error?: string }>,
+    historyList: () => ipcRenderer.invoke("preview:history-list") as Promise<Array<{ url: string; at: number }>>,
+    historyClear: () => ipcRenderer.invoke("preview:history-clear") as Promise<{ ok: boolean }>,
+    listProfiles: () => ipcRenderer.invoke("preview:profiles-list") as Promise<{ profiles: Array<{ id: string; label: string }>; activeId: string }>,
+    createProfile: (label: string) => ipcRenderer.invoke("preview:profiles-create", { label }) as Promise<{ ok: boolean; id?: string; label?: string; error?: string }>,
+    renameProfile: (id: string, label: string) => ipcRenderer.invoke("preview:profiles-rename", { id, label }) as Promise<{ ok: boolean; error?: string }>,
+    deleteProfile: (id: string) => ipcRenderer.invoke("preview:profiles-delete", { id }) as Promise<{ ok: boolean; error?: string }>,
+    switchProfile: (id: string, tabIds: number[], privateTabIds: number[] = []) => ipcRenderer.invoke("preview:profiles-switch", { id, tabIds, privateTabIds }) as Promise<{ ok: boolean; partition?: string; error?: string }>,
+    clearData: (kind: "cache" | "cookies" | "sitedata" | "history") => ipcRenderer.invoke("preview:clear-data", { kind }) as Promise<{ ok: boolean; error?: string }>,
+    dataSizes: (kind: "cache" | "storage") => ipcRenderer.invoke("preview:data-sizes", { kind }) as Promise<{ ok: boolean; bytes?: number; error?: string }>,
+    loadExtensions: (paths: string[]) => ipcRenderer.invoke("extensions:load", { paths }) as Promise<{ results: Array<{ path: string; ok: boolean; id?: string; error?: string }> }>,
+    unloadExtension: (id: string) => ipcRenderer.invoke("extensions:unload", { id }) as Promise<{ ok: boolean; error?: string }>,
+  },
+  /**
+   * IMPORT BROWSER DATA (browser-data-import): detect + cookies + files.
+   */
+  browserData: {
+    detect: () => ipcRenderer.invoke("browser-data:detect") as Promise<{ ok: boolean; browsers: Array<Record<string, unknown>>; error?: string }>,
+    import: (args: { browserId: string; cookies?: boolean; extensions?: string[] }) => ipcRenderer.invoke("browser-data:import", args) as Promise<{ ok: boolean; imported?: number; skippedProtected?: number; failed?: number; blockedReason?: string; extensionsCopied?: number; extensionsFailed?: number; error?: string }>,
+    importCookieFile: () => ipcRenderer.invoke("browser-data:import-cookie-file") as Promise<{ ok: boolean; imported?: number; failed?: number; cancelled?: boolean; error?: string }>,
+    onEvent: (listener: (event: { type: string; [k: string]: unknown }) => void) => {
+      const wrapped = (_e: unknown, payload: { type: string; [k: string]: unknown }) =>
+        listener(payload);
+      ipcRenderer.on("browser-data:event", wrapped);
+      return () => ipcRenderer.removeListener("browser-data:event", wrapped);
+    },
+  },
+  /**
+   * RECORDING (browser-recorder): save webm bytes + reveal in folder.
+   */
+  recording: {
+    save: (buffer: ArrayBuffer) => ipcRenderer.invoke("recording:save", { buffer }) as Promise<{ ok: boolean; path?: string; name?: string; error?: string }>,
+    reveal: (path: string) => ipcRenderer.invoke("recording:reveal", { path }) as Promise<{ ok: boolean }>,
+  },
+  /**
    * AGENT BROWSER: the AI's own real browser session. Exposed to the app
    * renderer so agent tools (via /api/agent/browser-command) can drive a
    * genuine Chromium — navigate, read page state, click, type, screenshot,

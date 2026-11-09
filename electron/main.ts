@@ -23,6 +23,9 @@ import { createConversationStore } from "./conversations-store";
 import { killNextChildren } from "./next-children";
 import { preparePreviewPartition, registerPreviewBrowser } from "./preview-views";
 import { registerFsOps } from "./fs-ops";
+import { registerPreviewExtrasIpc, activePreviewSession } from "./preview-extras";
+import { registerBrowserDataIpc } from "./browser-data-import";
+import { registerRecorderIpc } from "./browser-recorder";
 import fs from "node:fs";
 import path from "node:path";
 import { installPipeResilience, safeConsoleWrite } from "./safe-io";
@@ -366,6 +369,12 @@ registerPreviewBrowser({ handleAppIpc, getMainWindow });
 
 // Files-tab desktop ops: upload copy dialog + Recycle Bin (fs-ops.ts, D7).
 registerFsOps(getMainWindow, handleAppIpc);
+
+// Browser settings extras (private tabs, devtools, floating window, profiles,
+// history, data clearing, extensions) + import dialog backend (browser data).
+registerPreviewExtrasIpc(getMainWindow, handleAppIpc);
+registerBrowserDataIpc(activePreviewSession, handleAppIpc, getMainWindow);
+registerRecorderIpc(handleAppIpc);
 
 /** Resolve the repo root in dev / resources dir when packaged. */
 function projectRoot(): string {

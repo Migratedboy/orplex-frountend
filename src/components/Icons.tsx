@@ -100,6 +100,14 @@ export const IconAgent = (p: IconProps) => <Ms name="smart_toy" {...p} />;
 export const IconArrowRight = (p: IconProps) => <Ms name="arrow_forward" {...p} />;
 /** Browser toolbar arrows + open-external; Globe for the empty-state. */
 export const IconGlobe = (p: IconProps) => <Ms name="language" {...p} />;
+/** Browser settings menu (v2): % ext, record, private, devtools, dirs... */
+export const IconPuzzle = (p: IconProps) => <Ms name="extension" {...p} />;
+export const IconVideo = (p: IconProps) => <Ms name="videocam" {...p} />;
+export const IconMask = (p: IconProps) => <Ms name="mask" {...p} />;
+export const IconCode = (p: IconProps) => <Ms name="code" {...p} />;
+export const IconDatabase = (p: IconProps) => <Ms name="database" {...p} />;
+export const IconProfile = (p: IconProps) => <Ms name="person" {...p} />;
+export const IconCookie = (p: IconProps) => <Ms name="cookie" {...p} />;
 export const IconBack = (p: IconProps) => <Ms name="arrow_back" {...p} />;
 export const IconOpenExternal = (p: IconProps) => <Ms name="open_in_new" {...p} />;
 export const IconMenu = (p: IconProps) => <Ms name="menu" {...p} />;

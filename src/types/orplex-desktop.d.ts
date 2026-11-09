@@ -49,6 +49,39 @@ declare global {
           listener: (event: { type: string; [key: string]: unknown }) => void
         ) => () => void;
       };
+      /** Browser settings menu extras (private tabs, devtools, float, profiles, …). */
+      previewExtras?: {
+        createPrivateTab: () => Promise<{ ok: boolean; tabId?: number; private?: boolean; error?: string }>;
+        openDevTools: (tabId: number) => Promise<{ ok: boolean; error?: string }>;
+        hardReload: (tabId: number) => Promise<{ ok: boolean; error?: string }>;
+        floatToggle: (tabId: number) => Promise<{ ok: boolean; floating?: boolean; error?: string }>;
+        historyList: () => Promise<Array<{ url: string; at: number }>>;
+        historyClear: () => Promise<{ ok: boolean }>;
+        listProfiles: () => Promise<{ profiles: Array<{ id: string; label: string }>; activeId: string }>;
+        createProfile: (label: string) => Promise<{ ok: boolean; id?: string; label?: string; error?: string }>;
+        renameProfile: (id: string, label: string) => Promise<{ ok: boolean; error?: string }>;
+        deleteProfile: (id: string) => Promise<{ ok: boolean; error?: string }>;
+        switchProfile: (id: string, tabIds: number[], privateTabIds?: number[]) => Promise<{ ok: boolean; partition?: string; error?: string }>;
+        clearData: (kind: "cache" | "cookies" | "sitedata" | "history") => Promise<{ ok: boolean; error?: string }>;
+        dataSizes: (kind: "cache" | "storage") => Promise<{ ok: boolean; bytes?: number; error?: string }>;
+        loadExtensions: (paths: string[]) => Promise<{ results: Array<{ path: string; ok: boolean; id?: string; error?: string }> }>;
+        unloadExtension: (id: string) => Promise<{ ok: boolean; error?: string }>;
+      };
+      /** Import-browser-data backend (detect/cookies/cookie-file). */
+      browserData?: {
+        detect: () => Promise<{ ok: boolean; browsers: Array<Record<string, unknown>>; error?: string }>;
+        import: (args: { browserId: string; cookies?: boolean; extensions?: string[] }) => Promise<{
+          ok: boolean; imported?: number; skippedProtected?: number; failed?: number;
+          blockedReason?: string; extensionsCopied?: number; extensionsFailed?: number; error?: string;
+        }>;
+        importCookieFile: () => Promise<{ ok: boolean; imported?: number; failed?: number; cancelled?: boolean; error?: string }>;
+        onEvent: (listener: (event: { type: string; [key: string]: unknown }) => void) => () => void;
+      };
+      /** Recording save/reveal. */
+      recording?: {
+        save: (buffer: ArrayBuffer) => Promise<{ ok: boolean; path?: string; name?: string; error?: string }>;
+        reveal: (path: string) => Promise<{ ok: boolean }>;
+      };
       /** The AI's own real browser session (agent tools drive this). */
       agentBrowser?: {
         show: () => Promise<number>;
