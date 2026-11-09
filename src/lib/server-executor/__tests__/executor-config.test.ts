@@ -34,7 +34,7 @@ describe("maxConcurrentRuns", () => {
 });
 
 describe("parseFailoverChain", () => {
-  const env = { NVIDIA_API_KEY: "k", GROQ_API_KEY: "k" };
+  const env = { NVIDIA_API_KEY: "k", OPENROUTER_API_KEY: "k" };
 
   it("returns empty for unset/empty chain", () => {
     expect(parseFailoverChain(undefined, "nvidia", env)).toEqual([]);
@@ -42,23 +42,23 @@ describe("parseFailoverChain", () => {
   });
 
   it("keeps order and skips the primary", () => {
-    expect(parseFailoverChain("groq,openrouter", "nvidia", env)).toEqual(["groq"]);
-    expect(parseFailoverChain("groq", "groq", env)).toEqual([]);
+    expect(parseFailoverChain("openrouter,nvidia", "nvidia", env)).toEqual(["openrouter"]);
+    expect(parseFailoverChain("openrouter", "openrouter", env)).toEqual([]);
   });
 
   it("skips providers without keys configured", () => {
-    expect(parseFailoverChain("groq,openrouter", "nvidia", env)).toEqual(["groq"]);
+    expect(parseFailoverChain("openrouter,nvidia", "nvidia", env)).toEqual(["openrouter"]);
   });
 
   it("skips unknown provider names", () => {
-    expect(parseFailoverChain("together,groq", "nvidia", env)).toEqual(["groq"]);
+    expect(parseFailoverChain("together,openrouter", "nvidia", env)).toEqual(["openrouter"]);
   });
 
   it("handles whitespace and dedupes nothing silently", () => {
-    expect(parseFailoverChain(" groq , groq ", "nvidia", env)).toEqual(["groq", "groq"]);
+    expect(parseFailoverChain(" openrouter , openrouter ", "nvidia", env)).toEqual(["openrouter", "openrouter"]);
   });
 
   it("exposes the key env map for docs/tests", () => {
-    expect(FAILOVER_KEY_ENV.groq).toBe("GROQ_API_KEY");
+    expect(FAILOVER_KEY_ENV.openrouter).toBe("OPENROUTER_API_KEY");
   });
 });

@@ -10,6 +10,7 @@ import { useUpdateStore, checkForUpdates } from "@/lib/update/updateStore";
 import { IconCheck } from "@/components/Icons";
 import { SettingsApiKeyTab } from "@/components/settings/api-keys-tab";
 import { SettingsCostTab } from "@/components/settings/cost-tab";
+import { SettingsDatabaseTab } from "@/components/settings/database-tab";
 import { ResetRecoveryTab } from "@/components/settings/reset-recovery-tab";
 
 // === About tab: live version + update check ================================
@@ -130,6 +131,7 @@ export default function SettingsPage() {
     { id: "appearance", label: "Appearance" },
     { id: "cost", label: "Provider & Cost" },
     { id: "api", label: "API Keys" },
+    { id: "database", label: "Database" },
     { id: "about", label: "About" },
     { id: "danger", label: "Reset & Recovery" },
   ];
@@ -241,6 +243,10 @@ export default function SettingsPage() {
 
             {activeTab === "api" && (
               <SettingsApiKeyTab toast={toast} />
+            )}
+
+            {activeTab === "database" && (
+              <SettingsDatabaseTab />
             )}
 
             {activeTab === "about" && (
