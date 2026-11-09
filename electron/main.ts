@@ -22,8 +22,14 @@ import { registerTerminalIpc, killAllTerminalChildren } from "./terminal";
 import { createConversationStore } from "./conversations-store";
 import { killNextChildren } from "./next-children";
 import { preparePreviewPartition, registerPreviewBrowser } from "./preview-views";
+import { registerFsOps } from "./fs-ops";
 import fs from "node:fs";
 import path from "node:path";
+import { installPipeResilience, safeConsoleWrite } from "./safe-io";
+
+// Broken console pipes (closed terminal, detached launch, dev restart) must
+// never paint the fatal EPIPE dialog — console output is best-effort here.
+installPipeResilience();
 
 // Load the repo-root .env into this process (tiny 2-line parser — dotenv is
 // intentionally not a dependency). Must run BEFORE the constants below read
@@ -358,6 +364,9 @@ if (!gotTheLock) {
 // window ownership and the origin-guarded IPC entry point.
 registerPreviewBrowser({ handleAppIpc, getMainWindow });
 
+// Files-tab desktop ops: upload copy dialog + Recycle Bin (fs-ops.ts, D7).
+registerFsOps(getMainWindow, handleAppIpc);
+
 /** Resolve the repo root in dev / resources dir when packaged. */
 function projectRoot(): string {
   return isDev ? path.join(app.getAppPath()) : process.resourcesPath;
@@ -444,12 +453,14 @@ function startNextServer(which: "ui" | "api"): void {
   const port = which === "ui" ? UI_PORT : API_PORT;
 
   const wireChild = (child: ChildProcess) => {
-    child.stdout?.on("data", (d: Buffer) => process.stdout.write(`${tag} ${d}`));
-    child.stderr?.on("data", (d: Buffer) => process.stderr.write(`${tag} ${d}`));
+    // safeConsoleWrite, NOT raw writes: a child's stdout line arriving after
+    // the parent console pipe broke was the EPIPE crash-dialog source.
+    child.stdout?.on("data", (d: Buffer) => safeConsoleWrite(process.stdout, `${tag} ${d}`));
+    child.stderr?.on("data", (d: Buffer) => safeConsoleWrite(process.stderr, `${tag} ${d}`));
     // A spawn failure (ENOENT, EINVAL, permissions) must never kill the main
     // process silently — surface it and exit cleanly.
     child.on("error", (err) => {
-      process.stderr.write(`${tag} spawn error: ${err?.message || err}\n`);
+      safeConsoleWrite(process.stderr, `${tag} spawn error: ${err?.message || err}\n`);
       if (!quitting) {
         dialog.showErrorBox("Orplex server failed", `Could not launch the ${which} server: ${err?.message || err}`);
         app.exit(1);
@@ -550,7 +561,7 @@ function resolveIconPath(): string | undefined {
       }
     }
   }
-  process.stdout.write(`[icon] NOT FOUND. __dirname=${__dirname} appPath=${app.getAppPath()} cwd=${process.cwd()}\n`);
+  safeConsoleWrite(process.stdout, `[icon] NOT FOUND. __dirname=${__dirname} appPath=${app.getAppPath()} cwd=${process.cwd()}\n`);
   return undefined;
 }
 
@@ -573,7 +584,7 @@ function createWindow(): void {
   try {
     const bytes = iconPath ? fs.statSync(iconPath).size : 0;
     const sz = appIcon ? appIcon.getSize() : { width: 0, height: 0 };
-    process.stdout.write(
+    safeConsoleWrite(process.stdout, 
       `[icon] picked=${iconPath ?? "NONE"} bytes=${bytes} empty=${appIcon ? appIcon.isEmpty() : "n/a"} size=${sz.width}x${sz.height}\n`
     );
   } catch {}
@@ -618,7 +629,7 @@ function createWindow(): void {
           relaunchDisplayName: "Orplex Code",
         });
       } catch (err) {
-        process.stdout.write(`[icon] setAppDetails failed: ${String((err as Error)?.message || err)}\n`);
+        safeConsoleWrite(process.stdout, `[icon] setAppDetails failed: ${String((err as Error)?.message || err)}\n`);
       }
     }
   }
@@ -699,7 +710,7 @@ function createWindow(): void {
   // the window if it destroyed itself.
   let rendererRecoveredOnce = false;
   mainWindow.webContents.on("render-process-gone", (_e, details: any) => {
-    process.stdout.write(`[main-window] renderer gone: ${details?.reason || "?"}\n`);
+    safeConsoleWrite(process.stdout, `[main-window] renderer gone: ${details?.reason || "?"}\n`);
     if (quitting || rendererRecoveredOnce) return;
     rendererRecoveredOnce = true;
     setTimeout(() => {
@@ -1013,7 +1024,7 @@ app.whenReady().then(async () => {
       ["api", API_PORT],
     ] as const) {
       if (await probeAnyServer(loopbackProbeUrls(port))) {
-        process.stdout.write(`[startup] port ${port} (${which}) held by a stale process — taking it over\n`);
+        safeConsoleWrite(process.stdout, `[startup] port ${port} (${which}) held by a stale process — taking it over\n`);
         await killPortListener(port);
       }
     }
@@ -1023,7 +1034,7 @@ app.whenReady().then(async () => {
     if (!cloudApi) {
       await waitForServer(API_PROBES);
     } else {
-      process.stdout.write(`[startup] cloud mode: UI points at ${cloudApi} — no local API spawned\n`);
+      safeConsoleWrite(process.stdout, `[startup] cloud mode: UI points at ${cloudApi} — no local API spawned\n`);
     }
     // Warm the dev-compile path BEFORE the window opens: dev servers compile
     // modules on first hit, and an in-flight recompile resets connections —
@@ -1077,7 +1088,7 @@ app.whenReady().then(async () => {
   // src modules would break the Electron build.
   const shutdownMain = (signal: string) => {
     try {
-      process.stdout.write(`[shutdown] main received ${signal} — stopping children\n`);
+      safeConsoleWrite(process.stdout, `[shutdown] main received ${signal} — stopping children\n`);
       try {
         killAllTerminalChildren();
       } catch {}

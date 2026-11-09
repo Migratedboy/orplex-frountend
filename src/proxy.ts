@@ -101,6 +101,19 @@ const LOCAL_ONLY_API_ROUTES = [
   // folder open. These routes must run on-device.
   "/api/agent/plugins",
   "/api/agent/plugin-library",
+  // Database bundle (export/import/status): the local database engine
+  // (.orplex/*.json) lives on THIS device — the whole point of the
+  // conversation-local stores. Forwarding them to the cloud backend
+  // 404s (it has no /api/db routes) and even if it did, the export would
+  // exhale the WRONG machine's data (a serverless ephemeral disk, not the
+  // user's own .orplex). Same rule as playbook: device-local, never proxied.
+  "/api/db",
+  // Files-tab writes (Right Panel v2, P3): create/mkdir/rename/delete +
+  // per-directory listings on the USER'S disk. The git shape route runs git
+  // in the workspace. Both are meaningless on the serverless backend (no
+  // user's disk) — same rule as playbook/db above.
+  "/api/agent/fs",
+  "/api/agent/changes-git",
 ];
 
 // Conversations are LOCAL-FIRST in the desktop app: history CRUD reads and

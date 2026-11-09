@@ -122,6 +122,25 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
     },
   },
   /**
+   * FILE OPS (desktop): native-dialog upload copy + Recycle Bin delete.
+   */
+  fsOps: {
+    copySelected: (destDir: string, strategy: "keep" | "replace") =>
+      ipcRenderer.invoke("fs:copy-selected", { destDir, strategy }) as Promise<{
+        ok: boolean;
+        copied: Array<{ name: string; dest: string; renamed: boolean; replaced: boolean }>;
+        error?: string;
+      }>,
+    trash: (absPath: string) =>
+      ipcRenderer.invoke("fs:trash", { absPath }) as Promise<{ ok: boolean; error?: string }>,
+    onEvent: (listener: (event: { type: string; [k: string]: unknown }) => void) => {
+      const wrapped = (_e: unknown, payload: { type: string; [k: string]: unknown }) =>
+        listener(payload);
+      ipcRenderer.on("fs:event", wrapped);
+      return () => ipcRenderer.removeListener("fs:event", wrapped);
+    },
+  },
+  /**
    * AGENT BROWSER: the AI's own real browser session. Exposed to the app
    * renderer so agent tools (via /api/agent/browser-command) can drive a
    * genuine Chromium — navigate, read page state, click, type, screenshot,

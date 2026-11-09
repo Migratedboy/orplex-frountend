@@ -34,6 +34,21 @@ declare global {
           listener: (event: { type: string; [key: string]: unknown }) => void
         ) => () => void;
       };
+      /** Desktop file ops: upload-copy dialog + Recycle Bin delete. */
+      fsOps?: {
+        copySelected: (
+          destDir: string,
+          strategy: "keep" | "replace"
+        ) => Promise<{
+          ok: boolean;
+          copied: Array<{ name: string; dest: string; renamed: boolean; replaced: boolean }>;
+          error?: string;
+        }>;
+        trash: (absPath: string) => Promise<{ ok: boolean; error?: string }>;
+        onEvent: (
+          listener: (event: { type: string; [key: string]: unknown }) => void
+        ) => () => void;
+      };
       /** The AI's own real browser session (agent tools drive this). */
       agentBrowser?: {
         show: () => Promise<number>;

@@ -214,6 +214,28 @@ describe("split mode: forwarded routes keep the backend's CSRF layer", () => {
     expect(res.status).toBe(403);
   });
 
+  it("gates the Files-tab LOCAL_ONLY routes (P3: fs + changes-git)", async () => {
+    const fsRes = await handler(
+      req("POST", "/api/agent/fs", { origin: "https://evil.example" }),
+    );
+    expect(fsRes.status).toBe(403);
+    // The origin gate enforces state-changing methods (GET is a safe read).
+    const gitRes = await handler(
+      req("POST", "/api/agent/changes-git", { origin: "https://evil.example" }),
+    );
+    expect(gitRes.status).toBe(403);
+  });
+
+  it("lets same-origin requests to the new fs/changes-git routes through", async () => {
+    for (const [method, path] of [
+      ["POST", "/api/agent/fs"],
+      ["POST", "/api/agent/changes-git"],
+    ] as const) {
+      const res = await handler(req(method, path, { origin: "http://127.0.0.1:5000" }));
+      expect(res.headers.get("x-middleware-rewrite")).toBeNull();
+    }
+  });
+
   it("names BOTH the runtime and the build-time API base in connect-src", async () => {
     // The browser calls the base api-base.ts inlined at BUILD time; forwarding
     // prefers the runtime ORPLEX_API_URL. A policy naming only one of them
