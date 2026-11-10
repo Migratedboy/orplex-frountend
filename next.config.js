@@ -3,6 +3,7 @@ const nextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   compress: true,
+  productionBrowserSourceMaps: false,
   // The desktop dev app loads the UI from 127.0.0.1 (explicit IPv4 loopback),
   // so module-script requests carry Origin: http://127.0.0.1:5000 — without
   // this entry the dev server 403s them and every dynamic(ssr:false) chunk

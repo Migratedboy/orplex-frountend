@@ -97,7 +97,7 @@
   "build": {
     "appId": "tech.orplex.app",
     "productName": "Orplex Code",
-    "asar": false,
+    "asar": true,
     "publish": {
       "provider": "github",
       "owner": "Migratedboy",
