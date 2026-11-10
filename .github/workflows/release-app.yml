@@ -159,6 +159,13 @@ jobs:
           NEXT_TELEMETRY_DISABLED: 1
 
       - name: Upload build output (installers + updater metadata)
+        # Only SHIPPABLE binaries leave this job: the platform installers, their
+        # blockmaps and the updater channel files. release/ also contains the
+        # unpacked trees electron-builder leaves behind (win-unpacked/, mac/,
+        # linux-unpacked/, builder-debug.yml) — compiled, but redundant, and
+        # they would bloat every artifact into the thousands of files. The
+        # releases repo carries installers only, never source or build trees.
+        #
         # Artifact storage quota is shared across the whole account and can be
         # hit by accumulated 30-day-retention builds. The release itself is
         # published by the publish job from these artifacts, so a failed upload
@@ -168,7 +175,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.os }}
-          path: release/*
+          path: |
+            release/*.exe
+            release/*.exe.blockmap
+            release/*.dmg
+            release/*.dmg.blockmap
+            release/*.AppImage
+            release/*.AppImage.blockmap
+            release/latest*.yml
           retention-days: 1
           if-no-files-found: ignore
 
@@ -184,6 +198,19 @@ jobs:
           path: installers
           merge-multiple: true
 
+      - name: Verify installers were downloaded
+        # The build jobs' artifact upload is continue-on-error (account-wide
+        # artifact quota). Publishing an empty release would put a tag in the
+        # update feed with no latest.yml, so fail with the real reason instead.
+        run: |
+          shopt -s nullglob
+          files=(installers/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No installer artifacts were downloaded from the build jobs (artifact quota exhausted or upload failed). Re-run the release workflow once the quota recalculates."
+            exit 1
+          fi
+          ls -la installers
+
       - name: Attach to Release
         uses: softprops/action-gh-release@v2
         with:
@@ -194,5 +221,11 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          # GITHUB_TOKEN is scoped to THIS repository — it cannot create a
+          # release in orplex-releases (403 Resource not accessible by
+          # integration). RELEASES_TOKEN is a PAT with repo scope used only for
+          # this cross-repo publish; the fallback keeps the step runnable (and
+          # explicitly failing) when the secret is absent.
+          token: ${{ secrets.RELEASES_TOKEN || secrets.GITHUB_TOKEN }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN || secrets.GITHUB_TOKEN }}

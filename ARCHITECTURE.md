@@ -137,7 +137,7 @@ npm run eval:reliability
 | Dev-mode switch | `electron/dev-mode.ts` | `isDevRuntime()` — `ORPLEX_DEV=1` forces checkout semantics for the **branded dev electron** (`scripts/dev-branded-electron.mjs`), whose renamed binary would otherwise report `app.isPackaged === true` and fail to find a standalone bundle |
 | Loopback helper | `electron/loopback.ts` | `http://127.0.0.1:<port>` probe URLs. Windows resolves `localhost` to `::1` first, so the readiness probe must target the IPv4 address the child binds |
 | Tray | `electron/tray.ts` | Static template icon + native notifications; polls `/api/agent/runs` every 15 s and fires on status transitions only |
-| Updater | `electron/updater.ts` | electron-updater against **`Migratedboy/orplex-frountend`** (from the electron-builder `build.publish` block that becomes `app-update.yml`); auto-download, auto-install 12 s after "downloaded", checks at boot + every 6 h + on resume; notes HTML-stripped and capped at 2,000 chars; wired at `main.ts:1911` and the Help menu |
+| Updater | `electron/updater.ts` | electron-updater against **`Migratedboy/orplex-releases`** — set explicitly with `setFeedURL` (`UPDATE_FEED`) and mirrored by the electron-builder `build.publish` block that becomes `app-update.yml`; auto-download, auto-install 12 s after "downloaded", checks at boot + every 6 h + on resume; notes HTML-stripped and capped at 2,000 chars; wired at `main.ts:1911` and the Help menu |
 | Desktop auth | `electron/auth-desktop.ts` | Opens the system browser for the desktop OAuth flow (`orplex://`) and waits for the deep-link one-time code |
 | Terminal bridge | `electron/terminal.ts` | Runs commands on the **user's device** (see §15): argument-aware screening, Git Bash on Windows, secret-stripping `buildSafeEnv` (18 env-var names removed), 1–300 s timeouts, detached serve registry |
 | MCP bridge | `electron/mcp-bridge.ts` | **Remote-server OAuth 2.1** (dynamic client registration, S256 PKCE, system-browser sign-in, RFC 8252 loopback on 127.0.0.1) + a Node-side HTTP passthrough (1 MB body cap, 30 s timeout) so the renderer's MCP JSON-RPC never fights CORS. SSRF-guarded, redirects re-screened per hop |
@@ -1231,8 +1231,9 @@ members/update-member), `/api/workspaces/{create,destroy,merge}`,
   Electron's bundled runtime (`ELECTRON_RUN_AS_NODE=1`) with
   `NODE_ENV=production`, `PORT`, `HOSTNAME=127.0.0.1` and the device-local
   file paths (§How It Runs).
-- The update feed is the GitHub release channel of **Migratedboy/orplex-frountend**
-  (`app-update.yml` generated from `build.publish`); verify it with
+- The update feed is the GitHub release channel of **Migratedboy/orplex-releases**
+  (set by `UPDATE_FEED` in `electron/updater.ts`, mirrored by `app-update.yml`
+  generated from `build.publish`); verify it with
   `node scripts/check-updater-feed.mjs`.
 
 ---

@@ -14,6 +14,7 @@ class FakeUpdater extends EventEmitter {
   autoInstallOnAppQuit = false;
   allowDowngrade = true;
   logger: unknown = null;
+  setFeedURL = jest.fn();
   downloadUpdate = jest.fn(async () => {});
   quitAndInstall = jest.fn();
   checkForUpdates = jest.fn(
@@ -47,6 +48,7 @@ beforeEach(() => {
   fake.autoDownload = false;
   fake.autoInstallOnAppQuit = false;
   fake.allowDowngrade = true;
+  fake.setFeedURL.mockClear();
   fake.downloadUpdate.mockClear();
   fake.quitAndInstall.mockClear();
   fake.checkForUpdates = jest.fn(async (): Promise<{ updateInfo: { version: string; releaseNotes?: string } }> => ({
@@ -63,6 +65,19 @@ describe("auto update", () => {
     expect(status.state).toBe("available");
     expect(fake.autoDownload).toBe(true);
     expect(fake.autoInstallOnAppQuit).toBe(true);
+  });
+
+  it("checks the public installers repo, not the source repo", async () => {
+    const upd = await loadUpdater();
+    await upd.checkForUpdates(() => ({ webContents: { send: sendStatus } }) as never);
+
+    expect(fake.setFeedURL).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "github",
+        owner: "Migratedboy",
+        repo: "orplex-releases",
+      })
+    );
   });
 
   it("installs and relaunches once the download finished", async () => {

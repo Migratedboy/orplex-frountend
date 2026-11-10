@@ -81,11 +81,31 @@ function sendStatus(getWindow: WindowGetter, status: UpdateStatus): void {
 
 let updaterPromise: Promise<AppUpdater> | null = null;
 
+/**
+ * The public installers repo — the only place the app looks for updates.
+ * electron-builder bakes the same values into `app-update.yml` from
+ * `build.publish` in package.json; setting them here as well keeps a build
+ * whose `app-update.yml` is stale (or was packaged before the feed moved)
+ * from checking the source repo, which carries no installers.
+ */
+export const UPDATE_FEED = {
+  provider: "github",
+  owner: "Migratedboy",
+  repo: "orplex-releases",
+} as const;
+
 async function updater(): Promise<AppUpdater> {
   if (!updaterPromise) {
     updaterPromise = (async () => {
       const au = (await import("electron-updater")).autoUpdater;
       au.logger = console;
+      try {
+        au.setFeedURL({ ...UPDATE_FEED });
+      } catch (err) {
+        // A bad feed config must not disable updates outright: the packaged
+        // app-update.yml carries the same feed as a fallback.
+        console.error("[updater] setFeedURL failed:", err instanceof Error ? err.message : err);
+      }
       return au;
     })();
   }

@@ -8,7 +8,7 @@
 //
 // Usage: node scripts/check-updater-feed.mjs [owner/repo]
 
-const target = process.argv[2] || "Migratedboy/orplex-frountend";
+const target = process.argv[2] || "Migratedboy/orplex-releases";
 const [owner, repo] = target.split("/");
 const api = `https://api.github.com/repos/${owner}/${repo}`;
 const headers = { "User-Agent": "orplex-updater-feed-check" };

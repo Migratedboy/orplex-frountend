@@ -1,8 +1,25 @@
 // browser-data-import.test.ts — cookie parsers, decrypt rounds, profile sanitizing.
+//
+// Electron is mocked for the same reason as the other electron/ suites: these
+// are pure-function tests, and CI installs with ELECTRON_SKIP_BINARY_DOWNLOAD=1
+// (the binary download flakes), so importing the real `electron` package there
+// throws "Electron failed to install correctly" and the whole suite fails to
+// load. Every member below is only called from inside functions, never at
+// module load.
+jest.mock("electron", () => ({
+  app: { getPath: jest.fn(() => require("node:os").tmpdir()) },
+  dialog: { showOpenDialog: jest.fn(), showMessageBox: jest.fn() },
+  BrowserWindow: class {},
+  WebContentsView: class {},
+  session: { fromPartition: jest.fn(() => ({ clearCache: jest.fn() })) },
+  desktopCapturer: { getSources: jest.fn(async () => []) },
+}));
+
 import { createCipheriv, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
 import {
   parseNetscapeCookies,
   parseCookieEditorJson,
