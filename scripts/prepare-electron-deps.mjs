@@ -22,7 +22,7 @@ import path from "node:path";
 const root = process.cwd();
 const sourceRoot = path.join(root, "node_modules");
 const targetRoot = path.join(root, "electron-dist", "node_modules");
-const ENTRY = "electron-updater";
+const ENTRIES = ["electron-updater", "zod"];
 const SKIP = new Set(["electron"]); // never ship the npm electron shim
 
 function readManifest(name) {
@@ -32,7 +32,7 @@ function readManifest(name) {
 }
 
 const closure = new Set();
-const queue = [ENTRY];
+const queue = [...ENTRIES];
 while (queue.length) {
   const name = queue.shift();
   if (closure.has(name) || SKIP.has(name)) continue;
@@ -62,7 +62,7 @@ for (const name of closure) {
 // A tiny marker so the packaging step can assert the updater really shipped.
 writeFileSync(
   path.join(targetRoot, ".orplex-electron-deps.json"),
-  JSON.stringify({ entry: ENTRY, packages: [...closure].sort() }, null, 2),
+  JSON.stringify({ entries: ENTRIES, packages: [...closure].sort() }, null, 2),
 );
 
 console.log(`[electron-deps] copied ${copied} package(s) into electron-dist/node_modules:`);
