@@ -114,6 +114,13 @@ const LOCAL_ONLY_API_ROUTES = [
   // user's disk) — same rule as playbook/db above.
   "/api/agent/fs",
   "/api/agent/changes-git",
+  // Browser probe + content search + checkpoints (Panel v2 audit 2026-11-10):
+  // localhost-probe answers from THIS machine (Vercel would probe its own
+  // localhost — the port chips would never light); grep searches the local
+  // hard disk; checkpoints snapshot the registered workspace.
+  "/api/localhost-probe",
+  "/api/agent/grep",
+  "/api/agent/checkpoints",
 ];
 
 // Conversations are LOCAL-FIRST in the desktop app: history CRUD reads and
