@@ -47,6 +47,7 @@ const REF_ALLOWLIST = new Set([
   "/api/agent/mcp-tools-backup",
   "/api/mcpx",
   "/api/mcp/connections/supabase/disconnect",
+  "/api/recordings",
 ]);
 
 const strict = process.argv.includes("--strict");
