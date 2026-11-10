@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
    */
   lastSessionCrashed: () =>
     ipcRenderer.invoke("orplex:last-session-crashed") as Promise<boolean>,
+  /** Open a project folder with a native OS picker (Electron only). */
+  pickDirectory: () => ipcRenderer.invoke("orplex:pick-directory") as Promise<string | null>,
   /** Packaged app version (package.json "version") for update detection. */
   getAppVersion: () =>
     ipcRenderer.invoke("orplex:app-version") as Promise<string>,

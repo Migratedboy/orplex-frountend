@@ -37,7 +37,6 @@ export const DEFAULT_MODELS: DefaultModelRow[] = [
   { key: "openrouter/free", name: "Free Models Router", tag: "OpenRouter", detail: "free · 200K · tools · always available", group: "Default Models" },
 
   // --- OpenRouter free tier: the strongest free models available ---
-  { key: "stealth/crouton-alpha", name: "Crouton Alpha", tag: "OpenRouter", detail: "free · 1M · tools · vision", group: "Default Models" },
   { key: "nvidia/nemotron-3-ultra-550b-a55b:free", name: "Nemotron 3 Ultra", tag: "OpenRouter", detail: "free · 1M", group: "Default Models" },
   { key: "nvidia/nemotron-3.5-super-vl:free", name: "Nemotron 3.5 Super VL", tag: "OpenRouter", detail: "free · 1M · vision · video", group: "Default Models" },
   { key: "nvidia/nemotron-3.5-lightning:free", name: "Nemotron 3.5 Lightning", tag: "OpenRouter", detail: "free · 1M", group: "Default Models" },

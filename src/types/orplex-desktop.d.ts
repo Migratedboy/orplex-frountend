@@ -129,6 +129,8 @@ declare global {
       };
       /** True when the previous app session did not exit cleanly (crash recovery). */
       lastSessionCrashed?: () => Promise<boolean>;
+      /** Open a project folder with a native OS picker (Electron only). */
+      pickDirectory?: () => Promise<string | null>;
       /** Packaged app version from package.json (update detection). */
       getAppVersion?: () => Promise<string>;
       /** In-app updates: user-consented check/download/install + status events. */

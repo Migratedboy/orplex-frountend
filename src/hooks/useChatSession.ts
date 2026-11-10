@@ -372,6 +372,8 @@ export function useChatSession() {
           directoryNameRef.current,
           (msg) => toastRef.current(msg, "error"),
           task.activityTiming,
+          // Title generation runs on the model the user is chatting with.
+          task.model,
         )
         .catch(() => {
           /* already surfaced via onSaveError */
@@ -665,6 +667,8 @@ setRunLabel("No response — run stopped");
       directoryNameRef.current,
       undefined,
       restoredTiming,
+      // Same chat model the interrupted task ran on — titles track it too.
+      snap.model,
     )
       .then(() => {
         t("Your previous task was interrupted by the reload — partial output restored.", "info");

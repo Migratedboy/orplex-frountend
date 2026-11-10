@@ -44,13 +44,21 @@ function buildCloudClient(): PrismaClient | null {
     /localhost|127\.0\.0\.1/.test(DATABASE_URL)
   ) {
     throw new Error(
-      "[prisma] DATABASE_URL points at localhost in production — set the Supabase pooler URL (Transaction mode, port 6543) in the host dashboard."
+      "[prisma] DATABASE_URL points at localhost in production — set the Neon pooled DATABASE_URL in the host dashboard."
     );
   }
 
-  if (DATABASE_URL.includes("pooler.supabase.com") && !DATABASE_URL.includes("pgbouncer")) {
-    const separator = DATABASE_URL.includes("?") ? "&" : "?";
-    process.env.DATABASE_URL = `${DATABASE_URL}${separator}pgbouncer=true&connection_limit=1&pool_timeout=20`;
+  // Pooled hosts (Neon *-pooler.*) need pooler params; direct hosts don't.
+  if (/pooler/i.test(DATABASE_URL)) {
+    try {
+      const url = new URL(DATABASE_URL);
+      url.searchParams.set("pgbouncer", "true");
+      url.searchParams.set("connection_limit", "1");
+      url.searchParams.set("pool_timeout", "20");
+      process.env.DATABASE_URL = url.toString();
+    } catch {
+      // Unparseable URL — leave it untouched (the client will report it).
+    }
   }
 
   return new PrismaClient({

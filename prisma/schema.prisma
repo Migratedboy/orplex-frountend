@@ -1,4 +1,4 @@
-// Prisma schema for Supabase (PostgreSQL)
+// Prisma schema for Neon (PostgreSQL) — SOCIAL + MEMORY tier.
 // Run: npx -y prisma@5.22.0 db push (after setting DATABASE_URL in .env)
 // NOTE: the CLI version is pinned — this repo pins @prisma/client@5 and the
 // schema uses the v5 datasource format. A bare `npx prisma` resolves the v7
@@ -798,3 +798,75 @@ model MemorySetting {
   @@map("memory_settings")
 }
 
+// ── Polyglot persistence (Neon) ────────────────────────────────────────────
+// Memory: semantic agent memory (pgvector). `embedding` is a native vector
+// column — its HNSW index lives in migration SQL (Prisma can't express it).
+// One row per memory; userId+namespace is the tenant boundary.
+model Memory {
+  id         String   @id @default(cuid())
+  userId     String
+  namespace  String // tenant workspace / project scope — isolation boundary
+  kind       String // conversation | pattern | code | note
+  content    String   @db.Text
+  embedding  Unsupported("vector(1536)")
+  dimVersion Int      @default(1) // embedding model generation (re-embed on change)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, namespace])
+  @@map("memories")
+}
+
+// Recording: METADATA ONLY. The bytes live in the Electron app's local
+// userData/recordings/ dir and never leave the machine. This row lets the
+// cloud render a cross-device history of what was recorded.
+model Recording {
+  id          String    @id @default(cuid())
+  userId      String
+  machineId   String? // bytes live on this machine only
+  name        String
+  sizeBytes   Int
+  durationSec Int?
+  deletedAt   DateTime? // local library cleanup marks deleted (bytes already gone)
+  recordedAt  DateTime  @default(now())
+
+  @@index([userId, recordedAt])
+  @@map("recordings")
+}
+
+// OutboxEvent: transactional outbox. Written in the SAME transaction as the
+// domain change; the relay worker drains them to Redis + pgvector. Status
+// transitions pending → done, or pending → parked (poison message).
+model OutboxEvent {
+  id          String    @id @default(cuid())
+  topic       String // quota.changed | run.completed | memory.write | upload.created
+  aggregateId String? // domain id (userId / runId / uploadId)
+  payload     Json
+  attempts    Int       @default(0)
+  status      String    @default("pending") // pending | done | parked
+  nextRetryAt DateTime?
+  createdAt   DateTime  @default(now())
+  publishedAt DateTime?
+
+  @@index([status, nextRetryAt])
+  @@map("outbox_events")
+}
+
+// UploadedFile: pointer row for an OPT-IN cloud upload (Vercel Blob). Bytes
+// live in Blob; this row is why the DB can find them. Recordings NEVER come
+// here — they stay local by design.
+model UploadedFile {
+  id             String    @id @default(cuid())
+  userId         String
+  blobPathname   String
+  blobUrl        String? // public URL; null for private stores (signed URLs minted on read)
+  contentType    String
+  sizeBytes      Int // server-enforced ≤ 10 MB (see /api/uploads)
+  idempotencyKey String?   @unique // client-generated; retries return the same row/blob
+  kind           String    @default("opt-in") // avatar | upload | export
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([userId])
+  @@map("uploaded_files")
+}

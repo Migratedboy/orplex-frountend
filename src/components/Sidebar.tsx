@@ -16,6 +16,7 @@ import { useWorkspace } from "./WorkspaceProvider";
 import { useFileSystemContext } from "./FileSystemProvider";
 import { useTheme } from "./ThemeProvider";
 import { useActiveRunCount } from "@/hooks/useActiveRunCount";
+import { useToast } from "@/components/Toast";
 import { useBackgroundChat } from "@/hooks/useBackgroundChat";
 import { announceConversationOpen } from "@/lib/navigation-events";
 import { apiFetch } from "@/lib/api-base";
@@ -162,7 +163,8 @@ export default function Sidebar() {
   const { data: session, status } = useSession();
   const { conversations, renameConversation, deleteConversation, refresh } = useConversations();
   const { projects } = useWorkspace();
-  const { openFolder } = useFileSystemContext();
+  const { openFolder, reopenProject, attachPath, directoryName } = useFileSystemContext();
+  const { toast } = useToast();
   const { dark, toggle: toggleTheme } = useTheme();
   const { activeRuns, pendingApprovals } = useActiveRunCount();
   const { task, isRunning } = useBackgroundChat();
@@ -407,6 +409,60 @@ export default function Sidebar() {
               <div key={p.name}>
                 <button className={`${styles.row} ${open ? styles.active : ""}`} onClick={() => toggleProject(p.name)} aria-expanded={open}>
                   <Icon n={open ? "folderopen" : "folder"} /><span className={styles.lbl}>{projectLabel(p.name, p.displayName)}</span>
+                  {/* Hover new-chat in THIS project (user request): attaches the
+                      workspace folder, then starts a fresh thread in it. */}
+                  <span
+                    className={styles.newChat}
+                    role="button"
+                    tabIndex={0}
+                    title={`New chat in ${projectLabel(p.name, p.displayName)}`}
+                    aria-label={`New chat in ${projectLabel(p.name, p.displayName)}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void (async () => {
+                        // New chat IN THIS project: attach its folder silently
+                        // (no re-choosing), then start a fresh thread so the
+                        // first message lands in this project on save.
+                        if (directoryName !== p.name) {
+                          let attached = false;
+                          const outcome = await reopenProject(p.name);
+                          if (outcome.status === "ok") attached = true;
+                          if (!attached) {
+                            // Handle-less projects (opened from a different
+                            // device flow) keep their path in the roster.
+                            try {
+                              const { listProjects } = await import("@/lib/project-registry");
+                              const entry = listProjects(window.localStorage).find((x) => x.name === p.name);
+                              if (entry?.lastPath) {
+                                await attachPath(entry.lastPath);
+                                attached = true;
+                              }
+                            } catch {}
+                          }
+                          if (!attached) {
+                            // Never block on a picker (user requirement): the
+                            // chat still opens, just in the current workspace.
+                            toast(
+                              `"${p.name}" isn't saved on this device yet — new chat opens in the current workspace.`,
+                              "info"
+                            );
+                          }
+                        }
+                        window.dispatchEvent(new CustomEvent("orplex:new-chat"));
+                        setMobileOpen(false);
+                      })();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const el = e.currentTarget as HTMLElement;
+                        el.click();
+                      }
+                    }}
+                  >
+                    <Icon n="newchat" />
+                  </span>
                 </button>
                 <div className={`${styles.kids} ${open ? styles.open : ""}`}><div className={styles.chats}>
                   {!live.length && <div className={styles.empty}>No chats yet</div>}

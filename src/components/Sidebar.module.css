@@ -73,6 +73,12 @@
 .more { width:24px; height:24px; border-radius:6px; display:none; place-items:center; color:var(--muted); }
 .more:hover { background:var(--raise); color:var(--text); }
 .row:hover .more, .row.menu .more { display:grid; }
+/* Hover "new chat in project" button (user request): appears on project
+   row hover / focus at the row's right side, subscribing to the same
+   behavior as the row's other overflow actions. */
+.newChat { width:24px; height:24px; border-radius:50%; flex:none; display:none; place-items:center; color:var(--muted); cursor:pointer; outline:none; }
+.newChat:hover, .newChat:focus-visible { background:var(--accent-soft); color:var(--accent-text); }
+.row:hover .newChat, .newChat:focus-visible { display:grid; }
 .row:hover .br, .row.menu .br { display:none; }
 .empty { padding:6px 10px 6px 38px; color:var(--muted); font-size:13px; }
 .link { padding:6px 10px 6px 38px; color:var(--muted); font-size:13px; text-decoration:underline; text-underline-offset:3px; cursor:pointer; display:block; width:100%; text-align:left; }

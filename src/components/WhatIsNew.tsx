@@ -215,6 +215,13 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Moved machines? Export your whole local database as one portable file and import it anywhere",
     ],
   },
+  "1.2.9": {
+    title: "Export/import fix — the Database tab talks to your device",
+    items: [
+      "Fixed: Export/Import no longer bounce to the cloud backend — they always run on your device and read your real local database",
+      "The Settings Database tab now works identically offline and online",
+    ],
+  },
 };
 
 /** "1.0.9" < "1.0.10" < "1.1.0" — plain numeric segment compare. */

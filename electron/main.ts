@@ -28,7 +28,7 @@ import { registerBrowserDataIpc } from "./browser-data-import";
 import { registerRecorderIpc } from "./browser-recorder";
 import fs from "node:fs";
 import path from "node:path";
-import { installPipeResilience, safeConsoleWrite } from "./safe-io";
+import { installPipeResilience, safeConsoleWrite } from "./safeio";
 
 // Broken console pipes (closed terminal, detached launch, dev restart) must
 // never paint the fatal EPIPE dialog — console output is best-effort here.
@@ -1007,6 +1007,18 @@ app.whenReady().then(async () => {
     if (typeof url === "string") {
       if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     }
+  });
+
+  // Native folder picker for the desktop (File System Access API buckets out
+  // in Electron without permission plumbing — this is the reliable path).
+  handleAppIpc("orplex:pick-directory", async () => {
+    const win = getMainWindow();
+    const r = await dialog.showOpenDialog(win!, {
+      title: "Open project folder",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (r.canceled || r.filePaths.length === 0) return null;
+    return r.filePaths[0];
   });
 
   // Crash recovery: did the previous session end uncleanly? (read-only —

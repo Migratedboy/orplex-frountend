@@ -31,7 +31,7 @@ import {
   normalizePreviewUrl,
   resolveRefFromSnapshot,
 } from "./preview-logic";
-import { safeConsoleWrite } from "./safe-io";
+import { safeConsoleWrite } from "./safeio";
 
 const PREVIEW_PARTITION = "persist:orplex-preview";
 const previewViews = new Map<number, WebContentsView>(); // renderer tabId -> view

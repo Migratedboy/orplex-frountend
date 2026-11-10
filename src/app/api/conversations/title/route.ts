@@ -41,20 +41,29 @@ export async function POST(request: NextRequest) {
     if (!session?.user?.id) {
       return Response.json({ title: null }, { status: 401 });
     }
-    const body = (await request.json().catch(() => null)) as { message?: unknown } | null;
+    const body = (await request.json().catch(() => null)) as { message?: unknown; model?: unknown } | null;
     const message = typeof body?.message === "string" ? body.message.trim().slice(0, MAX_PROMPT_CHARS) : "";
     if (!message) return Response.json({ title: null });
+    // Titles come from the model the user is actually chatting with — the
+    // prompt-bar pick rides along; without it we degrade to the free router.
+    const requested = typeof body?.model === "string" ? body.model.trim() : "";
+    const targetModel = requested || "openrouter/free";
 
     let extras: FastProviderConfig[] = [];
     try {
-      // Same lane the chat itself uses: re-point providers at the default
-      // free model exactly like /api/chat does, instead of whichever
-      // fallback model each provider happens to carry — the
-      // "separate fast model" guess was why titles silently never landed.
-      const configs = await getProviderConfigs(session.user.id, "openrouter/free");
+      // Same lanes the chat itself uses: re-point providers at the requested
+      // model exactly like /api/chat does, instead of whichever fallback
+      // model each provider happens to carry — the "separate fast model"
+      // guess was why titles silently never landed (and why "hi" stayed raw).
+      const configs = await getProviderConfigs(session.user.id, targetModel);
+      const withKey = configs.filter((c) => c.apiKey);
+      // Keep only lanes that actually SERVE the requested model: OpenRouter
+      // lanes are re-pointed at it above; a fixed-model lane (Groq, NIM)
+      // qualifies only when it carries the same id — titling "hi" with
+      // heavyweight reasoning would burn the whole token budget on thinking.
+      const serving = requested ? withKey.filter((c) => c.model === targetModel) : withKey;
       extras = rankBySpeed(
-        configs
-          .filter((c) => c.apiKey)
+        (serving.length > 0 ? serving : withKey)
           .slice(0, 3)
           .map((c) => ({
             name: c.name,

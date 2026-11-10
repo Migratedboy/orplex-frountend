@@ -121,6 +121,8 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
   const recRef = useRef<{
     stream: MediaStream; recorder: MediaRecorder; canvas: HTMLCanvasElement;
     timer: () => void;
+    startedAt?: number; // set when MediaRecorder starts (duration calc for metadata)
+    chunks?: Blob[]; // set at start, read on stop
   } | null>(null);
   const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashNote = useCallback((msg: string, ms = 4200) => {
@@ -448,8 +450,23 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
         const bridge = window.orplexDesktop?.recording;
         const buf = await blob.arrayBuffer();
         const saved = await bridge?.save(buf);
-        if (saved?.ok) flashNote(`Saved recording: ${saved.name} (Reveal in browser-data menu)`);
-        else flashNote(saved?.error || "Save failed");
+        if (saved?.ok) {
+          flashNote(`Saved recording: ${saved.name} (Reveal in browser-data menu)`);
+          // Metadata-only sync (local-first by design — DATA-STORES.md):
+          // name/size/duration land in Postgres; the webm bytes never leave
+          // this machine. Best-effort: failure is non-fatal (the recording
+          // still plays locally; a re-sync can happen later).
+          void fetch("/api/recordings", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              name: saved.name,
+              sizeBytes: blob.size,
+              durationSec: rec.startedAt ? Math.max(0, Math.floor((Date.now() - rec.startedAt) / 1000)) : undefined,
+            }),
+          }).catch(() => {});
+        } else flashNote(saved?.error || "Save failed");
       } catch (e) {
         flashNote((e as Error).message);
       }
@@ -487,7 +504,7 @@ function BrowserPreviewInner({ panelActive, overlayOpen }: { panelActive: boolea
       const recorder = new MediaRecorder(mstream, { mimeType: MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : undefined });
       recorder.ondataavailable = (e: BlobEvent) => { if (e.data.size > 0) chunks.push(e.data); };
       recorder.start(1000);
-      recRef.current = { stream, recorder, canvas, timer: () => clearInterval(iv), chunks } as any;
+      recRef.current = { stream, recorder, canvas, timer: () => clearInterval(iv), chunks, startedAt: Date.now() } as any;
       setRecording(true);
       flashNote("Recording… click Record again to stop");
     } catch (e) {

@@ -72,13 +72,25 @@ export function normalizeThinkingBlocks(text: string): string {
   }
 
   out = out.replace(/\n{3,}/g, "\n\n").trim();
+  // 4b. Strip leaked model special tokens ("<|minimax|>", "<|tool_call|>" and
+  // friends): control sequences from reason-first models (e.g. MiniMax M3.1
+  // Flash) must never reach the bubble or the database — they render as raw
+  // junk like "files.]<|minimax|>[", confusing the user AND leaking the
+  // provider's internal framing. Also drop a truncated trailing fragment
+  // ("<|min..." at the very end of a cut-off generation).
+  out = out.replace(/<\|[^>]{1,60}\|>/g, "");
+  out = out.replace(/<\|[^<>\n]{0,40}$/, ""); // dangling half-token at end
+  out = out.replace(/\n\s*\n\s*\n/g, "\n\n").trim();
   // 4. Thinking-only output: the whole message would be just the card with no
   //    answer. Append an honest note instead of leaving raw reasoning alone.
   const answer = out
     .replace(/\[THINKING\][\s\S]*?(\[\/THINKING\]|$)/g, "")
     .trim();
-  if (!answer && out) {
-    out += "\n\n*(The model stopped before producing an answer — try again.)*";
+  if (!answer && text.trim().length > 0) {
+    // Input had content but nothing usable remains (thinking-only turn or
+    // everything scrubbed as special tokens): surface that honestly rather
+    // than rendering raw reasoning. Genuinely empty input stays empty.
+    out = (out ? out + "\n\n" : "") + "*(The model stopped before producing an answer — try again.)*";
   }
 
   return out;

@@ -377,10 +377,94 @@ export function useFileSystem() {
   // the in-flight picker instead.
   const pickerInFlightRef = useRef<Promise<void> | null>(null);
 
+  // Desktop attach without directory handles: the native picker hands us an
+  // absolute path (sets name + workspace-cwd registration directly), and the
+  // tree is built from the local /api/agent/fs listing with the SAME skip
+  // list as scanDirectory. The AI reads server-side via workspace-cwd.
+  const attachPath = useCallback(async (absPath: string): Promise<{ fileCount: number }> => {
+    const name = absPath.split(/[\\/]/).filter(Boolean).pop() || "workspace";
+    fileHandlesRef.current.clear();
+    setFileContents({});
+    setDirectoryHandle(null);
+    setDirectoryName(name);
+
+    try {
+      const { setProjectPath } = await import("@/lib/project-registry");
+      setProjectPath(window.localStorage, name, absPath);
+    } catch {}
+
+    const SKIP = new Set([
+      ".git", "node_modules", ".next", "dist", ".freebuff",
+      "package-lock.json", "tsconfig.tsbuildinfo", ".env", "dev.db",
+      "yarn.lock", "pnpm-lock.yaml", ".cache", "out", "build",
+    ]);
+    const buildTree = async (dir: string, depth: number, counter: { files: number }): Promise<FileNode[]> => {
+      if (depth > 8 || counter.files > 4000) return [];
+      const res = await apiFetch(`/api/agent/fs?dir=${encodeURIComponent(dir)}`);
+      if (!res.ok) return [];
+      const data = (await res.json().catch(() => null)) as { entries?: Array<{ name: string; kind: "file" | "directory" }> } | null;
+      const entries = data?.entries ?? [];
+      const out: FileNode[] = [];
+      for (const e of entries) {
+        if (SKIP.has(e.name)) continue;
+        const p = dir ? `${dir}/${e.name}` : e.name;
+        if (e.kind === "file") {
+          counter.files++;
+          out.push({ name: e.name, path: p, kind: "file" });
+        } else {
+          out.push({ name: e.name, path: p, kind: "directory", children: await buildTree(p, depth + 1, counter) });
+        }
+      }
+      return out.sort((a, b) =>
+        a.kind !== b.kind ? (a.kind === "directory" ? -1 : 1) : a.name.localeCompare(b.name)
+      );
+    };
+    const counter = { files: 0 };
+    const tree = await buildTree("", 0, counter);
+    setFileTree(tree);
+
+    try {
+      const res = await apiFetch("/api/agent/workspace-cwd", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: absPath }),
+      });
+      if (res.ok) {
+        toast(`Terminal commands will run in "${absPath}"`, "success");
+      } else {
+        const detail = await res.json().catch(() => null);
+        toast(
+          `Could not register "${absPath}" as the workspace (HTTP ${res.status}${
+            (detail as { error?: string } | null)?.error ? ` — ${(detail as { error?: string }).error}` : ""
+          }). AI and manual commands will fail until this succeeds.`,
+          "error"
+        );
+      }
+    } catch {
+      toast(`Could not register "${absPath}" as the workspace — is the app server reachable?`, "error");
+    }
+
+    return { fileCount: counter.files };
+  }, [toast]);
+
   const openFolder = useCallback(async () => {
     if (pickerInFlightRef.current) return pickerInFlightRef.current;
     const run = (async () => {
       try {
+        // DESKTOP: native OS picker (File System Access API throws in
+        // Electron without permission plumbing — the sidebar button was dead).
+        const bridge = (window as any).orplexDesktop as
+          | { pickDirectory?: () => Promise<string | null> }
+          | undefined;
+        if (bridge?.pickDirectory) {
+          const absPath = await bridge.pickDirectory();
+          if (!absPath) return; // cancelled — silent
+          const { fileCount } = await attachPath(absPath);
+          const label = absPath.split(/[\\/]/).filter(Boolean).pop() || "workspace";
+          toast(`Mapped "${label}" — ${fileCount} files available to the AI on demand.`, "success");
+          return;
+        }
+
         if (typeof window === "undefined" || !("showDirectoryPicker" in window)) {
           toast("File System Access API is not supported in this browser. Please use Chrome or Edge.", "error");
           return;
@@ -405,7 +489,7 @@ export function useFileSystem() {
     })();
     pickerInFlightRef.current = run;
     return run;
-  }, [openFolderHandle, toast]);
+  }, [openFolderHandle, attachPath, toast]);
 
   /**
    * Re-open a previously-opened project by folder NAME (Projects sidebar):
@@ -661,6 +745,7 @@ export function useFileSystem() {
     fileContents,
     openFolder,
     openFolderHandle,
+    attachPath,
     reopenProject,
     readFile,
     writeFile,

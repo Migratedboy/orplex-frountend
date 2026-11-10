@@ -173,33 +173,47 @@ async function partitionStorageSize(partition: string): Promise<number> {
 // === registration ============================================================
 
 export function registerPreviewExtrasIpc(getMainWindow: () => BrowserWindow | null, handleAppIpc: HandleFn): void {
-  // Scope screen-recording capture grants to THIS app's own window frame.
-  session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-    try {
-      const win = getMainWindow();
-      const mainFrameId = (win?.webContents as any)?.mainFrame?.frameId;
-      const reqFrameId = (request as any)?.frame?.frameId;
-      if (!win || mainFrameId === undefined || reqFrameId === undefined || reqFrameId !== mainFrameId) {
-        return callback({});
+  // Eager session work (display-media handler + boot extension loads) needs
+  // `app.ready` — IPC registrations themselves are fine eagerly, but touching
+  // `session.defaultSession` / `session.fromPartition` before ready throws
+  // "Session can only be received when app is ready" and kills the shell.
+  app.whenReady().then(() => {
+    // Scope screen-recording capture grants to THIS app's own window frame.
+    session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+      try {
+        const win = getMainWindow();
+        const mainFrameId = (win?.webContents as any)?.mainFrame?.frameId;
+        const reqFrameId = (request as any)?.frame?.frameId;
+        // Only reject when BOTH frame ids are present AND differ. In some
+        // Electron versions `request.frame` is undefined, which previously
+        // made us call callback({}) (no media -> "Permission denied").
+        if (!win || (mainFrameId !== undefined && reqFrameId !== undefined && reqFrameId !== mainFrameId)) {
+          return callback({});
+        }
+        desktopCapturer.getSources({ types: ["window"], thumbnailSize: { width: 1, height: 1 } }).then((sources) => {
+          const winTitle = (win?.title || "").toLowerCase();
+          // Match the main window by title (case-insensitive) first, then by
+          // a name regex, then fall back to the first available window source.
+          let appWin = sources.find((s) => winTitle && s.name.toLowerCase().includes(winTitle));
+          if (!appWin) appWin = sources.find((s) => /orplex/i.test(s.name));
+          if (!appWin) appWin = sources[0];
+          if (appWin) callback({ video: appWin });
+          else callback({});
+        }).catch(() => { try { callback({}); } catch {} });
+      } catch {
+        try { callback({}); } catch {}
       }
-      desktopCapturer.getSources({ types: ["window"], thumbnailSize: { width: 0, height: 0 } }).then((sources) => {
-        const appWin = sources.find((s) => /orplex/i.test(s.name));
-        if (appWin) callback({ video: appWin });
-        else callback({});
-      }).catch(() => { try { callback({}); } catch {} });
-    } catch {
-      try { callback({}); } catch {}
+    });
+
+    // Reload previously loaded extensions into the active profile session.
+    const bootExts = readLoadedExts();
+    if (bootExts.length > 0) {
+      const sess = activePreviewSession();
+      void (async () => {
+        for (const ext of bootExts) await loadExtensionFile(ext, sess);
+      })();
     }
   });
-
-  // Reload previously loaded extensions into the active profile session.
-  const bootExts = readLoadedExts();
-  if (bootExts.length > 0) {
-    const sess = activePreviewSession();
-    void (async () => {
-      for (const ext of bootExts) await loadExtensionFile(ext, sess);
-    })();
-  }
 
   const numTab = (raw: unknown): number | null => {
     const parsed = numId.safeParse(raw);

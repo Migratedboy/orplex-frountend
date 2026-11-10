@@ -102,6 +102,9 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
     /** Surfaced to the user when a save fails or truncates content. */
     onSaveError?: (message: string) => void,
     activityTiming?: ActivityTiming,
+    /** Model id the user is chatting with — the title request re-points its
+     *  lanes at this so titles come from the model they actually picked. */
+    chatModel?: string,
   ) => {
     const saveToken = navTokenRef.current;
     try {
@@ -157,16 +160,17 @@ setMessages(() => conv.messages.map((m: { role: string; content: string; created
         window.dispatchEvent(
           new CustomEvent(OPEN_CONVERSATION_EVENT, { detail: { id: newId } })
         );
-        // Refine the title with the fast model in the background: the
-        // first-prompt title above is instant; this lands a real name
-        // (e.g. "hi" → "Greeting") without blocking the reply.
+        // Refine the title in the background using the model the user is
+        // chatting with (not a separate "fast model" — that guess is why
+        // titles silently never landed): the first-prompt title is instant;
+        // this lands a real name (e.g. "hi" → "Greeting") without blocking.
         if (isNewThread) {
           void (async () => {
             try {
               const res = await fetch("/api/conversations/title", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message: userContent }),
+                body: JSON.stringify({ message: userContent, model: chatModel || undefined }),
               });
               if (!res.ok) return;
               const j = (await res.json().catch(() => null)) as { title?: unknown } | null;

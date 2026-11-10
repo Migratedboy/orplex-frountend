@@ -44,7 +44,7 @@ export function getFastProviders(): FastProviderConfig[] {
       name: "NVIDIA-Fast",
       url: "https://integrate.api.nvidia.com/v1/chat/completions",
       apiKey: nvKey,
-      model: "nvidia/nemotron-3-super-120b-a12b",
+      model: "minimaxai/minimax-m3.1-flash",
     });
   }
   return out;

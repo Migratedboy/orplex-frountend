@@ -25,7 +25,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { safeConsoleWrite } from "./safe-io";
+import { safeConsoleWrite } from "./safeio";
 
 // node:sqlite — probed once (D6). If the runtime lacks it, cookie imports
 // degrade to the cookie-file path with an honest notice (nothing silently fails).
