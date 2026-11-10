@@ -1,6 +1,6 @@
 {
   "name": "orplex-code",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "private": true,
   "description": "Orplex Code — the AI coding agent for your desktop and cloud.",
   "author": {
@@ -98,6 +98,9 @@
     "appId": "tech.orplex.app",
     "productName": "Orplex Code",
     "asar": true,
+    "asarUnpack": [
+      ".next/standalone/**/*"
+    ],
     "publish": {
       "provider": "github",
       "owner": "Migratedboy",

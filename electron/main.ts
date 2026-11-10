@@ -510,8 +510,18 @@ function startNextServer(which: "ui" | "api"): void {
     // self-contained server.js. Electron's bundled Node runs it directly via
     // ELECTRON_RUN_AS_NODE, so no separate node.exe has to ship.
     const root = projectRoot();
-    const appRoot = path.join(root, "app");
-    const standalone = path.join(appRoot, ".next", "standalone");
+    // Resolve the unpacked standalone bundle. With asar enabled the build
+    // packs .next/standalone into app.asar; asarUnpack extracts it to
+    // app.asar.unpacked, which is the only place a child process can run
+    // from. Fall back to the legacy (asar-disabled) and flat layouts so an
+    // older or hand-built install still boots instead of showing a false
+    // "install is incomplete" dialog.
+    const candidates = [
+      path.join(root, "app.asar.unpacked", ".next", "standalone"),
+      path.join(root, "app", ".next", "standalone"),
+      path.join(root, ".next", "standalone"),
+    ];
+    const standalone = candidates.find((c) => fs.existsSync(path.join(c, "server.js"))) || candidates[0];
     const serverEntry = path.join(standalone, "server.js");
     if (!fs.existsSync(serverEntry)) {
       dialog.showErrorBox(
