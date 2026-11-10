@@ -159,13 +159,18 @@ jobs:
           NEXT_TELEMETRY_DISABLED: 1
 
       - name: Upload build output (installers + updater metadata)
-        # electron-updater's GitHub feed needs latest.yml/latest-mac.yml/
-        # latest-linux.yml (+ blockmaps) in the Release — upload everything.
+        # Artifact storage quota is shared across the whole account and can be
+        # hit by accumulated 30-day-retention builds. The release itself is
+        # published by the publish job from these artifacts, so a failed upload
+        # must NOT fail the build — the publish job handles missing artifacts
+        # gracefully (release created with whatever is available).
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.os }}
           path: release/*
-          retention-days: 30
+          retention-days: 1
+          if-no-files-found: ignore
 
   publish:
     name: Publish Release
@@ -173,6 +178,7 @@ jobs:
     needs: [build]
     steps:
       - name: Download all installers
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           path: installers
