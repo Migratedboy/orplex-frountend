@@ -50,9 +50,6 @@ export async function GET(request: Request) {
     return page(`<h2 style="color:#ff6b00">Sign-in did not complete</h2><p style="color:#9aa">Return to the app and try again.</p>`);
   }
 
-  // Hand the app an encrypted grant instead of a server-side handle: the
-  // exchange call can land on another serverless instance, so no state may
-  // be kept between here and there.
   const grant = mintDesktopGrant({
     id: (session.user as { id?: string }).id || session.user.email || "",
     name: session.user.name,
@@ -60,8 +57,26 @@ export async function GET(request: Request) {
     image: session.user.image ?? null,
   });
 
-  // Deep link via JS (a 302 to a custom scheme would be blocked by browsers);
-  // keep a manual <a> fallback in case the OS has no orplex:// handler.
+  const returnTo = claims?.returnTo;
+  if (returnTo) {
+    try {
+      const u = new URL(returnTo);
+      const origin = u.origin;
+      const allowed =
+        origin.startsWith("http://localhost") ||
+        origin.startsWith("http://127.0.0.1") ||
+        (process.env.ALLOWED_ORIGINS || "http://localhost:5000")
+          .split(",")
+          .map((s) => s.trim().replace(/\/+$/, ""))
+          .includes(origin);
+      if (allowed) {
+        const target = new URL(returnTo);
+        target.searchParams.set("grant", grant);
+        return NextResponse.redirect(target.toString(), 302);
+      }
+    } catch {}
+  }
+
   const deepLink = `orplex://auth?code=${encodeURIComponent(grant)}`;
   return page(
     `<h2 style="color:#ff6b00">&#10003; Signed in</h2>` +

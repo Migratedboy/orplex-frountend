@@ -45,6 +45,28 @@ export async function GET(request: Request) {
   if (provider !== "google" && provider !== "github") {
     return page(`<h2 style="color:#ff6b00">Unsupported provider</h2><p style="color:#9aa">Use google or github.</p>`);
   }
+
+  const returnToRaw = (new URL(request.url).searchParams.get("return_to") || "").trim();
+  let returnTo: string | undefined;
+  if (returnToRaw) {
+    try {
+      const u = new URL(returnToRaw);
+      if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("bad proto");
+      const origin = u.origin;
+      const allowed =
+        origin.startsWith("http://localhost") ||
+        origin.startsWith("http://127.0.0.1") ||
+        (process.env.ALLOWED_ORIGINS || "http://localhost:5000")
+          .split(",")
+          .map((s) => s.trim().replace(/\/+$/, ""))
+          .includes(origin);
+      if (!allowed) throw new Error("disallowed origin");
+      returnTo = `${origin}${u.pathname.replace(/\/+$/, "") || ""}`;
+      if (!returnTo) returnTo = origin;
+    } catch {
+      returnTo = undefined;
+    }
+  }
   const configured =
     provider === "google"
       ? !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET)
@@ -60,7 +82,7 @@ export async function GET(request: Request) {
   // The flow cookie binds the code to THIS browser (login-CSRF defense) —
   // HttpOnly so page JS (and any XSS) cannot read it; SameSite=Lax so it
   // rides the OAuth callback navigation back.
-  const { code, flowToken } = mintDesktopCode(provider);
+  const { code, flowToken } = mintDesktopCode(provider, returnTo);
   const origin = new URL(request.url).origin;
   const callbackUrl = `${origin}/api/auth/desktop/finish?code=${encodeURIComponent(code)}`;
 

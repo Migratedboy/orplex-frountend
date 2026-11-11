@@ -28,6 +28,8 @@ export interface DesktopCodeClaims {
   /** sha256 of the initiator cookie (see mintDesktopCode). */
   flowHash: string;
   exp: number;
+  /** Optional frontend origin to redirect to after OAuth (browser flow). */
+  returnTo?: string;
 }
 
 const CODE_TTL_MS = 5 * 60_000;
@@ -66,10 +68,18 @@ function equalConstantTime(a: string, b: string): boolean {
  * Mint a one-time sign-in code for a provider plus the initiator token that
  * binds the flow to the browser that started it.
  */
-export function mintDesktopCode(provider: string): { code: string; flowToken: string } {
+export function mintDesktopCode(
+  provider: string,
+  returnTo?: string
+): { code: string; flowToken: string } {
   const flowToken = crypto.randomBytes(32).toString("base64url");
   const flowHash = crypto.createHash("sha256").update(flowToken).digest("hex");
-  const claims: DesktopCodeClaims = { provider, flowHash, exp: Date.now() + CODE_TTL_MS };
+  const claims: DesktopCodeClaims = {
+    provider,
+    flowHash,
+    exp: Date.now() + CODE_TTL_MS,
+    ...(returnTo ? { returnTo } : {}),
+  };
   const payload = b64u(Buffer.from(JSON.stringify(claims), "utf8"));
   return { code: `${payload}.${sign(payload)}`, flowToken };
 }

@@ -101,6 +101,13 @@ const LOCAL_ONLY_API_ROUTES = [
   // folder open. These routes must run on-device.
   "/api/agent/plugins",
   "/api/agent/plugin-library",
+  // Skills + tool-hooks read the folder open on THIS machine: the skill roster
+  // and bodies come from <workspace>/.orplex/skills, and the compiled deny
+  // rules from orplex.config.json + the installed bundles. Forwarded to the
+  // cloud they 404 (no such routes there) — which is exactly what the chat
+  // lane's use_skill and the pre-tool gate saw: every call failed.
+  "/api/agent/skills",
+  "/api/agent/tool-hooks",
   // Database bundle (export/import/status): the local database engine
   // (.orplex/*.json) lives on THIS device — the whole point of the
   // conversation-local stores. Forwarding them to the cloud backend
@@ -365,11 +372,15 @@ if (
           cookieName: "__Secure-next-auth.session-token",
         }));
       signedIn = !!token;
-    } else {
-      // The packaged app ships no NEXTAUTH_SECRET (a signing key must not
-      // live in a client binary), so the backend's session cookie cannot be
-      // verified here. The backend ALSO issues an Ed25519-signed app session
-      // whose PUBLIC key ships with the app — that one verifies locally.
+    }
+    // The backend mints the session JWT with the BACKEND's secret, which the
+    // frontend cannot verify in split mode (different secrets). The backend
+    // therefore ALSO issues an Ed25519-signed app session whose PUBLIC key
+    // ships with the app. Always fall back to it so a signed-in user is not
+    // bounced to /auth/signin just because the next-auth JWT cannot be
+    // verified here (packaged app has no secret at all; dev uses a mismatched
+    // one against the hosted backend).
+    if (!signedIn) {
       const appUser = await appSessionUserFromRequest(request);
       signedIn = !!appUser;
     }

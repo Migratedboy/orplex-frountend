@@ -105,6 +105,17 @@ export default function SignInPage() {
 
   }, []);
 
+  // Browser (non-desktop) sign-in returns here with ?grant=<encrypted grant>
+  // after the OAuth round-trip. Exchange it for a same-origin session cookie.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const grant = params.get("grant");
+    if (!grant) return;
+    // Clean the URL so a refresh doesn't re-exchange the (now-burned) grant.
+    window.history.replaceState({}, "", "/auth/signin");
+    void exchangeDesktopCode({ code: grant });
+  }, []);
+
   const handleDevLogin = async () => {
     setLoading(true);
     setError("");
@@ -175,7 +186,16 @@ export default function SignInPage() {
       return;
     }
     try {
-      await signIn(provider, { callbackUrl: afterAuthUrl });
+      // Route plain-browser sign-ins through the same desktop grant flow so
+      // the session cookie lands on THIS origin (the proxy rewrites it to the
+      // backend, which mints the grant and redirects back here with ?grant=).
+      // A relative callbackUrl would resolve against the backend origin and
+      // land the user on the api-only JSON stub.
+      const returnTo = encodeURIComponent(
+        `${window.location.origin}/auth/signin`
+      );
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.href = `/api/auth/desktop/start?provider=${provider}&return_to=${returnTo}`;
     } catch {
       setError("Authentication failed. Please try again.");
       setLoading(false);
