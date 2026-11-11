@@ -22,9 +22,9 @@ import { readCachedDefaultsSync, getDefaultModels } from "@/lib/default-models-c
 import { listProviderDefs } from "@/lib/provider-registry";
 import { apiFetch } from "@/lib/api-base";
 
-// Curated rows are no longer bundled — they come from the backend
-// (/api/models) and are cached in modelcatalog.json (see
-// default-models-client.ts). Mapped to picker rows on load.
+// Curated defaults are sourced from the backend (/api/models) and cached in
+// modelcatalog.json (see default-models-client.ts); the bundled list is the
+// offline/first-paint seed. Mapped to picker rows on load.
 function toPromptBarModels(rows: DefaultModelRow[]): PromptBarModel[] {
   return rows.map((r) => ({ key: r.key, name: r.name, tag: r.tag, detail: r.detail, group: r.group }));
 }
@@ -62,7 +62,7 @@ type ToastFn = (message: string, type?: "error" | "success" | "info") => void;
 export function useModelCatalog(toast: ToastFn) {
   // === Verified model catalog (fetched when the model menu opens) + recents ===
   const [catalogModels, setCatalogModels] = useState<PromptBarModel[]>([]);
-  // Curated defaults fetched from the backend (cached daily in modelcatalog.json).
+  // Curated defaults: seed from cache/bundle, refresh from backend daily.
   const [defaultModels, setDefaultModels] = useState<PromptBarModel[]>(() => {
     const c = readCachedDefaultsSync();
     if (c) return [...toPromptBarModels(c.models), ...toPromptBarModels(c.optIn)];
