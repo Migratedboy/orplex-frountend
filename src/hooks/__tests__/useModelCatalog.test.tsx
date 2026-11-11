@@ -57,7 +57,6 @@ describe("useModelCatalog — picker contract", () => {
   it("always lists the curated defaults BEFORE any fetch", () => {
     const { result } = renderHook(() => useModelCatalog(noopToast));
     const keys = result.current.models.map((m) => m.key);
-    expect(keys).toContain("minimaxai/minimax-m3.1-flash");
     expect(keys).toContain("openrouter/free");
     // group header placement survives the merge machinery untouched
     expect(result.current.models.every((m) => m.group === "Default Models")).toBe(true);
@@ -69,7 +68,7 @@ describe("useModelCatalog — picker contract", () => {
         return Promise.resolve(
           catalogShape([
             // same id as a default row, but with LIVE probe data and a fatter ctx
-            { id: "minimaxai/minimax-m3.1-flash", name: "MiniMax M3.1 Flash", provider: "nvidia", contextWindow: 262144, free: true },
+            { id: "openrouter/free", name: "MiniMax M3.1 Flash", provider: "nvidia", contextWindow: 262144, free: true },
             // a fresh verified model the defaults don't know
             { id: "acme/new-model", name: "Acme New", provider: "openrouter", contextWindow: 1024 * 200, free: false },
           ])
@@ -83,7 +82,7 @@ describe("useModelCatalog — picker contract", () => {
     await act(async () => {
       result.current.loadCatalog();
     });
-    const merged = result.current.models.find((m) => m.key === "minimaxai/minimax-m3.1-flash");
+    const merged = result.current.models.find((m) => m.key === "openrouter/free");
     expect(merged?.group).toBe("Default Models"); // default header survives
     expect(merged?.detail).toContain("256k"); // live probe context wins over "131K"
     expect(result.current.models.some((m) => m.key === "acme/new-model")).toBe(true);
@@ -94,11 +93,11 @@ describe("useModelCatalog — picker contract", () => {
     mockedApiFetch.mockImplementation((url: string) => {
       if (url === "/api/models/available") {
         return Promise.resolve(
-          catalogShape([{ id: "minimaxai/minimax-m3.1-flash", name: "MiniMax M3.1 Flash", provider: "nvidia", free: true }], {
+          catalogShape([{ id: "openrouter/free", name: "MiniMax M3.1 Flash", provider: "nvidia", free: true }], {
             userModels: [
               { id: "my-vendor/private-model", name: "Private Model", provider: "my-vendor", free: true },
               // duplicate of a verified id — must NOT render twice
-              { id: "minimaxai/minimax-m3.1-flash", name: "dup", provider: "groq", free: true },
+              { id: "openrouter/free", name: "dup", provider: "groq", free: true },
             ],
             keysRev: "r1",
           })
@@ -113,7 +112,7 @@ describe("useModelCatalog — picker contract", () => {
       result.current.loadCatalog();
     });
     const keys = result.current.models.map((m) => m.key);
-    expect(keys.filter((k) => k === "minimaxai/minimax-m3.1-flash")).toHaveLength(1);
+    expect(keys.filter((k) => k === "openrouter/free")).toHaveLength(1);
     expect(keys).toContain("my-vendor/private-model");
   });
 

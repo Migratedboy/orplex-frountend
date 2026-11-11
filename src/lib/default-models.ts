@@ -32,8 +32,10 @@ export interface DefaultModelRow {
 
 export const DEFAULT_MODELS: DefaultModelRow[] = [
   // --- Default (free) — first row is the fresh-chat default ---
-  // NVIDIA NIM hosts MiniMax M3.1 Flash free (minimaxai/* namespace).
-  { key: "minimaxai/minimax-m3.1-flash", name: "MiniMax M3.1 Flash", tag: "NVIDIA", detail: "free · tools", group: "Default Models" },
+  // OpenRouter's free router is always available (no per-model id to rot),
+  // so it leads the list. MiniMax M3.1 Flash on NVIDIA NIM is no longer
+  // reachable (NIM 404s it), so it has been removed to stop defaulting
+  // users onto a dead model.
   { key: "openrouter/free", name: "Free Models Router", tag: "OpenRouter", detail: "free · 200K · tools · always available", group: "Default Models" },
 
   // --- OpenRouter free tier: the strongest free models available ---

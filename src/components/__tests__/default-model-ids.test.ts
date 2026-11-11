@@ -53,10 +53,10 @@ beforeAll(async () => {
 const DEFAULT_KEYS = DEFAULT_MODELS.map((m) => m.key);
 
 /** Ids served by NVIDIA NIM (not OpenRouter) — skip the OpenRouter checks. */
-const NON_OPENROUTER_KEYS = new Set(["minimaxai/minimax-m3.1-flash"]);
+const NON_OPENROUTER_KEYS = new Set<string>();
 
 /** Free ids that carry no `:free` suffix but are still priced 0/0 upstream. */
-const FREE_NO_SUFFIX = new Set(["openrouter/free", "minimaxai/minimax-m3.1-flash"]);
+const FREE_NO_SUFFIX = new Set(["openrouter/free"]);
 
 describe("default model ids exist upstream", () => {
   it("every DEFAULT_MODELS key is in the live OpenRouter catalogue", () => {

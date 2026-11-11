@@ -44,7 +44,7 @@ export function getFastProviders(): FastProviderConfig[] {
       name: "NVIDIA-Fast",
       url: "https://integrate.api.nvidia.com/v1/chat/completions",
       apiKey: nvKey,
-      model: "minimaxai/minimax-m3.1-flash",
+      model: "meta/llama-3.1-8b-instruct",
     });
   }
   return out;

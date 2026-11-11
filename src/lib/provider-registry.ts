@@ -74,7 +74,7 @@ const PROVIDERS: ProviderDef[] = [
     keyEnvVar: "NVIDIA_API_KEY",
     keyPrefix: "nvapi-",
     keyHintUrl: "https://build.nvidia.com",
-    fallbackModel: "minimaxai/minimax-m3.1-flash",
+    fallbackModel: "meta/llama-3.1-8b-instruct",
     free: true,
   },
   {
