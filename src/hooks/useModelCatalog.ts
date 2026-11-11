@@ -17,13 +17,17 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PromptBarModel } from "@/components/PromptBar";
-import { DEFAULT_MODELS as DEFAULT_MODEL_ROWS, OPT_IN_MODELS as OPT_IN_MODEL_ROWS } from "@/lib/default-models";
+import { DEFAULT_MODELS as DEFAULT_MODEL_ROWS, OPT_IN_MODELS as OPT_IN_MODEL_ROWS, type DefaultModelRow } from "@/lib/default-models";
+import { readCachedDefaultsSync, getDefaultModels } from "@/lib/default-models-client";
 import { listProviderDefs } from "@/lib/provider-registry";
 import { apiFetch } from "@/lib/api-base";
 
-// Curated rows first (free defaults, always), then opt-in premium rows
-// (user-requested MiniMax — paid, clearly labelled, never a default).
-const DEFAULT_MODELS: PromptBarModel[] = [...DEFAULT_MODEL_ROWS, ...OPT_IN_MODEL_ROWS];
+// Curated rows are no longer bundled — they come from the backend
+// (/api/models) and are cached in modelcatalog.json (see
+// default-models-client.ts). Mapped to picker rows on load.
+function toPromptBarModels(rows: DefaultModelRow[]): PromptBarModel[] {
+  return rows.map((r) => ({ key: r.key, name: r.name, tag: r.tag, detail: r.detail, group: r.group }));
+}
 
 // Registry labels as picker tags, so a new registry provider shows up here
 // with zero component changes.
@@ -58,6 +62,13 @@ type ToastFn = (message: string, type?: "error" | "success" | "info") => void;
 export function useModelCatalog(toast: ToastFn) {
   // === Verified model catalog (fetched when the model menu opens) + recents ===
   const [catalogModels, setCatalogModels] = useState<PromptBarModel[]>([]);
+  // Curated defaults fetched from the backend (cached daily in modelcatalog.json).
+  const [defaultModels, setDefaultModels] = useState<PromptBarModel[]>(() => {
+    const c = readCachedDefaultsSync();
+    if (c) return [...toPromptBarModels(c.models), ...toPromptBarModels(c.optIn)];
+    // Seed from the bundled fallback until the backend fetch lands.
+    return [...DEFAULT_MODEL_ROWS, ...OPT_IN_MODEL_ROWS].map((r) => ({ key: r.key, name: r.name, tag: r.tag, detail: r.detail, group: r.group }));
+  });
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [recents, setRecents] = useState<string[]>(() => readRecents());
   // Mirror for use inside loadCatalog's closure without re-creating it.
@@ -96,6 +107,14 @@ export function useModelCatalog(toast: ToastFn) {
     // fired, and the picker spun on "Fetching verified models…" forever,
     // pinned to the defaults. Reset on setup as well as clear on cleanup.
     catalogCancelled.current = false;
+    // Fetch curated defaults from the backend (once/day, cached). Keep whatever
+    // cache exists on failure.
+    void getDefaultModels()
+      .then((c) => {
+        if (catalogCancelled.current || !c) return;
+        setDefaultModels([...toPromptBarModels(c.models), ...toPromptBarModels(c.optIn)]);
+      })
+      .catch(() => {});
     return () => {
       catalogCancelled.current = true;
       catalogTimers.current.forEach((t) => clearTimeout(t));
@@ -521,7 +540,7 @@ export function useModelCatalog(toast: ToastFn) {
     // placement for a curated entry.
     const out: PromptBarModel[] = [];
     const seen = new Set<string>();
-    for (const m of DEFAULT_MODELS) {
+    for (const m of defaultModels) {
       // The curated list is deduped too - a duplicate id here renders two rows
       // with the SAME React key, which React reports as a console error.
       if (seen.has(m.key)) continue;
@@ -542,7 +561,7 @@ export function useModelCatalog(toast: ToastFn) {
       out.push(m);
     }
     return out;
-  }, [catalogModels, coldIds, throttledModels, userModels, wakePromoted]);
+  }, [catalogModels, coldIds, throttledModels, userModels, wakePromoted, defaultModels]);
 
   /**
    * BYOK bypass.

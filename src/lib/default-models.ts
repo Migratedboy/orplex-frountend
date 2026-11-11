@@ -1,27 +1,3 @@
-/**
- * The models offered out of the box, shown under a persistent "Default Models"
- * group.
- *
- * FREE ONLY as a default. Every free row ends in `:free` on OpenRouter — the
- * default row (`openrouter/free`, first) must never bill the user per token
- * without them having chosen to. Groq was removed (2026-11): its free tier
- * is gone.
- *
- * MiniMax M3.1 Flash's free serving lives on NVIDIA NIM
- * (`minimaxai/minimax-m3.1-flash`, first row). OpenRouter only serves the
- * same model as a paid id (checked live 2026-11-09) — the NIM row is the
- * free route; the paid OpenRouter id is deliberately NOT offered.
- *
- * EVERY id was verified against OpenRouter's live /api/v1/models listing, not
- * a search engine. Free tiers rotate, so never add an id here without
- * checking the API first.
- *
- * KEYS MUST BE UNIQUE. The picker renders one row per entry, and React keys
- * the row by model id - two entries sharing an id render as two children with
- * the same key, which React reports as a console error and which can make
- * React drop and re-create rows.
- */
-
 export interface DefaultModelRow {
   key: string;
   name: string;
@@ -31,14 +7,7 @@ export interface DefaultModelRow {
 }
 
 export const DEFAULT_MODELS: DefaultModelRow[] = [
-  // --- Default (free) — first row is the fresh-chat default ---
-  // OpenRouter's free router is always available (no per-model id to rot),
-  // so it leads the list. MiniMax M3.1 Flash on NVIDIA NIM is no longer
-  // reachable (NIM 404s it), so it has been removed to stop defaulting
-  // users onto a dead model.
   { key: "openrouter/free", name: "Free Models Router", tag: "OpenRouter", detail: "free · 200K · tools · always available", group: "Default Models" },
-
-  // --- OpenRouter free tier: the strongest free models available ---
   { key: "nvidia/nemotron-3-ultra-550b-a55b:free", name: "Nemotron 3 Ultra", tag: "OpenRouter", detail: "free · 1M", group: "Default Models" },
   { key: "nvidia/nemotron-3.5-super-vl:free", name: "Nemotron 3.5 Super VL", tag: "OpenRouter", detail: "free · 1M · vision · video", group: "Default Models" },
   { key: "nvidia/nemotron-3.5-lightning:free", name: "Nemotron 3.5 Lightning", tag: "OpenRouter", detail: "free · 1M", group: "Default Models" },
@@ -50,10 +19,4 @@ export const DEFAULT_MODELS: DefaultModelRow[] = [
   { key: "liquid/lfm-2.5-2.6b:free", name: "LFM 2.5 2.6B", tag: "OpenRouter", detail: "free · 66K · compact", group: "Default Models" },
 ];
 
-/**
- * Opt-in paid rows. MiniMax M3.1 Flash ships FREE via NVIDIA NIM
- * (`minimaxai/minimax-m3.1-flash`, in DEFAULT_MODELS above), so this is
- * empty: no paid id needs offering while a free serving exists. Kept as the
- * extension point for future explicitly-opted premium rows.
- */
 export const OPT_IN_MODELS: DefaultModelRow[] = [];
