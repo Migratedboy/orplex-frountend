@@ -12,8 +12,10 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { usePathname, useRouter } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import { useConversations } from "./ConversationProvider";
+import { isArchived } from "@/lib/archived-chats";
 import { useWorkspace } from "./WorkspaceProvider";
 import { useFileSystemContext } from "./FileSystemProvider";
+import NewProjectModal from "./NewProjectModal";
 import { useTheme } from "./ThemeProvider";
 import { useActiveRunCount } from "@/hooks/useActiveRunCount";
 import { useToast } from "@/components/Toast";
@@ -81,12 +83,12 @@ interface ChatLike {
 }
 
 function NavRow({
-  icon, label, active, onClick, badge,
+  icon, label, active, onClick, badge, tourId,
 }: {
-  icon: string; label: string; active?: boolean; onClick: () => void; badge?: ReactNode;
+  icon: string; label: string; active?: boolean; onClick: () => void; badge?: ReactNode; tourId?: string;
 }) {
   return (
-    <button className={`${styles.row} ${active ? styles.active : ""}`} onClick={onClick}>
+    <button className={`${styles.row} ${active ? styles.active : ""}`} onClick={onClick} data-tour-id={tourId}>
       <Icon n={icon} /><span className={styles.lbl}>{label}</span>
       {badge}
     </button>
@@ -162,6 +164,7 @@ export default function Sidebar() {
   const router = useRouter();
   const { data: session, status } = useSession();
   const { conversations, renameConversation, deleteConversation, refresh } = useConversations();
+  const [, setArchTick] = useState(0);
   const { projects } = useWorkspace();
   const { openFolder, reopenProject, attachPath, directoryName } = useFileSystemContext();
   const { toast } = useToast();
@@ -182,10 +185,16 @@ export default function Sidebar() {
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [quota, setQuota] = useState<{ used: number; limit: number } | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Width + open-project state persist in the app's own keys (never orp.*).
+  // Re-render when the archived set changes (restore/archive from Settings).
+  useEffect(() => {
+    const on = () => setArchTick((t) => t + 1);
+    window.addEventListener("orplex:archived-changed", on);
+    return () => window.removeEventListener("orplex:archived-changed", on);
+  }, []);
   useEffect(() => {
     let w = 272;
     try {
@@ -351,7 +360,7 @@ export default function Sidebar() {
       onRename={rename} onHover={onHover} />
   );
 
-  const ungrouped = conversations.filter((c) => !c.workspaceName && match(c));
+  const ungrouped = conversations.filter((c) => !c.workspaceName && match(c) && !isArchived(c.id));
   const userName = session?.user?.name;
   const userEmail = session?.user?.email;
   const userInitial = (userName ?? userEmail ?? "U").charAt(0).toUpperCase();
@@ -382,14 +391,14 @@ export default function Sidebar() {
 
       <div className={styles.scroll} onScroll={() => setTip(null)}>
         {!ql && <>
-          <NavRow icon="newchat" label="New Chat" active={pathname === "/"} onClick={newChat} />
-          <NavRow icon="newproj" label="New project" onClick={() => { void openFolder(); setMobileOpen(false); }} />
-          <NavRow icon="plug" label="Plugins" active={pathname === "/plugins"} onClick={() => { router.push("/plugins"); setMobileOpen(false); }} />
+          <NavRow icon="newchat" label="New Chat" active={pathname === "/"} onClick={newChat} tourId="nav-new-chat" />
+          <NavRow icon="newproj" label="New project" onClick={() => { setNewProjectOpen(true); setMobileOpen(false); }} />
+          <NavRow icon="plug" label="Plugins" active={pathname === "/plugins"} onClick={() => { router.push("/plugins"); setMobileOpen(false); }} tourId="nav-plugins" />
           <NavRow icon="mem" label="Memory" active={pathname === "/memory"} onClick={() => { router.push("/memory"); setMobileOpen(false); }} />
-          <div className={styles.label}>Agents</div>
+          <div className={styles.label} data-tour-id="nav-agents">Agents</div>
           <NavRow icon="flow" label="Agent Manager" active={pathname.startsWith("/manager")}
             onClick={() => { router.push("/manager"); setMobileOpen(false); }}
-            badge={pendingApprovals > 0 ? <span className={styles.badge}>{pendingApprovals > 9 ? "9+" : pendingApprovals}</span> : undefined} />
+            badge={pendingApprovals > 0 ? <span className={styles.badge}>{pendingApprovals > 9 ? "9+" : pendingApprovals}</span> : undefined} tourId="nav-manager" />
           <NavRow icon="board" label="Runs Board" active={pathname.startsWith("/runs")}
             onClick={() => { router.push("/runs"); setMobileOpen(false); }}
             badge={activeRuns >= 2 ? <span className={styles.badge}>{activeRuns > 9 ? "9+" : activeRuns}</span> : undefined} />
@@ -407,7 +416,7 @@ export default function Sidebar() {
         </button>
         <div className={`${styles.kids} ${projectsOpen ? styles.open : ""}`}><div>
           {projects.map((p) => {
-            const all = conversations.filter((c) => c.workspaceName === p.name);
+            const all = conversations.filter((c) => c.workspaceName === p.name && !isArchived(c.id));
             const live = all.filter(match);
             if (ql && !live.length) return null;
             const open = openProjects.has(p.name) || !!ql;
@@ -500,7 +509,7 @@ export default function Sidebar() {
           </div>
         ) : null}
         <NavRow icon="gear" label="Settings" active={pathname.startsWith("/settings")}
-          onClick={() => { router.push("/settings"); setMobileOpen(false); }} />
+          onClick={() => { router.push("/settings"); setMobileOpen(false); }} tourId="nav-settings" />
         <div className={styles.user}>
           <div className={styles.av}>
             {session?.user?.image ? (
@@ -537,6 +546,17 @@ export default function Sidebar() {
         </div>
       )}
       {menu && menuChat ? <ChatMenu pos={menu} chat={menuChat} onAct={menuAct} onClose={() => setMenu(null)} /> : null}
+      <NewProjectModal
+        open={newProjectOpen}
+        onClose={() => setNewProjectOpen(false)}
+        openFolder={openFolder}
+        onCloned={(path, name) => {
+          toast(`Cloned ${name} → ${path}`, "success");
+          if (typeof window !== "undefined" && window.orplexDesktop?.revealPath) {
+            void window.orplexDesktop.revealPath(path);
+          }
+        }}
+      />
     </>
   );
 
