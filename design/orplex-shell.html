@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orplex Code – Outer Shell</title>
+<script>
+(function(){var t='system';try{t=localStorage.getItem('orplex-theme')||'system'}catch(e){}
+var dark=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);
+document.documentElement.dataset.theme=dark?'dark':'light';document.documentElement.dataset.pref=t;})();
+</script>
+<style>
+:root{
+  --bg:#151516; --side:#212122; --main:#1b1b1c;
+  --hover:#2c2c2e; --active:#353537; --line:#2c2c2e;
+  --text:#ececee; --muted:#8d8d93; --accent:#f97316; --accent-bg:rgba(249,115,22,.16);
+  --seg:#0f0f10; --tab-hover:#1c1c1e; --card:#272728; --input:#2b2b2d; --dash:#3a3a3d; --cell:#333335; --track:#3a3a3d; --fill:#8f8f94; --heat:#a5c997;
+  color-scheme:dark;
+  --strip-h:44px; --rail-w:52px; --side-w:255px; --left-w:calc(var(--rail-w) + var(--side-w)); --right-w:420px;
+}
+@media (max-width:1100px){:root{--right-w:300px}}
+:root[data-theme="light"]{
+  --bg:#e8e8eb; --side:#f6f6f8; --main:#ffffff;
+  --hover:#e6e6ea; --active:#dadade; --line:#dcdce0;
+  --text:#1c1c1e; --muted:#6a6a72; --accent:#ea6a0a; --accent-bg:rgba(234,106,10,.13);
+  --seg:#dcdce0; --tab-hover:#e1e1e5; --card:#eeeef1; --input:#e6e6ea; --dash:#c3c3ca; --cell:#e0e0e4; --track:#d3d3d9; --fill:#6a6a72; --heat:#4f9a3f;
+  color-scheme:light;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--text);font:13.5px/1.35 "Segoe UI",Inter,system-ui,sans-serif;display:flex;flex-direction:column;user-select:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+body.collapsed{--left-w:var(--rail-w)}
+
+/* ---------- TOP STRIP (replaces native title bar) ---------- */
+.strip{height:var(--strip-h);display:flex;align-items:stretch;-webkit-app-region:drag}
+.strip button,.strip .tab{-webkit-app-region:no-drag}
+.lead{width:var(--left-w);flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 12px;overflow:hidden;transition:width .18s ease}
+.nav{display:flex;gap:2px}
+.nav button{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--muted)}
+.nav button:hover{background:var(--hover);color:var(--text)}
+.lead-r{display:flex;align-items:center;gap:8px}
+.bell{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--muted)}
+.bell:hover{background:var(--hover);color:var(--text)}
+body.collapsed .lead-r{display:none}
+.seg{display:flex;background:var(--seg);border-radius:8px;padding:2px;-webkit-app-region:no-drag}
+.seg button{padding:3px 14px;border-radius:6px;color:var(--muted);font-size:12.5px}
+.seg button.on{background:var(--active);color:var(--text)}
+body.collapsed .seg{display:none}
+
+.tabs{display:flex;align-items:stretch;flex:1;min-width:0;overflow:hidden}
+.tab{display:flex;align-items:center;gap:7px;flex:0 1 190px;min-width:60px;padding:0 12px;color:var(--muted);border-left:1px solid var(--line);cursor:pointer;white-space:nowrap;position:relative}
+.tab svg.b{width:14px;height:14px;opacity:.7}
+.tab span{overflow:hidden;text-overflow:ellipsis;flex:1}
+.tab:hover{background:var(--tab-hover);color:var(--text)}
+.tab.on{background:var(--main);color:var(--text);border-radius:8px 8px 0 0}
+.tab.on svg.b{color:var(--accent);opacity:1}
+.tab.on::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:var(--accent)}
+.tab .x{width:16px;height:16px;border-radius:4px;display:grid;place-items:center;opacity:0}
+.tab:hover .x,.tab.on .x{opacity:.8}
+.tab .x:hover{background:var(--active)}
+.tab .x svg{width:11px;height:11px}
+.add{flex:none;width:34px;height:28px;align-self:center;display:grid;place-items:center;color:var(--muted);border-radius:6px;margin-left:4px}
+.add:hover{background:var(--hover);color:var(--text)}
+/* right zone: own tab strip (right-panel tabs) + window controls, sits exactly above the right panel */
+.rzone{width:var(--right-w);flex:none;display:flex;align-items:stretch;min-width:0}
+.rzone .tabs{flex:1}
+.rzone .tab{flex:0 1 150px;min-width:42px}
+.rzone .tab.on{flex:0 0 auto;min-width:110px}
+.win{display:flex;flex:none}
+.win button{width:46px;display:grid;place-items:center;color:var(--muted)}
+.win button:hover{background:var(--hover);color:var(--text)}
+.win button.close:hover{background:#e5484d;color:#fff}
+.win svg{width:14px;height:14px}
+
+/* ---------- BODY ---------- */
+.body{flex:1;display:flex;min-height:0}
+
+/* icon rail */
+.rail{width:var(--rail-w);flex:none;display:flex;flex-direction:column;align-items:center;padding:6px 0 10px;gap:6px}
+.rail button{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;color:var(--muted)}
+.rail button:hover{background:var(--hover);color:var(--text)}
+.rail button.on{background:var(--active);color:var(--text)}
+.rail svg.i{width:19px;height:19px}
+.rail .sp{flex:1}
+.usage-pop{position:fixed;z-index:200;width:230px;padding:12px 14px;border-radius:12px;background:var(--card);border:1px solid var(--line);box-shadow:0 8px 28px rgba(0,0,0,.4);font-size:12.5px;pointer-events:none;opacity:0;transform:translateX(-4px);transition:opacity .12s ease,transform .12s ease;visibility:hidden}
+.usage-pop.show{opacity:1;transform:none;visibility:visible}
+.usage-pop .top{display:flex;justify-content:space-between;margin-bottom:8px;font-weight:600}
+.usage-pop .top span:last-child{color:var(--muted);font-weight:400}
+.avatar{cursor:pointer;outline:0;-webkit-app-region:no-drag;position:relative;z-index:1}
+.avatar:focus-visible{box-shadow:0 0 0 2px var(--accent)}
+.avatar{width:30px;height:30px;border-radius:50%;background:var(--active);display:grid;place-items:center;font-size:12px;font-weight:600}
+
+/* sidebar panel */
+.side{width:var(--side-w);flex:none;padding:0 8px 8px 0;overflow:hidden;transition:width .18s ease,padding .18s ease}
+body.collapsed .side{width:0;padding:0}
+.side-in{width:calc(var(--side-w) - 8px);height:100%;background:var(--side);border-radius:14px;display:flex;flex-direction:column;padding:12px 10px 10px}
+.brand{display:flex;align-items:center;gap:8px;padding:2px 4px 12px}
+.brand b{font-size:17px;font-weight:700;letter-spacing:-.2px;flex:1;white-space:nowrap}
+.brand button{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--muted)}
+.brand button:hover{background:var(--hover);color:var(--text)}
+.row{display:flex;align-items:center;gap:10px;width:100%;padding:7px 9px;border-radius:8px;text-align:left;white-space:nowrap}
+.row:hover{background:var(--hover)}
+.row svg.i{color:var(--muted)}
+.row small{font-size:10.5px;padding:0 5px;border-radius:4px;background:var(--active);color:var(--muted);margin-left:-4px}
+.row .pill{margin-left:auto;font-size:11.5px;padding:1px 8px;border-radius:999px;background:var(--accent-bg);color:var(--accent);font-weight:600}
+.label{padding:16px 9px 6px;color:var(--muted);font-size:12.5px}
+.projects{flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--active) transparent}
+.projects .row.on{background:var(--active);font-weight:500}
+.projects .row.on svg.i{color:var(--accent)}
+.foot{border-top:1px solid var(--line);padding-top:8px;margin-top:6px}
+.foot .meta{display:flex;justify-content:space-between;padding:4px 9px 6px;color:var(--muted);font-size:12.5px}
+
+/* middle placeholder */
+.main{flex:1;min-width:0;display:flex}
+.center{flex:1;min-width:0;padding:0 10px 14px 0;position:relative}
+.tools{position:absolute;top:8px;right:22px;display:flex;gap:2px;z-index:2}
+.tools button{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;color:var(--muted)}
+.tools button:hover{background:var(--hover);color:var(--text)}
+.tools button.on{color:var(--text)}
+.tools svg.i{width:17px;height:17px}
+body.rp-hidden .rpanel,body.rp-hidden #rtabs{display:none}
+body.rp-hidden .rzone{width:auto}
+body.rp-hidden .center{padding-right:14px}
+.rpanel{width:var(--right-w);flex:none;padding:0 14px 14px 0}
+.ph{height:100%;background:var(--main);border:1.5px dashed var(--dash);border-radius:12px;display:grid;place-items:center;text-align:center;color:var(--muted)}
+.ph h2{font-size:20px;font-weight:600;color:var(--text);letter-spacing:-.2px}
+.ph p{margin-top:6px;font-size:13px}
+
+
+/* ---------- INTEGRATIONS PAGE (rail extensions icon) ---------- */
+.integrations{display:none;flex:1;min-width:0;padding:0 14px 8px 0}
+body.integrations-open .side,body.integrations-open .main{display:none}
+body.integrations-open .integrations{display:block}
+.int-in{height:100%;background:var(--main);border-radius:14px;overflow-y:auto;padding:40px 48px 48px;scrollbar-width:thin;scrollbar-color:var(--active) transparent;user-select:text}
+.int-wrap{max-width:880px;margin:0 auto}
+.int-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:26px}
+.int-head h1{font-size:28px;font-weight:500;letter-spacing:-.3px}
+.int-tools{display:flex;align-items:center;gap:8px}
+.int-search{display:flex;align-items:center;gap:9px;height:34px;width:300px;max-width:100%;padding:0 12px;background:var(--input);border-radius:10px;color:var(--muted)}
+.int-search svg{width:15px;height:15px;flex:none}
+.int-search input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--text);font:inherit;user-select:text}
+.int-search input::placeholder{color:var(--muted)}
+.int-note{color:var(--muted);font-size:12.5px;margin:-12px 0 16px;text-align:right}
+.int-note:empty{display:none}
+.int-row{display:flex;align-items:center;gap:12px;background:var(--card);border-radius:12px;padding:20px 22px;margin-bottom:12px}
+.int-row>svg.i{width:18px;height:18px;color:var(--muted);flex:none}
+.int-row .nm{font-weight:600;font-size:15px}
+.int-row small{color:var(--muted);font-size:12px;margin-left:10px}
+.int-row .sp{flex:1}
+.int-row .btn.off{color:var(--muted)}
+.int-empty{color:var(--muted);padding:6px 2px 4px}
+.int-h{margin:26px 0 10px;color:var(--muted);font-size:13.5px}
+.int-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
+.int-tile{display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;background:var(--card);border-radius:12px;text-align:left;color:var(--text)}
+.int-tile:hover{background:var(--hover)}
+.int-tile .nm{flex:1;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.int-tile>svg.i{width:16px;height:16px;color:var(--muted);flex:none}
+.int-tile.added{opacity:.6;cursor:default}
+.int-ic{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;color:#fff;font-weight:700;font-size:14px;flex:none}
+
+/* ---------- SETTINGS PAGE (rail gear) ---------- */
+.settings{display:none;flex:1;min-width:0;padding:0 14px 8px 0}
+body.settings-open .side,body.settings-open .main{display:none}
+body.settings-open .settings{display:block}
+.settings-in{height:100%;background:var(--side);border-radius:14px;display:flex;overflow:hidden}
+.s-nav{width:var(--side-w);flex:none;border-right:1px solid var(--line);padding:18px 10px;display:flex;flex-direction:column;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--active) transparent}
+.s-nav h2{font-size:19px;font-weight:600;padding:0 9px 16px;letter-spacing:-.2px}
+.s-search{display:flex;align-items:center;gap:9px;height:34px;padding:0 11px;background:var(--input);border-radius:9px;color:var(--muted);margin-bottom:12px}
+.s-search input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--text);font:inherit;user-select:text}
+.s-search input::placeholder{color:var(--muted)}
+.s-item{display:block;width:100%;height:34px;text-align:left;padding:0 9px;border-radius:8px;color:var(--text);white-space:nowrap}
+.s-item:hover{background:var(--hover)}
+.s-item.on{background:var(--active);font-weight:500}
+.s-main{flex:1;min-width:0;overflow-y:auto;padding:40px 42px 48px 48px;scrollbar-width:thin;scrollbar-color:var(--active) transparent;user-select:text}
+.s-wrap{max-width:940px;margin:0 auto}
+.s-title{font-size:28px;font-weight:500;letter-spacing:-.3px;margin-bottom:28px}
+.card{background:var(--card);border-radius:14px;padding:22px;margin-bottom:16px}
+.card h3{display:flex;align-items:center;gap:7px;font-size:15px;font-weight:600;margin-bottom:22px}
+.card h3 svg{width:15px;height:15px;color:var(--muted)}
+.meter .top{display:flex;justify-content:space-between;margin-bottom:12px}
+.meter .top span:last-child{color:var(--muted)}
+.bar{height:6px;border-radius:3px;background:var(--track);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--fill);border-radius:3px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.stats.two{grid-template-columns:repeat(2,1fr)}
+.stat small{display:block;color:var(--muted);font-size:13.5px;margin-bottom:6px}
+.stat b{font-size:28px;font-weight:500;letter-spacing:-.4px}
+.heat{display:grid;grid-template-rows:repeat(7,11px);grid-auto-flow:column;grid-auto-columns:11px;gap:3px;margin-top:26px;overflow:hidden}
+.heat i{border-radius:2px;background:var(--cell)}
+.heat i.a{background:var(--heat)}
+.lines{margin-top:22px}
+.ln{display:flex;justify-content:space-between;align-items:center;padding:15px 0;border-top:1px solid var(--line);font-size:14px}
+.ln span:first-child{font-weight:600;display:flex;align-items:center;gap:7px}
+.ln span:first-child svg{width:15px;height:15px;color:var(--muted);font-weight:400}
+.ln span:last-child{color:var(--muted)}
+
+.ks{max-width:700px;margin:0}
+.ks-sub{color:var(--muted);margin:-8px 0 20px}
+.ks-bar{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+.ks-g{margin:24px 0 4px;color:var(--muted);font-size:13px;font-weight:500}
+.ks-row{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:40px;border-bottom:1px solid var(--line)}
+.ks-r{display:flex;align-items:center;gap:8px;flex:none}
+.ks-keys{display:flex;gap:4px;padding:4px;border-radius:8px}
+.ks-keys:hover{background:var(--hover)}
+.kc{min-width:28px;height:26px;padding:0 8px;border-radius:7px;background:var(--active);display:inline-grid;place-items:center;font-size:12.5px;font-weight:500}
+.ks-none{color:var(--muted);font-size:13px;padding:0 6px}
+.ks-ic{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;color:var(--muted)}
+.ks-ic:hover{background:var(--hover);color:var(--text)}
+.ks-ic svg{width:14px;height:14px}
+.ks-ic.bg{background:var(--active)}
+.ks-cap{padding:5px 12px;border-radius:8px;border:1px dashed var(--accent);color:var(--accent);font-size:12.5px;font-weight:500}
+.ks-cap small{color:var(--muted);margin-left:8px;font-weight:400}
+.ks-err{color:#e5484d;font-size:12.5px;padding:0 0 8px}
+.ks-empty{padding:30px 0;text-align:center;color:var(--muted)}
+.sk-card{padding:22px 24px 10px}
+.sk-search{width:100%;height:38px;border-radius:9px;border:1px solid transparent;background:var(--input);color:var(--text);font:inherit;padding:0 14px;outline:0;user-select:text}
+.sk-search:focus{border-color:var(--accent)}
+.sk-search::placeholder{color:var(--muted)}
+.sk-bar{display:flex;align-items:center;gap:8px;margin:14px 0 4px}
+.sk-bar .sp{flex:1}
+.sk-bar .cnt{color:var(--muted);font-size:13px}
+.sk-cat{margin:22px 0 2px 8px;color:var(--muted);font-size:12.5px;font-weight:600}
+.sk{display:flex;align-items:flex-start;gap:14px;padding:16px 8px;border-top:1px solid var(--line)}
+.sk-cat+.sk{border-top:0}
+.sk-ic{width:34px;height:34px;border-radius:9px;background:var(--input);display:grid;place-items:center;flex:none;color:var(--muted);margin-top:2px}
+.sk-ic svg{width:17px;height:17px}
+.sk-body{flex:1;min-width:0}
+.sk-body b{display:block;font-weight:600;font-size:14.5px;margin-bottom:4px}
+.sk-body p{color:var(--muted);font-size:13.5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.sk-act{display:flex;align-items:center;gap:12px;flex:none;margin-top:2px}
+.sk-empty{padding:34px 0 28px;text-align:center;color:var(--muted)}
+.s-title{display:flex;align-items:center;gap:10px}
+.s-title .help{display:inline-flex;font-size:0}
+.acc-row{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:44px;padding:6px 0}
+.acc-row+.acc-row{border-top:1px solid var(--line)}
+.acc-row .k{font-weight:600}
+.s-sub{color:var(--muted);margin:-14px 0 24px;max-width:680px;line-height:1.5}
+.db-row{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:14px 0}
+.db-row+.db-row{border-top:1px solid var(--line)}
+.db-row b{display:block;font-weight:600;margin-bottom:4px}
+.db-row p{color:var(--muted);font-size:13.5px}
+.db-row .btn{flex:none}
+.acc-row .v{display:flex;align-items:center;gap:10px;min-width:0}
+.acc-row .v span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acc-row input{height:34px;width:260px;max-width:100%;border-radius:8px;border:1px solid var(--accent);background:var(--input);color:var(--text);font:inherit;padding:0 10px;outline:0;user-select:text}
+.card.flat h3.solo{margin-bottom:6px}
+.card .f-err:empty,.card .note:empty{display:none}
+.cta{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.cta b{display:block;font-weight:600;margin-bottom:6px}
+.cta p{color:var(--muted)}
+.set-row{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:34px}
+.set-row .lbl{display:flex;align-items:center;gap:7px;font-weight:500}
+.set-row .lbl svg{width:15px;height:15px;color:var(--muted)}
+.card h3.solo{margin-bottom:12px}
+.sw{position:relative;width:42px;height:26px;border-radius:13px;background:var(--track);flex:none;transition:background .15s}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.35);transition:transform .15s}
+.sw[aria-checked="true"]{background:var(--accent)}
+.sw[aria-checked="true"]::after{transform:translateX(16px)}
+.sel{appearance:none;background:none;border:0;color:var(--text);font:inherit;font-weight:500;cursor:pointer;padding:6px 22px 6px 8px;border-radius:8px;outline:0;background-image:linear-gradient(45deg,transparent 50%,var(--text) 50%),linear-gradient(135deg,var(--text) 50%,transparent 50%);background-position:calc(100% - 11px) 14px,calc(100% - 7px) 14px;background-size:4px 4px;background-repeat:no-repeat}
+.sel:hover{background-color:var(--hover)}
+.sel option{background:var(--side);color:var(--text)}
+.btn.soft{background:var(--active);color:var(--text)}
+.btn.danger{background:#d64550;color:#fff}
+.acc-del-txt{color:var(--muted)}
+.acc-del-actions{display:flex;gap:8px;flex:none}
+.btn.soft:hover{filter:brightness(1.12)}
+.btn.icon{width:34px;padding:0}
+.btn.icon svg{width:17px;height:17px}
+.note{color:var(--muted);font-size:12.5px;margin-top:10px;min-height:16px}
+.mp{display:grid;grid-template-columns:280px 1fr;background:var(--card);border-radius:14px;overflow:hidden;align-items:stretch}
+.mp-item{display:flex;align-items:center;gap:12px;width:100%;padding:16px 18px;text-align:left;color:var(--text)}
+.mp-item:hover,.mp-item.on{background:var(--hover)}
+.mp-item b{display:block;font-weight:600;font-size:14px}
+.mp-ic{width:34px;height:34px;border-radius:9px;background:var(--input);display:grid;place-items:center;flex:none;color:var(--muted)}
+.mp-ic svg{width:18px;height:18px}
+.mp-st{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12.5px;margin-top:2px}
+.mp-st::before{content:"";width:7px;height:7px;border-radius:2px;background:var(--muted);flex:none}
+.mp-st.ok::before{background:#4caf50}
+.mp-chev{margin-left:auto;color:var(--muted)}
+.mp-chev svg{width:14px;height:14px}
+.mp-pane{padding:22px 24px;border-left:1px solid var(--line);min-width:0}
+.mp-head{display:flex;align-items:center;gap:12px;font-weight:600;font-size:15px;margin-bottom:6px}
+.mp-head .mp-ic{width:32px;height:32px}
+.mp-empty{text-align:center;padding:34px 0 26px}
+.mp-empty h4{font-size:19px;font-weight:600;margin-bottom:18px}
+.btn{display:inline-flex;align-items:center;justify-content:center;height:34px;padding:0 16px;border-radius:9px;background:var(--accent);color:#1b1206;font-weight:600;font-size:13.5px}
+.btn:hover{filter:brightness(1.08)}
+.btn.ghost{background:none;color:var(--text)}
+.btn.ghost:hover{background:var(--hover);filter:none}
+.btn.sm{height:30px;padding:0 12px;font-size:13px}
+.f-l{display:block;font-weight:600;margin:18px 0 8px;font-size:14px}
+.f-in{width:100%;height:40px;border-radius:9px;border:1px solid transparent;background:var(--input);color:var(--text);font:inherit;padding:0 12px;outline:0;user-select:text}
+.f-in:focus{border-color:var(--accent)}
+.f-in::placeholder{color:var(--muted)}
+select.f-in{appearance:none;cursor:pointer;padding-right:30px;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 17px) 17px,calc(100% - 12px) 17px;background-size:5px 5px;background-repeat:no-repeat}
+.f-row{display:flex;align-items:center;gap:14px}
+.f-row select{width:200px;flex:none}
+.f-row a{color:var(--text);font-size:13px;text-decoration:none;white-space:nowrap}
+.f-row a:hover{text-decoration:underline}
+.f-desc{display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--muted);font-size:13px}
+.tier{font-size:10px;font-weight:700;letter-spacing:.05em;padding:2px 7px;border-radius:5px;flex:none;line-height:1.5}
+.tier.free{background:rgba(76,175,80,.16);color:#4caf50}
+.tier.paid{background:var(--input);color:var(--muted)}
+.pv-row .tier{margin-left:6px;vertical-align:1px}
+.f-key{position:relative}
+.f-key .f-in{padding-right:64px}
+.f-key button{position:absolute;right:6px;top:5px;height:30px;padding:0 10px;font-weight:600;border-radius:7px}
+.f-key button:hover{background:var(--hover)}
+.f-adv{margin-top:22px;padding-top:8px;border-top:1px solid var(--line)}
+.f-adv summary{cursor:pointer;font-weight:600;padding:12px 0;list-style:none;display:flex;align-items:center;gap:8px}
+.f-adv summary::-webkit-details-marker{display:none}
+.f-adv summary::before{content:"";border:5px solid transparent;border-left:7px solid currentColor;border-right:0;transition:transform .12s}
+.f-adv[open] summary::before{transform:rotate(90deg)}
+.f-foot{display:flex;align-items:center;gap:10px;margin-top:20px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+.f-foot .sp{flex:1}
+.f-err{color:#e5484d;font-size:13px;margin-top:12px;min-height:16px}
+.pv-row{display:flex;align-items:center;gap:12px;padding:14px 0;border-top:1px solid var(--line)}
+.pv-row:first-of-type{border-top:0}
+.pv-row div{min-width:0;flex:1}
+.pv-row b{display:block;font-weight:600}
+.pv-row small{display:block;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mp-note{color:var(--muted);margin:10px 0 0;font-size:13.5px}
+.themes{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.theme{background:none;border:2px solid var(--line);border-radius:12px;padding:10px;text-align:left;color:var(--text)}
+.theme:hover{border-color:var(--muted)}
+.theme.on{border-color:var(--accent)}
+.theme .pv{height:84px;border-radius:8px;margin-bottom:10px;display:flex;overflow:hidden;border:1px solid rgba(128,128,128,.25)}
+.pv i{display:block}
+.theme b{font-weight:500}
+.theme small{display:block;color:var(--muted);margin-top:2px;font-size:12px}
+.rail .themebtn{margin-bottom:4px}
+@media (max-width:760px){.lead-r{display:none}}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="back" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
+    <symbol id="fwd" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+    <symbol id="bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0"/></symbol>
+    <symbol id="laptop" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 20h20"/></symbol>
+    <symbol id="trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+    <symbol id="check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="min" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="max" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></symbol>
+    <symbol id="home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v10h-6v-6H9v6H3z"/></symbol>
+    <symbol id="layout" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></symbol>
+    <symbol id="apps" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M17.5 14v7M14 17.5h7"/></symbol>
+    <symbol id="gear" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></symbol>
+    <symbol id="panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></symbol>
+    <symbol id="edit" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></symbol>
+    <symbol id="folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></symbol>
+    <symbol id="folderplus" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M12 11v6M9 14h6"/></symbol>
+    <symbol id="hourglass" viewBox="0 0 24 24"><path d="M6 2h12M6 22h12M7 2v4l5 6-5 6v4M17 2v4l-5 6 5 6v4"/></symbol>
+    <symbol id="up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10v1a4 4 0 01-4 4H6"/></symbol>
+    <symbol id="invite" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M2 21v-2a4 4 0 014-4h6a4 4 0 014 4v2M19 8v6M16 11h6"/></symbol>
+    <symbol id="help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 015 .5c0 1.5-2.5 2-2.5 3.5M12 17h.01"/></symbol>
+    <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></symbol>
+    <symbol id="tasks" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h9"/></symbol>
+    <symbol id="term" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7.5 10l3 2.5-3 2.5M13 15h4"/></symbol>
+    <symbol id="panelr" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/></symbol>
+    <symbol id="chat" viewBox="0 0 24 24"><path d="M21 12a8 8 0 01-11.6 7.1L4 20l1-4.6A8 8 0 1121 12z"/></symbol>
+    <symbol id="spark" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></symbol>
+    <symbol id="undo" viewBox="0 0 24 24"><path d="M3 12a9 9 0 109-9 9 9 0 00-6.4 2.6L3 8M3 3v5h5"/></symbol>
+    <symbol id="plug" viewBox="0 0 24 24"><path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 01-4 4h-4a4 4 0 01-4-4V8z"/></symbol>
+    <symbol id="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></symbol>
+    <symbol id="logo" viewBox="0 0 16 16"><path fill="#f97316" d="M3 3h2v2h6V3h2v2h1v6h-1v2h-2v-2H5v2H3v-2H2V5h1z"/><path fill="#fff" d="M5 7h2v2H5zM9 7h2v2H9z"/></symbol>
+  </defs>
+</svg>
+
+<!-- TOP STRIP: arrows + Code/Chat over rail+sidebar, tabs start exactly at the middle area -->
+<header class="strip">
+  <div class="lead">
+    <div class="nav">
+      <button aria-label="Back"><svg class="i"><use href="#back"/></svg></button>
+      <button aria-label="Forward"><svg class="i"><use href="#fwd"/></svg></button>
+    </div>
+    <div class="lead-r"><button class="bell" id="bell" aria-label="Notifications"><svg class="i"><use href="#bell"/></svg></button><div class="seg" id="seg"><button class="on">Code</button><button>Chat</button></div></div>
+  </div>
+  <!-- middle zone: conversation tabs -->
+  <div class="tabs" id="tabs"></div>
+  <!-- right zone: right-panel tabs + window controls -->
+  <div class="rzone">
+    <div class="tabs" id="rtabs"></div>
+    <div class="win">
+      <button aria-label="Minimize"><svg class="i"><use href="#min"/></svg></button>
+      <button aria-label="Maximize"><svg class="i"><use href="#max"/></svg></button>
+      <button class="close" aria-label="Close"><svg class="i"><use href="#x"/></svg></button>
+    </div>
+  </div>
+</header>
+
+<div class="body">
+  <nav class="rail">
+    <button class="on" data-r="home" aria-label="Home"><svg class="i"><use href="#home"/></svg></button>
+    <button data-r="layout" id="layoutbtn" aria-label="Toggle sidebar" title="Toggle sidebar" aria-pressed="true"><svg class="i"><use href="#layout"/></svg></button>
+    <button data-r="apps" aria-label="Extensions"><svg class="i"><use href="#apps"/></svg></button>
+    <button data-r="settings" aria-label="Settings"><svg class="i"><use href="#gear"/></svg></button>
+    <div class="sp"></div>
+    <button class="themebtn" id="themebtn" aria-label="Toggle light / dark mode" title="Toggle light / dark mode"><svg class="i"><use href="#moon"/></svg></button>
+    <div class="avatar" id="avatar" tabindex="0" role="button" aria-label="Account" aria-describedby="usage-pop">C</div>
+  </nav>
+
+  <aside class="side">
+    <div class="ph">
+      <div>
+        <h2>Sidebar goes here</h2>
+        <p>Brand, projects and account stay as they were.</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MIDDLE (inner UI plugs in here) -->
+  <main class="main">
+    <section class="center">
+      <div class="tools" id="tools">
+        <button data-tool="Tasks" data-ic="tasks" aria-label="Tasks" title="Tasks"><svg class="i"><use href="#tasks"/></svg></button>
+        <button data-tool="Terminal" data-ic="term" aria-label="Terminal" title="Terminal"><svg class="i"><use href="#term"/></svg></button>
+        <button data-tool="Files" data-ic="folder" aria-label="Files" title="Files"><svg class="i"><use href="#folder"/></svg></button>
+        <button class="on" id="rptoggle" aria-label="Toggle right panel" title="Toggle right panel"><svg class="i"><use href="#panelr"/></svg></button>
+      </div>
+      <div class="ph">
+        <div>
+          <h2>Chat UI goes here</h2>
+          <p>Conversation, composer and header stay exactly as they are.</p>
+        </div>
+      </div>
+    </section>
+    <section class="rpanel">
+      <div class="ph">
+        <div>
+          <h2>Right panel goes here</h2>
+          <p>Changes / browser / preview content for the active right tab.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- SETTINGS PAGE: replaces sidebar + chat + right panel while the gear is active -->
+  <section class="settings" id="settings" aria-label="Settings">
+    <div class="settings-in">
+      <nav class="s-nav">
+        <h2>Settings</h2>
+        <label class="s-search"><svg class="i"><use href="#search"/></svg><input id="ssearch" placeholder="Search settings" autocomplete="off"></label>
+        <div id="snav"></div>
+      </nav>
+      <div class="s-main" id="smain"></div>
+    </div>
+  </section>
+
+  <!-- INTEGRATIONS PAGE: replaces sidebar + chat + right panel while the extensions icon is active -->
+  <section class="integrations" id="integrations" aria-label="Integrations">
+    <div class="int-in" id="int-in"></div>
+  </section>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+// Tabs = conversations of the selected project
+const state={proj:'orplex',data:{
+  orplex:{on:0,tabs:['Fix Orplex Code Install','Orplex Backend Migration','Orplex Electron Self-Update','Request For Project Review','Fix Error Request','AI File Tool Not Working']},
+  terminal:{on:0,tabs:['New chat']},
+  psd10:{on:0,tabs:['New chat']},
+  'nova-studio':{on:0,tabs:['New chat']}
+}};
+// Right-panel tabs (changes / browser / preview) — independent from conversation tabs, kept per project
+const rstate={};
+function rget(){return rstate[state.proj]||(rstate[state.proj]={on:0,tabs:[{n:'Changes',ic:'branch'},{n:'Preview',ic:'globe'}]});}
+
+// generic tab strip renderer, used by both zones
+function drawTabs(box,list,getOn,setOn,icon,onAdd,addLabel){
+  box.innerHTML='';
+  list.forEach((t,i)=>{
+    const name=typeof t==='string'?t:t.n, ic=typeof t==='string'?icon:t.ic;
+    const d=document.createElement('div');
+    d.className='tab'+(i===getOn()?' on':''); d.title=name;
+    d.innerHTML='<svg class="i b"><use href="#'+ic+'"/></svg><span></span><button class="x" aria-label="Close tab"><svg class="i"><use href="#x"/></svg></button>';
+    d.querySelector('span').textContent=name;
+    d.addEventListener('click',e=>{
+      if(e.target.closest('.x')){
+        list.splice(i,1);
+        let on=getOn();
+        if(i<on) on--;
+        if(on>=list.length) on=list.length-1;
+        setOn(Math.max(on,0));
+      } else setOn(i);
+      render();
+    });
+    box.appendChild(d);
+  });
+  const a=document.createElement('button');
+  a.className='add'; a.setAttribute('aria-label',addLabel);
+  a.innerHTML='<svg class="i"><use href="#plus"/></svg>';
+  a.addEventListener('click',onAdd);
+  box.appendChild(a);
+}
+function render(){
+  const p=state.data[state.proj], r=rget();
+  if(!p.tabs.length){p.tabs.push('New chat');p.on=0;}
+  drawTabs($('#tabs'),p.tabs,()=>p.on,v=>p.on=v,'branch',addChat,'New conversation');
+  drawTabs($('#rtabs'),r.tabs,()=>r.on,v=>r.on=v,'globe',addRight,'New panel tab');
+}
+function addChat(){const p=state.data[state.proj];p.tabs.push('New chat');p.on=p.tabs.length-1;render();}
+function addRight(){const r=rget();r.tabs.push({n:'New tab',ic:'globe'});r.on=r.tabs.length-1;render();}
+// Code / Chat toggle
+$('#seg').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  [...$('#seg').children].forEach(x=>x.classList.toggle('on',x===b));
+});
+// ---------- Rail + Settings page ----------
+const SPAGES=['General','Account','Appearance','Usage','Model Providers','Database','Skills','Keyboard shortcuts','Archived'];
+const HELP='<svg class="i"><use href="#help"/></svg>';
+// ---------- Usage data: ONE source, everything on the page is derived from it ----------
+// Real numbers come from the host app (Electron/backend):  window.setOrplexUsage({...})  or preset window.orplexUsage
+// SAMPLE below is only used until the host sends real data.
+const dayKey=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const daysAgo=n=>{const d=new Date();d.setHours(12,0,0,0);d.setDate(d.getDate()-n);return d;};
+const SAMPLE={
+  daily:{used:1000,limit:1000},                       // requests/hours used today vs daily limit
+  activeDays:[0,3,4,5,6,7,8,11,12,13,16,17,19,22,23,24,25,28,29,31,34,35,38,41,42].map(n=>dayKey(daysAgo(n))), // 'YYYY-MM-DD' list
+  last7:{messages:1469,input:153200000,cacheRead:146200000,output:945200}
+};
+let USAGE=Object.assign({},SAMPLE,window.orplexUsage||{});
+window.setOrplexUsage=function(d){USAGE=Object.assign({},USAGE,d||{});if(document.querySelector('#snav .s-item.on')?.textContent==='Usage')showPage('Usage');};
+
+const fmtTok=n=>n>=1e9?(n/1e9).toFixed(1)+'B':n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':String(n);
+const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function streaks(set){
+  let cur=0,d=daysAgo(0);
+  if(!set.has(dayKey(d))) d=daysAgo(1);               // today not logged yet doesn't break the streak
+  while(set.has(dayKey(d))){cur++;d.setDate(d.getDate()-1);}
+  let best=0,run=0;
+  [...set].sort().forEach((k,i,arr)=>{
+    const prev=i&&new Date(arr[i-1]+'T12:00:00'), now=new Date(k+'T12:00:00');
+    run=(i&&Math.round((now-prev)/864e5)===1)?run+1:1;
+    best=Math.max(best,run);
+  });
+  return {cur,best};
+}
+const plural=(n,w)=>n+' '+w+(n===1?'':'s');
+function heatHTML(set){
+  const today=daysAgo(0), lastWeek=new Date(today); lastWeek.setDate(today.getDate()-today.getDay());
+  const start=new Date(lastWeek); start.setDate(start.getDate()-51*7);
+  let cells='';
+  for(let i=0;i<52*7;i++){
+    const d=new Date(start); d.setDate(start.getDate()+i);
+    const k=dayKey(d), future=d>today;
+    cells+='<i'+(set.has(k)?' class="a"':'')+(future?' style="visibility:hidden"':'')+' title="'+k+'"></i>';
+  }
+  return cells;
+}
+function usageHTML(){
+  const u=USAGE, set=new Set(u.activeDays), st=streaks(set);
+  const pct=u.daily.limit?Math.min(100,Math.round(u.daily.used/u.daily.limit*100)):0;
+  const l=u.last7, total=l.input+l.output;
+  return `<div class="s-wrap"><h1 class="s-title">Usage</h1>
+    <div class="card meter"><h3>Hours ${HELP}</h3>
+      <div class="top"><span>Daily</span><span>${pct}% used</span></div>
+      <div class="bar"><i style="width:${pct}%"></i></div></div>
+    <div class="card"><h3>Activity ${HELP}</h3>
+      <div class="stats">
+        <div class="stat"><small>Current streak</small><b>${plural(st.cur,'day')}</b></div>
+        <div class="stat"><small>Longest streak</small><b>${plural(st.best,'day')}</b></div>
+        <div class="stat"><small>Active days</small><b>${set.size}</b></div>
+      </div>
+      <div class="heat">${heatHTML(set)}</div></div>
+    <div class="card"><h3>Last 7 days ${HELP}</h3>
+      <div class="stats two">
+        <div class="stat"><small>Messages</small><b>${esc(l.messages.toLocaleString('en-US'))}</b></div>
+        <div class="stat"><small>Total tokens</small><b>${fmtTok(total)}</b></div>
+      </div>
+      <div class="lines">
+        <div class="ln"><span>Input tokens</span><span>${fmtTok(l.input)}</span></div>
+        <div class="ln"><span>Read from cache ${HELP}</span><span>${fmtTok(l.cacheRead)}</span></div>
+        <div class="ln"><span>Output tokens</span><span>${fmtTok(l.output)}</span></div>
+      </div></div></div>`;
+}
+// ---------- Chat toolbar: tasks / terminal / files open a right-panel tab, last button shows/hides the right panel ----------
+function setRightPanel(show){
+  document.body.classList.toggle('rp-hidden',!show);
+  $('#rptoggle').classList.toggle('on',show);
+}
+$('#rptoggle').addEventListener('click',()=>setRightPanel(document.body.classList.contains('rp-hidden')));
+$('#tools').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-tool]'); if(!b) return;
+  const r=rget(), name=b.dataset.tool;
+  let i=r.tabs.findIndex(t=>t.n===name);
+  if(i<0){r.tabs.push({n:name,ic:b.dataset.ic});i=r.tabs.length-1;}
+  r.on=i; setRightPanel(true); render();
+});
+// ---------- Theme ----------
+const mq=matchMedia('(prefers-color-scheme: dark)');
+function getPref(){return document.documentElement.dataset.pref||'system';}
+function applyTheme(pref){
+  const dark=pref==='dark'||(pref==='system'&&mq.matches);
+  document.documentElement.dataset.theme=dark?'dark':'light';
+  document.documentElement.dataset.pref=pref;
+  try{localStorage.setItem('orplex-theme',pref);}catch(e){}
+  $('#themebtn use').setAttribute('href',dark?'#sun':'#moon');      // icon shows what you'll switch to
+  $('#themebtn').title=dark?'Switch to light mode':'Switch to dark mode';
+  if(document.querySelector('#snav .s-item.on')?.textContent==='Appearance') showPage('Appearance');
+}
+mq.addEventListener('change',()=>{if(getPref()==='system')applyTheme('system');});
+$('#themebtn').addEventListener('click',()=>applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark'));
+function appearanceHTML(){
+  const pv=(a,b,c)=>`<div class="pv"><i style="width:22%;background:${a}"></i><i style="flex:1;background:${b}"></i><i style="width:28%;background:${c}"></i></div>`;
+  const opts=[
+    ['light','Light','Bright surfaces',pv('#f6f6f8','#ffffff','#eeeef1')],
+    ['dark','Dark','Easy on the eyes',pv('#212122','#1b1b1c','#272728')],
+    ['system','System','Match your device',`<div class="pv"><div style="flex:1;display:flex">${pv('#f6f6f8','#ffffff','#eeeef1').replace('class="pv"','style="flex:1;display:flex;width:100%"')}</div><div style="flex:1;display:flex">${pv('#212122','#1b1b1c','#272728').replace('class="pv"','style="flex:1;display:flex;width:100%"')}</div></div>`]
+  ];
+  return `<div class="s-wrap"><h1 class="s-title">Appearance</h1>
+    <div class="card"><h3>Theme</h3><div class="themes">`+
+    opts.map(([k,n,d,v])=>`<button class="theme${getPref()===k?' on':''}" data-theme="${k}">${v}<b>${n}</b><small>${d}</small></button>`).join('')+
+    `</div></div></div>`;
+}
+// ---------- Keyboard shortcuts ----------
+// Defaults are your app's shortcuts. Changes persist on this device. Every shortcut also fires window event "orplex:shortcut" {id};
+// window.orplexShortcutMap() returns {id:'Ctrl+Shift+K',...} so the Electron main process can register matching accelerators.
+const KS_DEFS=[
+  {id:'send',group:'Chat',label:'Send message',keys:['Ctrl','Enter']},
+  {id:'stop',group:'Chat',label:'Stop generation',keys:['Esc']},
+  {id:'newChat',group:'Chat',label:'New chat',keys:['Ctrl','N']},
+  {id:'palette',group:'Navigation',label:'Command palette',keys:['Ctrl','K']},
+  {id:'terminal',group:'Panel',label:'Toggle terminal',keys:['Ctrl','/']},
+  {id:'sidebar',group:'Panel',label:'Toggle sidebar',keys:['Ctrl','B']},
+  {id:'preview',group:'Panel',label:'Toggle preview',keys:['Ctrl','P']},
+  {id:'dark',group:'Theme',label:'Toggle dark mode',keys:['Ctrl','.']}
+];
+let KS_OVR={};try{KS_OVR=JSON.parse(localStorage.getItem('orplex-shortcuts')||'{}');}catch(e){}
+const ksKeys=d=>d.id in KS_OVR?KS_OVR[d.id]:d.keys;
+const ksStr=k=>k.join('+');
+const ksSave=()=>{try{localStorage.setItem('orplex-shortcuts',JSON.stringify(KS_OVR));}catch(e){}};
+window.orplexShortcutMap=()=>Object.fromEntries(KS_DEFS.map(d=>[d.id,ksStr(ksKeys(d))]));
+const KS_CODE={Slash:'/',Period:'.',Comma:',',Backquote:'`',Minus:'-',Equal:'=',BracketLeft:'[',BracketRight:']',Backslash:'\\',Semicolon:';',Quote:"'",Enter:'Enter',Escape:'Esc',Space:'Space',Tab:'Tab',Backspace:'Backspace',Delete:'Delete',ArrowUp:'↑',ArrowDown:'↓',ArrowLeft:'←',ArrowRight:'→',Home:'Home',End:'End',PageUp:'PgUp',PageDown:'PgDn'};
+function ksCombo(e){
+  const c=e.code; let key=null;
+  if(/^Key[A-Z]$/.test(c)) key=c[3]; else if(/^Digit\d$/.test(c)) key=c[5]; else if(/^F\d{1,2}$/.test(c)) key=c; else key=KS_CODE[c]||null;
+  if(!key) return null;                                   // modifier-only or unknown key
+  const mods=[(e.ctrlKey||e.metaKey)&&'Ctrl',e.altKey&&'Alt',e.shiftKey&&'Shift'].filter(Boolean);
+  return mods.concat(key);
+}
+const KS_RESERVED=['Ctrl+C','Ctrl+V','Ctrl+X','Ctrl+Z','Ctrl+Y','Ctrl+A'];
+// actions that exist in the shell today; everything else only fires the event
+const KS_ACTIONS={
+  newChat:()=>addChat(),
+  sidebar:()=>document.body.classList.toggle('collapsed'),
+  dark:()=>applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark'),
+  terminal:()=>{const r=rget(),t=r.tabs[r.on];
+    if(!document.body.classList.contains('rp-hidden')&&t&&t.n==='Terminal') setRightPanel(false);
+    else document.querySelector('#tools button[data-tool="Terminal"]').click();},
+  preview:()=>{
+    if(!document.body.classList.contains('rp-hidden')){setRightPanel(false);return;}
+    const r=rget(),i=r.tabs.findIndex(t=>t.n==='Preview'); if(i>=0)r.on=i; setRightPanel(true); render();}
+};
+let ksCapture=null, ksErr={}, ksQuery='';
+function ksRowHTML(d){
+  const keys=ksKeys(d), mod=d.id in KS_OVR;
+  let r;
+  if(ksCapture===d.id) r='<span class="ks-cap">Press new shortcut…<small>Esc to cancel</small></span>';
+  else r=(mod&&keys.length?'<button class="ks-ic" data-ksclear aria-label="Remove shortcut" title="Remove shortcut"><svg class="i"><use href="#x"/></svg></button>':'')+
+    (mod?'<button class="ks-ic bg" data-ksreset aria-label="Reset to default" title="Reset to default"><svg class="i"><use href="#undo"/></svg></button>':'')+
+    `<button class="ks-keys" data-ksedit aria-label="Change shortcut for ${d.label}">${keys.length?keys.map(k=>`<span class="kc">${esc(k)}</span>`).join(''):'<span class="ks-none">Unassigned</span>'}</button>`;
+  return `<div class="ks-row" data-ks="${d.id}"><span>${d.label}</span><span class="ks-r">${r}</span></div>`+(ksErr[d.id]?`<div class="ks-err" role="alert">${esc(ksErr[d.id])}</div>`:'');
+}
+function ksListHTML(){
+  const q=ksQuery.trim().toLowerCase(); let out='',n=0;
+  [...new Set(KS_DEFS.map(d=>d.group))].forEach(g=>{
+    const rows=KS_DEFS.filter(d=>d.group===g&&(!q||(d.label+' '+g+' '+ksStr(ksKeys(d))).toLowerCase().includes(q)));
+    if(rows.length){n+=rows.length;out+=`<div class="ks-g">${g}</div>`+rows.map(ksRowHTML).join('');}
+  });
+  return n?out:'<div class="ks-empty">No shortcuts match “'+esc(ksQuery)+'”.</div>';
+}
+function ksRefresh(){const l=$('#ks-list');if(l)l.innerHTML=ksListHTML();}
+function keyboardHTML(){
+  ksCapture=null;ksErr={};ksQuery='';
+  return `<div class="s-wrap ks"><h1 class="s-title">Keyboard shortcuts</h1>
+    <p class="ks-sub">Click a shortcut to change it.</p>
+    <div class="ks-bar"><label class="s-search" style="flex:1;margin:0"><svg class="i"><use href="#search"/></svg><input id="ks-q" placeholder="Search shortcuts" autocomplete="off"></label><button class="btn soft" id="ks-reset">Reset all</button></div>
+    <div id="ks-list">${ksListHTML()}</div></div>`;
+}
+$('#smain').addEventListener('input',e=>{if(e.target.id==='ks-q'){ksQuery=e.target.value;ksRefresh();}});
+$('#smain').addEventListener('click',e=>{
+  if(!$('#ks-list')) return;
+  if(e.target.closest('#ks-reset')){KS_OVR={};ksSave();ksCapture=null;ksErr={};return ksRefresh();}
+  const row=e.target.closest('.ks-row'); if(!row) return;
+  const id=row.dataset.ks;
+  if(e.target.closest('[data-ksclear]')){KS_OVR[id]=[];delete ksErr[id];ksSave();return ksRefresh();}
+  if(e.target.closest('[data-ksreset]')){delete KS_OVR[id];delete ksErr[id];ksSave();return ksRefresh();}
+  if(e.target.closest('[data-ksedit]')){ksCapture=id;ksErr={};ksRefresh();}
+});
+document.addEventListener('click',e=>{if(ksCapture&&!e.target.closest('.ks-cap')){ksCapture=null;ksRefresh();}},true);
+document.addEventListener('keydown',e=>{
+  // 1) recording a new shortcut
+  if(ksCapture){
+    e.preventDefault();e.stopPropagation();
+    if(e.code==='Escape'){ksCapture=null;ksRefresh();return;}
+    const combo=ksCombo(e); if(!combo) return;            // still holding only modifiers
+    const str=ksStr(combo), id=ksCapture, hasMod=combo.includes('Ctrl')||combo.includes('Alt'), isF=/^F\d/.test(combo[combo.length-1]);
+    let err='';
+    if(!hasMod&&!isF) err='Use Ctrl or Alt together with a key.';
+    else if(KS_RESERVED.includes(str)) err=str+' is reserved by the system.';
+    else {const other=KS_DEFS.find(d=>d.id!==id&&ksStr(ksKeys(d))===str); if(other) err=str+' is already used by “'+other.label+'”.';}
+    if(err){ksErr={[id]:err};ksRefresh();return;}
+    const def=KS_DEFS.find(d=>d.id===id);
+    if(str===ksStr(def.keys)) delete KS_OVR[id]; else KS_OVR[id]=combo;
+    ksSave();ksCapture=null;ksErr={};ksRefresh();
+    window.dispatchEvent(new CustomEvent('orplex:shortcut-changed',{detail:{id,keys:str}}));
+    return;
+  }
+  // 2) running a shortcut
+  const combo=ksCombo(e); if(!combo||e.repeat) return;
+  const str=ksStr(combo), def=KS_DEFS.find(d=>ksStr(ksKeys(d))===str); if(!def) return;
+  const t=e.target, typing=t&&(t.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+  if(typing&&!combo.includes('Ctrl')&&!combo.includes('Alt')) return;   // plain keys (e.g. Esc) must not hijack typing
+  if(combo.includes('Ctrl')||combo.includes('Alt')) e.preventDefault();
+  if(KS_ACTIONS[def.id]) KS_ACTIONS[def.id]();
+  window.dispatchEvent(new CustomEvent('orplex:shortcut',{detail:{id:def.id,keys:str}}));
+},true);
+// ---------- Skills ----------
+// Catalog shown until the host app provides the real list:  window.orplexSkills = [{id,name,description,category,enabled}]
+// (descriptions below are drafts: swap in each skill's real SKILL.md description). Listen for "orplex:skill" to react to toggles.
+const DEFAULT_SKILLS=[{"id":"chain-of-thought","name":"Chain of Thought","description":"Work through a problem step by step, showing intermediate reasoning before the answer. Use when a task needs careful logic, math, or multi-step deduction.","category":"Reasoning & Planning"},{"id":"tree-of-thought","name":"Tree of Thought","description":"Explore several solution branches in parallel, compare them, and keep the strongest. Use when a problem has multiple plausible approaches and the first idea may not be the best.","category":"Reasoning & Planning"},{"id":"self-reflection","name":"Self-Reflection","description":"Review your own output for mistakes, gaps and weak assumptions, then revise it. Use before finalizing code, plans or explanations.","category":"Reasoning & Planning"},{"id":"first-principles","name":"First Principles","description":"Break a problem down to its fundamental facts and rebuild the solution from there. Use when conventional approaches feel stuck or over-complicated.","category":"Reasoning & Planning"},{"id":"karpathy-s-llm-rules","name":"Karpathy's LLM Rules","description":"Coding guidelines inspired by Andrej Karpathy's observations on common LLM mistakes: think first, keep changes simple and surgical, and verify against clear goals. Use for any code change.","category":"Reasoning & Planning"},{"id":"grill-me-plan-interview","name":"Grill Me (Plan Interview)","description":"Interview you about a plan, one question at a time, until every decision and dependency is clear. Use when a plan or design feels underspecified.","category":"Reasoning & Planning"},{"id":"superpowers-tdd-plans","name":"Superpowers (TDD + Plans)","description":"Plan first, then build with test-driven development: write a failing test, make it pass, refactor. Use for features and bug fixes that need a structured workflow.","category":"Reasoning & Planning"},{"id":"session-handoff","name":"Session Handoff","description":"Summarize the current state, decisions and next steps so a new session can pick up cleanly. Use when ending a long session or switching tasks.","category":"Reasoning & Planning"},{"id":"code-review","name":"Code Review","description":"Review code for bugs, readability, maintainability and style, with concrete suggested fixes. Use when asked to review a diff, file or pull request.","category":"Analysis & Review"},{"id":"security-audit","name":"Security Audit","description":"Look for common vulnerabilities such as injection, broken auth and unsafe data handling, and rank findings by severity. Use before shipping or when reviewing risky code.","category":"Analysis & Review"},{"id":"trail-of-bits-security","name":"Trail of Bits Security","description":"Deeper security analysis in the style of Trail of Bits: threat modelling, trust boundaries and targeted vulnerability hunting. Use for audits of sensitive code.","category":"Analysis & Review"},{"id":"performance-profile","name":"Performance Profile","description":"Find slow code paths and memory hot spots, and suggest measured optimizations. Use when something is slow, heavy or timing out.","category":"Analysis & Review"},{"id":"dependency-audit","name":"Dependency Audit","description":"Check dependencies for known vulnerabilities, outdated versions, licensing issues and bloat. Use before releases or when updating packages.","category":"Analysis & Review"},{"id":"complexity-estimate","name":"Complexity Estimate","description":"Estimate time and space complexity of code and flag costly patterns. Use when asked how code scales or about Big-O.","category":"Analysis & Review"},{"id":"merge-conflict-resolver","name":"Merge Conflict Resolver","description":"Understand both sides of a conflict and merge them safely, explaining each decision. Use when a merge or rebase reports conflicts.","category":"Analysis & Review"},{"id":"test-generator","name":"Test Generator","description":"Generate tests for existing code covering normal, edge and failure cases. Use when asked to add or improve tests.","category":"Code Generation"},{"id":"doc-generator","name":"Doc Generator","description":"Write clear docs and docstrings from the code: purpose, parameters, returns and examples. Use when code lacks documentation.","category":"Code Generation"},{"id":"api-scaffold","name":"API Scaffold","description":"Scaffold a REST API with routes, validation, error handling and a sensible folder structure. Use when starting a new backend service or set of endpoints.","category":"Code Generation"},{"id":"graphql-scaffold","name":"GraphQL Scaffold","description":"Set up a GraphQL schema, resolvers and tooling with typed inputs and error handling. Use when building a GraphQL API.","category":"Code Generation"},{"id":"docker-ci-setup","name":"Docker / CI Setup","description":"Create a Dockerfile, compose file and CI workflow tuned for the project. Use when containerizing an app or adding automated builds.","category":"Code Generation"},{"id":"migration-script","name":"Migration Script","description":"Write safe, reversible database or code migrations with rollback steps. Use when changing schemas or moving data.","category":"Code Generation"},{"id":"grpc-protobuf-scaffold","name":"gRPC / Protobuf Scaffold","description":"Define protobuf messages and services and generate matching server and client stubs. Use when building gRPC services.","category":"Code Generation"},{"id":"monorepo-setup","name":"Monorepo Setup","description":"Structure a monorepo with shared packages, workspaces and a build and task pipeline. Use when combining multiple apps or libraries in one repo.","category":"Code Generation"},{"id":"microservice-scaffold","name":"Microservice Scaffold","description":"Create a service skeleton with config, health checks, logging and an API contract. Use when adding a new microservice.","category":"Code Generation"},{"id":"background-worker-cron","name":"Background Worker / Cron","description":"Build background workers and scheduled jobs with retries, logging and safe shutdown. Use when work must run off the request path or on a schedule.","category":"Code Generation"},{"id":"extract-function","name":"Extract Function","description":"Pull repeated or tangled logic into well-named functions without changing behaviour. Use when a function is long or duplicated.","category":"Refactoring"},{"id":"simplify-code","name":"Simplify Code","description":"Reduce complexity by removing needless branches, layers and abstractions. Use when code is harder to read than it should be.","category":"Refactoring"},{"id":"type-annotations","name":"Type Annotations","description":"Add accurate type annotations and fix type gaps. Use when migrating to typed code or tightening types.","category":"Refactoring"},{"id":"error-handling","name":"Error Handling","description":"Make failure paths explicit with clear errors, validation and recovery. Use when code swallows errors or crashes unexpectedly.","category":"Refactoring"},{"id":"remove-dead-code","name":"Remove Dead Code","description":"Find and safely delete unused code, imports and files. Use when cleaning up after features or refactors.","category":"Refactoring"},{"id":"circuit-breaker-pattern","name":"Circuit Breaker Pattern","description":"Add circuit breakers, timeouts and fallbacks around unreliable dependencies. Use when a failing service can cascade into others.","category":"Refactoring"},{"id":"graceful-shutdown","name":"Graceful Shutdown","description":"Handle termination signals by finishing in-flight work and closing connections cleanly. Use for servers, workers and anything that holds resources.","category":"Refactoring"},{"id":"composition-patterns","name":"Composition Patterns","description":"Prefer composition over inheritance and deeply nested props or classes. Use when components or classes are getting rigid or hard to reuse.","category":"Refactoring"},{"id":"frontend-design","name":"Frontend Design","description":"Create distinctive, polished interfaces with intentional typography, color and spacing. Use when building or restyling pages and components.","category":"Frontend & UI"},{"id":"react-best-practices","name":"React Best Practices","description":"Apply modern React patterns for state, effects, performance and component structure. Use when writing or reviewing React code.","category":"Frontend & UI"},{"id":"next-js-app-router","name":"Next.js App Router","description":"Build with the Next.js App Router: server and client components, routing, data fetching and caching. Use for Next.js projects.","category":"Frontend & UI"},{"id":"wcag-2-2-accessibility","name":"WCAG 2.2 Accessibility","description":"Audit and improve accessibility following WCAG 2.2: contrast, keyboard use, focus and screen readers. Use when asked for a11y checks or fixes.","category":"Frontend & UI"},{"id":"web-typography","name":"Web Typography","description":"Set type scales, line length, spacing and font loading for readable pages. Use when text looks off or needs a system.","category":"Frontend & UI"},{"id":"animation-patterns","name":"Animation Patterns","description":"Add purposeful motion with CSS and JS that stays smooth and respects reduced-motion. Use for transitions, micro-interactions and loading states.","category":"Frontend & UI"},{"id":"design-system-components","name":"Design System Components","description":"Build consistent, reusable components with tokens, variants and documented states. Use when creating or extending a design system.","category":"Frontend & UI"},{"id":"remotion-video-generation","name":"Remotion Video Generation","description":"Generate programmatic videos with Remotion using React components and timelines. Use when asked to make or render videos from code.","category":"Frontend & UI"},{"id":"web-search","name":"Web Search","description":"Search the web for current information and cite sources. Use when facts may have changed or aren't in the project.","category":"Web & Research"},{"id":"documentation-lookup","name":"Documentation Lookup","description":"Find and read official docs for a library, framework or API before answering. Use when exact API details matter.","category":"Web & Research"},{"id":"library-comparison","name":"Library Comparison","description":"Compare libraries on features, maintenance, size, licensing and fit. Use when choosing between packages.","category":"Web & Research"},{"id":"stack-overflow-research","name":"Stack Overflow Research","description":"Search Q&A threads for known problems and weigh the answers by quality and age. Use when debugging an unfamiliar error.","category":"Web & Research"},{"id":"webapp-browser-testing","name":"Webapp Browser Testing","description":"Drive a real browser to click through a web app, check behaviour and capture screenshots. Use when verifying UI flows.","category":"Web & Research"},{"id":"web-scraping-firecrawl","name":"Web Scraping (Firecrawl)","description":"Extract clean page content and structured data from websites with Firecrawl. Use when you need data from pages that have no API.","category":"Web & Research"},{"id":"secret-scanner","name":"Secret Scanner","description":"Detect leaked API keys, tokens and credentials in code and history. Use before commits and releases.","category":"Security"},{"id":"input-sanitization","name":"Input Sanitization","description":"Validate and escape user input to prevent injection and XSS. Use wherever data crosses a trust boundary.","category":"Security"},{"id":"auth-authorization-check","name":"Auth & Authorization Check","description":"Review login, sessions, permissions and access control for gaps. Use when adding or changing auth.","category":"Security"},{"id":"semgrep-sast-scan","name":"Semgrep SAST Scan","description":"Run Semgrep static analysis and triage the findings. Use for automated code security scans.","category":"Security"},{"id":"supply-chain-security","name":"Supply Chain Security","description":"Assess dependency provenance, lockfiles, install scripts and build pipeline risks. Use when adding packages or hardening CI.","category":"Security"},{"id":"cryptography-review","name":"Cryptography Review","description":"Check hashing, encryption, randomness and key handling against current best practice. Use when code touches crypto or secrets.","category":"Security"},{"id":"lint-format","name":"Lint & Format","description":"Run and fix linting and formatting to match project rules. Use before commits or when style issues appear.","category":"Quality & Standards"},{"id":"type-check","name":"Type Check","description":"Run the type checker and fix type errors properly instead of silencing them. Use after code changes in typed projects.","category":"Quality & Standards"},{"id":"naming-review","name":"Naming Review","description":"Review names of variables, functions and files for clarity and consistency. Use when code is hard to follow.","category":"Quality & Standards"},{"id":"caveman-mode-token-saver","name":"Caveman Mode (Token Saver)","description":"Respond tersely with minimal filler to save tokens. Use in long sessions or when output length matters.","category":"Quality & Standards"},{"id":"conventional-commits","name":"Conventional Commits","description":"Write commit messages in the Conventional Commits format. Use when committing or preparing a changelog.","category":"Quality & Standards"},{"id":"context-mode-noise-filter","name":"Context Mode (Noise Filter)","description":"Filter out noisy logs and irrelevant output so only useful context is kept. Use when tool output is large or cluttered.","category":"Quality & Standards"},{"id":"unit-test-generator","name":"Unit Test Generator","description":"Write focused unit tests with mocks and edge cases for individual functions. Use when covering new or untested logic.","category":"Testing & QA"},{"id":"integration-test-generator","name":"Integration Test Generator","description":"Write tests that exercise modules, databases and APIs working together. Use when verifying real interactions.","category":"Testing & QA"},{"id":"e2e-playwright-tests","name":"E2E Playwright Tests","description":"Create end-to-end browser tests with Playwright for key user flows. Use when protecting critical journeys.","category":"Testing & QA"},{"id":"property-based-testing","name":"Property-Based Testing","description":"Define properties and generate many inputs to find edge cases. Use for parsers, math and data transforms.","category":"Testing & QA"},{"id":"load-stress-testing","name":"Load & Stress Testing","description":"Design load tests, run them and read the results for bottlenecks. Use before launch or scaling changes.","category":"Testing & QA"},{"id":"mutation-testing","name":"Mutation Testing","description":"Mutate code to check whether the tests actually catch bugs. Use when coverage looks high but confidence is low.","category":"Testing & QA"},{"id":"kubernetes-manifests","name":"Kubernetes Manifests","description":"Write Deployments, Services, config and probes with sensible resource limits. Use when deploying to Kubernetes.","category":"DevOps & Infrastructure"},{"id":"terraform-module","name":"Terraform Module","description":"Create reusable Terraform modules with clear variables, outputs and state handling. Use for infrastructure as code.","category":"DevOps & Infrastructure"},{"id":"ci-cd-pipeline","name":"CI/CD Pipeline","description":"Build pipelines that test, build and deploy automatically with caching and gates. Use when setting up or fixing delivery.","category":"DevOps & Infrastructure"},{"id":"gitops-argocd-flux","name":"GitOps (ArgoCD/Flux)","description":"Set up Git-driven deployments with ArgoCD or Flux. Use when cluster state should follow a repo.","category":"DevOps & Infrastructure"},{"id":"observability-opentelemetry","name":"Observability (OpenTelemetry)","description":"Add traces, metrics and logs with OpenTelemetry. Use when services need monitoring and debugging visibility.","category":"DevOps & Infrastructure"},{"id":"istio-service-mesh","name":"Istio Service Mesh","description":"Configure Istio for traffic routing, security and telemetry between services. Use when running a service mesh.","category":"DevOps & Infrastructure"},{"id":"nginx-configuration","name":"Nginx Configuration","description":"Write and tune Nginx configs for proxying, TLS, caching and rate limits. Use when serving or fronting apps with Nginx.","category":"DevOps & Infrastructure"},{"id":"react-native-component","name":"React Native Component","description":"Build mobile UI components in React Native with platform-aware styling. Use when creating screens and widgets.","category":"Mobile & Cross-Platform"},{"id":"flutter-widget","name":"Flutter Widget","description":"Build composable Flutter widgets with sound state management. Use for Flutter UI work.","category":"Mobile & Cross-Platform"},{"id":"expo-react-native-setup","name":"Expo / React Native Setup","description":"Set up an Expo or React Native project with navigation, config and builds. Use when starting a mobile app.","category":"Mobile & Cross-Platform"},{"id":"sql-query-optimization","name":"SQL Query Optimization","description":"Analyze query plans and rewrite queries and indexes for speed. Use when a query is slow.","category":"Data & AI/ML"},{"id":"data-pipeline-etl","name":"Data Pipeline (ETL)","description":"Design extract-transform-load pipelines with validation and retries. Use when moving or reshaping data.","category":"Data & AI/ML"},{"id":"ml-pipeline-mlops","name":"ML Pipeline (MLOps)","description":"Structure training, evaluation, versioning and deployment of ML models. Use when productionizing machine learning.","category":"Data & AI/ML"},{"id":"vector-search-rag","name":"Vector Search / RAG","description":"Build embeddings, vector search and retrieval-augmented generation flows. Use when giving a model access to your documents.","category":"Data & AI/ML"},{"id":"financial-risk-metrics","name":"Financial Risk Metrics","description":"Calculate risk measures such as volatility, drawdown and value at risk. Use for portfolio or trading analysis.","category":"Data & AI/ML"},{"id":"pdf-document-generator","name":"PDF / Document Generator","description":"Generate formatted PDFs and documents from data or templates. Use when producing reports, invoices or exports.","category":"Media & Content"},{"id":"email-template-generator","name":"Email Template Generator","description":"Create responsive HTML emails that render well across clients. Use when designing transactional or marketing emails.","category":"Media & Content"},{"id":"og-image-social-card","name":"OG Image / Social Card","description":"Generate Open Graph and social share images from page data. Use when links need good previews.","category":"Media & Content"},{"id":"svg-icon-system","name":"SVG Icon System","description":"Design a consistent set of SVG icons with a shared grid and stroke. Use when an app needs its own icon set.","category":"Media & Content"},{"id":"landing-page-copy","name":"Landing Page Copy","description":"Write clear, persuasive landing page copy with a strong headline and call to action. Use when launching or refreshing a page.","category":"Business & Marketing"},{"id":"seo-copywriting","name":"SEO Copywriting","description":"Write search-friendly content with sensible keywords, headings and meta tags. Use when pages should rank.","category":"Business & Marketing"},{"id":"api-documentation-openapi","name":"API Documentation (OpenAPI)","description":"Produce OpenAPI specs and readable API docs from code. Use when documenting endpoints.","category":"Business & Marketing"},{"id":"changelog-generator","name":"Changelog Generator","description":"Turn commits and pull requests into a clean, readable changelog. Use when preparing a release.","category":"Business & Marketing"},{"id":"stripe-payment-integration","name":"Stripe Payment Integration","description":"Integrate Stripe checkout, subscriptions and webhooks securely. Use when adding payments.","category":"Integrations & APIs"},{"id":"oauth-2-0-integration","name":"OAuth 2.0 Integration","description":"Implement OAuth 2.0 flows with PKCE, token storage and refresh. Use when adding sign-in with a provider.","category":"Integrations & APIs"},{"id":"webhook-handler","name":"Webhook Handler","description":"Receive webhooks with signature checks, idempotency and retries. Use when consuming events from another service.","category":"Integrations & APIs"},{"id":"email-service-sendgrid-resend","name":"Email Service (SendGrid/Resend)","description":"Send transactional email with SendGrid or Resend, including templates and error handling. Use when an app needs to email users.","category":"Integrations & APIs"},{"id":"real-time-chat-websocket","name":"Real-Time Chat (WebSocket)","description":"Build real-time chat over WebSockets with presence, reconnection and history. Use for live messaging features.","category":"Integrations & APIs"},{"id":"event-sourcing-cqrs","name":"Event Sourcing / CQRS","description":"Model state as a log of events and separate reads from writes. Use when you need audit trails or complex domain history.","category":"Advanced Patterns"},{"id":"saga-choreography-pattern","name":"Saga / Choreography Pattern","description":"Coordinate multi-service workflows with compensating actions. Use when a transaction spans several services.","category":"Advanced Patterns"},{"id":"leader-election","name":"Leader Election","description":"Choose a single active node among many with safe failover. Use when only one instance should run a job.","category":"Advanced Patterns"},{"id":"job-state-machine","name":"Job State Machine","description":"Model job lifecycles as explicit states and transitions. Use when background jobs need reliable tracking.","category":"Advanced Patterns"},{"id":"plugin-architecture","name":"Plugin Architecture","description":"Design extension points so features load as plugins. Use when third parties or modules need to extend an app.","category":"Advanced Patterns"},{"id":"blue-green-canary-deploy","name":"Blue-Green / Canary Deploy","description":"Release with blue-green or canary strategies and fast rollback. Use when deploys must be low risk.","category":"Advanced Patterns"},{"id":"advanced-rate-limiting","name":"Advanced Rate Limiting","description":"Implement token-bucket, sliding-window and per-key rate limits. Use when protecting APIs from abuse.","category":"Advanced Patterns"},{"id":"idempotency-framework","name":"Idempotency Framework","description":"Make operations safe to retry with idempotency keys and stored results. Use when duplicate requests could cause harm.","category":"Advanced Patterns"}];
+const SKILL_LIST=Array.isArray(window.orplexSkills)&&window.orplexSkills.length?window.orplexSkills:DEFAULT_SKILLS;
+let SKILL_ON={};try{SKILL_ON=JSON.parse(localStorage.getItem('orplex-skills')||'{}');}catch(e){}
+const skillOn=k=>k.id in SKILL_ON?SKILL_ON[k.id]:(k.enabled!==false);
+function skillsListHTML(q){
+  q=(q||'').trim().toLowerCase();
+  const hit=SKILL_LIST.filter(k=>!q||(k.name+' '+k.description+' '+(k.category||'')).toLowerCase().includes(q));
+  if(!hit.length) return '<div class="sk-empty">No skills match “'+esc(q)+'”.</div>';
+  let out='',cat=null;
+  hit.forEach(k=>{
+    if(k.category&&k.category!==cat){cat=k.category;out+=`<div class="sk-cat">${esc(cat)} · ${hit.filter(x=>x.category===cat).length}</div>`;}
+    out+=`<div class="sk"><span class="sk-ic"><svg class="i"><use href="#spark"/></svg></span><div class="sk-body"><b>${esc(k.name)}</b><p title="${esc(k.description).replace(/"/g,'&quot;')}">${esc(k.description)}</p></div><div class="sk-act"><button class="btn soft sm" data-skedit="${esc(k.id)}">Edit</button><button class="sw" role="switch" aria-label="${esc(k.name)}" aria-checked="${skillOn(k)}" data-skill="${esc(k.id)}"></button></div></div>`;
+  });
+  return out;
+}
+const skCount=()=>SKILL_LIST.filter(skillOn).length+' of '+SKILL_LIST.length+' enabled';
+function skillsHTML(){
+  return `<div class="s-wrap"><h1 class="s-title">Skills <span class="help" title="Skills are reusable instructions the agent loads when a task matches.">${HELP}</span></h1>
+    <div class="card sk-card">
+      <input class="sk-search" id="sk-q" type="search" placeholder="Search skills" aria-label="Search skills" autocomplete="off">
+      <div class="sk-bar"><button class="btn soft" data-skact="discoverSkills">Discover</button><button class="btn soft" data-skact="createSkill">Create</button><button class="btn soft" data-skact="uploadSkill">Upload</button><span class="sp"></span><span class="cnt" id="sk-cnt">${skCount()}</span></div>
+      <div class="note" id="sk-note" role="status"></div>
+      <div id="sk-list">${skillsListHTML('')}</div>
+    </div></div>`;
+}
+$('#smain').addEventListener('input',e=>{if(e.target.id==='sk-q')$('#sk-list').innerHTML=skillsListHTML(e.target.value);});
+$('#smain').addEventListener('click',e=>{
+  const sw=e.target.closest('.sw[data-skill]');
+  if(sw){
+    const id=sw.dataset.skill, on=sw.getAttribute('aria-checked')!=='true';
+    sw.setAttribute('aria-checked',on); SKILL_ON[id]=on;
+    try{localStorage.setItem('orplex-skills',JSON.stringify(SKILL_ON));}catch(err){}
+    $('#sk-cnt').textContent=skCount();
+    window.dispatchEvent(new CustomEvent('orplex:skill',{detail:{id,enabled:on}}));
+    return;
+  }
+  const ed=e.target.closest('[data-skedit]'), act=e.target.closest('[data-skact]');
+  if(!ed&&!act) return;
+  const fn=ed?'editSkill':act.dataset.skact, host=window.orplexHost, note=$('#sk-note');
+  if(host&&typeof host[fn]==='function'){host[fn](ed?ed.dataset.skedit:undefined);note.textContent='';}
+  else note.textContent=({editSkill:'The skill editor',discoverSkills:'Skill discovery',createSkill:'Skill creation',uploadSkill:'Skill upload'}[fn])+' isn\'t connected in this preview.';
+});
+// ---------- Account ----------
+// Real values come from the host app: set window.orplexAccount = {name,email,providers:{github,google}} or call window.setOrplexAccount({...}).
+// Without it, SAMPLE_ACCOUNT is shown. Name/email edits made here are remembered on this device and fire "orplex:account".
+const SAMPLE_ACCOUNT={name:'Yash',email:'you@example.com',providers:{github:false,google:true}};
+function loadAcc(){let st={};try{st=JSON.parse(localStorage.getItem('orplex-account')||'{}');}catch(e){}
+  const h=window.orplexAccount||{};
+  return {name:h.name||st.name||SAMPLE_ACCOUNT.name,email:h.email||st.email||SAMPLE_ACCOUNT.email,providers:Object.assign({},SAMPLE_ACCOUNT.providers,h.providers||{})};}
+const ACC=loadAcc(); let accEdit=null, accErr='';
+function updateAvatar(){const a=document.querySelector('.avatar');a.textContent=(ACC.name.trim()[0]||'?').toUpperCase();a.setAttribute('aria-label',ACC.name);}
+window.setOrplexAccount=function(d){d=d||{};if(d.providers)Object.assign(ACC.providers,d.providers);if(d.name)ACC.name=d.name;if(d.email)ACC.email=d.email;updateAvatar();if(document.querySelector('#snav .s-item.on')?.textContent==='Account')showPage('Account');};
+function accRow(key,label,type){
+  const editing=accEdit===key;
+  return `<div class="acc-row"><span class="k">${label}</span><span class="v">`+
+    (editing?`<input id="a-input" type="${type}" value="" aria-label="${label}" autocomplete="off" spellcheck="false"><button class="btn sm" id="a-save">Save</button><button class="btn soft sm" id="a-cancel">Cancel</button>`
+            :`<span>${esc(ACC[key])}</span><button class="btn soft icon" data-edit="${key}" aria-label="Edit ${label.toLowerCase()}" title="Edit ${label.toLowerCase()}"><svg class="i"><use href="#edit"/></svg></button>`)+
+    `</span></div>`;
+}
+function providerRow(id,name){
+  const on=ACC.providers[id];
+  return `<div class="acc-row"><span class="k">${name}</span><button class="btn${on?' soft':''}" data-prov="${id}">${on?'Connected':'Connect'}</button></div>`;
+}
+function accountHTML(){
+  return `<div class="s-wrap"><h1 class="s-title">Account</h1>
+    <div class="card">${accRow('name','Display name','text')}${accRow('email','Email','email')}<div class="f-err" id="a-err" role="alert" style="margin-top:6px">${esc(accErr)}</div></div>
+    <div class="card flat"><h3 class="solo">Sign-in methods</h3>${providerRow('github','GitHub')}${providerRow('google','Google')}<div class="note" id="a-note" role="status"></div></div>
+    ${ACC.providers.github?'':`<div class="card"><div class="cta"><div><b>Connect your GitHub account</b><p>Use your GitHub repositories in cloud chats on web and desktop.</p></div><button class="btn" data-prov="github">Connect</button></div></div>`}
+    <div class="card"><h3 class="solo">Delete account</h3>
+      <div class="set-row"><span class="acc-del-txt">Cancel any subscriptions before deleting your account.</span><span class="acc-del-actions" id="acc-del-actions"><button class="btn danger" id="acc-delete">Delete account</button></span></div>
+      <div class="note" id="acc-del-note" role="status"></div></div>
+    <button class="btn soft" id="acc-signout">Sign out</button>
+    <div class="note" id="acc-out-note" role="status"></div>
+  </div>`;
+}
+function accPage(){accErr='';showPage('Account');}
+$('#smain').addEventListener('click',e=>{
+  if(!document.getElementById('a-err')&&!e.target.closest('[data-prov]')) return;
+  const ed=e.target.closest('[data-edit]');
+  if(ed){accEdit=ed.dataset.edit;accErr='';showPage('Account');const i=$('#a-input');i.value=ACC[accEdit];i.focus();i.select();return;}
+  if(e.target.closest('#a-cancel')){accEdit=null;return accPage();}
+  if(e.target.closest('#a-save')) return saveAcc();
+  const pv=e.target.closest('[data-prov]');
+  if(pv){
+    const id=pv.dataset.prov, on=ACC.providers[id], host=window.orplexHost, fn=host&&(on?host.disconnect:host.connect);
+    window.dispatchEvent(new CustomEvent('orplex:account-'+(on?'disconnect':'connect'),{detail:{provider:id}}));
+    const note=$('#a-note')||document.createElement('div');
+    if(typeof fn==='function'){Promise.resolve(fn.call(host,id)).then(r=>{ACC.providers[id]=!on;showPage('Account');}).catch(()=>{note.textContent='Couldn\'t update '+id+'.';});}
+    else note.textContent='Sign-in isn\'t connected in this preview.';
+  }
+});
+$('#smain').addEventListener('keydown',e=>{
+  if(e.target.id!=='a-input') return;
+  if(e.key==='Enter') saveAcc(); else if(e.key==='Escape'){accEdit=null;accPage();}
+});
+function saveAcc(){
+  const v=$('#a-input').value.trim(), key=accEdit;
+  if(key==='name'&&(!v||v.length>40)) accErr='Display name must be 1–40 characters.';
+  else if(key==='email'&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) accErr='Enter a valid email address.';
+  else{
+    ACC[key]=v; accEdit=null; accErr='';
+    try{localStorage.setItem('orplex-account',JSON.stringify({name:ACC.name,email:ACC.email}));}catch(e){}
+    window.dispatchEvent(new CustomEvent('orplex:account',{detail:{field:key,value:v}}));
+    updateAvatar();
+  }
+  const keep=accEdit; showPage('Account'); if(keep){const i=$('#a-input');i.value=v;i.focus();}
+}
+// ---------- General settings ----------
+const APP_NAME='Orplex Code';
+const APP_VERSION=window.orplexVersion||'0.1.0';   // host app: set window.orplexVersion = app.getVersion()
+const SET_DEFAULTS={advancedMode:true,sounds:true,autoRenew:true,autoArchive:'never',agentsMd:true};
+function loadSettings(){try{return Object.assign({},SET_DEFAULTS,JSON.parse(localStorage.getItem('orplex-settings')||'{}'));}catch(e){return Object.assign({},SET_DEFAULTS);}}
+const SETTINGS=loadSettings();
+function setSetting(k,v){
+  SETTINGS[k]=v;
+  try{localStorage.setItem('orplex-settings',JSON.stringify(SETTINGS));}catch(e){}
+  window.dispatchEvent(new CustomEvent('orplex:setting',{detail:{key:k,value:v,all:{...SETTINGS}}}));  // host app can listen for this
+}
+const tip=t=>`<span title="${t}" style="display:inline-flex">${HELP}</span>`;
+function toggleRow(key,label,help){
+  return `<div class="set-row"><span class="lbl">${label}${help?tip(help):''}</span><button class="sw" role="switch" aria-label="${label}" aria-checked="${SETTINGS[key]}" data-set="${key}"></button></div>`;
+}
+function generalHTML(){
+  const arch=[['never','Never'],['1','After 1 day'],['7','After 7 days'],['30','After 30 days']];
+  return `<div class="s-wrap"><h1 class="s-title">General</h1>
+    <div class="card"><h3 class="solo">Composer</h3>${toggleRow('advancedMode','Advanced Mode','Show extra controls in the message composer.')}</div>
+    <div class="card"><h3 class="solo">Notifications</h3>${toggleRow('sounds','Notification sounds','Play a sound when the agent finishes or needs you.')}</div>
+    <div class="card"><h3 class="solo">Sessions</h3>${toggleRow('autoRenew','Auto-renew sessions','Start a new session automatically when the current one ends.')}</div>
+    <div class="card"><h3 class="solo">Feedback</h3>
+      <div style="display:flex;gap:8px"><button class="btn soft" id="g-report">Report issue or feature</button><button class="btn soft icon" id="g-community" aria-label="Community chat" title="Community chat"><svg class="i"><use href="#chat"/></svg></button></div></div>
+    <div class="card"><div class="set-row"><span class="lbl" style="font-weight:600">Auto-archive chats${tip('Move old chats to Archived after this long.')}</span>
+      <select class="sel" id="g-archive" aria-label="Auto-archive chats">${arch.map(([v,n])=>`<option value="${v}"${SETTINGS.autoArchive===v?' selected':''}>${n}</option>`).join('')}</select></div></div>
+    <div class="card"><h3 class="solo">Agent instructions ${tip('Send your project\'s AGENTS.md to the agent with every request.')}</h3>${toggleRow('agentsMd','Include AGENTS.md','')}</div>
+    <div class="card"><h3 class="solo">Version</h3>
+      <div class="set-row"><span class="lbl" style="font-weight:600">${APP_NAME} ${esc(APP_VERSION)}</span><button class="btn soft" id="g-update">Check for updates</button></div>
+      <div class="note" id="g-note" role="status"></div></div>
+  </div>`;
+}
+$('#smain').addEventListener('click',e=>{
+  const sw=e.target.closest('.sw[data-set]');
+  if(sw){const on=sw.getAttribute('aria-checked')!=='true';sw.setAttribute('aria-checked',on);setSetting(sw.dataset.set,on);return;}
+  if(e.target.closest('#g-update')){
+    const note=$('#g-note'), host=window.orplexHost;
+    if(host&&typeof host.checkForUpdates==='function'){note.textContent='Checking…';Promise.resolve(host.checkForUpdates()).then(r=>note.textContent=r||'You\'re up to date.').catch(()=>note.textContent='Couldn\'t check for updates.');}
+    else note.textContent='Updates aren\'t connected in this preview.';
+  }
+});
+$('#smain').addEventListener('change',e=>{if(e.target.id==='g-archive')setSetting('autoArchive',e.target.value);});
+// ---------- Model Providers ----------
+const PROVIDERS={
+  nvidia:{n:'NVIDIA NIM',tier:'free',tag:'Free tier, no credit card needed',base:'https://integrate.api.nvidia.com/v1',key:'https://build.nvidia.com/settings/api-keys',ph:'meta/llama-3.1-70b-instruct'},
+  openrouter:{n:'OpenRouter',tier:'paid',tag:'Every model behind one key, pay-per-use',base:'https://openrouter.ai/api/v1',key:'https://openrouter.ai/keys',ph:'provider/model-name'},
+  anthropic:{n:'Claude (Anthropic)',tier:'paid',tag:'Claude Sonnet & Opus — premium coding quality',base:'https://api.anthropic.com',key:'https://console.anthropic.com/settings/keys',ph:'model-name'},
+  gemini:{n:'Google Gemini',tier:'free',tag:'Free tier available, huge context windows',base:'https://generativelanguage.googleapis.com/v1beta/openai',key:'https://aistudio.google.com/app/apikey',ph:'model-name'},
+  mistral:{n:'Mistral AI',tier:'free',tag:'European models, free experiment tier',base:'https://api.mistral.ai/v1',key:'https://console.mistral.ai/api-keys',ph:'mistral-large-latest'},
+  deepseek:{n:'DeepSeek',tier:'paid',tag:'Frontier reasoning at commodity prices',base:'https://api.deepseek.com',key:'https://platform.deepseek.com/api_keys',ph:'model-name'},
+  together:{n:'Together AI',tier:'free',tag:'Open models, fast serving, free credits',base:'https://api.together.xyz/v1',key:'https://api.together.ai/settings/api-keys',ph:'organization/model-name'},
+  xai:{n:'xAI (Grok)',tier:'paid',tag:'Grok models, real-time knowledge',base:'https://api.x.ai/v1',key:'https://console.x.ai',ph:'model-name'},
+  cerebras:{n:'Cerebras',tier:'free',tag:'Wafer-scale speed, free tier',base:'https://api.cerebras.ai/v1',key:'https://cloud.cerebras.ai',ph:'model-name'},
+  fireworks:{n:'Fireworks AI',tier:'paid',tag:'Production-grade open-model serving',base:'https://api.fireworks.ai/inference/v1',key:'https://fireworks.ai/account/api-keys',ph:'accounts/fireworks/models/model-name'},
+  openai:{n:'OpenAI',tier:'paid',tag:'GPT models, pay-per-use',base:'https://api.openai.com/v1',key:'https://platform.openai.com/api-keys',ph:'model-name'},
+  custom:{n:'Custom (OpenAI-compatible)',tier:'',tag:'Any OpenAI-compatible endpoint',base:'',key:'',ph:'model-name'}
+};
+const PROV_FIRST=Object.keys(PROVIDERS)[0];
+const tierBadge=v=>v.tier?`<span class="tier ${v.tier}">${v.tier==='free'?'FREE TIER':'PAY-PER-USE'}</span>`:'';
+const provDesc=v=>`${tierBadge(v)}<span>${v.tag||''}</span>`;
+// NOTE: keys are kept in localStorage only for this shell. In the real app, store them with Electron safeStorage / OS keychain.
+function loadProviders(){try{return JSON.parse(localStorage.getItem('orplex-providers')||'[]');}catch(e){return[];}}
+function saveProviders(){try{localStorage.setItem('orplex-providers',JSON.stringify(mp.list));}catch(e){}}
+const mp={sel:'api',view:'list',list:loadProviders()};
+const maskKey=k=>k.length>8?k.slice(0,3)+'…'+k.slice(-4):'••••';
+function providersHTML(){
+  const n=mp.list.length;
+  const item=(id,icon,name,status,ok)=>`<button class="mp-item${mp.sel===id?' on':''}" data-sel="${id}"><span class="mp-ic"><svg class="i"><use href="#${icon}"/></svg></span><span><b>${name}</b><span class="mp-st${ok?' ok':''}">${status}</span></span>${id==='api'?'<span class="mp-chev"><svg class="i"><use href="#chev"/></svg></span>':''}</button>`;
+  let pane;
+  if(mp.view==='form'){
+    pane=`<div class="mp-head"><span class="mp-ic"><svg class="i"><use href="#plug"/></svg></span>API providers ${HELP}</div>
+      <label class="f-l" for="mp-prov">Provider</label>
+      <div class="f-row"><select class="f-in" id="mp-prov">${Object.entries(PROVIDERS).map(([k,v])=>`<option value="${k}">${v.n}</option>`).join('')}</select><a id="mp-setup" target="_blank" rel="noopener noreferrer" href="${PROVIDERS[PROV_FIRST].key}">Provider setup ↗</a></div>
+      <div class="f-desc" id="mp-desc">${provDesc(PROVIDERS[PROV_FIRST])}</div>
+      <label class="f-l" for="mp-key">API key ${HELP}</label>
+      <div class="f-key"><input class="f-in" id="mp-key" type="password" placeholder="Paste your API key" autocomplete="off" spellcheck="false"><button id="mp-show" type="button">Show</button></div>
+      <label class="f-l" for="mp-model">Model ID ${HELP}</label>
+      <input class="f-in" id="mp-model" placeholder="${PROVIDERS[PROV_FIRST].ph}" autocomplete="off" spellcheck="false">
+      <details class="f-adv"><summary>Advanced settings</summary>
+        <label class="f-l" for="mp-base" style="margin-top:6px">Base URL</label>
+        <input class="f-in" id="mp-base" value="${PROVIDERS[PROV_FIRST].base}" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false"></details>
+      <div class="f-err" id="mp-err" role="alert"></div>
+      <div class="f-foot"><span>Saved on this device.</span><span class="sp"></span><button class="btn" id="mp-save">Save provider</button><button class="btn ghost" id="mp-back">Back</button></div>`;
+  } else if(!n){
+    pane=`<div class="mp-head"><span class="mp-ic"><svg class="i"><use href="#plug"/></svg></span>API providers ${HELP}</div>
+      <div class="mp-empty"><h4>No API providers yet ${HELP}</h4><button class="btn" id="mp-add">Add provider</button></div>`;
+  } else {
+    pane=`<div class="mp-head"><span class="mp-ic"><svg class="i"><use href="#plug"/></svg></span><span style="flex:1">API providers ${HELP}</span><button class="btn sm" id="mp-add">Add provider</button></div>
+      <div style="margin-top:12px">`+mp.list.map(p=>`<div class="pv-row"><div><b>${esc(p.name)}</b> ${PROVIDERS[p.prov]?tierBadge(PROVIDERS[p.prov]):''}<small>${esc(p.model)} · ${esc(maskKey(p.key))}</small></div><button class="btn ghost sm mp-rm" data-id="${p.id}">Remove</button></div>`).join('')+`</div>`;
+  }
+  return `<div class="s-wrap"><h1 class="s-title">Model Providers</h1>
+    <div class="card"><div class="db-row"><div><b>Warm models</b><p id="warm-note" role="status">Every verified model is live — nothing to warm.</p></div><button class="btn" id="mp-warm">Warm models</button></div></div>
+    <div class="mp"><div>
+    ${item('api','plug','API providers',n?n+' added':'None added',n>0)}
+  </div><div class="mp-pane">${pane}</div></div></div>`;
+}
+$('#smain').addEventListener('click',e=>{
+  const t=e.target, rerender=()=>showPage('Model Providers');
+  if(!document.querySelector('.mp')) return;
+  const it=t.closest('.mp-item'); if(it){mp.sel=it.dataset.sel;mp.view='list';return rerender();}
+  if(t.closest('#mp-add')){mp.view='form';return rerender();}
+  if(t.closest('#mp-back')){mp.view='list';return rerender();}
+  const rm=t.closest('.mp-rm'); if(rm){mp.list=mp.list.filter(p=>String(p.id)!==rm.dataset.id);saveProviders();return rerender();}
+  if(t.closest('#mp-show')){const k=$('#mp-key'),show=k.type==='password';k.type=show?'text':'password';$('#mp-show').textContent=show?'Hide':'Show';return;}
+  if(t.closest('#mp-save')){
+    const prov=$('#mp-prov').value, key=$('#mp-key').value.trim(), model=$('#mp-model').value.trim(), base=$('#mp-base').value.trim();
+    let err='';
+    if(!key) err='Paste your API key.';
+    else if(!model) err='Enter a model ID.';
+    else if(!/^https?:\/\//i.test(base)) err='Base URL must start with http:// or https://';
+    $('#mp-err').textContent=err; if(err) return;
+    mp.list.push({id:Date.now(),prov,name:PROVIDERS[prov].n,key,model,base});
+    saveProviders(); mp.view='list'; rerender();
+  }
+});
+$('#smain').addEventListener('change',e=>{
+  if(e.target.id!=='mp-prov') return;
+  const v=PROVIDERS[e.target.value], a=$('#mp-setup');
+  $('#mp-base').value=v.base; $('#mp-model').placeholder=v.ph;
+  a.style.display=v.key?'':'none'; if(v.key) a.href=v.key;
+  $('#mp-desc').innerHTML=provDesc(v);
+});
+// ---------- Database ----------
+// Host hooks (optional): window.orplexHost.exportDatabase() / .importDatabase(file). Without a host, the preview just says so.
+function databaseHTML(){
+  return `<div class="s-wrap"><h1 class="s-title">Database</h1>
+    <p class="s-sub">Your chats, runs, keys and learning live on this device. Export them as one portable file and import on any other machine.</p>
+    <div class="card">
+      <div class="db-row"><div><b>Export local database</b><p>One JSON file with every model — SHA-256 checksummed, portable anywhere.</p></div><button class="btn" id="db-export">Export .json</button></div>
+      <div class="db-row"><div><b>Import database</b><p>Restores an exported file. Corrupt or forged models are skipped with reasons.</p></div><button class="btn" id="db-import">Choose file</button><input type="file" id="db-file" accept=".json,application/json" hidden></div>
+      <div class="note" id="db-note" role="status">Import replaces rows by model checksum — re-running the same file is a no-op for intact data.</div>
+    </div></div>`;
+}
+(function(){
+  const say=t=>{const n=$('#db-note'); if(n) n.textContent=t;};
+  $('#smain').addEventListener('click',e=>{
+    if(!document.getElementById('db-export')) return;
+    if(e.target.closest('#db-import')) return $('#db-file').click();
+    if(e.target.closest('#db-export')){
+      const host=window.orplexHost;
+      window.dispatchEvent(new CustomEvent('orplex:db-export'));
+      if(host&&typeof host.exportDatabase==='function'){say('Exporting…');Promise.resolve(host.exportDatabase()).then(()=>say('Database exported.')).catch(()=>say('Couldn\'t export the database.'));}
+      else say('Export isn\'t connected in this preview.');
+    }
+  });
+  $('#smain').addEventListener('change',e=>{
+    if(e.target.id!=='db-file') return;
+    const f=e.target.files&&e.target.files[0]; if(!f) return;
+    const host=window.orplexHost;
+    window.dispatchEvent(new CustomEvent('orplex:db-import',{detail:{file:f}}));
+    if(host&&typeof host.importDatabase==='function'){say('Importing…');Promise.resolve(host.importDatabase(f)).then(r=>say(typeof r==='string'&&r?r:'Import finished.')).catch(()=>say('Couldn\'t import that file.'));}
+    else say('Import isn\'t connected in this preview.');
+    e.target.value='';
+  });
+})();
+// Warm models. Host hook (optional): window.orplexHost.warmModels()
+$('#smain').addEventListener('click',e=>{
+  if(!e.target.closest('#mp-warm')) return;
+  const note=$('#warm-note'), host=window.orplexHost;
+  window.dispatchEvent(new CustomEvent('orplex:warm-models'));
+  if(host&&typeof host.warmModels==='function'){note.textContent='Warming models…';Promise.resolve(host.warmModels()).then(r=>note.textContent=typeof r==='string'&&r?r:'Every verified model is live — nothing to warm.').catch(()=>note.textContent='Couldn\'t warm models.');}
+  else note.textContent='Warming isn\'t connected in this preview.';
+});
+// ---------- Integrations (placeholders) ----------
+// Real data comes from the host app:  window.setOrplexIntegrations({connected:[{id,name,where,tools,url,on}], popular:['Name',...]})  or preset window.orplexIntegrations
+const INT_SAMPLE={
+  connected:[
+    {id:'example-server-1',name:'example-server-1',where:'This computer',tools:12,url:'https://mcp.example.com/one',on:true},
+    {id:'example-server-2',name:'example-server-2',where:'This computer',tools:8,url:'https://mcp.example.com/two',on:true}
+  ],
+  popular:['Gmail','Google Calendar','Google Drive','Slack','Notion','Linear','PostHog','Sentry','Stripe','Supabase','HubSpot','Outlook']
+};
+let INT=Object.assign({},INT_SAMPLE,window.orplexIntegrations||{});
+window.setOrplexIntegrations=function(d){INT=Object.assign({},INT,d||{});if(document.body.classList.contains('integrations-open'))renderInt();};
+const intHue=n=>{let h=0;for(const c of n)h=(h*31+c.charCodeAt(0))%360;return h;};
+const intSlug=n=>n.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+function renderInt(){
+  const root=$('#int-in'); if(!root) return;
+  const q=($('#int-q')&&$('#int-q').value)||'', had=document.activeElement&&document.activeElement.id==='int-q';
+  const have=new Set(INT.connected.map(c=>c.id));
+  root.innerHTML=`<div class="int-wrap">
+    <div class="int-head"><h1>Integrations</h1><div class="int-tools">
+      <label class="int-search"><svg class="i"><use href="#search"/></svg><input id="int-q" placeholder="Explore more integrations" autocomplete="off" spellcheck="false" value="${esc(q).replace(/"/g,'&quot;')}"></label>
+      <button class="btn soft" id="int-custom">Custom</button></div></div>
+    <div class="int-note" id="int-note" role="status"></div>
+    ${INT.connected.length?INT.connected.map(c=>`<div class="int-row" data-id="${esc(c.id)}"><svg class="i"><use href="#laptop"/></svg><span><span class="nm">${esc(c.name)}</span><small>${esc(c.where)} · ${c.tools} tools · ${esc(c.url)}</small></span><span class="sp"></span><button class="btn soft sm${c.on?'':' off'}" data-tog="${esc(c.id)}">${c.on?'<svg class="i" style="width:14px;height:14px;margin-right:6px"><use href="#check"/></svg>On':'Off'}</button><button class="btn soft icon sm" data-del="${esc(c.id)}" aria-label="Remove ${esc(c.name)}" title="Remove"><svg class="i"><use href="#trash"/></svg></button></div>`).join(''):'<div class="int-empty">No integrations connected yet.</div>'}
+    <div class="int-h">Popular</div>
+    <div class="int-grid" id="int-grid">${INT.popular.map(n=>{const id=intSlug(n),added=have.has(id);return `<button class="int-tile${added?' added':''}" data-add="${esc(n)}" data-name="${esc(n.toLowerCase())}"${added?' disabled':''}><span class="int-ic" style="background:hsl(${intHue(n)},42%,42%)">${esc(n[0])}</span><span class="nm">${esc(n)}</span><svg class="i"><use href="#${added?'check':'plus'}"/></svg></button>`;}).join('')}</div>
+  </div>`;
+  filterInt(); if(had){const i=$('#int-q');i.focus();i.setSelectionRange(i.value.length,i.value.length);}
+}
+function filterInt(){const q=(($('#int-q')||{}).value||'').trim().toLowerCase();document.querySelectorAll('#int-grid .int-tile').forEach(t=>t.style.display=t.dataset.name.includes(q)?'':'none');}
+$('#integrations').addEventListener('input',e=>{if(e.target.id==='int-q')filterInt();});
+$('#integrations').addEventListener('click',e=>{
+  const add=e.target.closest('[data-add]');
+  if(add){const n=add.dataset.add;window.dispatchEvent(new CustomEvent('orplex:integration-add',{detail:{name:n}}));INT.connected.push({id:intSlug(n),name:intSlug(n),where:'This computer',tools:0,url:'https://mcp.example.com/'+intSlug(n),on:true});return renderInt();}
+  const tog=e.target.closest('[data-tog]');
+  if(tog){const c=INT.connected.find(x=>x.id===tog.dataset.tog);if(c){c.on=!c.on;window.dispatchEvent(new CustomEvent('orplex:integration-toggle',{detail:{id:c.id,on:c.on}}));}return renderInt();}
+  const del=e.target.closest('[data-del]');
+  if(del){window.dispatchEvent(new CustomEvent('orplex:integration-remove',{detail:{id:del.dataset.del}}));INT.connected=INT.connected.filter(x=>x.id!==del.dataset.del);return renderInt();}
+  if(e.target.closest('#int-custom')){
+    const host=window.orplexHost;window.dispatchEvent(new CustomEvent('orplex:integration-custom'));
+    const note=$('#int-note');
+    if(host&&typeof host.addCustomIntegration==='function'){Promise.resolve(host.addCustomIntegration()).catch(()=>{note.textContent='Couldn\'t add a custom integration.';});}
+    else note.textContent='Custom integrations aren\'t connected in this preview.';
+  }
+});
+// Delete account / Sign out. Host hooks (optional): window.orplexHost.deleteAccount() / .signOut()
+(function(){
+  const DEL_BTN='<button class="btn danger" id="acc-delete">Delete account</button>';
+  $('#smain').addEventListener('click',e=>{
+    const t=e.target; if(!document.getElementById('acc-delete')&&!document.getElementById('acc-del-confirm')) return;
+    const host=window.orplexHost, box=$('#acc-del-actions'), note=$('#acc-del-note');
+    if(t.closest('#acc-delete')){box.innerHTML='<button class="btn soft" id="acc-del-cancel">Cancel</button><button class="btn danger" id="acc-del-confirm">Yes, delete my account</button>';note.textContent='This can\'t be undone.';return;}
+    if(t.closest('#acc-del-cancel')){box.innerHTML=DEL_BTN;note.textContent='';return;}
+    if(t.closest('#acc-del-confirm')){
+      window.dispatchEvent(new CustomEvent('orplex:account-delete'));
+      if(host&&typeof host.deleteAccount==='function'){note.textContent='Deleting…';Promise.resolve(host.deleteAccount()).catch(()=>{note.textContent='Couldn\'t delete the account.';box.innerHTML=DEL_BTN;});}
+      else{note.textContent='Account deletion isn\'t connected in this preview.';box.innerHTML=DEL_BTN;}
+      return;
+    }
+    if(t.closest('#acc-signout')){
+      window.dispatchEvent(new CustomEvent('orplex:account-signout'));
+      const n=$('#acc-out-note');
+      if(host&&typeof host.signOut==='function'){Promise.resolve(host.signOut()).catch(()=>{n.textContent='Couldn\'t sign out.';});}
+      else n.textContent='Sign-out isn\'t connected in this preview.';
+    }
+  });
+})();
+function showPage(name){
+  document.querySelectorAll('#snav .s-item').forEach(b=>b.classList.toggle('on',b.textContent===name));
+  const m=$('#smain');
+  m.innerHTML = name==='General' ? generalHTML() : name==='Keyboard shortcuts' ? keyboardHTML() : name==='Skills' ? skillsHTML() : name==='Account' ? accountHTML() : name==='Usage' ? usageHTML() : name==='Appearance' ? appearanceHTML() : name==='Model Providers' ? providersHTML() : name==='Database' ? databaseHTML()
+    : '<div class="s-wrap"><h1 class="s-title"></h1><div class="ph" style="height:260px"><div><h2></h2></div></div></div>';
+  if(!['General','Keyboard shortcuts','Skills','Account','Usage','Appearance','Model Providers','Database'].includes(name)){ m.querySelector('.s-title').textContent=name; m.querySelector('.ph h2').textContent=name+' settings go here'; }
+  m.scrollTop=0;
+}
+SPAGES.forEach(n=>{
+  const b=document.createElement('button');
+  b.className='s-item'; b.textContent=n;
+  b.addEventListener('click',()=>showPage(n));
+  $('#snav').appendChild(b);
+});
+$('#ssearch').addEventListener('input',e=>{
+  const q=e.target.value.trim().toLowerCase();
+  document.querySelectorAll('#snav .s-item').forEach(b=>b.style.display=b.textContent.toLowerCase().includes(q)?'':'none');
+});
+// rail: gear opens the settings page, any other icon returns to the app
+document.querySelector('.rail').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-r]'); if(!b) return;
+  if(b.dataset.r==='layout'){document.body.classList.toggle('collapsed');return;}   // layout icon = toggle sidebar, doesn't change the active view
+  document.querySelectorAll('.rail button').forEach(x=>x.classList.toggle('on',x===b));
+  document.body.classList.toggle('settings-open',b.dataset.r==='settings');
+  document.body.classList.toggle('integrations-open',b.dataset.r==='apps');
+  if(b.dataset.r==='apps') renderInt();
+});
+// layout icon reflects sidebar state (covers the Ctrl+B shortcut too)
+(function(){const b=$('#layoutbtn'),sync=()=>b&&b.setAttribute('aria-pressed',String(!document.body.classList.contains('collapsed')));
+  new MutationObserver(sync).observe(document.body,{attributes:true,attributeFilter:['class']});sync();})();
+$('#smain').addEventListener('click',e=>{const t=e.target.closest('.theme');if(t)applyTheme(t.dataset.theme);});
+// hover (or focus) the avatar -> daily usage popover, driven by the same USAGE data as the Usage page
+(function(){
+  const av=$('#avatar'); if(!av) return;
+  const pop=document.createElement('div'); pop.className='usage-pop'; pop.id='usage-pop'; pop.setAttribute('role','tooltip'); document.body.appendChild(pop);
+  function show(){
+    const u=USAGE, pct=u.daily&&u.daily.limit?Math.min(100,Math.round(u.daily.used/u.daily.limit*100)):0;
+    pop.innerHTML='<div class="top"><span>Daily</span><span>'+pct+'% used</span></div><div class="bar"><i style="width:'+pct+'%"></i></div>';
+    const a=av.getBoundingClientRect(), r=document.querySelector('.rail').getBoundingClientRect();
+    pop.style.left=(r.right+6)+'px';
+    const h=pop.offsetHeight; pop.style.top=Math.max(8,Math.min(innerHeight-h-8,a.bottom-h+8))+'px';
+    pop.classList.add('show');
+  }
+  const hide=()=>pop.classList.remove('show');
+  av.addEventListener('mouseenter',show); av.addEventListener('mouseleave',hide);
+  av.addEventListener('focus',show); av.addEventListener('blur',hide);
+  // click (or Enter/Space) -> open Settings on the Account page
+  function openAccount(){
+    hide();
+    document.querySelectorAll('.rail button').forEach(x=>x.classList.toggle('on',x.dataset.r==='settings'));
+    document.body.classList.remove('integrations-open');
+    document.body.classList.add('settings-open');
+    showPage('Account');
+  }
+  document.querySelector('.rail').addEventListener('click',e=>{if(e.target.closest('#avatar'))openAccount();}); // same click path as the gear
+  av.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openAccount();}});
+})();
+applyTheme(getPref());
+updateAvatar();
+showPage('General');
+render();
+</script>
+</body>
+</html>

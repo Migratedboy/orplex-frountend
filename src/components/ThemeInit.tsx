@@ -4,21 +4,25 @@ import { useEffect } from "react";
 
 /**
  * Early theme bootstrap — runs before the app paints its UI.
- * DARK is the default (layout.tsx ships <html class="dark">); the only stored
- * preference is an explicit LIGHT choice in localStorage ("orplex-theme").
- * Replaces the inline <script> tag that was causing React warnings.
+ * Pref model (shell spec §4 / D1): `orplex-theme` is 'light' | 'dark' |
+ * 'system'; NO stored value = dark (today's default, and an existing stored
+ * 'light' keeps working). Applies BOTH the new `data-theme` attribute and the
+ * legacy `.dark` class so old components keep working.
  */
 export default function ThemeInit() {
   useEffect(() => {
-    try {
-      if (localStorage.getItem("orplex-theme") === "light") {
-        document.documentElement.classList.remove("dark");
-      } else {
-        document.documentElement.classList.add("dark");
-      }
-    } catch {
-      // localStorage unavailable — stay dark
-    }
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => {
+      let pref = "dark";
+      try { pref = localStorage.getItem("orplex-theme") || "dark"; } catch {}
+      const dark = pref === "dark" || (pref === "system" && mq.matches);
+      const root = document.documentElement;
+      root.dataset.theme = dark ? "dark" : "light";
+      root.classList.toggle("dark", dark);
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
   }, []);
 
   return null; // Renders nothing

@@ -1,33 +1,23 @@
 "use client";
 
 /**
- * RightPanelShell.tsx — the Right Panel v2 shell (P1): Freebuff-style open-tab
- * bar, empty launcher, persistence + migration, lazy tabs, per-tab error
- * boundary, resize grip, and the browser keep-mounted contract (native views
- * survive panel close / tab close — hidden via `preview:show-tab`, freed
- * after 10 min idle once the browser tab is closed — DECISIONS D13).
+ * RightPanelShell.tsx — the Right Panel v2 body (P1): empty launcher, lazy
+ * tabs, per-tab error boundary, resize grip, and the browser keep-mounted
+ * contract (native views survive panel close / tab close — hidden via
+ * `preview:show-tab`, freed after 10 min idle once the browser tab is
+ * closed — DECISIONS D13).
  *
- * The aside is ALWAYS rendered (display:none when closed): returning null
- * would unmount the browser tab and destroy its native WebContentsViews,
- * which is exactly the state loss v2 removes.
+ * The tab BAR moved into the strip (spec §3): open/active tab state lives in
+ * RightPanelContext and is shared with the strip's rzone. This component
+ * renders the panel BODY inside the shell's `.ox-rpanel` slot (in-flow —
+ * shell.css neutralizes the legacy fixed-position rules) and is ALWAYS
+ * rendered: display:none when closed, because returning null would unmount
+ * the browser tab and destroy its native WebContentsViews.
  */
-import { lazy, Suspense, Component, type ReactNode, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, Component, type ReactNode, useEffect, useRef } from "react";
 import { ErrorView } from "../StateViews";
 import { QueuePanelSkeleton, FilesPanelSkeleton, ChangesPanelSkeleton } from "../PanelSkeletons";
-import {
-  OPEN_KEY,
-  OPEN_TABS_KEY,
-  LEGACY_TAB_KEY,
-  parseOpenTabs,
-  legacyTabToOpenTabs,
-  defaultTabToOpenTabs,
-  toLegacyTabId,
-  addTab,
-  closeTab,
-  type TabId,
-} from "@/lib/panel-state";
-import { useActiveRunCount } from "@/hooks/useActiveRunCount";
-import { TabBar } from "./TabBar";
+import { useRightPanel } from "@/components/shell/RightPanelContext";
 import { EmptyLauncher } from "./EmptyLauncher";
 
 // Lazy tabs (budget §2.8: a closed tab costs ~0; chunk loads on first open).
@@ -64,101 +54,29 @@ class TabErrorBoundary extends Component<{ children: ReactNode; tab: string }, {
   }
 }
 
-function RpTabFallback({ tab }: { tab: TabId }) {
+function RpTabFallback({ tab }: { tab: string }) {
   if (tab === "queue") return <QueuePanelSkeleton />;
   if (tab === "files") return <FilesPanelSkeleton />;
   if (tab === "changes") return <ChangesPanelSkeleton />;
   return <div className="rp-empty" aria-busy="true">Loading…</div>;
 }
 
-export interface RightPanelShellProps {
-  open: boolean;
-  onClose: () => void;
-  defaultTab?: string;
-  onResizingChange?: (resizing: boolean) => void;
-}
+const DEFAULT_RP_WIDTH = 420;
 
-const DEFAULT_RP_WIDTH = 460;
-const BROWSER_IDLE_FREE_MS = 10 * 60 * 1000;
-
-export default function RightPanelShell({ open, onClose, defaultTab, onResizingChange }: RightPanelShellProps) {
-  const [openTabs, setOpenTabs] = useState<TabId[]>([]);
-  const [activeTab, setActiveTab] = useState<TabId | null>(null);
-  const [browserMounted, setBrowserMounted] = useState(false);
-  const [popoverOpen, setPopoverOpen] = useState(false);
-  const [browserLive, setBrowserLive] = useState(false);
-  const [restored, setRestored] = useState(false);
-
-  // === Restore persisted state (post-hydration, never in useState) ===
-  useEffect(() => {
-    let initial: TabId[] = [];
-    let initialActive: TabId | null = null;
-    try {
-      const fromNew = parseOpenTabs(sessionStorage.getItem(OPEN_TABS_KEY));
-      if (fromNew !== null) {
-        initial = fromNew;
-        const legacy = legacyTabToOpenTabs(sessionStorage.getItem(LEGACY_TAB_KEY));
-        const preferred = legacy[0];
-        initialActive =
-          (preferred && initial.includes(preferred) ? preferred : initial[initial.length - 1]) ?? null;
-      } else {
-        initial = legacyTabToOpenTabs(sessionStorage.getItem(LEGACY_TAB_KEY));
-        if (initial.length === 0) initial = defaultTabToOpenTabs(defaultTab);
-        initialActive = initial[initial.length - 1] ?? null;
-      }
-    } catch {
-      // storage blocked — fall through to the empty launcher
-    }
-    setOpenTabs(initial);
-    setActiveTab(initialActive);
-    if (initial.includes("browser")) setBrowserMounted(true);
-    setRestored(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Programmatic open (AppLayout's defaultTab changed: Ctrl+T, Ctrl+1..6,
-  // orplex:open-panel). Runs after restore so mount-time restore wins.
-  useEffect(() => {
-    if (!restored || !defaultTab) return;
-    const toOpen = defaultTabToOpenTabs(defaultTab);
-    if (toOpen.length === 0) return;
-    const id = toOpen[0];
-    setOpenTabs((prev) => {
-      if (prev.includes(id)) return prev;
-      return [...prev, id];
-    });
-    setActiveTab(id);
-    if (id === "browser") setBrowserMounted(true);
-  }, [restored, defaultTab]);
-
-  // Persist open list + legacy keys (AppLayout + reset-recovery-tab compat).
-  useEffect(() => {
-    if (!restored) return;
-    try {
-      sessionStorage.setItem(OPEN_TABS_KEY, JSON.stringify(openTabs));
-      sessionStorage.setItem(OPEN_KEY, open ? "1" : "0");
-      if (activeTab) sessionStorage.setItem(LEGACY_TAB_KEY, toLegacyTabId(activeTab));
-    } catch {}
-  }, [openTabs, activeTab, open, restored]);
-
-  // === Resize (drag the left grip) — moved verbatim from RightPanel.tsx ===
-  // Panel width lives IN CODE (no persistence): 460px out of the box — the
-  // reference's browser-friendly width. Reload always returns to default.
-  const [width, setWidth] = useState<number>(DEFAULT_RP_WIDTH);
-  const [resizing, setResizing] = useState(false);
+export default function RightPanelShell() {
+  const rp = useRightPanel();
+  const { width, setWidth, resizing, setResizing } = rp;
   const widthRef = useRef(width);
   widthRef.current = width;
   const dragStart = useRef({ x: 0, w: 0 });
 
+  // The slot width follows the context width (NOT persisted — unchanged
+  // behavior: reload always returns to the default).
   useEffect(() => {
     document.documentElement.style.setProperty("--rp-w", `${Math.round(width)}px`);
   }, [width]);
 
-  useEffect(() => {
-    onResizingChange?.(resizing);
-    return () => onResizingChange?.(false);
-  }, [resizing, onResizingChange]);
-
+  // === Resize (drag the left grip) — moved verbatim from RightPanel.tsx ===
   useEffect(() => {
     if (!resizing) return undefined;
     // Freeze text selection + show the resize cursor for the whole drag.
@@ -184,71 +102,16 @@ export default function RightPanelShell({ open, onClose, defaultTab, onResizingC
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
     };
-  }, [resizing]);
+  }, [resizing, setWidth, setResizing]);
 
-  // Browser idle-free (D13): tab closed → hidden views freed after 10 min.
-  useEffect(() => {
-    if (!browserMounted || openTabs.includes("browser")) return;
-    const t = setTimeout(() => setBrowserMounted(false), BROWSER_IDLE_FREE_MS);
-    return () => clearTimeout(t);
-  }, [browserMounted, openTabs]);
-
-  // Browser-live dot (localhost probe) while the panel is open.
-  useEffect(() => {
-    if (!open) return;
-    let alive = true;
-    const probe = async () => {
-      try {
-        const res = await fetch("/api/localhost-probe", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        const d = (await res.json()) as { live?: number[] };
-        if (alive) setBrowserLive((d.live ?? []).length > 0);
-      } catch {
-        /* offline — the dot just stays off */
-      }
-    };
-    void probe();
-    const iv = setInterval(probe, 10_000);
-    return () => {
-      alive = false;
-      clearInterval(iv);
-    };
-  }, [open]);
-
-  // Badge polls only while the panel is open (§2.8): the Queue count is a
-  // 10s tick; closed, it's an hourly whisper (fresh enough on demand, not a
-  // runaway timer).
-  const { activeRuns } = useActiveRunCount(open ? 10_000 : 3_600_000);
-
-  const onActivate = (id: TabId) => {
-    setActiveTab(id);
-    if (id === "browser") setBrowserMounted(true);
-  };
-  const onOpenTab = (id: TabId) => {
-    const r = addTab(openTabs, id);
-    setOpenTabs(r.openTabs);
-    setActiveTab(r.activeTab);
-    if (id === "browser") setBrowserMounted(true);
-  };
-  const onCloseTab = (id: TabId) => {
-    const r = closeTab(openTabs, activeTab, id);
-    setOpenTabs(r.openTabs);
-    setActiveTab(r.activeTab);
-  };
-
-  const browserVisible = open && activeTab === "browser" && openTabs.includes("browser");
+  const open = rp.isOpen;
+  const activeTab = rp.activeTab;
+  const browserVisible = rp.browserVisible;
 
   return (
     <aside
       className="orplex-rp right-panel"
-      style={{
-        position: "fixed", top: 64, right: 0, bottom: 0,
-        width: "min(var(--rp-w, 460px), 100vw)", zIndex: 35,
-        display: open ? "flex" : "none",
-      }}
+      style={{ display: open ? "flex" : "none" }}
       data-resizing={resizing ? "" : undefined}
       aria-hidden={!open}
     >
@@ -269,23 +132,13 @@ export default function RightPanelShell({ open, onClose, defaultTab, onResizingC
         onKeyDown={(e) => {
           const step = e.shiftKey ? 40 : 16;
           const max = Math.min(720, window.innerWidth - 320);
-          if (e.key === "ArrowLeft") { e.preventDefault(); setWidth(w => Math.max(280, Math.min(max, w + step))); }
-          if (e.key === "ArrowRight") { e.preventDefault(); setWidth(w => Math.max(280, Math.min(max, w - step))); }
+          if (e.key === "ArrowLeft") { e.preventDefault(); setWidth(Math.max(280, Math.min(max, widthRef.current + step))); }
+          if (e.key === "ArrowRight") { e.preventDefault(); setWidth(Math.max(280, Math.min(max, widthRef.current - step))); }
         }}
         tabIndex={0}
       />
-      <TabBar
-        openTabs={openTabs}
-        activeTab={activeTab}
-        onActivate={onActivate}
-        onCloseTab={onCloseTab}
-        onOpenTab={onOpenTab}
-        onClosePanel={onClose}
-        badges={{ browserLive, queueCount: activeRuns }}
-        onPopoverChange={setPopoverOpen}
-      />
       <div className="rp-content">
-        {open && activeTab === null && <EmptyLauncher onOpen={onOpenTab} />}
+        {open && activeTab === null && <EmptyLauncher onOpen={rp.open} />}
         {open && activeTab !== null && (
           <TabErrorBoundary tab={activeTab}>
             <Suspense fallback={<RpTabFallback tab={activeTab} />}>
@@ -301,7 +154,7 @@ export default function RightPanelShell({ open, onClose, defaultTab, onResizingC
         )}
         {/* Browser lives outside the conditional tree: hiding the aside
             (panel closed) or the tab wrapper (tab closed) must not unmount it. */}
-        {browserMounted && (
+        {rp.browserMounted && (
           <div
             style={{
               height: "100%",
@@ -311,7 +164,7 @@ export default function RightPanelShell({ open, onClose, defaultTab, onResizingC
           >
             <TabErrorBoundary tab="browser">
               <Suspense fallback={<RpTabFallback tab="browser" />}>
-                <BrowserPreview panelActive={browserVisible} overlayOpen={popoverOpen} />
+                <BrowserPreview panelActive={browserVisible} overlayOpen={rp.overlayOpen} />
               </Suspense>
             </TabErrorBoundary>
           </div>

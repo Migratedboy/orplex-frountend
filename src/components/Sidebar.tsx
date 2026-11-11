@@ -187,18 +187,21 @@ export default function Sidebar() {
 
   // Width + open-project state persist in the app's own keys (never orp.*).
   useEffect(() => {
+    let w = 272;
     try {
-      const w = Number(localStorage.getItem("orplex.sidebarWidth"));
-      if (Number.isFinite(w) && w >= 220 && w <= 420) {
-        setWidth(w);
-        // TopBar is position:fixed — its left offset tracks the rail width.
-        document.documentElement.style.setProperty("--sb-w", `${w}px`);
+      const stored = Number(localStorage.getItem("orplex.sidebarWidth"));
+      if (Number.isFinite(stored) && stored >= 220 && stored <= 420) {
+        w = stored;
+        setWidth(stored);
       }
       const open = JSON.parse(localStorage.getItem("orplex.sidebarOpenProjects") ?? "[]") as unknown;
       if (Array.isArray(open)) setOpenProjects(new Set(open.filter((x): x is string => typeof x === "string")));
       setProjectsOpen(localStorage.getItem("orplex.sidebarProjectsOpen.v2") !== "0");
       setChatsOpen(localStorage.getItem("orplex.sidebarChatsOpen.v2") !== "0");
     } catch {}
+    // The shell (strip lead + sidebar slot) tracks this width even on a
+    // first run with nothing persisted.
+    document.documentElement.style.setProperty("--sb-w", `${w}px`);
   }, []);
   useEffect(() => {
     try { localStorage.setItem("orplex.sidebarOpenProjects", JSON.stringify([...openProjects])); } catch {}
@@ -318,8 +321,11 @@ export default function Sidebar() {
   const startResize = (e: React.MouseEvent) => {
     e.preventDefault();
     setDrag(true);
+    // The shell's icon rail sits LEFT of the sidebar — subtract its width so
+    // the grip stays under the cursor (pre-shell the sidebar started at x=0).
+    const railW = document.querySelector(".ox-rail")?.getBoundingClientRect().width ?? 0;
     const move = (ev: MouseEvent) => {
-      const w = Math.max(220, Math.min(420, ev.clientX));
+      const w = Math.max(220, Math.min(420, ev.clientX - railW));
       setWidth(w);
       document.documentElement.style.setProperty("--sb-w", `${w}px`);
     };

@@ -7,7 +7,9 @@
    @import was blocked — the designed fonts were silently falling back to
    system fonts. */
 :root {
-  --font-sans: 'Fraunces', 'Lexend', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, serif;
+  /* Shell font (spec §4): Segoe UI stack at 13.5px. The chat hero's display
+     serif sets its own family and is unaffected. */
+  --font-sans: "Segoe UI", Inter, system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, Consolas, monospace;
 
   /* Orplex design tokens (BRAND.md §2). Light values — `.dark` swaps them.
@@ -106,12 +108,47 @@
   --composer-fade-from: rgba(11, 11, 13, 0);
 }
 
+/* ===== SHELL TOKENS (ported 1:1 from design/orplex-shell.html) =============
+ * Dark = default (no stored pref). Light lives under [data-theme="light"],
+ * which ThemeInit keeps in sync with the legacy .dark class. Every new shell
+ * surface references ONLY these tokens — no hard-coded colors. */
+:root {
+  --bg: #151516; --side: #212122; --main: #1b1b1c;
+  --hover: #2c2c2e; --active: #353537; --line: #2c2c2e;
+  --text: #ececee; --muted: #8d8d93; --accent: #f97316; --accent-bg: rgba(249, 115, 22, .16);
+  --seg: #0f0f10; --tab-hover: #1c1c1e; --card: #272728; --input: #2b2b2d;
+  --dash: #3a3a3d; --cell: #333335; --track: #3a3a3d; --fill: #8f8f94; --heat: #a5c997;
+  --danger-btn: #d64550;
+  color-scheme: dark;
+  --strip-h: 44px; --rail-w: 52px; --side-w: 255px;
+  --left-w: calc(var(--rail-w) + var(--side-w)); --right-w: 420px;
+  --font-shell: "Segoe UI", Inter, system-ui, sans-serif;
+  /* Aliases for re-skinning inner components whose own CSS shadows the
+     canonical names (Sidebar.module.css defines --side/--main/--hover…).
+     Kept 1:1 with the canonical tokens; flips with the theme. */
+  --shell-side: var(--side); --shell-main: var(--main); --shell-card: var(--card);
+  --shell-line: var(--line); --shell-text: var(--text); --shell-muted: var(--muted);
+  --shell-hover: var(--hover); --shell-active: var(--active); --shell-accent: var(--accent);
+  --shell-input: var(--input);
+}
+@media (max-width: 1100px) { :root { --right-w: 300px; } }
+:root[data-theme="light"] {
+  --bg: #e8e8eb; --side: #f6f6f8; --main: #ffffff;
+  --hover: #e6e6ea; --active: #dadade; --line: #dcdce0;
+  --text: #1c1c1e; --muted: #6a6a72; --accent: #ea6a0a; --accent-bg: rgba(234, 106, 10, .13);
+  --seg: #dcdce0; --tab-hover: #e1e1e5; --card: #eeeef1; --input: #e6e6ea;
+  --dash: #c3c3ca; --cell: #e0e0e4; --track: #d3d3d9; --fill: #6a6a72; --heat: #4f9a3f;
+  color-scheme: light;
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; }
 body {
   background: var(--canvas);
   color: var(--text-primary);
-  font-family: var(--font-sans);
+  font-family: var(--font-shell);
+  font-size: 13.5px;
+  line-height: 1.35;
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -4914,3 +4951,23 @@ html:not(.dark) .pb-meta {
   color:#a6a6a6;
 }
 
+
+/* ===== SHELL REMAP (spec �4) ===============================================
+ * Remap the legacy semantic tokens onto the shell tokens so every inner
+ * surface sits seamlessly inside the new frame without editing each
+ * component. Appended LAST so it wins the cascade over the literal values
+ * in the :root / .dark blocks above. Both themes follow automatically
+ * because the shell tokens themselves flip under [data-theme="light"]. */
+:root {
+  --canvas: var(--bg);
+  --surface: var(--main);
+  --well: var(--card);
+  --border: var(--line);
+  --text-primary: var(--text);
+  --text-secondary: var(--muted);
+  --text-tertiary: var(--muted);
+  --text-dim: var(--muted);
+  --brand: var(--accent);
+  --ring-brand: var(--accent-bg);
+  --danger-soft: #e5484d;
+}

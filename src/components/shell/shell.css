@@ -1,0 +1,445 @@
+/* shell.css — ported 1:1 from design/orplex-shell.html <style>, namespaced
+   under .ox-shell (the shell root div). Body-level classes from the design
+   (body.collapsed etc.) became root classes (.ox-shell.collapsed). Colors
+   reference ONLY the shell tokens in globals.css — no hard-coded palette
+   outside the danger button (#d64550) which the spec pins. */
+
+.ox-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 13.5px/1.35 var(--font-shell);
+  user-select: none;
+}
+.ox-shell button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+.ox-shell svg.ox-i { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.ox-shell :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ox-shell.collapsed { --left-w: var(--rail-w); }
+/* The sidebar drag-resizes itself and publishes its width as --sb-w on
+   :root — the strip's lead zone and the sidebar slot both follow it. */
+.ox-shell { --left-w: calc(var(--rail-w) + var(--sb-w, var(--side-w))); }
+
+/* ---------- TOP STRIP ---------- */
+.ox-strip { height: var(--strip-h); display: flex; align-items: stretch; flex: none; -webkit-app-region: drag; }
+.ox-strip button, .ox-strip .ox-tab { -webkit-app-region: no-drag; }
+.ox-strip button { -webkit-app-region: no-drag; }
+.ox-lead { width: var(--left-w); flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 14px 0 12px; overflow: hidden; transition: width .18s ease; }
+.ox-nav { display: flex; gap: 2px; }
+.ox-nav button { width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; color: var(--muted); }
+.ox-nav button:hover { background: var(--hover); color: var(--text); }
+.ox-nav button:disabled { opacity: .35; cursor: default; }
+.ox-lead-r { display: flex; align-items: center; gap: 8px; }
+.ox-bell { width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; color: var(--muted); position: relative; }
+.ox-bell:hover { background: var(--hover); color: var(--text); }
+.ox-shell.collapsed .ox-lead-r { display: none; }
+.ox-seg { display: flex; background: var(--seg); border-radius: 8px; padding: 2px; -webkit-app-region: no-drag; }
+.ox-seg button { padding: 3px 14px; border-radius: 6px; color: var(--muted); font-size: 12.5px; }
+.ox-seg button.on { background: var(--active); color: var(--text); }
+.ox-shell.collapsed .ox-seg { display: none; }
+
+.ox-tabs { display: flex; align-items: stretch; flex: 1; min-width: 0; overflow: hidden; }
+.ox-tab { display: flex; align-items: center; gap: 7px; flex: 0 1 190px; min-width: 60px; padding: 0 12px; color: var(--muted); border-left: 1px solid var(--line); cursor: pointer; white-space: nowrap; position: relative; user-select: none; }
+.ox-tab svg.ox-i { width: 14px; height: 14px; opacity: .7; }
+.ox-tab span { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.ox-tab:hover { background: var(--tab-hover); color: var(--text); }
+.ox-tab.on { background: var(--main); color: var(--text); border-radius: 8px 8px 0 0; }
+.ox-tab.on svg.ox-i { color: var(--accent); opacity: 1; }
+.ox-tab.on::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--accent); }
+.ox-tab .ox-tx { width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center; opacity: 0; flex: none; }
+.ox-tab:hover .ox-tx, .ox-tab.on .ox-tx { opacity: .8; }
+.ox-tab .ox-tx:hover { background: var(--active); }
+.ox-tab .ox-tx svg { width: 11px; height: 11px; }
+.ox-add { flex: none; width: 34px; height: 28px; align-self: center; display: grid; place-items: center; color: var(--muted); border-radius: 6px; margin-left: 4px; }
+.ox-add:hover { background: var(--hover); color: var(--text); }
+/* right zone: own tab strip + window controls, sits exactly above the right panel */
+.ox-rzone { width: var(--right-w); flex: none; display: flex; align-items: stretch; min-width: 0; }
+.ox-rzone .ox-tabs { flex: 1; }
+.ox-rzone .ox-tab { flex: 0 1 150px; min-width: 42px; }
+.ox-rzone .ox-tab.on { flex: 0 0 auto; min-width: 110px; }
+.ox-win { display: flex; flex: none; }
+.ox-win button { width: 46px; display: grid; place-items: center; color: var(--muted); }
+.ox-win button:hover { background: var(--hover); color: var(--text); }
+.ox-win button.ox-close:hover { background: #e5484d; color: #fff; }
+.ox-win svg { width: 14px; height: 14px; }
+
+/* ---------- BODY ---------- */
+.ox-body { flex: 1; display: flex; min-height: 0; }
+
+/* icon rail */
+.ox-rail { width: var(--rail-w); flex: none; display: flex; flex-direction: column; align-items: center; padding: 6px 0 10px; gap: 6px; }
+.ox-rail button { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; color: var(--muted); }
+.ox-rail button:hover { background: var(--hover); color: var(--text); }
+.ox-rail button.on { background: var(--active); color: var(--text); }
+.ox-rail svg.ox-i { width: 19px; height: 19px; }
+.ox-rail .ox-sp { flex: 1; }
+.ox-rail .ox-themebtn { margin-bottom: 4px; }
+.ox-usage-pop { position: fixed; z-index: 200; width: 230px; padding: 12px 14px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 8px 28px rgba(0, 0, 0, .4); font-size: 12.5px; pointer-events: none; opacity: 0; transform: translateX(-4px); transition: opacity .12s ease, transform .12s ease; visibility: hidden; color: var(--text); font: 12.5px/1.35 var(--font-shell); }
+.ox-usage-pop.show { opacity: 1; transform: none; visibility: visible; }
+.ox-usage-pop .ox-top { display: flex; justify-content: space-between; margin-bottom: 8px; font-weight: 600; }
+.ox-usage-pop .ox-top span:last-child { color: var(--muted); font-weight: 400; }
+.ox-avatar { cursor: pointer; outline: 0; position: relative; z-index: 1; width: 30px; height: 30px; border-radius: 50%; background: var(--active); display: grid; place-items: center; font-size: 12px; font-weight: 600; overflow: hidden; color: var(--text); }
+.ox-avatar:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.ox-avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+/* sidebar panel */
+.ox-side { width: var(--sb-w, var(--side-w)); flex: none; padding: 0 8px 8px 0; overflow: hidden; transition: width .18s ease, padding .18s ease; display: flex; }
+.ox-shell.collapsed .ox-side { width: 0; padding: 0; border: 0; }
+.ox-side-in { width: calc(var(--sb-w, var(--side-w)) - 8px); height: 100%; display: flex; flex-direction: column; min-width: 0; flex: 1; }
+/* The Sidebar fills the slot: its inline width (272px default) follows the
+   same --sb-w the shell publishes, so it must not overflow the slot. */
+.ox-shell .ox-side-in .app-sidebar,
+.ox-shell .ox-side-in .app-sidebar > .sbInner { width: 100% !important; }
+/* The existing Sidebar fills the slot; re-skin it onto shell tokens (spec §4)
+   via its own custom-property names (Sidebar.module.css shadows --side etc.,
+   so the values come from the --shell-* alias tokens in globals.css). */
+.ox-shell .app-sidebar {
+  --side: var(--shell-side);
+  --main: var(--shell-main);
+  --raise: var(--shell-active);
+  --hover: var(--shell-hover);
+  --border: var(--shell-line);
+  --text: var(--shell-text);
+  --muted: var(--shell-muted);
+  --accent: var(--shell-accent);
+  --accent-soft: var(--accent-bg);
+  --accent-text: var(--shell-accent);
+  --pop: var(--shell-card);
+  background: transparent;
+  border-right: 0;
+}
+.ox-shell .app-sidebar .sbInner { border-radius: 14px; background: var(--side); }
+
+/* middle */
+.ox-main { flex: 1; min-width: 0; display: flex; }
+.ox-center { flex: 1; min-width: 0; padding: 0 10px 14px 0; position: relative; display: flex; flex-direction: column; }
+.ox-center > .ox-page-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ox-tools { position: absolute; top: 8px; right: 22px; display: flex; gap: 2px; z-index: 2; }
+.ox-tools button { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); }
+.ox-tools button:hover { background: var(--hover); color: var(--text); }
+.ox-tools button.on { color: var(--text); background: var(--hover); }
+.ox-tools svg.ox-i { width: 17px; height: 17px; }
+.ox-shell.rp-hidden .ox-rpanel, .ox-shell.rp-hidden .ox-rzone .ox-tabs { display: none; }
+.ox-shell.rp-hidden .ox-rzone { width: auto; }
+.ox-shell.rp-hidden .ox-center { padding-right: 14px; }
+.ox-rpanel { width: min(var(--rp-w, var(--right-w)), 100vw); flex: none; padding: 0 14px 14px 0; display: flex; min-width: 0; }
+/* RightPanelShell now lives IN-FLOW inside the slot above (the strip owns the
+   tab bar): neutralize the legacy fixed-position rules from globals.css. */
+.ox-shell .ox-rpanel > .right-panel {
+  position: static;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  width: auto;
+  border-left: 0;
+  z-index: auto;
+  flex: 1;
+  min-width: 0;
+  flex-shrink: 1;
+}
+/* Right-panel pages (settings/integrations open) must also hide the panel and
+   free the native browser view. */
+.ox-shell.settings-open .ox-side, .ox-shell.settings-open .ox-main { display: none; }
+.ox-shell.integrations-open .ox-side, .ox-shell.integrations-open .ox-main { display: none; }
+
+/* ---------- NOTIFICATIONS POPOVER (strip bell) ---------- */
+.ox-notif-pop { position: fixed; z-index: 210; width: 320px; max-height: 420px; display: flex; flex-direction: column; border-radius: 12px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 8px 28px rgba(0, 0, 0, .4); font-size: 12.5px; overflow: hidden; }
+.ox-notif-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); font-weight: 600; }
+.ox-notif-head button { color: var(--muted); font-size: 12px; }
+.ox-notif-head button:hover { color: var(--text); }
+.ox-notif-list { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--active) transparent; }
+.ox-notif-item { display: flex; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.ox-notif-item:last-child { border-bottom: 0; }
+.ox-notif-item:hover { background: var(--hover); }
+.ox-notif-item.unread { border-left: 2px solid var(--accent); }
+.ox-notif-item .ox-ni-ic { color: var(--muted); flex: none; margin-top: 1px; }
+.ox-notif-item .ox-ni-body { min-width: 0; flex: 1; }
+.ox-notif-item .ox-ni-title { font-weight: 600; }
+.ox-notif-item .ox-ni-msg { color: var(--muted); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ox-notif-item .ox-ni-time { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.ox-notif-empty { padding: 26px 14px; text-align: center; color: var(--muted); }
+
+/* fresh-arrival toast stack (re-homed from the old top bar) */
+.ox-notif-toasts { position: fixed; top: calc(var(--strip-h) + 8px); right: 16px; z-index: 95; display: flex; flex-direction: column; gap: 8px; }
+.ox-notif-toast { min-width: 280px; max-width: 380px; padding: 10px 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 8px 28px rgba(0, 0, 0, .4); font-size: 12.5px; line-height: 1.45; color: var(--text); }
+.ox-notif-toast[data-type="error"] { border-color: var(--danger-btn); }
+.ox-notif-toast[data-type="success"] { border-color: var(--fill); }
+.ox-notif-toast .ox-nt-title { font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.ox-notif-toast .ox-nt-msg { color: var(--muted); margin-top: 2px; }
+
+/* tab context menu (conversation tabs) */
+.ox-tabmenu { position: fixed; z-index: 220; min-width: 170px; padding: 5px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 8px 28px rgba(0, 0, 0, .4); font-size: 12.5px; }
+.ox-tabmenu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border-radius: 7px; text-align: left; }
+.ox-tabmenu button:hover { background: var(--hover); }
+.ox-tabmenu button:disabled { color: var(--muted); cursor: default; }
+.ox-tabmenu button:disabled:hover { background: none; }
+
+/* "+" popover for right-panel tabs (closed-tab launcher in the strip) */
+.ox-rpop { position: fixed; z-index: 220; min-width: 170px; padding: 5px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 8px 28px rgba(0, 0, 0, .4); font-size: 12.5px; }
+.ox-rpop button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border-radius: 7px; text-align: left; }
+.ox-rpop button:hover { background: var(--hover); }
+.ox-rpop .ox-rpop-none { padding: 10px; color: var(--muted); text-align: center; }
+
+/* ---------- INTEGRATIONS PAGE ---------- */
+.ox-integrations { display: none; flex: 1; min-width: 0; padding: 0 14px 8px 0; }
+.ox-shell.integrations-open .ox-integrations { display: block; }
+.ox-int-in { height: 100%; background: var(--main); border-radius: 14px; overflow-y: auto; padding: 40px 48px 48px; scrollbar-width: thin; scrollbar-color: var(--active) transparent; user-select: text; }
+.ox-int-wrap { max-width: 880px; margin: 0 auto; }
+.ox-int-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 26px; }
+.ox-int-head h1 { font-size: 28px; font-weight: 500; letter-spacing: -.3px; }
+.ox-int-tools { display: flex; align-items: center; gap: 8px; }
+.ox-int-search { display: flex; align-items: center; gap: 9px; height: 34px; width: 300px; max-width: 100%; padding: 0 12px; background: var(--input); border-radius: 10px; color: var(--muted); }
+.ox-int-search svg { width: 15px; height: 15px; flex: none; }
+.ox-int-search input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; color: var(--text); font: inherit; user-select: text; }
+.ox-int-search input::placeholder { color: var(--muted); }
+.ox-int-note { color: var(--muted); font-size: 12.5px; margin: -12px 0 16px; text-align: right; }
+.ox-int-note:empty { display: none; }
+.ox-int-row { display: flex; align-items: center; gap: 12px; background: var(--card); border-radius: 12px; padding: 20px 22px; margin-bottom: 12px; }
+.ox-int-row > svg.ox-i { width: 18px; height: 18px; color: var(--muted); flex: none; }
+.ox-int-row .ox-nm { font-weight: 600; font-size: 15px; }
+.ox-int-row small { color: var(--muted); font-size: 12px; margin-left: 10px; }
+.ox-int-row .ox-sp { flex: 1; }
+.ox-int-row .btn.off { color: var(--muted); }
+.ox-int-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.ox-int-empty { color: var(--muted); padding: 6px 2px 4px; }
+.ox-int-h { margin: 26px 0 10px; color: var(--muted); font-size: 13.5px; }
+.ox-int-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.ox-int-tile { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; background: var(--card); border-radius: 12px; text-align: left; color: var(--text); }
+.ox-int-tile:hover { background: var(--hover); }
+.ox-int-tile .ox-nm { flex: 1; min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ox-int-tile > svg.ox-i { width: 16px; height: 16px; color: var(--muted); flex: none; }
+.ox-int-tile.added { opacity: .6; cursor: default; }
+.ox-int-ic { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 14px; flex: none; }
+.ox-int-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: -8px 0 16px; }
+.ox-int-chip { padding: 4px 12px; border-radius: 999px; background: var(--card); color: var(--muted); font-size: 12px; }
+.ox-int-chip:hover { background: var(--hover); color: var(--text); }
+.ox-int-chip.on { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+
+/* ---------- SETTINGS PAGE ---------- */
+.ox-settings { display: none; flex: 1; min-width: 0; padding: 0 14px 8px 0; }
+.ox-shell.settings-open .ox-settings { display: block; }
+.ox-settings-in { height: 100%; background: var(--side); border-radius: 14px; display: flex; overflow: hidden; }
+.ox-s-nav { width: var(--side-w); flex: none; border-right: 1px solid var(--line); padding: 18px 10px; display: flex; flex-direction: column; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--active) transparent; }
+.ox-s-nav h2 { font-size: 19px; font-weight: 600; padding: 0 9px 16px; letter-spacing: -.2px; }
+.ox-s-search { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 11px; background: var(--input); border-radius: 9px; color: var(--muted); margin-bottom: 12px; }
+.ox-s-search svg { width: 15px; height: 15px; flex: none; }
+.ox-s-search input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; color: var(--text); font: inherit; user-select: text; }
+.ox-s-search input::placeholder { color: var(--muted); }
+.ox-s-item { display: block; width: 100%; height: 34px; text-align: left; padding: 0 9px; border-radius: 8px; color: var(--text); white-space: nowrap; }
+.ox-s-item:hover { background: var(--hover); }
+.ox-s-item.on { background: var(--active); font-weight: 500; }
+.ox-s-main { flex: 1; min-width: 0; overflow-y: auto; padding: 40px 42px 48px 48px; scrollbar-width: thin; scrollbar-color: var(--active) transparent; user-select: text; }
+.ox-s-wrap { max-width: 940px; margin: 0 auto; }
+.ox-s-title { font-size: 28px; font-weight: 500; letter-spacing: -.3px; margin-bottom: 28px; display: flex; align-items: center; gap: 10px; }
+.ox-s-title .ox-help { display: inline-flex; font-size: 0; color: var(--muted); }
+.ox-s-title .ox-help svg { width: 15px; height: 15px; }
+.ox-card { background: var(--card); border-radius: 14px; padding: 22px; margin-bottom: 16px; }
+.ox-card h3 { display: flex; align-items: center; gap: 7px; font-size: 15px; font-weight: 600; margin-bottom: 22px; }
+.ox-card h3 svg { width: 15px; height: 15px; color: var(--muted); }
+.ox-card h3.ox-solo { margin-bottom: 12px; }
+.ox-card.flat h3.ox-solo { margin-bottom: 6px; }
+.ox-card .f-err:empty, .ox-card .note:empty { display: none; }
+.ox-s-sub { color: var(--muted); margin: -14px 0 24px; max-width: 680px; line-height: 1.5; }
+.ox-meter .ox-top { display: flex; justify-content: space-between; margin-bottom: 12px; }
+.ox-meter .ox-top span:last-child { color: var(--muted); }
+.ox-bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+.ox-bar i { display: block; height: 100%; background: var(--fill); border-radius: 3px; }
+.ox-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.ox-stats.two { grid-template-columns: repeat(2, 1fr); }
+.ox-stat small { display: block; color: var(--muted); font-size: 13.5px; margin-bottom: 6px; }
+.ox-stat b { font-size: 28px; font-weight: 500; letter-spacing: -.4px; }
+.ox-heat { display: grid; grid-template-rows: repeat(7, 11px); grid-auto-flow: column; grid-auto-columns: 11px; gap: 3px; margin-top: 26px; overflow: hidden; }
+.ox-heat i { border-radius: 2px; background: var(--cell); }
+.ox-heat i.a { background: var(--heat); }
+.ox-lines { margin-top: 22px; }
+.ox-ln { display: flex; justify-content: space-between; align-items: center; padding: 15px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.ox-ln span:first-child { font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.ox-ln span:first-child svg { width: 15px; height: 15px; color: var(--muted); font-weight: 400; }
+.ox-ln span:last-child { color: var(--muted); }
+
+/* keyboard shortcuts page */
+.ox-ks { max-width: 700px; margin: 0; }
+.ox-ks-sub { color: var(--muted); margin: -8px 0 20px; }
+.ox-ks-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+.ox-ks-g { margin: 24px 0 4px; color: var(--muted); font-size: 13px; font-weight: 500; }
+.ox-ks-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 40px; border-bottom: 1px solid var(--line); }
+.ox-ks-r { display: flex; align-items: center; gap: 8px; flex: none; }
+.ox-ks-keys { display: flex; gap: 4px; padding: 4px; border-radius: 8px; }
+.ox-ks-keys:hover { background: var(--hover); }
+.ox-kc { min-width: 28px; height: 26px; padding: 0 8px; border-radius: 7px; background: var(--active); display: inline-grid; place-items: center; font-size: 12.5px; font-weight: 500; }
+.ox-ks-none { color: var(--muted); font-size: 13px; padding: 0 6px; }
+.ox-ks-ic { width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; color: var(--muted); }
+.ox-ks-ic:hover { background: var(--hover); color: var(--text); }
+.ox-ks-ic svg { width: 14px; height: 14px; }
+.ox-ks-ic.bg { background: var(--active); }
+.ox-ks-cap { padding: 5px 12px; border-radius: 8px; border: 1px dashed var(--accent); color: var(--accent); font-size: 12.5px; font-weight: 500; }
+.ox-ks-cap small { color: var(--muted); margin-left: 8px; font-weight: 400; }
+.ox-ks-err { color: #e5484d; font-size: 12.5px; padding: 0 0 8px; }
+.ox-ks-empty { padding: 30px 0; text-align: center; color: var(--muted); }
+
+/* skills page */
+.ox-sk-card { padding: 22px 24px 10px; }
+.ox-sk-search { width: 100%; height: 38px; border-radius: 9px; border: 1px solid transparent; background: var(--input); color: var(--text); font: inherit; padding: 0 14px; outline: 0; user-select: text; }
+.ox-sk-search:focus { border-color: var(--accent); }
+.ox-sk-search::placeholder { color: var(--muted); }
+.ox-sk-bar { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; }
+.ox-sk-bar .ox-sp { flex: 1; }
+.ox-sk-bar .cnt { color: var(--muted); font-size: 13px; }
+.ox-sk-cat { margin: 22px 0 2px 8px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+.ox-sk { display: flex; align-items: flex-start; gap: 14px; padding: 16px 8px; border-top: 1px solid var(--line); }
+.ox-sk-cat + .ox-sk { border-top: 0; }
+.ox-sk-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--input); display: grid; place-items: center; flex: none; color: var(--muted); margin-top: 2px; }
+.ox-sk-ic svg { width: 17px; height: 17px; }
+.ox-sk-body { flex: 1; min-width: 0; }
+.ox-sk-body b { display: block; font-weight: 600; font-size: 14.5px; margin-bottom: 4px; }
+.ox-sk-body p { color: var(--muted); font-size: 13.5px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ox-sk-act { display: flex; align-items: center; gap: 12px; flex: none; margin-top: 2px; }
+.ox-sk-empty { padding: 34px 0 28px; text-align: center; color: var(--muted); }
+
+/* account page */
+.ox-acc-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; padding: 6px 0; }
+.ox-acc-row + .ox-acc-row { border-top: 1px solid var(--line); }
+.ox-acc-row .k { font-weight: 600; }
+.ox-acc-row .v { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ox-acc-row .v span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ox-acc-row input { height: 34px; width: 260px; max-width: 100%; border-radius: 8px; border: 1px solid var(--accent); background: var(--input); color: var(--text); font: inherit; padding: 0 10px; outline: 0; user-select: text; }
+.ox-acc-del-txt { color: var(--muted); }
+.ox-acc-del-actions { display: flex; gap: 8px; flex: none; }
+
+/* generic rows */
+.ox-cta { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.ox-cta b { display: block; font-weight: 600; margin-bottom: 6px; }
+.ox-cta p { color: var(--muted); }
+.ox-set-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 34px; }
+.ox-set-row .lbl { display: flex; align-items: center; gap: 7px; font-weight: 500; }
+.ox-set-row .lbl svg { width: 15px; height: 15px; color: var(--muted); }
+.ox-note { color: var(--muted); font-size: 12.5px; margin-top: 10px; min-height: 16px; }
+.ox-db-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 0; }
+.ox-db-row + .ox-db-row { border-top: 1px solid var(--line); }
+.ox-db-row b { display: block; font-weight: 600; margin-bottom: 4px; }
+.ox-db-row p { color: var(--muted); font-size: 13.5px; }
+.ox-db-row .btn { flex: none; }
+
+/* switch / select / buttons */
+.ox-sw { position: relative; width: 42px; height: 26px; border-radius: 13px; background: var(--track); flex: none; transition: background .15s; }
+.ox-sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); transition: transform .15s; }
+.ox-sw[aria-checked="true"] { background: var(--accent); }
+.ox-sw[aria-checked="true"]::after { transform: translateX(16px); }
+.ox-sel { appearance: none; background: none; border: 0; color: var(--text); font: inherit; font-weight: 500; cursor: pointer; padding: 6px 22px 6px 8px; border-radius: 8px; outline: 0; background-image: linear-gradient(45deg, transparent 50%, var(--text) 50%), linear-gradient(135deg, var(--text) 50%, transparent 50%); background-position: calc(100% - 11px) 14px, calc(100% - 7px) 14px; background-size: 4px 4px; background-repeat: no-repeat; }
+.ox-sel:hover { background-color: var(--hover); }
+.ox-sel option { background: var(--side); color: var(--text); }
+.ox-btn { display: inline-flex; align-items: center; justify-content: center; height: 34px; padding: 0 16px; border-radius: 9px; background: var(--accent); color: #1b1206; font-weight: 600; font-size: 13.5px; }
+.ox-btn:hover { filter: brightness(1.08); }
+.ox-btn.soft { background: var(--active); color: var(--text); }
+.ox-btn.soft:hover { filter: brightness(1.12); }
+.ox-btn.ghost { background: none; color: var(--text); }
+.ox-btn.ghost:hover { background: var(--hover); filter: none; }
+.ox-btn.sm { height: 30px; padding: 0 12px; font-size: 13px; }
+.ox-btn.danger { background: var(--danger-btn); color: #fff; }
+.ox-btn.icon { width: 34px; padding: 0; }
+.ox-btn.icon svg { width: 17px; height: 17px; }
+
+/* model providers page */
+.ox-mp { display: grid; grid-template-columns: 280px 1fr; background: var(--card); border-radius: 14px; overflow: hidden; align-items: stretch; }
+.ox-mp-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 16px 18px; text-align: left; color: var(--text); }
+.ox-mp-item:hover, .ox-mp-item.on { background: var(--hover); }
+.ox-mp-item b { display: block; font-weight: 600; font-size: 14px; }
+.ox-mp-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--input); display: grid; place-items: center; flex: none; color: var(--muted); }
+.ox-mp-ic svg { width: 18px; height: 18px; }
+.ox-mp-st { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.ox-mp-st::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--muted); flex: none; }
+.ox-mp-st.ok::before { background: #4caf50; }
+.ox-mp-chev { margin-left: auto; color: var(--muted); }
+.ox-mp-chev svg { width: 14px; height: 14px; }
+.ox-mp-pane { padding: 22px 24px; border-left: 1px solid var(--line); min-width: 0; }
+.ox-mp-head { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: 15px; margin-bottom: 6px; }
+.ox-mp-head .ox-mp-ic { width: 32px; height: 32px; }
+.ox-mp-empty { text-align: center; padding: 34px 0 26px; }
+.ox-mp-empty h4 { font-size: 19px; font-weight: 600; margin-bottom: 18px; }
+.ox-f-l { display: block; font-weight: 600; margin: 18px 0 8px; font-size: 14px; }
+.ox-f-in { width: 100%; height: 40px; border-radius: 9px; border: 1px solid transparent; background: var(--input); color: var(--text); font: inherit; padding: 0 12px; outline: 0; user-select: text; }
+.ox-f-in:focus { border-color: var(--accent); }
+.ox-f-in::placeholder { color: var(--muted); }
+select.ox-f-in { appearance: none; cursor: pointer; padding-right: 30px; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 17px) 17px, calc(100% - 12px) 17px; background-size: 5px 5px; background-repeat: no-repeat; }
+.ox-f-row { display: flex; align-items: center; gap: 14px; }
+.ox-f-row select { width: 200px; flex: none; }
+.ox-f-row a { color: var(--text); font-size: 13px; text-decoration: none; white-space: nowrap; }
+.ox-f-row a:hover { text-decoration: underline; }
+.ox-f-desc { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--muted); font-size: 13px; }
+.ox-tier { font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 2px 7px; border-radius: 5px; flex: none; line-height: 1.5; }
+.ox-tier.free { background: rgba(76, 175, 80, .16); color: #4caf50; }
+.ox-tier.paid { background: var(--input); color: var(--muted); }
+.ox-pv-row .ox-tier { margin-left: 6px; vertical-align: 1px; }
+.ox-f-key { position: relative; }
+.ox-f-key .ox-f-in { padding-right: 64px; }
+.ox-f-key button { position: absolute; right: 6px; top: 5px; height: 30px; padding: 0 10px; font-weight: 600; border-radius: 7px; }
+.ox-f-key button:hover { background: var(--hover); }
+.ox-f-adv { margin-top: 22px; padding-top: 8px; border-top: 1px solid var(--line); }
+.ox-f-adv summary { cursor: pointer; font-weight: 600; padding: 12px 0; list-style: none; display: flex; align-items: center; gap: 8px; }
+.ox-f-adv summary::-webkit-details-marker { display: none; }
+.ox-f-adv summary::before { content: ""; border: 5px solid transparent; border-left: 7px solid currentColor; border-right: 0; transition: transform .12s; }
+.ox-f-adv[open] summary::before { transform: rotate(90deg); }
+.ox-f-foot { display: flex; align-items: center; gap: 10px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.ox-f-foot .ox-sp { flex: 1; }
+.ox-f-err { color: #e5484d; font-size: 13px; margin-top: 12px; min-height: 16px; }
+.ox-pv-row { display: flex; align-items: center; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
+.ox-pv-row:first-of-type { border-top: 0; }
+.ox-pv-row div { min-width: 0; flex: 1; }
+.ox-pv-row b { display: block; font-weight: 600; }
+.ox-pv-row small { display: block; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ox-mp-note { color: var(--muted); margin: 10px 0 0; font-size: 13.5px; }
+
+/* appearance page */
+.ox-themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.ox-theme { background: none; border: 2px solid var(--line); border-radius: 12px; padding: 10px; text-align: left; color: var(--text); }
+.ox-theme:hover { border-color: var(--muted); }
+.ox-theme.on { border-color: var(--accent); }
+.ox-theme .ox-pv { height: 84px; border-radius: 8px; margin-bottom: 10px; display: flex; overflow: hidden; border: 1px solid rgba(128, 128, 128, .25); }
+.ox-theme .ox-pv i { display: block; }
+.ox-theme b { font-weight: 500; }
+.ox-theme small { display: block; color: var(--muted); margin-top: 2px; font-size: 12px; }
+
+/* archived page */
+.ox-arch-row { display: flex; align-items: center; gap: 12px; padding: 14px 4px; border-top: 1px solid var(--line); }
+.ox-arch-row:first-of-type { border-top: 0; }
+.ox-arch-row .ox-nm { flex: 1; min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ox-arch-row small { color: var(--muted); flex: none; }
+
+/* prompt-bar plug popover (Manage integrations) */
+.ox-plug-pop { position: fixed; z-index: 220; width: 280px; max-height: 320px; overflow-y: auto; padding: 8px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 8px 28px rgba(0, 0, 0, .4); font-size: 12.5px; }
+.ox-plug-pop .ox-plug-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 10px; font-weight: 600; }
+.ox-plug-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 8px; }
+.ox-plug-row:hover { background: var(--hover); }
+.ox-plug-row .ox-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ox-plug-foot { padding: 8px 8px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
+.ox-plug-foot button { color: var(--accent); font-weight: 600; font-size: 12.5px; }
+.ox-plug-empty { padding: 12px 8px; color: var(--muted); }
+
+/* ---------- RESPONSIVE (≤760px): hamburger drawer, sheet right panel ---- */
+.ox-hamburger { display: none; }
+@media (max-width: 760px) {
+  .ox-rail { display: none; }
+  .ox-lead-r { display: none; }
+  .ox-lead { width: auto; padding: 0 10px; }
+  .ox-hamburger { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 6px; color: var(--muted); margin-right: 6px; }
+  .ox-hamburger:hover { background: var(--hover); color: var(--text); }
+  .ox-rzone { width: auto; flex: 1; justify-content: flex-end; }
+  .ox-rzone .ox-tabs { display: none; }
+  .ox-side { position: fixed; left: 0; top: var(--strip-h); bottom: 0; width: min(var(--side-w), 82vw); z-index: 300; background: var(--side); border-radius: 0 14px 14px 0; padding: 8px; box-shadow: 0 10px 40px rgba(0, 0, 0, .5); transform: translateX(-105%); transition: transform .2s ease; }
+  .ox-shell.mobile-side .ox-side { transform: none; }
+  .ox-shell.collapsed .ox-side { width: min(var(--side-w), 82vw); }
+  .ox-side::before { content: ""; position: fixed; inset: var(--strip-h) 0 0 0; background: rgba(0, 0, 0, .35); opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .ox-shell.mobile-side .ox-side::before { opacity: 1; pointer-events: auto; }
+  .ox-rpanel { position: fixed; left: 0; right: 0; top: var(--strip-h); bottom: 0; width: auto; z-index: 250; background: var(--main); padding: 10px; border-radius: 14px 14px 0 0; }
+  .ox-shell.settings-open .ox-s-nav { width: 100%; border-right: 0; }
+  .ox-shell.settings-open .ox-settings-in { flex-direction: column; }
+  .ox-int-in, .ox-s-main { padding: 24px 18px 40px; }
+  .ox-int-head { flex-wrap: wrap; }
+  .ox-mp { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ox-lead, .ox-side, .ox-sw, .ox-sw::after, .ox-usage-pop { transition: none; }
+}
