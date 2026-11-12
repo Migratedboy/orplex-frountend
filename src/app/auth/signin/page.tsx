@@ -186,16 +186,20 @@ export default function SignInPage() {
       return;
     }
     try {
-      // Route plain-browser sign-ins through the same desktop grant flow so
-      // the session cookie lands on THIS origin (the proxy rewrites it to the
-      // backend, which mints the grant and redirects back here with ?grant=).
-      // A relative callbackUrl would resolve against the backend origin and
-      // land the user on the api-only JSON stub.
+      // Route plain-browser sign-ins through the MEDIATOR SITE's desktop
+      // grant flow: the OAuth round-trip (state cookies + provider redirect
+      // URIs) lives on the site origin now, so starting anywhere else puts
+      // the provider's state cookies on an origin the callback never hits.
+      // The backend mints the grant and finish redirects back to THIS
+      // origin with ?grant= (return_to is allowlisted as loopback).
+      const siteOrigin = (
+        process.env.NEXT_PUBLIC_SITE_URL || "https://orplex-code.vercel.app"
+      ).replace(/\/+$/, "");
       const returnTo = encodeURIComponent(
         `${window.location.origin}/auth/signin`
       );
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      window.location.href = `/api/auth/desktop/start?provider=${provider}&return_to=${returnTo}`;
+      window.location.href = `${siteOrigin}/api/auth/desktop/start?provider=${provider}&return_to=${returnTo}`;
     } catch {
       setError("Authentication failed. Please try again.");
       setLoading(false);

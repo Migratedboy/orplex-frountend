@@ -4,12 +4,15 @@
 // callback lands on the cloud domain, so the session cookie never reaches the
 // app's own origin. The deep-link handoff fixes that:
 //
-//   1. The renderer asks the main process to open the SYSTEM browser at
-//      `<backend>/api/auth/desktop/start?provider=google|github`.
-//   2. The backend completes the OAuth flow on its own domain (Google/GitHub
-//      redirect URIs stay exactly as configured — nothing to re-register),
-//      mints a single-use code, and navigates the browser to
-//      `orplex://auth?code=<one-time-code>` (or `?error=<reason>`).
+//   1. The renderer asks the main process to open the SYSTEM browser at the
+//      MEDIATOR SITE's login page (`ORPLEX_AUTH_URL`, default
+//      https://orplex-code.vercel.app/login?app=auth).
+//   2. The site owns the whole OAuth round-trip (GitHub/Google/email magic
+//      link — NEXTAUTH_URL and the provider redirect URIs live there), so
+//      the session cookie lands on the site origin. When the page was opened
+//      in app mode, its JS mints a short-lived one-time token at
+//      /api/auth/desktop/link (proxied to the backend) and navigates to
+//      `orplex://auth?code=<token>` (or `?error=<reason>`).
 //   3. The OS launches/focuses this app with that URL (protocol handler),
 //      or hands it to the running instance via `second-instance` argv.
 //   4. Main parses the URL and forwards { code, error } to the renderer,
@@ -25,18 +28,30 @@ import { app, ipcMain, shell, type BrowserWindow } from "electron";
 import path from "node:path";
 
 const PROTOCOL = "orplex";
-const DEFAULT_BACKEND = "https://orplextech.freebuff.app";
+/** The mediator site's login page in app mode — where desktop sign-in starts. */
+const DEFAULT_AUTH_URL = "https://orplex-code.vercel.app/login?app=auth";
 
 export interface DesktopAuthPayload {
   code?: string;
   error?: string;
 }
 
-function backendOrigin(): string {
-  const raw = (process.env.ORPLEX_API_URL || process.env.NEXT_PUBLIC_API_BASE_URL || "")
-    .trim()
-    .replace(/\/+$/, "");
-  return raw || DEFAULT_BACKEND;
+/**
+ * Kept for reference — desktop sign-in no longer starts on the backend (the
+ * mediator site does, see authOrigin). The backend origin still drives ALL
+ * other app API traffic via the local proxy (ORPLEX_API_URL).
+ */
+
+/**
+ * Where desktop sign-in STARTS: the mediator site, not the backend. The
+ * site's OAuth round-trip (and the provider-registered redirect URIs) live
+ * on orplex-code.vercel.app — starting on the backend would put the
+ * provider's state cookies on the wrong origin and kill the flow. Override
+ * with ORPLEX_AUTH_URL (shipped in electron/app-config.json as authUrl).
+ */
+function authOrigin(): string {
+  const raw = (process.env.ORPLEX_AUTH_URL || "").trim().replace(/\/+$/, "");
+  return raw || DEFAULT_AUTH_URL;
 }
 
 /** Parse `orplex://auth?code=…` / `orplex://auth?error=…`. Null when unrelated. */
@@ -118,12 +133,13 @@ export function registerDesktopAuth(windowGetter: () => BrowserWindow | null): v
     }
   }
 
-  // Renderer → main: open the backend's desktop sign-in start page in the
-  // user's real browser (system browser = the user's existing OAuth session
-  // and password manager, per RFC 8252).
+  // Renderer → main: open the mediator site's sign-in page in the user's
+  // real browser (system browser = the user's existing OAuth session and
+  // password manager, per RFC 8252). The site handles ALL providers
+  // (GitHub / Google / email) in one UI, so `provider` is ignored here.
   ipcMain.handle("orplex:auth-start", async (_e, provider: string) => {
-    const p = provider === "github" ? "github" : "google";
-    const url = `${backendOrigin()}/api/auth/desktop/start?provider=${p}`;
+    void provider; // site page offers every provider; kept for IPC compatibility
+    const url = authOrigin();
     try {
       await shell.openExternal(url);
       return { ok: true, url };

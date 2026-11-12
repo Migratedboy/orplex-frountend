@@ -68,10 +68,15 @@ installPipeResilience();
       if (!fs.existsSync(p)) continue;
       const cfg = JSON.parse(fs.readFileSync(p, "utf8")) as {
         apiUrl?: string;
+        authUrl?: string;
         lightweight?: boolean;
         sessionPublicKey?: string;
       };
       if (cfg.apiUrl && !process.env.ORPLEX_API_URL) process.env.ORPLEX_API_URL = cfg.apiUrl;
+      // Desktop sign-in starts on the MEDIATOR SITE (the OAuth round-trip and
+      // provider redirect URIs live there); the backend origin is only the
+      // API target. .env / shell env keep winning for local dev.
+      if (cfg.authUrl && !process.env.ORPLEX_AUTH_URL) process.env.ORPLEX_AUTH_URL = cfg.authUrl;
       if (cfg.lightweight && !process.env.ORPLEX_LIGHTWEIGHT) process.env.ORPLEX_LIGHTWEIGHT = "1";
       // The app verifies its own session cookie with the backend's PUBLIC
       // key (the private key never leaves the backend). Without it the local
