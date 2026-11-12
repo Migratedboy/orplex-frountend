@@ -65,10 +65,25 @@ const SPLIT_COOKIES = splitDeploymentCookies();
 // Shared JWT callbacks — used by both full authOptions and lightweight jwtOnlyOptions.
 // Keeping these in one place ensures session shape is consistent everywhere.
 const jwtCallbacks: NextAuthOptions["callbacks"] = {
-  async jwt({ token, user }) {
+  async jwt({ token, user, account, profile }) {
     if (user) {
       token.id = user.id;
       token.image = user.image;
+    }
+    // Identity must follow the provider the user JUST signed in with.
+    // With an adapter + JWT sessions, a linked provider re-auth reuses the
+    // existing DB user, whose name/image are whatever the FIRST provider
+    // stored — signing in with GitHub while the row was created via Google
+    // kept showing the Google name + avatar. Refresh from the fresh OAuth
+    // profile instead (GitHub → login/name + avatar_url, Google → name +
+    // picture). The DB row sync lives only in the backend copy; self-hosted
+    // mode treats the JWT as the single source of truth.
+    if (account?.provider && profile) {
+      const p = profile as { name?: string; login?: string; picture?: string; avatar_url?: string };
+      const nextName = (p.name || (account.provider === "github" ? p.login : "")) || "";
+      const nextImage = p.picture || p.avatar_url || "";
+      if (nextName) token.name = nextName;
+      if (nextImage) token.image = nextImage;
     }
     return token;
   },
