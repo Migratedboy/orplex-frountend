@@ -101,6 +101,13 @@ export const chatMessageSchema = z.object({
       ).optional(),
     })
   ).optional(),
+  // User-authored skill roster (.orplex/skills) sent by the DESKTOP client.
+  // In split mode /api/chat runs on the backend, which cannot read the user's
+  // workspace, so its own loadUserSkills() came back empty and the model was
+  // never told a skill existed. The desktop reads the roster from its local
+  // /api/agent/skills route and sends it here. Names + descriptions only
+  // (renderSkillRoster output), capped at the same 1,600-char budget.
+  skillRoster: z.string().max(2000).optional(),
 });
 
 // Inferred type
@@ -133,7 +140,7 @@ function validateInput<T>(schema: z.ZodSchema<T>, input: unknown): ValidationRes
   }
   return {
     valid: false,
-    errors: result.error.errors.map(e => `${e.path.join(".")}: ${e.message}`),
+    errors: result.error.issues.map((e: { path: PropertyKey[]; message: string }) => `${e.path.join(".")}: ${e.message}`),
   };
 }
 

@@ -65,7 +65,7 @@ export async function POST(request: NextRequest) {
     if (!parsed.success) {
       // SECURITY: Never leak internal validation details to client
       // Log details server-side only for debugging
-      console.warn("[Bug Report] Validation failed:", parsed.error.errors);
+      console.warn("[Bug Report] Validation failed:", parsed.error.issues);
       return NextResponse.json(
         { success: false, message: "Invalid input. Please check all fields and try again." },
         { status: 400 }

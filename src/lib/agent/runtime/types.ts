@@ -47,7 +47,7 @@ export const createTaskInputSchema = z.object({
   runId: z.string().min(1),
   role: agentRoleSchema,
   title: z.string().min(1).max(255),
-  input: z.record(z.unknown()).default({}),
+  input: z.record(z.string(), z.unknown()).default({}),
   dependsOn: z.array(z.string().min(1)).default([]),
 });
 

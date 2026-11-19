@@ -7,7 +7,9 @@ import { useToast } from "./Toast";
 import PromptBar, { type PromptBarMode, type PromptBarModel, type PromptBarSource } from "./PromptBar";
 import ChangesBar from "./ChangesBar";
 import { useFileProcessor, formatFileSize, getFileIcon } from "@/hooks/useFileProcessor";
-import { SKILL_CATEGORIES, type Skill } from "@/lib/skills";
+import type { Skill, SkillCategory } from "@orplex/sdk/skills";
+import { useMarketplaceSkills } from "@/hooks/useMarketplaceSkills";
+import { loadDisabledSkillIds, SKILL_SETTINGS_EVENT } from "@/lib/skill-settings";
 import ConnectorsPanel from "./ConnectorsPanel";
 import { IconMcp } from "./Icons";
 import type { AttachedFile } from "@/hooks/useFileProcessor";
@@ -60,9 +62,13 @@ interface ChatInputProps {
  * memo, which feeds `list`, which feeds the scroll-into-view layout effect —
  * so the model menu scrolled on every parent render while open.
  */
-const SKILL_COMMANDS = SKILL_CATEGORIES.flatMap((c) =>
-  c.skills.map((s) => ({ key: s.id, name: `/${s.name}`, description: s.description, insert: s.promptPrefix }))
-);
+function buildSkillCommands(categories: SkillCategory[], disabled: Set<string>) {
+  return categories.flatMap((c) =>
+    c.skills
+      .filter((s) => !disabled.has(s.id))
+      .map((s) => ({ key: s.id, name: `/${s.name}`, description: s.description, insert: s.promptPrefix }))
+  );
+}
 const EFFORT_TIERS = ["Low", "Medium", "High"];
 
 const MODES: (PromptBarMode & { agentMode: AgentMode })[] = [
@@ -154,6 +160,24 @@ export const droppedFilesBridge: { add: ((files: AttachedFile[]) => void) | null
 
 export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, runPhase = "idle", requestStartedAt, agentEvents = [], turnActive, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, stopped = false }: ChatInputProps) {
   const files = useFileProcessor();
+  // Built-in skill toggles (Settings → Skills). Disabled skills are removed
+  // from the prompt-bar "/" menu so they can't be inserted.
+  const [disabledSkillIds, setDisabledSkillIds] = useState<Set<string>>(() => loadDisabledSkillIds());
+  useEffect(() => {
+    const handler = () => setDisabledSkillIds(loadDisabledSkillIds());
+    window.addEventListener(SKILL_SETTINGS_EVENT, handler);
+    window.addEventListener("storage", handler);
+    return () => {
+      window.removeEventListener(SKILL_SETTINGS_EVENT, handler);
+      window.removeEventListener("storage", handler);
+    };
+  }, []);
+  // Marketplace skills (signed catalogue, fetched at runtime).
+  const { categories: skillCategories } = useMarketplaceSkills();
+  const skillCommands = useMemo(
+    () => buildSkillCommands(skillCategories, disabledSkillIds),
+    [skillCategories, disabledSkillIds],
+  );
   // Publish the attach bridge (page-level drag-and-drop) and release it on unmount.
   useEffect(() => {
     droppedFilesBridge.add = files.addFiles;
@@ -495,7 +519,7 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             modes={MODES}
             defaultMode={agentMode}
             sources={SOURCES}
-            commands={SKILL_COMMANDS}
+            commands={skillCommands}
             models={models}
             recentModels={recentModels}
             modelsLoading={showBlockingSpinner}

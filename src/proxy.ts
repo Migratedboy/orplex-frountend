@@ -34,9 +34,19 @@ import { meetsMinimum } from "@/lib/app-version";
 import { buildCsp } from "@/lib/csp";
 import { isSameOriginRequest, isStateChangingMethod } from "@/lib/same-origin";
 
-// Simple request ID generation - Edge Runtime compatible (no Node.js modules)
+// Cryptographically-strong request ID — Edge Runtime compatible.
+// Math.random() is predictable and must never seed request correlation IDs.
 function generateRequestId(): string {
-  return Math.random().toString(36).substring(2) + Date.now().toString(36);
+  try {
+    const c = globalThis.crypto;
+    if (c && typeof c.randomUUID === "function") return c.randomUUID();
+    if (c && typeof c.getRandomValues === "function") {
+      const buf = new Uint8Array(16);
+      c.getRandomValues(buf);
+      return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+    }
+  } catch { /* fall through */ }
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
 // Backend origin for the API forward. Reads ORPLEX_API_URL (server-side
@@ -128,6 +138,10 @@ const LOCAL_ONLY_API_ROUTES = [
   "/api/localhost-probe",
   "/api/agent/grep",
   "/api/agent/checkpoints",
+  // The signed marketplace catalogue is verified with a public key that lives
+  // in THIS app, and cached on THIS disk. Forwarding it to the backend would
+  // move signature verification out of the process that consumes the data.
+  "/api/marketplace/catalog",
 ];
 
 // Conversations are LOCAL-FIRST in the desktop app: history CRUD reads and
