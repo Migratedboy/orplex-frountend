@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { apiFetch } from "@/lib/api-base";
 import ChangesBar from "../ChangesBar";
 
-jest.mock("@/lib/api-base", () => ({ apiFetch: jest.fn() }));
+jest.mock("@orplex/sdk/lib/api-base", () => ({ apiFetch: jest.fn() }));
 
 const pendingFiles = [
   {

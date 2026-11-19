@@ -13,7 +13,7 @@
 
 import { renderHook, act } from "@testing-library/react";
 
-jest.mock("@/lib/api-base", () => ({
+jest.mock("@orplex/sdk/lib/api-base", () => ({
   apiFetch: jest.fn(),
 }));
 

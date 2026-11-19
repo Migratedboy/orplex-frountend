@@ -59,7 +59,7 @@ describe("runUserHooks", () => {
     // Bypass the loader with a cache primed through the parse path: write a
     // temp config via the mocked readFile — simpler: parse-then-run against
     // a nonexistent dir yields no hooks, so prove the guard directly.
-    const { isCommandAllowed } = jest.requireActual("@/lib/exec-guard") as {
+    const { isCommandAllowed } = jest.requireActual("@orplex/sdk/lib/exec-guard") as {
       isCommandAllowed: (c: string) => { allowed: boolean };
     };
     expect(isCommandAllowed("rm -rf /").allowed).toBe(false);

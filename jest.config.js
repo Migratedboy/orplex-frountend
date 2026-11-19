@@ -18,6 +18,8 @@ module.exports = {
       roots: ["<rootDir>/src", "<rootDir>/electron"],
       testMatch: ["**/__tests__/**/*.test.ts"],
       moduleNameMapper: { "^@/(.*)$": "<rootDir>/src/$1" },
+      // Host contract for @orplex/sdk (approval mode) — must precede test imports.
+      setupFiles: ["<rootDir>/jest.setup.sdk.ts"],
       transform: {
         "^.+\\.tsx?$": ["ts-jest", { tsconfig: "tsconfig.json", isolatedModules: true }],
       },
@@ -34,6 +36,7 @@ module.exports = {
         "^@/(.*)$": "<rootDir>/src/$1",
         "\\.(css|less|scss|sass)$": "<rootDir>/jest.styleMock.js",
       },
+      setupFiles: ["<rootDir>/jest.setup.sdk.ts"],
       transform: {
         "^.+\\.tsx?$": ["ts-jest", { tsconfig: "tsconfig.json", isolatedModules: true }],
       },

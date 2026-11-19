@@ -24,7 +24,7 @@ import { dispatchToolCall, type ToolContext } from "../native-tools";
 import { M3_TOOL_DEFINITIONS } from "../../tool-definitions";
 import type { ToolCall } from "../../stream-reader";
 
-jest.mock("@/lib/api-base", () => ({
+jest.mock("@orplex/sdk/lib/api-base", () => ({
   // If a branch ever reaches the network in these tests, fail loudly instead
   // of hanging on a real request.
   apiFetch: jest.fn(() => {
@@ -83,8 +83,10 @@ function makeCtx(): ToolContext {
 const emptyCall = (name: string): ToolCall => ({ name } as ToolCall);
 
 describe("dispatch surface — every defined tool routes (the split-safety contract)", () => {
-  it("M3_TOOL_DEFINITIONS still exposes 48 tools (the source of truth)", () => {
-    expect(TOOL_NAMES).toHaveLength(48);
+  it("M3_TOOL_DEFINITIONS still exposes 49 tools (the source of truth)", () => {
+    // 48 → 49 when use_skill joined the chat lane's roster (user-authored
+    // SKILL.md loading — the same tool the worktree lane already had).
+    expect(TOOL_NAMES).toHaveLength(49);
   });
 
   it.each(TOOL_NAMES)("routes %s without throwing and names it in the envelope", async (name) => {

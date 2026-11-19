@@ -4,8 +4,8 @@
 // launch, and policy/validation must fire before any session is created.
 import { runBrowserOp, activeSessionCount } from "../agent-browser-session";
 
-jest.mock("@/lib/browser-verification", () => ({
-  ...jest.requireActual("@/lib/browser-verification"),
+jest.mock("@orplex/sdk/lib/browser-verification/index", () => ({
+  ...jest.requireActual("@orplex/sdk/lib/browser-verification/index"),
   isInstalledChromeAvailable: jest.fn().mockResolvedValue(false),
 }));
 

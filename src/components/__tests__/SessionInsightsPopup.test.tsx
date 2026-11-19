@@ -7,7 +7,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import SessionInsightsPopup from "../SessionInsightsPopup";
 
 const mockApiFetch = jest.fn();
-jest.mock("@/lib/api-base", () => ({ apiFetch: (...a: unknown[]) => mockApiFetch(...a) }));
+jest.mock("@orplex/sdk/lib/api-base", () => ({ apiFetch: (...a: unknown[]) => mockApiFetch(...a) }));
 // The popup now carries the fork action, which pulls in router/toast/transport.
 // Fork is exercised elsewhere; these tests only care about the insights data.
 jest.mock("next/navigation", () => ({ useRouter: () => ({ push: jest.fn() }) }));

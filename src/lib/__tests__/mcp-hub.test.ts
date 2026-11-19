@@ -56,7 +56,7 @@ jest.mock("@modelcontextprotocol/client", () => {
   };
 });
 
-jest.mock("@/lib/mcp-catalog", () => ({
+jest.mock("@orplex/sdk/lib/mcp-catalog", () => ({
   getMcpCatalogEntry: jest.fn(() => null),
 }));
 

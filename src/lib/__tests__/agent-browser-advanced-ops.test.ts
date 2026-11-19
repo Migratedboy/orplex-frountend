@@ -10,8 +10,8 @@ import { runBrowserOp, activeSessionCount, resolveRefSelector, evaluateAttempts,
 import { M3_TOOL_DEFINITIONS, LEAN_TOOL_DEFINITIONS, LEAN_TOOL_NAMES, usesCompactTools } from "../tool-definitions";
 import { buildNativeToolDefs } from "../server-executor/executor";
 
-jest.mock("@/lib/browser-verification", () => ({
-  ...jest.requireActual("@/lib/browser-verification"),
+jest.mock("@orplex/sdk/lib/browser-verification/index", () => ({
+  ...jest.requireActual("@orplex/sdk/lib/browser-verification/index"),
   isInstalledChromeAvailable: jest.fn().mockResolvedValue(false),
 }));
 

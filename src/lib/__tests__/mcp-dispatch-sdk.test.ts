@@ -1,7 +1,7 @@
 // mcp-dispatch-sdk.test.ts — the SDK-lane dispatcher: one POST through
 // /api/agent/mcp/call, the shared tool_result contract, and honest error
 // mapping (reconnect hint, cooldown, truncation).
-jest.mock("@/lib/api-base", () => ({ apiFetch: jest.fn() }));
+jest.mock("@orplex/sdk/lib/api-base", () => ({ apiFetch: jest.fn() }));
 
 import { apiFetch } from "@/lib/api-base";
 import { dispatchMcpToolCallSdk } from "../mcp/dispatch";

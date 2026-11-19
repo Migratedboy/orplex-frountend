@@ -1,7 +1,9 @@
 // Regression tests for the parallel-workspaces Windows fix: the worktree
 // parent directory must be created with the fs API (mkdir recursive), never
 // through a Unix-only `mkdir -p` shell command.
-jest.mock("child_process", () => ({ execSync: jest.fn(), spawn: jest.fn() }));
+// The worktree path uses execFileSync (argv array, no shell) so a path with
+// spaces or shell metacharacters can never be reinterpreted by cmd.exe/sh.
+jest.mock("child_process", () => ({ execFileSync: jest.fn(), spawn: jest.fn() }));
 jest.mock("fs/promises", () => ({
   mkdir: jest.fn(),
   cp: jest.fn(),
@@ -17,21 +19,23 @@ jest.mock("@/lib/runtime-state", () => ({
   runtimeState: { workspaces: { fallbackCount: 0, lastFallbackAt: null, lastFallbackReason: null } },
 }));
 
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { mkdir, readdir } from "fs/promises";
 import { join } from "path";
 import { recordRuntimeLog } from "@/lib/runtime-log";
 import { runtimeState } from "@/lib/runtime-state";
 import { createWorkspace } from "../parallel-workspaces";
 
-const execSyncMock = execSync as unknown as jest.Mock;
+const execFileSyncMock = execFileSync as unknown as jest.Mock;
+/** Flatten execFileSync("git", ["worktree","add",...]) into one searchable string. */
+const gitCalls = () => execFileSyncMock.mock.calls.map((c) => [String(c[0]), ...(c[1] ?? []).map(String)].join(" "));
 const mkdirMock = mkdir as unknown as jest.Mock;
 const readdirMock = readdir as unknown as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
   // Default: git repo present, every git command succeeds.
-  execSyncMock.mockReturnValue(Buffer.from(""));
+  execFileSyncMock.mockReturnValue(Buffer.from(""));
   mkdirMock.mockResolvedValue(undefined);
   // Empty project listing keeps the directory-copy fallback trivial.
   readdirMock.mockResolvedValue([]);
@@ -43,7 +47,7 @@ describe("createWorkspace cross-platform directory creation", () => {
 
     expect(mkdirMock).toHaveBeenCalledWith(join("D:\\proj", ".orplex-workspaces"), { recursive: true });
     // The actual regression: no shell command may contain mkdir anymore.
-    const shellCommands = execSyncMock.mock.calls.map((c) => String(c[0]));
+    const shellCommands = gitCalls();
     expect(shellCommands.some((cmd) => cmd.includes("mkdir"))).toBe(false);
     expect(ws.branchName).toMatch(/^agent\/ws-/);
   });
@@ -51,13 +55,13 @@ describe("createWorkspace cross-platform directory creation", () => {
   it("still creates the git worktree inside the parent directory", async () => {
     const ws = await createWorkspace("D:\\proj");
 
-    const worktreeCmd = execSyncMock.mock.calls.map((c) => String(c[0])).find((cmd) => cmd.includes("git worktree add"));
+    const worktreeCmd = gitCalls().find((cmd) => cmd.includes("worktree add"));
     expect(worktreeCmd).toContain(ws.workspaceDir);
     expect(ws.workspaceDir).toBe(join("D:\\proj", ".orplex-workspaces", ws.id));
   });
 
   it("falls back to directory copy when git is unavailable (also fs-based)", async () => {
-    execSyncMock.mockImplementation(() => {
+    execFileSyncMock.mockImplementation(() => {
       throw new Error("git not found");
     });
 
@@ -70,9 +74,9 @@ describe("createWorkspace cross-platform directory creation", () => {
   it("marks non-git roots as a legitimate copy with the reason (never a fallback)", async () => directModeCheck("copy", "not a git repository"));
 
   it("marks worktree failures as copy-fallback, increments the metric, and logs loudly", async () => {
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (String(cmd).includes("rev-parse")) return Buffer.from(""); // git repo
-      if (String(cmd).includes("worktree add")) throw new Error("fatal: worktree add failed");
+    execFileSyncMock.mockImplementation((_file: string, args?: readonly string[]) => {
+      if (args?.includes("rev-parse")) return Buffer.from(""); // git repo
+      if (args?.includes("worktree")) throw new Error("fatal: worktree add failed");
       return Buffer.from("");
     });
 
@@ -94,7 +98,7 @@ describe("createWorkspace cross-platform directory creation", () => {
 
 /** Fresh-module variant of the legitimate-copy check (isolated metric state). */
 async function directModeCheck(expectedMode: "copy", expectedReason: string): Promise<void> {
-  execSyncMock.mockImplementation(() => {
+  execFileSyncMock.mockImplementation(() => {
     throw new Error("not a repo");
   });
   const ws = await createWorkspace("D:\\proj");

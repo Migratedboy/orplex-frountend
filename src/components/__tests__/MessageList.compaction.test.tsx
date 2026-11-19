@@ -21,7 +21,7 @@ jest.mock("../VirtualList", () => ({
   }) => <div data-testid="virtual-list">{items.map((it, i) => renderItem(it as never))}</div>,
 }));
 
-jest.mock("@/lib/api-base", () => ({ apiFetch: jest.fn() }));
+jest.mock("@orplex/sdk/lib/api-base", () => ({ apiFetch: jest.fn() }));
 
 // The bubble renderers are irrelevant to what this test asserts (which event
 // row is chosen), and MessageContent -> MarkdownRenderer drags in
