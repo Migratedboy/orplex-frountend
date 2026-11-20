@@ -16,7 +16,7 @@ export const DEFAULT_MODELS: DefaultModelRow[] = [
   { key: "google/gemma-4-26b-a4b-it:free", name: "Gemma 4 26B A4B", tag: "OpenRouter", detail: "free · 262K · vision", group: "Default Models" },
   { key: "google/gemma-4-31b-it:free", name: "Gemma 4 31B", tag: "OpenRouter", detail: "free · 262K · vision", group: "Default Models" },
   { key: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", name: "Nemotron 3 Nano Omni", tag: "OpenRouter", detail: "free · 256K · vision", group: "Default Models" },
-  { key: "liquid/lfm-2.5-2.6b:free", name: "LFM 2.5 2.6B", tag: "OpenRouter", detail: "free · 66K · compact", group: "Default Models" },
+  { key: "liquid/lfm-3-1.7b:free", name: "LFM 3 1.7B", tag: "OpenRouter", detail: "free · 262K · compact", group: "Default Models" },
 ];
 
 export const OPT_IN_MODELS: DefaultModelRow[] = [];

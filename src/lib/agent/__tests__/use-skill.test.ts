@@ -34,6 +34,27 @@ jest.mock("@orplex/sdk/lib/api-base", () => ({
   API_BASE: "",
 }));
 
+// The mock above only covers the app's own `@/lib/api-base` shim. The tool layer
+// lives in @orplex/sdk and imports its OWN ./api-base build, so mocking the
+// package subpath does not intercept it — the real apiFetch then ran and died on
+// "Failed to parse URL from /api/agent/skills", because Node's fetch has no base
+// for a relative path. Patch the platform primitive both builds end up calling:
+// a relative URL is answered by the real route handler.
+const realFetch = global.fetch;
+beforeAll(() => {
+  global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith("/")) {
+      return skillsRoute(new NextRequest(new URL(url, "http://localhost")));
+    }
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+});
+
+afterAll(() => {
+  global.fetch = realFetch;
+});
+
 function writeSkill(folder: string, content: string) {
   const dir = join(mockRoot, ".orplex", "skills", folder);
   mkdirSync(dir, { recursive: true });

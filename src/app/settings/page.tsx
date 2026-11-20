@@ -217,22 +217,6 @@ export default function SettingsPage() {
                     </div>
                     <span className="settings-toggle-hint">Use the toggle in the top bar</span>
                   </div>
-                  <div className="settings-divider" />
-                  <div className="settings-toggle-row">
-                    <div className="settings-toggle-info">
-                      <span className="settings-toggle-label">Compact Messages</span>
-                      <span className="settings-toggle-desc">Reduce spacing in chat messages</span>
-                    </div>
-                    <span className="settings-toggle-badge">Coming Soon</span>
-                  </div>
-                  <div className="settings-divider" />
-                  <div className="settings-toggle-row">
-                    <div className="settings-toggle-info">
-                      <span className="settings-toggle-label">Font Size</span>
-                      <span className="settings-toggle-desc">Adjust text size throughout the app</span>
-                    </div>
-                    <span className="settings-toggle-badge">Coming Soon</span>
-                  </div>
                 </div>
               </div>
             )}
