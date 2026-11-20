@@ -42,8 +42,10 @@ export default function BootGate({ children }: { children: React.ReactNode }) {
   const [active, setActive] = useState(false);
   const [fading, setFading] = useState(false);
   const gateRef = useRef<HTMLDivElement>(null);
-  const minTimer = useRef<ReturnType<typeof setTimeout>>();
-  const fadeTimer = useRef<ReturnType<typeof setTimeout>>();
+  // React 19 removed the no-argument useRef overload: a ref that starts empty
+  // must say so, otherwise the mutable cell is typed `undefined` for its whole life.
+  const minTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const fadeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const fadingStarted = useRef(false);
 
   useEffect(() => {

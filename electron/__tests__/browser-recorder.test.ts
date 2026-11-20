@@ -21,6 +21,24 @@ import fs from "node:fs";
 const tmpRoot = path.join(os.tmpdir(), `orplex-recorder-test-${Date.now()}`);
 const handlers = new Map<string, (e: unknown, raw?: unknown) => Promise<unknown>>();
 
+/**
+ * `recording:save` refuses when the volume has under 200 MB to spare (local-first
+ * means a recording must never fill the machine up). That guard is what we want in
+ * production, but it makes this suite machine-dependent: on a volume with a few MB
+ * left the save is *correctly* rejected and the assertion below would report a bug
+ * that does not exist. So measure the volume once and only exercise the write path
+ * where there is room for it; the rejection path is asserted unconditionally.
+ */
+const freeMB = (() => {
+  try {
+    const stats = fs.statfsSync(os.tmpdir());
+    return (Number(stats.bfree) * Number(stats.bsize)) / (1024 * 1024);
+  } catch {
+    return Number.POSITIVE_INFINITY; // no statfs: the guard is skipped in the handler too
+  }
+})();
+const itWithDiskRoom = freeMB > 300 ? it : it.skip;
+
 beforeAll(async () => {
   (app.getPath as jest.Mock).mockReturnValue(tmpRoot);
   registerRecorderIpc(((channel: string, handler: (e: unknown, raw?: unknown) => Promise<unknown>) => {
@@ -34,7 +52,7 @@ afterAll(async () => {
 });
 
 describe("recording persistence (local-first)", () => {
-  it("writes bytes only under userData/recordings and returns a name", async () => {
+  itWithDiskRoom("writes bytes only under userData/recordings and returns a name", async () => {
     const buf = Buffer.from("webm-bytes");
     const res = (await handlers.get("recording:save")?.({}, { buffer: buf })) as any;
     expect(res.ok).toBe(true);
@@ -49,6 +67,9 @@ describe("recording persistence (local-first)", () => {
   });
 
   it("library lists recordings with sizes and mtimes", async () => {
+    // Own the directory: when the write test above is skipped (low disk) nothing
+    // has created recordings/ yet, and this case is about the listing, not setup.
+    await fs.promises.mkdir(path.join(tmpRoot, "recordings"), { recursive: true });
     await fs.promises.writeFile(path.join(tmpRoot, "recordings", "old.webm"), Buffer.from("old"));
     const res = (await handlers.get("recording:library")?.({})) as any;
     expect(res.ok).toBe(true);
@@ -72,6 +93,7 @@ describe("recording persistence (local-first)", () => {
   it("rejected content ('savings' no-ops like strings) never hits disk", async () => {
     const res = (await handlers.get("recording:save")?.({}, { buffer: "not-a-buffer" })) as any;
     expect(res.ok).toBe(false);
+    await fs.promises.mkdir(path.join(tmpRoot, "recordings"), { recursive: true });
     const files = await fs.promises.readdir(path.join(tmpRoot, "recordings"));
     expect(files.every((f) => f.endsWith(".webm"))).toBe(true);
   });

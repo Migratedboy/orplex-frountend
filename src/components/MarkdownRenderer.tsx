@@ -223,18 +223,21 @@ const MD_COMPONENTS: Components = {
           return <br />;
         },
         img({ src, alt }) {
+          // react-markdown types `src` as `string | Blob` (Blob for object URLs),
+          // so nothing below may assume a string.
+          const url = typeof src === "string" ? src : "";
           // Markdown like `![]()` produces src="" — rendering it would make the
           // browser re-fetch the whole page (and trip the Next.js dev warning).
           // Raster data-URLs only: data:image/svg+xml executes script when
           // opened as a document, so SVG is never allowlisted here.
-          if (!src || !/^(https?:|data:image\/(png|jpe?g|gif|webp);base64,)/i.test(src.trim())) return null;
+          if (!url || !/^(https?:|data:image\/(png|jpe?g|gif|webp);base64,)/i.test(url.trim())) return null;
           return (
             <div className="md-image-wrap">
               {/* eslint-disable-next-line @next/next/no-img-element -- dynamic user-content URL; next/image needs static dimensions plus a remotePatterns allowlist */}
-              <img src={src} alt={alt || ""} className="md-image" loading="lazy" referrerPolicy="no-referrer" />
+              <img src={url} alt={alt || ""} className="md-image" loading="lazy" referrerPolicy="no-referrer" />
               <div className="md-image-actions">
                 <button
-                  onClick={() => { const a = document.createElement("a"); a.href = src || ""; a.download = alt || "image.png"; a.click(); }}
+                  onClick={() => { const a = document.createElement("a"); a.href = url; a.download = alt || "image.png"; a.click(); }}
                   className="code-block-btn"
                 >
                   <IconDownload size={12} /> Save Image
@@ -243,8 +246,8 @@ const MD_COMPONENTS: Components = {
                   onClick={() => {
                     // Never target=_blank a data: URL — SVG inside would run script
                     // in the opener's context. Download instead; open only http(s).
-                    if (/^https?:/i.test(src || "")) window.open(src, "_blank", "noopener,noreferrer");
-                    else { const a = document.createElement("a"); a.href = src || ""; a.download = alt || "image.png"; a.click(); }
+                    if (/^https?:/i.test(url)) window.open(url, "_blank", "noopener,noreferrer");
+                    else { const a = document.createElement("a"); a.href = url; a.download = alt || "image.png"; a.click(); }
                   }}
                   className="code-block-btn"
                 >
