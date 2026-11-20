@@ -846,6 +846,27 @@ function createWindow(): void {
   // endlessly-crashing renderer from spinning a reload loop), or recreate
   // the window if it destroyed itself.
   let rendererRecoveredOnce = false;
+  // Forward renderer console output to the dev terminal. Without this, a React
+  // error or a failed fetch is visible only if you happen to have DevTools open,
+  // which is how UI bugs (missing window controls, blank panels) went unnoticed.
+  if (isDev) {
+    mainWindow.webContents.on("console-message", (...args: any[]) => {
+      // Electron 35+ passes one event object; older versions pass positional args.
+      const e = args[0];
+      const level = typeof e === "object" && e && "level" in e ? String(e.level) : String(args[1] ?? "info");
+      const message = typeof e === "object" && e && "message" in e ? String(e.message) : String(args[2] ?? "");
+      const source = typeof e === "object" && e && "sourceId" in e ? String(e.sourceId ?? "") : String(args[4] ?? "");
+      const line = typeof e === "object" && e && "lineNumber" in e ? String(e.lineNumber ?? "") : String(args[3] ?? "");
+      if (/^(debug|verbose|info|log)$/i.test(level) && !/error|warn/i.test(message)) return;
+      safeConsoleWrite(process.stdout, `[renderer:${level}] ${message}${source ? ` (${source}:${line})` : ""}\n`);
+    });
+    mainWindow.webContents.on("did-fail-load", (_e, code, desc, url) => {
+      safeConsoleWrite(process.stdout, `[renderer] did-fail-load ${code} ${desc} ${url}\n`);
+    });
+    mainWindow.webContents.on("preload-error", (_e, path, err) => {
+      safeConsoleWrite(process.stdout, `[renderer] preload-error ${path}: ${err?.message || err}\n`);
+    });
+  }
   mainWindow.webContents.on("render-process-gone", (_e, details: any) => {
     safeConsoleWrite(process.stdout, `[main-window] renderer gone: ${details?.reason || "?"}\n`);
     if (quitting || rendererRecoveredOnce) return;

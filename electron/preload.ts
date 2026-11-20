@@ -47,6 +47,24 @@ contextBridge.exposeInMainWorld("orplexDesktop", {
   getAppVersion: () =>
     ipcRenderer.invoke("orplex:app-version") as Promise<string>,
   /**
+   * WINDOW CONTROLS. The window is frameless, so minimise/maximise/close only
+   * exist if the renderer can reach them — WindowControls.tsx renders nothing
+   * without this bridge, which is why the title bar had no buttons at all.
+   * The main process owns the handlers (orplex:window-*).
+   */
+  window: {
+    minimize: () => ipcRenderer.invoke("orplex:window-minimize") as Promise<boolean>,
+    toggleMaximize: () => ipcRenderer.invoke("orplex:window-toggle-maximize") as Promise<boolean>,
+    close: () => ipcRenderer.invoke("orplex:window-close") as Promise<boolean>,
+    isMaximized: () => ipcRenderer.invoke("orplex:window-is-maximized") as Promise<boolean>,
+    /** Main broadcasts on maximize/unmaximize so the button can swap its icon. */
+    onMaximizeChange: (listener: (maximized: boolean) => void) => {
+      const wrapped = (_e: unknown, maximized: boolean) => listener(!!maximized);
+      ipcRenderer.on("orplex:window-maximized", wrapped);
+      return () => ipcRenderer.removeListener("orplex:window-maximized", wrapped);
+    },
+  },
+  /**
    * IN-APP UPDATES: the app updates itself (check → download in the
    * background → install + relaunch). The renderer can defer the restart;
    * the downloaded build is then applied on the next quit or boot. All UI

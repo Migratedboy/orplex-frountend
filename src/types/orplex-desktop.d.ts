@@ -133,6 +133,17 @@ declare global {
       pickDirectory?: () => Promise<string | null>;
       /** Packaged app version from package.json (update detection). */
       getAppVersion?: () => Promise<string>;
+      /**
+       * Frameless-window controls (min / max-restore / close). Absent in the
+       * browser build; WindowControls.tsx renders nothing without it.
+       */
+      window?: {
+        minimize: () => Promise<boolean>;
+        toggleMaximize: () => Promise<boolean>;
+        close: () => Promise<boolean>;
+        isMaximized: () => Promise<boolean>;
+        onMaximizeChange: (listener: (maximized: boolean) => void) => () => void;
+      };
       /** In-app updates: user-consented check/download/install + status events. */
       updates?: {
         check: () => Promise<{ state: string; version?: string }>;
