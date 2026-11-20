@@ -456,6 +456,12 @@ export interface BuildPromptOptions {
    */
   mcpSection?: string;
   /**
+   * Pre-built "## SKILLS" block (one line per installed skill) from the same
+   * loader the chat lane uses. Rides like PLAYBOOK_SECTION: absent → no block,
+   * so only the lanes that pass it (the worktree executor) change behaviour.
+   */
+  skillRoster?: string;
+  /**
    * Async variant of mcpSection for the worker path: when present, the worker
    * calls it to build the roster with live discovery for remotes whose
    * localStorage tools cache is empty (so the prompt sees real tools even if
@@ -518,6 +524,9 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
   // Empty roster → "" → no block, as before.
   const MCP_SECTION = opts.mcpSection ?? (opts.mcpSectionAsync ? await opts.mcpSectionAsync() : buildMcpToolsSection());
 
+  // Skills: the roster of installed skills this lane can read. Empty → no block.
+  const SKILLS_SECTION = (opts.skillRoster || "").trim();
+
   // Playbook: evidence-backed learnings from previous verified runs in this
   // workspace. Token-budgeted, only for cosine-similar matches. Server-only:
   // the reader touches Prisma, which cannot run in the browser bundle (the
@@ -563,7 +572,7 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
     // would silently disable live artifacts in the chat lane.
     const artifactBlock = mode === "ask" ? `\n\n${ARTIFACT_PROTOCOL}` : "";
     const MEMORY_DOCTRINE_USED = mode === "ask" ? ASK_MEMORY_DOCTRINE : MEMORY_DOCTRINE;
-    return `${COMPACT_CORE}${artifactBlock}${MCP_SECTION ? "\n\n" + MCP_SECTION + "\n\n" + MCP_SESSION_NOTE : ""}${PLAYBOOK_SECTION ? "\n\n" + PLAYBOOK_SECTION : ""}${MEMORY_SECTION ? "\n\n" + MEMORY_DOCTRINE_USED + "\n\n" + MEMORY_SECTION : ""}${EFFORT_STYLE[effort ?? "medium"]}`;
+    return `${COMPACT_CORE}${artifactBlock}${MCP_SECTION ? "\n\n" + MCP_SECTION + "\n\n" + MCP_SESSION_NOTE : ""}${SKILLS_SECTION ? "\n\n" + SKILLS_SECTION : ""}${PLAYBOOK_SECTION ? "\n\n" + PLAYBOOK_SECTION : ""}${MEMORY_SECTION ? "\n\n" + MEMORY_DOCTRINE_USED + "\n\n" + MEMORY_SECTION : ""}${EFFORT_STYLE[effort ?? "medium"]}`;
   }
 
   if (mode === "ask") {
@@ -595,6 +604,7 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
           STAGED_FILES_DOCTRINE,
           CLARIFICATION_DOCTRINE,
           ...(MCP_SECTION ? [MCP_SECTION] : []),
+          ...(SKILLS_SECTION ? [SKILLS_SECTION] : []),
           ...(PLAYBOOK_SECTION ? [PLAYBOOK_SECTION] : []),
           ...(MEMORY_SECTION ? [MEMORY_DOCTRINE, MEMORY_SECTION] : []),
           WORKFLOW,
@@ -614,6 +624,7 @@ export async function buildSystemPrompt(opts: BuildPromptOptions): Promise<strin
           STAGED_FILES_DOCTRINE,
           CLARIFICATION_DOCTRINE,
           ...(MCP_SECTION ? [MCP_SECTION] : []),
+          ...(SKILLS_SECTION ? [SKILLS_SECTION] : []),
           ...(PLAYBOOK_SECTION ? [PLAYBOOK_SECTION] : []),
           ...(MEMORY_SECTION ? [MEMORY_DOCTRINE, MEMORY_SECTION] : []),
           WORKFLOW,

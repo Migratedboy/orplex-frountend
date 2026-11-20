@@ -93,12 +93,69 @@ function writeLoadedExts(list: LoadedExt[]): void {
   } catch {}
 }
 async function loadExtensionFile(ext: LoadedExt, sess: Session): Promise<{ ok: boolean; id?: string; error?: string }> {
+  // Refuse rather than half-load: Electron silently ignores permissions its
+  // extension host does not implement, so an ad-blocker asking for
+  // "webRequest" would appear installed and then do nothing.
+  const unsupported = unsupportedPermissions(ext.path);
+  if (unsupported.length > 0) {
+    return {
+      ok: false,
+      error: `Extension needs ${unsupported.join(", ")}, which Electron's extension host does not support.`,
+    };
+  }
   try {
     const loaded = await sess.loadExtension(ext.path);
     return { ok: true, id: (loaded as any)?.id };
   } catch (err) {
     return { ok: false, error: (err as Error)?.message || String(err) };
   }
+}
+
+// === extension permissions ==================================================
+
+/**
+ * The permission names Electron's extension host actually implements. Anything
+ * else in a manifest is ignored at runtime (Electron supports a sliver of the
+ * Chrome extension API), which looks like a broken extension to the user.
+ *
+ * Kept deliberately short: adding a name here promises that the permission
+ * works, and the preview UI hides warnings based on this list.
+ */
+const SUPPORTED_EXTENSION_PERMISSIONS = new Set([
+  "storage",
+  "unlimitedStorage",
+  "tabs",
+  "activeTab",
+  "scripting",
+  "alarms",
+]);
+
+/**
+ * Permissions declared by an unpacked extension that Electron cannot honour.
+ * A missing/unreadable manifest returns [] — Electron's loadExtension reports
+ * the real error, and this helper must never mask it.
+ */
+export function unsupportedPermissions(extDir: string): string[] {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(extDir, "manifest.json"), "utf8"));
+  } catch {
+    return [];
+  }
+  if (!manifest || typeof manifest !== "object") return [];
+  const record = manifest as Record<string, unknown>;
+  const declared = [
+    ...(Array.isArray(record.permissions) ? record.permissions : []),
+    ...(Array.isArray(record.optional_permissions) ? record.optional_permissions : []),
+  ];
+  const unsupported = new Set<string>();
+  for (const name of declared) {
+    // Manifests may declare objects (e.g. MV2 "fileSystem") or junk; only
+    // strings are permission names.
+    if (typeof name !== "string") continue;
+    if (!SUPPORTED_EXTENSION_PERMISSIONS.has(name)) unsupported.add(name);
+  }
+  return [...unsupported].sort();
 }
 
 // === floating window =========================================================

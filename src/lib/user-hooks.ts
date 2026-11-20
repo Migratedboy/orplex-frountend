@@ -140,7 +140,13 @@ export async function runUserHooks(
       const isWin = platform() === "win32";
       const child = spawn(
         isWin ? "cmd.exe" : "/bin/sh",
-        isWin ? ["/d", "/s", "/c", hook.command] : ["-c", hook.command],
+        // Windows: Node re-quotes every argument it passes to a batch host, and
+        // `cmd /s /c "\"C:\\Program Files\\...\\node.exe\" -e \"...\""`
+        // then fails with "is not recognized" (exit 1) — so a pre-tool hook
+        // could never exit 2 and never block. windowsVerbatimArguments hands the
+        // command line over untouched, and the extra surrounding quotes are what
+        // `/s` strips to get back to the real command.
+        isWin ? ["/d", "/s", "/c", `"${hook.command}"`] : ["-c", hook.command],
         {
           cwd: workDir,
           env: {
@@ -150,6 +156,7 @@ export async function runUserHooks(
             ORPLEX_WORKSPACE: workDir,
           },
           windowsHide: true,
+          windowsVerbatimArguments: isWin,
         },
       );
       let out = "";

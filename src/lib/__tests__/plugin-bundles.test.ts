@@ -106,9 +106,12 @@ describe("plugin bundles", () => {
       fs.readFileSync(path.join(orplex, "skills", "new-skill", "SKILL.md"), "utf8")
     ).toBe("Bundle skill body.");
     const hooks = JSON.parse(fs.readFileSync(path.join(orplex, "hooks.json"), "utf8"));
-    expect(hooks["post-run"]).toEqual([
-      { command: "echo user-hook" },
-      { command: "echo bundle-hook" },
+    // hooks.json has one shape: { hooks: [{ event, command, match? }] }. The old
+    // event-keyed object ({"post-run": [{command}]}) is still read and repaired
+    // on install, which is why the bundle above may keep using it.
+    expect(hooks.hooks).toEqual([
+      { event: "post-run", command: "echo user-hook" },
+      { event: "post-run", command: "echo bundle-hook" },
     ]);
     const mcp = JSON.parse(fs.readFileSync(path.join(orplex, "mcp.json"), "utf8"));
     expect(mcp.fs.command).toBe("user-cmd");

@@ -7,7 +7,7 @@
  * - Results merge back after approval
  */
 
-import { execSync, spawn } from "child_process";
+import { execFileSync, spawn } from "child_process";
 import { mkdir, cp, rm, writeFile, readFile, readdir, stat } from "fs/promises";
 import { join, dirname, resolve, sep, relative } from "path";
 import { randomBytes } from "crypto";
@@ -62,7 +62,7 @@ export async function createWorkspace(
   // Check if git repo
   let isGitRepo = false;
   try {
-    execSync("git rev-parse --is-inside-work-tree", {
+    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
       cwd: rootDir,
       stdio: "pipe",
       timeout: 5000,
@@ -95,7 +95,10 @@ async function createGitWorktree(
 
     // Create branch if it doesn't exist
     try {
-      execSync(`git branch "${branchName}"`, {
+      // argv array, no shell: a branch name or path can never be re-parsed by
+      // cmd.exe (spaces, \"&\", \"%PATH%\") — the reason this file avoids
+      // interpolated git command lines.
+      execFileSync("git", ["branch", branchName], {
         cwd: rootDir,
         stdio: "pipe",
         timeout: 10000,
@@ -105,8 +108,9 @@ async function createGitWorktree(
     }
 
     // Create worktree
-    execSync(
-      `git worktree add "${workspaceDir}" "${branchName}" --detach`,
+    execFileSync(
+      "git",
+      ["worktree", "add", workspaceDir, branchName, "--detach"],
       {
         cwd: rootDir,
         stdio: "pipe",
@@ -327,8 +331,9 @@ export async function prepareMerge(
     // instead, and include untracked files (git diff omits them).
     if (ws.branchName) {
       try {
-        const diff = execSync(
-          `git diff "${ws.branchName}" --name-only`,
+        const diff = execFileSync(
+          "git",
+          ["diff", ws.branchName, "--name-only"],
           { cwd: ws.workspaceDir, stdio: "pipe", timeout: 10000 }
         ).toString();
 
@@ -338,10 +343,11 @@ export async function prepareMerge(
           .filter(Boolean);
 
         // Untracked files created by the agent
-        const status = execSync(
-          `git status --porcelain`,
-          { cwd: ws.workspaceDir, stdio: "pipe", timeout: 10000 }
-        ).toString();
+        const status = execFileSync("git", ["status", "--porcelain"], {
+          cwd: ws.workspaceDir,
+          stdio: "pipe",
+          timeout: 10000,
+        }).toString();
         const untracked = status
           .split("\n")
           .map((l) => l.trim())
@@ -467,17 +473,19 @@ export async function destroyWorkspace(
     // Remove git worktree if applicable
     if (ws.branchName) {
       try {
-        execSync(
-          `git worktree remove "${ws.workspaceDir}" --force`,
+        execFileSync(
+          "git",
+          ["worktree", "remove", ws.workspaceDir, "--force"],
           { cwd: ws.rootDir, stdio: "pipe", timeout: 15000 }
         );
       } catch {}
       // Delete the leftover branch so orphaned refs don't pile up
       try {
-        execSync(
-          `git branch -D "${ws.branchName}"`,
-          { cwd: ws.rootDir, stdio: "pipe", timeout: 10000 }
-        );
+        execFileSync("git", ["branch", "-D", ws.branchName], {
+          cwd: ws.rootDir,
+          stdio: "pipe",
+          timeout: 10000,
+        });
       } catch {}
     }
 
