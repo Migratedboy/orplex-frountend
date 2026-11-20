@@ -16,7 +16,7 @@
     "dev": "node scripts/dev-branded-electron.mjs",
     "dev:ui": "next dev -p 5000",
     "prebuild": "node scripts/fetch-fonts.mjs",
-    "build": "next build && node scripts/prepare-standalone.mjs",
+    "build": "node scripts/assert-no-dev-server.mjs && next build && node scripts/prepare-standalone.mjs",
     "start": "npm run electron:build:main && electron .",
     "electron:dev": "npm run dev",
     "electron:start": "npm run start",
