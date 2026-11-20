@@ -1,0 +1,171 @@
+{
+  "_comment": "Test fixture only — a slice of the published marketplace MCP catalogue. Product data lives in orplex-marketplace; this exists so unit tests do not need the network.",
+  "entries": [
+    {
+      "schemaVersion": 1,
+      "id": "github",
+      "name": "GitHub",
+      "description": "Repos, issues, PRs, actions, code search — act on GitHub from chat.",
+      "category": "devtools",
+      "version": "1.0.0",
+      "license": "MIT",
+      "auth": "oauth",
+      "popular": true,
+      "remote": {
+        "url": "https://api.githubcopilot.com/mcp",
+        "transport": "streamable-http"
+      },
+      "oauth": {},
+      "stdio": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "mcp-remote",
+          "https://api.githubcopilot.com/mcp"
+        ],
+        "env": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "memory",
+      "name": "Persistent memory",
+      "description": "Knowledge-graph memory the agent can read/write across runs.",
+      "category": "ai",
+      "version": "1.0.0",
+      "license": "MIT",
+      "auth": "none",
+      "popular": true,
+      "stdio": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-memory"
+        ],
+        "env": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "postgres",
+      "name": "PostgreSQL (read-only)",
+      "description": "Inspect schemas and run read-only SQL against a Postgres database.",
+      "category": "database",
+      "version": "1.0.0",
+      "license": "MIT",
+      "auth": "token",
+      "popular": true,
+      "stdio": {
+        "command": "uvx",
+        "args": [
+          "postgres-mcp",
+          "--access-mode=restricted"
+        ],
+        "env": [
+          {
+            "name": "DATABASE_URI",
+            "label": "postgres://user:pass@host:5432/db",
+            "secret": true,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "s3",
+      "name": "AWS S3",
+      "description": "List buckets, upload/download objects, and copy files on S3.",
+      "category": "cloud",
+      "version": "1.0.0",
+      "license": "MIT",
+      "auth": "token",
+      "stdio": {
+        "command": "uvx",
+        "args": [
+          "mcp-server-s3"
+        ],
+        "env": [
+          {
+            "name": "AWS_ACCESS_KEY_ID",
+            "label": "Access key id",
+            "secret": true,
+            "required": true
+          },
+          {
+            "name": "AWS_SECRET_ACCESS_KEY",
+            "label": "Secret access key",
+            "secret": true,
+            "required": true,
+            "help": "••••"
+          },
+          {
+            "name": "AWS_REGION",
+            "label": "Region",
+            "secret": true,
+            "required": true,
+            "help": "us-east-1"
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "shell",
+      "name": "Shell (sandboxed)",
+      "description": "Run allow-listed shell commands as tools.",
+      "category": "shell",
+      "version": "1.0.0",
+      "license": "MIT",
+      "auth": "none",
+      "stdio": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "mcp-shell"
+        ],
+        "env": [
+          {
+            "name": "SHELL_ALLOWLIST",
+            "label": "Comma-separated commands",
+            "required": false,
+            "help": "ls,grep,wc"
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "supabase",
+      "name": "Supabase",
+      "description": "Query tables, manage auth users, run edge functions, and manage your Postgres project.",
+      "category": "database",
+      "version": "1.0.0",
+      "license": "MIT",
+      "auth": "oauth",
+      "popular": true,
+      "remote": {
+        "url": "https://mcp.supabase.com/mcp",
+        "transport": "streamable-http"
+      },
+      "oauth": {},
+      "stdio": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@supabase/mcp-server-supabase",
+          "--project-ref=<project-ref>"
+        ],
+        "env": [
+          {
+            "name": "SUPABASE_ACCESS_TOKEN",
+            "label": "Personal access token (supabase.com/dashboard/account/tokens)",
+            "secret": true,
+            "required": true
+          }
+        ]
+      },
+      "docsUrl": "https://supabase.com/docs/guides/getting-started/mcp"
+    }
+  ]
+}

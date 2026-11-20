@@ -78,6 +78,8 @@ import { recordProviderEvent } from "@/lib/provider-uptime";
 import { acquireTokens, estimateTokensOfMessages, reportUsage } from "@/lib/tpm-pacer";
 import { createIsolatedContext, type WorktreeContext } from "./worktree";
 import type { RuntimeArtifact } from "@/lib/agent/runtime/types";
+// Registers the marketplace bundle provider — the hook gate runs from here.
+import "@/lib/marketplace-bundles";
 
 const POLL_INTERVAL_MS = 4000;
 const TURN_LIMIT = 60;
@@ -351,6 +353,7 @@ function buildWorktreeAddendum(mcpTools: McpToolDef[], nativeMode: boolean, memo
     `- run_in_sandbox { "name": "run_in_sandbox", "command": "...", "timeout": 60 } (isolated runner for installs, builds, tests — same screening)`,
     `- verify_app { "name": "verify_app", "dev_command": "npm run dev", "port": 3001, "path": "/" } (starts the server, loads a real headless browser, returns console errors + a screenshot)`,
     `- playbook_search { "name": "playbook_search", "query": "..." } (learnings from past verified runs — check before starting)`,
+    `- use_skill { "name": "use_skill", "name_of_skill": "<name>" } (load the full instructions of a skill listed in ## SKILLS before acting)`,
     `- skill_create { "name": "skill_create", "title": "...", "text": "..." } (save a reusable procedure for future runs)`,
     `- session_search { "name": "session_search", "query": "..." } (search past conversation messages)`,
     `- scratchpad_update { "name": "scratchpad_update", "section": "plan|hypotheses|findings|next", "content": "..." } (private working memory, re-shown every turn — record plan, findings, next move; never store secrets)`,
@@ -358,8 +361,12 @@ function buildWorktreeAddendum(mcpTools: McpToolDef[], nativeMode: boolean, memo
     `- batch_execute { "name": "batch_execute", "variants": [{ "label": "...", "prompt": "..." }] } (2-3 competing approaches run in parallel worktrees; merged ONLY on majority agreement — otherwise every variant's report comes back and nothing is merged)`,
     `Keep a private scratchpad via scratchpad_update as you learn — todo discipline still applies; the scratchpad holds reasoning, not checkmarks.`,
   ];
+  // The roster itself rides in the system prompt's ## SKILLS section (same
+  // loader, same caps). Repeating it here doubled its token cost, and listing
+  // use_skill in the text-protocol verbs above keeps it reachable when the
+  // model emits tool calls as text instead of native function calls.
   if (skillRoster) {
-    lines.push(``, `Skills available (call use_skill { "name": "use_skill", "name_of_skill": "<name>" } to load the full instructions):`, skillRoster);
+    lines.push(``, `Skills are listed in the ## SKILLS section of your instructions — call use_skill with name_of_skill to load one's full steps.`);
   }
   if (memoryBlock) {
     lines.push(``, `Project memory (user-authored conventions from orplex.md — follow these):`, memoryBlock);
@@ -647,7 +654,10 @@ async function executeTool(
     const { beforeToolCall } = await import("../plugins/registry");
     const gated = await beforeToolCall(name, call as Record<string, unknown>);
     if ((gated as { _blocked?: boolean })._blocked) {
-      return "refused by secret policy: file content appears to contain a hardcoded secret — use environment variables instead.";
+      const reason = (gated as { _reason?: string })._reason;
+      return reason
+        ? `refused by plugin policy: ${reason}`
+        : "refused by secret policy: file content appears to contain a hardcoded secret — use environment variables instead.";
     }
   } catch {
     // Hook infrastructure must never break tool dispatch; a hook failure
@@ -821,8 +831,35 @@ async function executeTool(
 
   // use_skill: inject the full body of a discovered skill into the
   // transcript (the roster in the system prompt carries only descriptions).
-  if (name === "use_skill" && typeof call.name_of_skill === "string") {
-    return (call.__skillBody as string) || `error: skill "${String(call.name_of_skill).slice(0, 80)}" not found`;
+  // `__skillFound` distinguishes "no such skill" from "skill with an empty
+  // body": a SKILL.md holding only frontmatter used to be rostered here and
+  // then reported as not found, sending the model hunting for a missing file.
+  if (name === "use_skill") {
+    const args = call as Record<string, unknown>;
+    const rawArg = args.name_of_skill ?? args.skill_name ?? args.skill;
+    const wanted = String(rawArg ?? "").trim().slice(0, 80);
+    // A malformed call used to fall through to `unknown tool "use_skill"`,
+    // which reads as "this tool does not exist" and sends the model hunting
+    // for another way to load the skill instead of retrying with an argument.
+    if (!wanted) {
+      return `error — use_skill needs name_of_skill. Pass a skill name from the ## SKILLS roster, e.g. { "name_of_skill": "deploy-app" }.`;
+    }
+    // The skill list lives in the run scope that dispatches this call, so the
+    // match and the roster arrive pre-computed on the call itself. When a lane
+    // dispatches use_skill without that pre-resolution, say so instead of
+    // claiming the name does not exist.
+    if (args.__skillFound === undefined) {
+      return `error: skills were not loaded for this run. Read .orplex/skills/${wanted}/SKILL.md directly with read_file.`;
+    }
+    if (args.__skillFound !== true) {
+      const roster = typeof args.__skillRoster === "string" ? args.__skillRoster.trim() : "";
+      return `error: skill "${wanted}" not found. Available skills:\n${roster || "(none — this workspace has no .orplex/skills entries)"}`;
+    }
+    const body = typeof args.__skillBody === "string" ? args.__skillBody : "";
+    if (!body.trim()) {
+      return `skill "${wanted}" has no instructions: its SKILL.md contains only frontmatter. Tell the user to add the steps below the --- block in .orplex/skills/<name>/SKILL.md.`;
+    }
+    return body;
   }
 
   // scratchpad_update: the run's private working memory (plan, hypotheses,
@@ -1941,7 +1978,12 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         // Same prompt as the chat lane, but the roster shown is this lane's
         // real roster — otherwise the prompt advertises client-only tools the
         // worktree executor cannot dispatch.
-        const masterPrompt = await buildMasterPrompt({ mode: "code", toolNames: nativeDefs.map((d) => d.name) });
+        const masterPrompt = await buildMasterPrompt({
+          mode: "code",
+          toolNames: nativeDefs.map((d) => d.name),
+          // Same ## SKILLS section the chat lane gets, from the same loader.
+          skillRoster,
+        });
         const messages = [
           { role: "system", content: `${masterPrompt}\n\n${buildWorktreeAddendum(
             mcpTools,
@@ -2118,7 +2160,13 @@ export async function executeRun(run: QueuedRun): Promise<ExecutorResult> {
         }
         // use_skill resolves against the discovered skill list before dispatch.
         if (toolName === "use_skill") {
-          (call as Record<string, unknown>).__skillBody = skillBody(skills, String((call as Record<string, unknown>).name_of_skill ?? "")) ?? "";
+          const c = call as Record<string, unknown>;
+          const body = skillBody(skills, String(c.name_of_skill ?? c.skill_name ?? c.skill ?? ""));
+          (call as Record<string, unknown>).__skillFound = body !== null;
+          (call as Record<string, unknown>).__skillBody = body ?? "";
+          // Carried on the call so the (top-level) executor can answer a miss
+          // with the real roster without reaching back into run scope.
+          (call as Record<string, unknown>).__skillRoster = skillRoster;
         }
         const out = await executeTool(call as never, ctx!, run.autonomyPolicy !== "auto", run.id, writtenFiles, hooks, autoCp, mcpRunConfigs, mcpTools, {
           get: () => scratch,

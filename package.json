@@ -47,7 +47,7 @@
     "@hugeicons/react": "^1.1.10",
     "@modelcontextprotocol/client": "2.3.0",
     "@next-auth/prisma-adapter": "^1.0.7",
-    "@orplex/sdk": "^0.2.1",
+    "@orplex/sdk": "^0.3.1",
     "@prisma/client": "^5.20.0",
     "@vercel/sandbox": "^3.9.0",
     "electron-updater": "^6.8.9",

@@ -24,7 +24,7 @@ jest.mock("@/lib/prisma", () => ({
   },
 }));
 
-jest.mock("@orplex/sdk/lib/mcp-catalog", () => {
+jest.mock("@/lib/mcp-catalog", () => {
   const actual = jest.requireActual("@orplex/sdk/lib/mcp-catalog");
   return { ...actual, getMcpCatalogEntry: jest.fn() };
 });

@@ -8,7 +8,8 @@
 //    call on a promise until that route answers.
 // 2. Marketplace. The catalog is verified Ed25519-signed data; the public key
 //    ships with the app so a compromised CDN cannot inject skills or MCP specs.
-// Narrow subpath on purpose: background-worker is reachable from a client
+//
+// Narrow subpaths on purpose: background-worker is reachable from a client
 // component (useChatSession), so importing the SDK umbrella here would drag
 // fs/child_process modules into the browser bundle.
 import { configureApprovals } from "@orplex/sdk/lib/approval-store";
@@ -21,6 +22,10 @@ export function configureSdkHost(): void {
   configured = true;
 
   configureApprovals({ mode: "poll" });
+
+  // Library bundles are NOT registered here: materializing them pulls filesystem
+  // code and this module is client-reachable. marketplace-bundles.ts (server
+  // only) registers the provider when a server entry point imports it.
 
   // The app version gates marketplace items (each item declares a minimum app
   // version) — expose it so plugin/skill resolution can honour that.

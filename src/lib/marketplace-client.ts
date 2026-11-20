@@ -18,7 +18,11 @@ import { homedir } from "node:os";
 import { DEFAULT_INDEX_URL, verifyIndex } from "@orplex/sdk/marketplace";
 import type { MarketplaceIndex } from "@orplex/sdk/marketplace";
 import type { Skill, SkillCategory } from "@orplex/sdk/skills";
-import type { McpCatalogEntry } from "@orplex/sdk/mcp";
+// Narrow subpath only: the /mcp and /plugins barrels pull Node transports
+// (child_process) and must never reach a client bundle — this module is
+// imported by background-worker, which a client component imports. For the same
+// reason materialization lives in marketplace-bundles.ts (server-only).
+import { applyOAuthEnvOverrides, type McpCatalogEntry } from "@orplex/sdk/lib/mcp-catalog";
 import type { BundleDef } from "@orplex/sdk/lib/plugin-library/types";
 
 /** Public key of the marketplace signing key (base64url SPKI DER). Public by design. */
@@ -125,23 +129,45 @@ async function loadFromNetwork(): Promise<MarketplaceSnapshot> {
 
 let memo: Promise<MarketplaceSnapshot> | null = null;
 
+// ---------------------------------------------------------------------------
+// Synchronous mirrors.
+//
+// Connection and auth code decides whether a server id is "known" inside paths
+// that cannot await. The verified bundle is mirrored into these arrays as soon
+// as it loads, and an empty array before that is a safe answer: lookups return
+// null, which callers already handle as "no catalogue hints for this id".
+// ---------------------------------------------------------------------------
+let syncMcp: readonly McpCatalogEntry[] = [];
+
+/** MCP catalogue as currently loaded (possibly empty before the first load). */
+export function peekMcpCatalog(): readonly McpCatalogEntry[] {
+  return syncMcp;
+}
+
+function mirror(bundle: MarketplaceBundle | null): void {
+  syncMcp = bundle ? applyOAuthEnvOverrides(bundle.mcp ?? []) : [];
+}
+
 async function load(): Promise<MarketplaceSnapshot> {
   const cached = await readCache("bundle.json");
   const meta = await readCache("meta.json").catch(() => null);
   const cachedAt = (meta as unknown as { fetchedAt?: number } | null)?.fetchedAt ?? 0;
 
   if (cached && Date.now() - cachedAt < TTL_MS) {
+    mirror(cached);
     return { bundle: cached, source: "cache", verified: true, fetchedAt: cachedAt };
   }
 
   const fresh = await loadFromNetwork();
   if (fresh.bundle) {
     await writeCache("meta.json", { fetchedAt: fresh.fetchedAt } as unknown as MarketplaceBundle);
+    mirror(fresh.bundle);
     return fresh;
   }
   // Network failed or the signature did not verify — serve the last verified
   // cache and report why, rather than showing an empty toolbox with no reason.
   if (cached) {
+    mirror(cached);
     return { bundle: cached, source: "cache", verified: true, fetchedAt: cachedAt, error: fresh.error };
   }
   return fresh;
@@ -183,14 +209,27 @@ export async function getAllSkills(): Promise<Skill[]> {
   return bundle?.skills ?? [];
 }
 
-/** MCP catalogue, marketplace-owned. */
+/** MCP catalogue, marketplace-owned, with operator OAuth overrides applied. */
 export async function getMcpCatalog(): Promise<McpCatalogEntry[]> {
-  const { bundle } = await getMarketplaceSnapshot();
-  return bundle?.mcp ?? [];
+  await getMarketplaceSnapshot();
+  return [...syncMcp];
 }
 
-/** Plugin bundles (skills + declarative hooks), marketplace-owned. */
+/** Raw plugin bundle definitions as published (declarative data only). */
 export async function getPluginBundles(): Promise<Array<BundleDef & { name?: string }>> {
   const { bundle } = await getMarketplaceSnapshot();
   return bundle?.plugins ?? [];
+}
+
+/**
+// NOTE: no getMaterializedBundles here. Bundles are materialized in
+// marketplace-bundles.ts, which is server-only (it pulls filesystem code).
+
+/**
+ * Test seam: install a catalogue without a network load. Production code never
+ * calls this — the catalogue arrives through getMarketplaceSnapshot(). It exists
+ * so tests can exercise connection/auth paths that need catalogue hints.
+ */
+export function __setMcpCatalogForTests(entries: readonly McpCatalogEntry[]): void {
+  syncMcp = applyOAuthEnvOverrides(entries);
 }

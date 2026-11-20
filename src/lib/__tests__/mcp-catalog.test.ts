@@ -1,125 +1,98 @@
-// Unit tests for the MCP catalog: size promise (100+), structural integrity,
-// Zod schema validation, auth/stdio shape, and search ranking behavior.
+// mcp-catalog.test.ts — the catalogue logic, over an injected catalogue.
+//
+// The 100 server entries are marketplace data now (signed, published in
+// orplex-marketplace, validated there). What still needs unit coverage is the
+// logic that operates on whatever catalogue the host supplies: schema
+// validation, lookup, ranking, filtering and limits.
 import {
-  MCP_CATALOG,
-  MCP_CATALOG_SIZE,
-  MCP_CATEGORIES,
   getMcpCatalogEntry,
   mcpCatalogEntrySchema,
   searchMcpCatalog,
   validateMcpCatalog,
-} from "../mcp-catalog";
+  type McpCatalogEntry,
+} from "@orplex/sdk/lib/mcp-catalog";
+// Taxonomy labels stay in the app-side module; the entries do not.
+import { MCP_CATEGORIES } from "../mcp-catalog";
+
+const entry = (over: Partial<McpCatalogEntry> & { id: string }): McpCatalogEntry =>
+  ({
+    name: over.id,
+    description: `${over.id} server for agents`, // schema needs >= 11 chars
+    category: "devtools",
+    version: "1.0.0",
+    auth: "none",
+    stdio: { command: "npx", args: ["-y", `${over.id}-mcp`], env: [] },
+    ...over,
+  }) as McpCatalogEntry;
+
+const CATALOG: McpCatalogEntry[] = [
+  entry({ id: "figma", name: "Figma", description: "Read and write design files", category: "design", auth: "oauth", popular: true }),
+  entry({ id: "supabase", name: "Supabase", description: "Query tables and manage auth users", category: "database", auth: "token" }),
+  entry({ id: "memory", name: "Memory", description: "Knowledge-graph memory for agents", category: "ai" }),
+  entry({ id: "brave-search", name: "Brave Search", description: "Web results without tracking", category: "search" }),
+  entry({ id: "airtable", name: "Airtable", description: "Create and update records", category: "productivity", auth: "oauth", popular: true }),
+];
 
 describe("mcp-catalog", () => {
-  it("ships 100+ servers", () => {
-    expect(MCP_CATALOG.length).toBeGreaterThanOrEqual(95);
-    expect(MCP_CATALOG_SIZE).toBe(MCP_CATALOG.length);
+  it("keeps the taxonomy labels the Connectors UI renders", () => {
+    expect(MCP_CATALOGS_TAXONOMY()).toBe(true);
   });
 
-  it("has unique ids and slugs", () => {
-    const ids = new Set(MCP_CATALOG.map((e) => e.id));
-    expect(ids.size).toBe(MCP_CATALOG.length);
+  it("validates a well-formed catalogue and rejects a broken one", () => {
+    expect(validateMcpCatalog(CATALOG).ok).toBe(true);
+
+    const broken = [{ ...CATALOG[0], category: "not-a-category" }] as unknown as McpCatalogEntry[];
+    const result = validateMcpCatalog(broken);
+    expect(result.ok).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
   });
 
-  it("every entry is well-formed (stdio command/args, unique env names, labels)", () => {
-    for (const e of MCP_CATALOG) {
-      expect(e.id).toMatch(/^[a-z0-9-]+$/);
-      expect(e.name.length).toBeGreaterThan(0);
-      expect(e.description.length).toBeGreaterThan(10);
-      expect(e.stdio).toBeDefined();
-      expect(typeof e.stdio!.command).toBe("string");
-      expect(e.stdio!.command.length).toBeGreaterThan(0);
-      expect(Array.isArray(e.stdio!.args)).toBe(true);
-      expect(e.stdio!.args.every((a) => typeof a === "string")).toBe(true);
-      const names = e.stdio!.env.map((s) => s.name);
-      expect(new Set(names).size).toBe(names.length);
-      for (const spec of e.stdio!.env) {
-        expect(spec.name).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
-        expect(spec.label.length).toBeGreaterThan(0);
-      }
-    }
+  it("the schema rejects an entry with no transport at all", () => {
+    const { stdio: _s, remote: _r, ...bare } = CATALOG[0] as unknown as Record<string, unknown>;
+    void _s;
+    void _r;
+    const parsed = mcpCatalogEntrySchema.safeParse(bare);
+    // An entry with neither stdio nor remote is not usable — it must not pass.
+    expect(parsed.success).toBe(false);
   });
 
-  it("passes the Zod catalog schema (load-time validation)", () => {
-    const result = validateMcpCatalog();
-    expect(result.errors).toEqual([]);
-    expect(result.ok).toBe(true);
-    for (const e of MCP_CATALOG) {
-      const parsed = mcpCatalogEntrySchema.safeParse(e);
-      expect(parsed.success).toBe(true);
-    }
+  it("looks entries up in the supplied catalogue only", () => {
+    expect(getMcpCatalogEntry("figma", CATALOG)?.name).toBe("Figma");
+    expect(getMcpCatalogEntry("not-there", CATALOG)).toBeNull();
+    expect(getMcpCatalogEntry("figma", [])).toBeNull();
   });
 
-  it("derives a consistent auth type for every entry", () => {
-    for (const e of MCP_CATALOG) {
-      expect(["oauth", "token", "none"]).toContain(e.auth);
-      if (e.auth === "oauth") expect(e.oauth).toBeDefined();
-      if (e.auth === "token") {
-        expect((e.stdio?.env ?? []).some((s) => s.secret)).toBe(true);
-      }
-      if (e.oauth) expect(e.auth).toBe("oauth");
-      if (e.docsUrl) expect(e.docsUrl.startsWith("https://")).toBe(true);
-    }
-    // Every entry with a secret env var must not claim "none".
-    for (const e of MCP_CATALOG) {
-      const hasSecret = (e.stdio?.env ?? []).some((s) => s.secret);
-      if (hasSecret) expect(e.auth).not.toBe("none");
-    }
-  });
-
-  it("covers the marquee integrations", () => {
-    for (const id of ["supabase", "firebase", "vercel", "figma", "github", "notion", "stripe", "postgres"]) {
-      expect(getMcpCatalogEntry(id)).not.toBeNull();
-    }
-    expect(getMcpCatalogEntry("does-not-exist")).toBeNull();
-  });
-
-  it("marks popular entries and secret env fields", () => {
-    expect(MCP_CATALOG.filter((e) => e.popular).length).toBeGreaterThanOrEqual(15);
-    const supabase = getMcpCatalogEntry("supabase")!;
-    expect(supabase.stdio!.env[0].secret).toBe(true);
-    expect(supabase.stdio!.env[0].required).toBe(true);
-    expect(supabase.auth).toBe("oauth");
-  });
-
-  it("exposes display categories that match the catalog", () => {
-    const keys = new Set(MCP_CATEGORIES.map((c) => c.key));
-    expect(keys.has("all")).toBe(true);
-    for (const e of MCP_CATALOG) {
-      expect(keys.has(e.category)).toBe(true);
-    }
-  });
-});
-
-describe("searchMcpCatalog", () => {
-  it("returns everything (popular first) on empty query", () => {
-    const all = searchMcpCatalog("", "all", 500);
-    expect(all.length).toBe(MCP_CATALOG.length);
-    expect(all[0].popular).toBe(true);
-  });
-
-  it("matches by name, id, and description", () => {
-    const byName = searchMcpCatalog("figma", "all", 100);
-    expect(byName[0].id).toBe("figma");
-    const byDesc = searchMcpCatalog("knowledge graph", "all", 100);
-    expect(byDesc.some((e) => e.id === "memory")).toBe(true);
+  it("ranks exact name/id hits above description hits", () => {
+    const hits = searchMcpCatalog("brave search", "all", 10, CATALOG);
+    expect(hits[0].id).toBe("brave-search"); // hyphen normalised
+    const desc = searchMcpCatalog("tracking", "all", 10, CATALOG);
+    expect(desc[0].id).toBe("brave-search"); // only a description hit
   });
 
   it("is case-insensitive", () => {
-    expect(searchMcpCatalog("SUPABASE", "all", 5)[0].id).toBe("supabase");
+    expect(searchMcpCatalog("SUPABASE", "all", 5, CATALOG)[0].id).toBe("supabase");
   });
 
   it("filters by category", () => {
-    const design = searchMcpCatalog("", "design", 100);
+    const design = searchMcpCatalog("", "design", 100, CATALOG);
     expect(design.length).toBeGreaterThan(0);
     expect(design.every((e) => e.category === "design")).toBe(true);
   });
 
-  it("respects the limit", () => {
-    expect(searchMcpCatalog("", "all", 7).length).toBe(7);
+  it("puts popular entries first on an empty query and respects the limit", () => {
+    const all = searchMcpCatalog("", "all", 500, CATALOG);
+    expect(all).toHaveLength(CATALOG.length);
+    expect(all[0].popular).toBe(true);
+    expect(searchMcpCatalog("", "all", 2, CATALOG)).toHaveLength(2);
   });
 
-  it("returns nothing for garbage queries", () => {
-    expect(searchMcpCatalog("zzzznotapackage", "all", 10)).toEqual([]);
+  it("returns nothing for garbage queries, and nothing without a catalogue", () => {
+    expect(searchMcpCatalog("zzzznotapackage", "all", 10, CATALOG)).toEqual([]);
+    expect(searchMcpCatalog("figma", "all", 10, [])).toEqual([]);
   });
 });
+
+/** The taxonomy is taxonomy, not catalogue content — it must survive the move. */
+function MCP_CATALOGS_TAXONOMY(): boolean {
+  return MCP_CATEGORIES.length >= 14 && MCP_CATEGORIES[0].key === "all";
+}

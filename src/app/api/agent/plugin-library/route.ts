@@ -1,4 +1,4 @@
-// Plugin library API — built-in, one-click installable bundles.
+// Plugin library API — one-click installable bundles published by the marketplace.
 // GET  /api/agent/plugin-library  → library catalog + per-workspace installed flags
 // POST /api/agent/plugin-library  → { slug } installs one bundle into the open workspace
 //
@@ -10,7 +10,8 @@ import { sessionUserId } from "@/lib/server-session";
 import { resolveWorkspaceCwd } from "@/lib/workspace-cwd";
 import { clearToolHookCache } from "@/lib/tool-hooks";
 import { installPlugin } from "@/lib/plugin-bundles";
-import { BUILTIN_BUNDLES, isBundleInstalled, materializeBundle } from "@/lib/plugin-library";
+import { isBundleInstalled, materializeBundle } from "@/lib/plugin-library";
+import { getMaterializedBundles } from "@/lib/marketplace-bundles";
 import { isBundleEnabled, readBundleState, recordBundleInstall, setBundleEnabled } from "@/lib/plugin-library-state";
 
 function err(msg: string, status: number) {
@@ -25,9 +26,11 @@ export async function GET(request: NextRequest) {
   if (!cwd) return NextResponse.json({ library: [], workspaceOpen: false });
 
   const state = await readBundleState(cwd);
+  // Bundle definitions are marketplace data — the app ships none of its own.
+  const bundles = await getMaterializedBundles();
   const library = [];
-  for (const b of BUILTIN_BUNDLES) {
-    const installed = await isBundleInstalled(cwd, b.slug);
+  for (const b of bundles) {
+    const installed = await isBundleInstalled(bundles, cwd, b.slug);
     library.push({
       slug: b.slug,
       name: b.slug,
@@ -54,14 +57,15 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => ({}));
   const slug = typeof body?.slug === "string" ? body.slug : "";
-  const bundle = materializeBundle(slug);
+  const bundles = await getMaterializedBundles();
+  const bundle = materializeBundle(bundles, slug);
   if (!bundle) return err("Unknown library bundle", 404);
 
   // Containment is structural: installPlugin() writes only under
   // <workspace>/.orplex/ with sanitized skill names, so no path input from
   // this request can escape the workspace.
   const result = await installPlugin(bundle, cwd);
-  await recordBundleInstall(cwd, slug); // enabled=true + rules snapshot
+  await recordBundleInstall(bundles, cwd, slug); // enabled=true + rules snapshot
   return NextResponse.json({
     installed: {
       name: bundle.manifest.name,
@@ -83,7 +87,8 @@ export async function PATCH(request: NextRequest) {
   const slug = typeof body?.slug === "string" ? body.slug : "";
   if (typeof body?.enabled !== "boolean") return err("enabled (boolean) is required", 400);
 
-  const entry = await setBundleEnabled(cwd, slug, body.enabled);
+  const bundles = await getMaterializedBundles();
+  const entry = await setBundleEnabled(bundles, cwd, slug, body.enabled);
   if (!entry) return err("Unknown library bundle", 404);
 
   // Enforcement compiles through a 60s cache — the toggle must not be stale

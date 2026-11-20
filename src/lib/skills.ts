@@ -1,6 +1,7 @@
-// Shim — this module now lives in @orplex/sdk.
+// skills.ts — the app's view of the skill catalogue.
 //
-// The app keeps importing "@/lib/skills" unchanged, so the extraction is
-// reversible per module: delete this file and restore it from git to roll back.
-// Implementations, fixes and tests for it belong in the SDK repo.
-export * from "@orplex/sdk/lib/skills";
+// The 101 skills used to be compiled into this module. They are marketplace data
+// now (signed, verified, cached — see marketplace-client.ts), so what remains
+// here is the type surface and the helpers every consumer already imports.
+export type { Skill, SkillCategory } from "@orplex/sdk/lib/skills";
+export { flattenSkills, getSkillById, searchSkills } from "@orplex/sdk/lib/skills";

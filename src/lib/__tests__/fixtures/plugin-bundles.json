@@ -1,0 +1,126 @@
+{
+  "_comment": "Test fixture only — five bundle definitions copied verbatim from the published marketplace bundle (hooks included). Product data lives in orplex-marketplace.",
+  "bundles": [
+    {
+      "slug": "branch-discipline",
+      "name": "branch-discipline",
+      "description": "Feature-branch workflow guardrails: pushes to main/master are blocked, commits and pushes are announced, and every task starts from a clean tree.",
+      "category": "devops",
+      "version": "1.0.0",
+      "hooks": {
+        "deny": [
+          "git\\s+push\\s+.*\\b(main|master)\\b",
+          "git\\s+push\\s+origin\\s+(main|master)\\s*$"
+        ],
+        "notify": [
+          "git\\s+push",
+          "git\\s+commit"
+        ]
+      },
+      "skills": [
+        {
+          "name": "branch-discipline",
+          "title": "branch-discipline",
+          "body": "# Branch discipline\n\nmain is releasable at all times; all agent work happens on branches.\n\n---\n## Rules\n\n1. Check git status and the current branch before the first write. If the tree is dirty or you are on main, create/switch to a feature branch first (feat/<topic>, fix/<topic>).\n2. One logical change per commit; rebase-style cleanups beat interleaved mega-commits.\n3. Never push to main/master — open a branch and let the human merge after review.\n4. If the repo has no remote, commit locally and say so; do not invent push commands."
+        }
+      ]
+    },
+    {
+      "slug": "safe-commands",
+      "name": "safe-commands",
+      "description": "Shell commands run screened and narrow: no rm -rf, no curl|sh, no chained evasion forms.",
+      "category": "security",
+      "version": "1.0.0",
+      "hooks": {
+        "deny": [
+          "rm\\s+-rf\\s+/",
+          "curl[^|]*\\|\\s*(ba)?sh",
+          "wget[^|]*\\|\\s*(ba)?sh",
+          "mkfs",
+          ":(){:\\|:&};:"
+        ],
+        "notify": [
+          "run_command"
+        ]
+      },
+      "skills": [
+        {
+          "name": "safe-commands",
+          "title": "safe-commands",
+          "body": "# Safe commands\n\nThe shell is the most dangerous tool in the belt — treat it that way.\n\n---\n## Rules\n\n1. Prefer argv-array process APIs over shell strings; when a shell is required, keep the command one line and quote variables.\n2. Never pipe network input into an interpreter (curl | sh is always refused).\n3. Destructive flags (-rf, --force, drop, truncate) need explicit user-visible justification in the task summary.\n4. Prefer the project's own scripts (npm run ...) over ad-hoc command chains.\n5. Long-running commands get timeouts; a hung process is a failure mode, handle it."
+        }
+      ]
+    },
+    {
+      "slug": "secret-hygiene",
+      "name": "secret-hygiene",
+      "description": "Blocks tool calls that would write or echo credential-shaped strings (AWS keys, GitHub tokens, private key blocks) before they land in any file or log.",
+      "category": "security",
+      "version": "1.0.0",
+      "hooks": {
+        "deny": [
+          "AKIA[0-9A-Z]{16}",
+          "ghp_[A-Za-z0-9]{30,}",
+          "github_pat_[A-Za-z0-9_]{20,}",
+          "sk-[A-Za-z0-9]{20,}",
+          "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"
+        ],
+        "notify": [
+          "run_command.*env",
+          "run_command.*printenv"
+        ]
+      },
+      "skills": [
+        {
+          "name": "secret-hygiene",
+          "title": "secret-hygiene",
+          "body": "# Secret hygiene\n\nCredentials never belong in source, logs, or command output.\n\n---\n## Rules\n\n1. Read secrets from environment variables or a secrets manager — never hardcode them, even \"temporarily\".\n2. If you see a credential-shaped string in a diff or a file you are editing, stop and flag it to the user instead of preserving it.\n3. Example/env files use placeholders (your-key-here), never real-looking values.\n4. When a command might echo secrets (env, printenv, config dumps), prefer the narrow command that shows only what you need."
+        }
+      ]
+    },
+    {
+      "slug": "test-first",
+      "name": "test-first",
+      "description": "Test-driven discipline: a failing test exists before any fix, and new features land with coverage.",
+      "category": "quality",
+      "version": "1.0.0",
+      "hooks": {
+        "notify": [
+          "run_command.*test",
+          "run_command.*jest",
+          "run_command.*pytest"
+        ]
+      },
+      "skills": [
+        {
+          "name": "test-first",
+          "title": "test-first",
+          "body": "# Test-first\n\nA bug you can't reproduce in a test isn't fixed — it's postponed.\n\n---\n## Rules\n\n1. For every bug fix, first write the smallest test that fails on the current code. Watch it fail. Then fix.\n2. New features ship with at least one test per acceptance criterion.\n3. Refactors run the existing suite before and after — green to green, no snapshot drift.\n4. Never weaken an assertion to make a test pass. If the test is wrong, change the test and say why.\n5. Prefer testing observable behavior over private internals."
+        }
+      ]
+    },
+    {
+      "slug": "verified-commits",
+      "name": "verified-commits",
+      "description": "The agent may only claim a task done when the machine agrees: typecheck and tests must exit 0 before any 'done' summary, and history rewriting is off-limits.",
+      "category": "quality",
+      "version": "1.0.0",
+      "hooks": {
+        "deny": [
+          "git\\s+push\\s+.*--force",
+          "git\\s+commit\\s+.*--no-verify"
+        ],
+        "notify": [
+          "git\\s+commit"
+        ]
+      },
+      "skills": [
+        {
+          "name": "verified-commits",
+          "title": "verified-commits",
+          "body": "# Verified commits\n\nWork is not done because the code looks right. It is done when the verification lanes pass.\n\n---\n## Rules\n\n1. After every code change, run the project's checks (tsc --noEmit + the test suite) and read the EXIT CODES. Exit 0 is the only \"passed\".\n2. Never summarize a task as complete while any check fails. Report the failure and the fix you attempted instead.\n3. If a check was never run (no test suite, no compiler), say so explicitly — \"unverified\" is an honest status, a guess is not.\n4. Never rewrite history: no git push --force, no git commit --no-verify, no amending commits you did not create in this session.\n5. Commit small and often; every commit message says WHY, not just what."
+        }
+      ]
+    }
+  ]
+}
