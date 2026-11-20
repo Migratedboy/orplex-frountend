@@ -25,6 +25,14 @@ export const POISON_SHORTCUT_NAME = "Electron.lnk";
  */
 export const DEV_BINARY_NAME = "orplex-dev.exe";
 
+/**
+ * Is this file name a branded dev binary? The launcher names the copy after a
+ * hash of the icon (orplex-dev-1a2b3c4d.exe) so Windows cannot reuse a cached
+ * taskbar icon for an old logo, which is why this matches the prefix and not
+ * just DEV_BINARY_NAME. The bare name stays valid for older checkouts.
+ */
+const DEV_BINARY_PATTERN = /^orplex-dev(-[0-9a-f]{8})?\.exe$/;
+
 /** Windows path → file name, independent of the host platform. */
 function fileName(p: string): string {
   const normalized = String(p).replace(/\\/g, "/");
@@ -54,10 +62,11 @@ export function isIconPoisonTarget(target: string | undefined | null): boolean {
   // Basename must be exactly a dev-lane runtime (not electron, not
   // electron-helper.exe, not the installed product).
   const base = fileName(t);
-  if (base !== "electron.exe" && base !== DEV_BINARY_NAME) return false;
+  const isBranded = base === DEV_BINARY_NAME || DEV_BINARY_PATTERN.test(base);
+  if (base !== "electron.exe" && !isBranded) return false;
   return (
     /\/electron\/dist\/electron\.exe$/i.test(t) ||
-    /\/electron\/dist\/orplex-dev\.exe$/i.test(t) ||
+    (isBranded && /\/electron\/dist\/[^/]+$/i.test(t)) ||
     /\/node_modules\/electron\//i.test(t) ||
     /\/electron\/dist\//i.test(t)
   );

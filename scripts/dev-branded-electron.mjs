@@ -15,6 +15,7 @@
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,8 +42,14 @@ if (process.platform !== "win32") {
   // The branded copy MUST live next to electron.exe: Electron loads its ICU
   // data and .pak files relative to the executable, so a copy elsewhere
   // dies with "Invalid file descriptor to ICU data received".
-  const outExe = path.join(electronDist, "orplex-dev.exe");
-  const stampFile = path.join(electronDist, "orplex-dev.stamp");
+  // The copy is named after a hash of the icon, not just "orplex-dev.exe".
+  // Windows caches a taskbar button's icon per executable PATH (and per AUMID),
+  // so rewriting the same path with a new icon left the old logo on screen even
+  // though the exe resources were new. A new icon now means a new path, which
+  // has no cache entry at all. icon-poison.ts matches the "orplex-dev*" prefix.
+  const iconHash = crypto.createHash("sha256").update(fs.readFileSync(iconPath)).digest("hex").slice(0, 8);
+  const outExe = path.join(electronDist, `orplex-dev-${iconHash}.exe`);
+  const stampFile = path.join(electronDist, `orplex-dev-${iconHash}.stamp`);
 
   const stat = (p) => {
     try {
@@ -101,7 +108,18 @@ if (process.platform !== "win32") {
       res.outputResource(executable);
       fs.writeFileSync(outExe, Buffer.from(executable.generate()));
       fs.writeFileSync(stampFile, stamp);
-      console.log("[dev-icon] branded electron.exe written with the Orplex icon.");
+      // Drop copies made for a previous logo: a stale orplex-dev-*.exe is dead
+      // weight and, if anything launched it, would show the old taskbar logo.
+      for (const entry of fs.readdirSync(electronDist)) {
+        const stale = /^orplex-dev(-[0-9a-f]{8})?\.(exe|stamp)$/i.test(entry);
+        const mine = entry.startsWith(path.basename(outExe)) || entry === path.basename(stampFile);
+        if (stale && !mine) {
+          try {
+            fs.rmSync(path.join(electronDist, entry), { force: true });
+          } catch {}
+        }
+      }
+      console.log(`[dev-icon] branded ${path.basename(outExe)} written with the Orplex icon.`);
     }
 
     const child = spawn(outExe, process.argv.slice(2).length ? process.argv.slice(2) : ["."], {

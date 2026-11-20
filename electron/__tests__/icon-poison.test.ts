@@ -39,6 +39,16 @@ describe("isIconPoisonTarget — the Start Menu shortcut that poisons the taskba
     expect(isIconPoisonTarget("D:/orplex/node_modules/electron/dist/orplex-dev.exe")).toBe(true);
   });
 
+  it("flags the icon-hashed dev binary too", () => {
+    // The launcher names the branded copy after a hash of the icon
+    // (orplex-dev-1a2b3c4d.exe) so Windows cannot reuse a cached taskbar icon
+    // from a previous logo. Those copies are the same dev-lane runtime, so the
+    // sweep has to keep recognising them.
+    expect(isIconPoisonTarget("D:\\orplex\\node_modules\\electron\\dist\\orplex-dev-1a2b3c4d.exe")).toBe(true);
+    expect(isIconPoisonTarget("D:/orplex/node_modules/electron/dist/orplex-dev-deadbeef.exe")).toBe(true);
+    expect(isIconPoisonTarget("D:/orplex/node_modules/electron/dist/orplex-dev-nothex.exe")).toBe(false);
+  });
+
   it("does not flag our branded dev binary outside an electron runtime tree", () => {
     // A copy someone installed themselves is not the dev lane we own.
     expect(isIconPoisonTarget("C:\\Users\\me\\Desktop\\orplex-dev.exe")).toBe(false);

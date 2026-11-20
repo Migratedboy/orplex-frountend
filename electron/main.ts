@@ -8,8 +8,8 @@
  * server; the UI talks to the hosted backend over HTTPS. Both vars come
  * from the repo-root .env via the loader at the top of this file.
  */
-import { app, BrowserWindow, shell, Menu, dialog, ipcMain, session, nativeImage } from "electron";
-import type { NativeImage } from "electron";
+import { app, BrowserWindow, shell, Menu, dialog, ipcMain, session, nativeImage, screen } from "electron";
+import type { NativeImage, Rectangle } from "electron";
 import { isDevRuntime } from "./dev-mode";
 import { POISON_SHORTCUT_NAME, sweepIconPoison as sweepIconPoisonPure } from "./icon-poison";
 import { homedir } from "node:os";
@@ -28,6 +28,7 @@ import { registerBrowserDataIpc } from "./browser-data-import";
 import { registerRecorderIpc } from "./browser-recorder";
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { installPipeResilience, safeConsoleWrite } from "./safeio";
 
 // Broken console pipes (closed terminal, detached launch, dev restart) must
@@ -100,7 +101,28 @@ const isDev = isDevRuntime();
 // reusing "tech.orplex.app" keeps showing the INSTALLED app's cached icon
 // even when the dev exe and the BrowserWindow carry a brand-new one.
 const PACKAGED_APP_ID = "tech.orplex.app";
-const DEV_APP_ID = "tech.orplex.app.dev";
+// ...and it must not reuse a stale DEV AUMID either. Windows caches the taskbar
+// icon per AUMID, so after a logo change the shell kept drawing the PREVIOUS
+// icon for the running window even though the exe resources and BrowserWindow
+// icon were already the new ones (verifiable: RT_ICON hashes match the new
+// .ico). Deriving the dev id from the icon bytes makes every logo change a new
+// taskbar identity, so that cache cannot survive a rebrand.
+function devAppId(): string {
+  const candidates = [
+    path.join(__dirname, "..", "electron", "assets", "icon.ico"),
+    path.join(app.getAppPath(), "electron", "assets", "icon.ico"),
+    path.join(process.cwd(), "electron", "assets", "icon.ico"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (!fs.existsSync(candidate)) continue;
+      const digest = createHash("sha256").update(fs.readFileSync(candidate)).digest("hex").slice(0, 8);
+      return `tech.orplex.app.dev.${digest}`;
+    } catch {}
+  }
+  return "tech.orplex.app.dev";
+}
+const DEV_APP_ID = devAppId();
 const APP_ID = isDev ? DEV_APP_ID : PACKAGED_APP_ID;
 // Electron OWNS both Next.js processes — the user never runs one separately.
 // ORPLEX_PORT / ORPLEX_API_PORT only override for special setups.
@@ -214,6 +236,71 @@ function getMainWindow(): BrowserWindow | null {
 }
 let quitting = false;
 
+// === WINDOW BOUNDS =========================================================
+// The frameless window's restore rect is tracked HERE instead of trusting
+// Electron/Windows. On Windows a window that was maximized can come back from
+// `unmaximize()` at its MAXIMIZED work-area rect (a frameless window has no
+// full native "normal position" recorded), and a creation-time rect can be
+// larger than the display the app is restored onto — both showed up as
+// "clicking Restore makes the app bigger than my screen". We remember the last
+// windowed bounds while the window is neither maximized nor fullscreen and
+// always clamp before restoring.
+let normalBounds: Rectangle | null = null;
+
+/** Work area (screen minus taskbar) of the display a rect mostly sits on. */
+function workAreaFor(rect: Rectangle): Rectangle {
+  try {
+    return screen.getDisplayMatching(rect).workArea;
+  } catch {
+    return screen.getPrimaryDisplay().workArea;
+  }
+}
+
+/** Clamp bounds into a display's work area, honouring the window's min size. */
+function clampToWorkArea(bounds: Rectangle, win: BrowserWindow): Rectangle {
+  const wa = workAreaFor(bounds);
+  const [minW, minH] = win.getMinimumSize();
+  const width = Math.max(Math.min(bounds.width, wa.width), Math.min(minW, wa.width));
+  const height = Math.max(Math.min(bounds.height, wa.height), Math.min(minH, wa.height));
+  const x = Math.min(Math.max(bounds.x, wa.x), Math.max(wa.x, wa.x + wa.width - width));
+  const y = Math.min(Math.max(bounds.y, wa.y), Math.max(wa.y, wa.y + wa.height - height));
+  return { x, y, width, height };
+}
+
+/** Remember the current windowed bounds (ignored while maximized/minimized). */
+function rememberNormalBounds(win: BrowserWindow | null): void {
+  if (!win || win.isDestroyed() || win.isMaximized() || win.isMinimized() || win.isFullScreen()) return;
+  const b = win.getBounds();
+  const wa = workAreaFor(b);
+  // A rect that fills the work area is the maximized rect — some platforms
+  // emit `resize` BEFORE `maximize`, so never learn that as the windowed rect.
+  if (b.width >= wa.width && b.height >= wa.height) return;
+  normalBounds = clampToWorkArea(b, win);
+}
+
+/**
+ * Restore a maximized window to the last windowed bounds, clamped to the
+ * display's work area. Called from the `unmaximize` event, so it covers our
+ * Restore button, double-click on the strip, Win+Down and the window menu.
+ */
+function restoreWindowedBounds(win: BrowserWindow): void {
+  const target = clampToWorkArea(normalBounds ?? win.getBounds(), win);
+  normalBounds = target;
+  win.setBounds(target);
+  // Windows can ignore a setBounds issued while the unmaximize transition is
+  // still settling, leaving the window at the work-area (maximized) rect.
+  // Verify once that transition is done and re-apply if it did not take.
+  setTimeout(() => {
+    const w = getMainWindow();
+    if (!w || w.isDestroyed() || w.isMaximized() || w.isMinimized() || w.isFullScreen()) return;
+    const b = w.getBounds();
+    const wa = workAreaFor(b);
+    const stillMaximized = b.width >= wa.width && b.height >= wa.height;
+    const oversized = b.width > wa.width || b.height > wa.height;
+    if (stillMaximized || oversized) w.setBounds(clampToWorkArea(target, w));
+  }, 80);
+}
+
 // === CRASH RECOVERY =========================================================
 // A session file records whether the previous run ended cleanly. If the app
 // starts WITHOUT that marker (crash, force-kill, power loss), the renderer
@@ -258,6 +345,10 @@ const gotTheLock = app.requestSingleInstanceLock();
 // the installed app's cached icon.
 try {
   app.setAppUserModelId(APP_ID);
+  // Identity is the first thing to check when a taskbar icon looks stale: the
+  // shell caches per AUMID + exe path, so a logged id that did not change
+  // means the app is looking at an old cache, not a wrong icon file.
+  safeConsoleWrite(process.stdout, `[aumid] ${APP_ID} exe=${path.basename(process.execPath)}\n`);
 } catch {}
 // Self-healing icon-poison sweep: Electron's Windows toast-notification
 // path self-installs a Start Menu "Electron.lnk" carrying its own AUMID.
@@ -612,15 +703,20 @@ function createWindow(): void {
       `[icon] picked=${iconPath ?? "NONE"} bytes=${bytes} empty=${appIcon ? appIcon.isEmpty() : "n/a"} size=${sz.width}x${sz.height}\n`
     );
   } catch {}
+  const wa = screen.getPrimaryDisplay().workAreaSize;
+  const initW = Math.min(1440, wa.width);
+  const initH = Math.min(900, wa.height);
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 940,
-    minHeight: 600,
+    width: initW,
+    height: initH,
+    minWidth: Math.min(940, wa.width),
+    minHeight: Math.min(600, wa.height),
     backgroundColor: "#1a1c1d",
     show: false,
     title: "Orplex Code — starting server…",
     autoHideMenuBar: true,
+    frame: false,
+    titleBarStyle: process.platform === "darwin" ? "hidden" : undefined,
     // Orplex logo for the window + taskbar. On Windows an .ico carries the
     // full size range (16–256) so the taskbar renders crisply; PNG elsewhere.
     icon: iconArg,
@@ -632,6 +728,13 @@ function createWindow(): void {
       webviewTag: false,
     },
   });
+
+  // Seed + keep the windowed rect the Restore control returns to (see
+  // WINDOW BOUNDS above). Without this, maximizing then restoring is at the
+  // mercy of Windows' frameless-window placement and can end up screen-sized.
+  normalBounds = clampToWorkArea(mainWindow.getBounds(), mainWindow);
+  mainWindow.on("resize", () => rememberNormalBounds(getMainWindow()));
+  mainWindow.on("move", () => rememberNormalBounds(getMainWindow()));
 
   if (iconArg) {
     try {
@@ -746,6 +849,20 @@ function createWindow(): void {
         createWindow();
       }
     }, 1500);
+  });
+
+  // Frameless window: broadcast maximize state so the renderer's window
+  // controls can swap the maximize/restore icon.
+  mainWindow.on("maximize", () => {
+    try { mainWindow?.webContents.send("orplex:window-maximized", true); } catch {}
+  });
+  mainWindow.on("unmaximize", () => {
+    // Bring the window back to OUR windowed rect, never to whatever rect
+    // Windows considers normal for a frameless window (that one can exceed
+    // the display). Then tell the renderer to swap the restore icon back.
+    const w = getMainWindow();
+    if (w) restoreWindowedBounds(w);
+    try { mainWindow?.webContents.send("orplex:window-maximized", false); } catch {}
   });
 
   mainWindow.on("closed", () => {
@@ -1047,6 +1164,24 @@ app.whenReady().then(async () => {
   // "What's new" exactly once per installed version.
   handleAppIpc("orplex:app-version", () => app.getVersion());
 
+  // Frameless window controls (Phase 5) — consumed by shell/WindowControls.tsx.
+  handleAppIpc("orplex:window-minimize", () => { try { getMainWindow()?.minimize(); } catch {} return true; });
+  handleAppIpc("orplex:window-toggle-maximize", () => {
+    const w = getMainWindow();
+    if (!w) return false;
+    if (w.isMaximized()) {
+      // The `unmaximize` handler re-applies the clamped windowed bounds.
+      w.unmaximize();
+    } else {
+      // Capture the rect to come back to BEFORE maximizing.
+      rememberNormalBounds(w);
+      w.maximize();
+    }
+    return w.isMaximized();
+  });
+  handleAppIpc("orplex:window-close", () => { try { getMainWindow()?.close(); } catch {} return true; });
+  handleAppIpc("orplex:window-is-maximized", () => !!getMainWindow()?.isMaximized());
+
   try {
     // Electron owns BOTH server lifecycles — it always spawns its own Next
     // children and kills them on quit (close window = servers stop). The
@@ -1055,16 +1190,28 @@ app.whenReady().then(async () => {
     // a crashed previous run, take it over cleanly; the user's own processes
     // on OTHER ports are never touched.
     const cloudApi = process.env.ORPLEX_API_URL || "";
+    // DEV: a developer may already be running `next dev` on the UI port. The
+    // old takeover killed it, so the terminal watching that server died and the
+    // next boot started against a half-written `.next/dev` cache (the source of
+    // the "unexpected Turbopack error" overlay). Reuse a live UI server in dev;
+    // a packaged build still takes over a stale/zombie listener, because there
+    // the port is ours alone and a zombie must not shadow the bundled server.
+    let reuseUiServer = false;
     for (const [which, port] of [
       ["ui", UI_PORT],
       ["api", API_PORT],
     ] as const) {
       if (await probeAnyServer(loopbackProbeUrls(port))) {
+        if (isDev && which === "ui") {
+          safeConsoleWrite(process.stdout, `[startup] port ${port} (ui) already serving — reusing the running dev server\n`);
+          reuseUiServer = true;
+          continue;
+        }
         safeConsoleWrite(process.stdout, `[startup] port ${port} (${which}) held by a stale process — taking it over\n`);
         await killPortListener(port);
       }
     }
-    await startNextServer("ui");
+    if (!reuseUiServer) await startNextServer("ui");
     if (!cloudApi) await startNextServer("api");
     await waitForServer(APP_PROBES);
     if (!cloudApi) {
