@@ -222,6 +222,26 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "The Settings Database tab now works identically offline and online",
     ],
   },
+  "3.0.0": {
+    title: "The tools moved into the SDK — plugins come from the marketplace",
+    items: [
+      "The AI tool layer is now a published package (@orplex/sdk 0.3.1) — the app is the shell around it, and nothing in the app can drift from the tools it calls",
+      "Plugins, MCP servers and skills are no longer baked into the app: 241 of them (101 skills, 100 MCP servers, 40 marketing and engineering plugins) are fetched from the signed catalog and cached, so a fresh install gets the current set instead of whatever shipped months ago",
+      "The catalog is Ed25519-signed and every item carries a sha256 — an unsigned or edited item is refused instead of quietly installed",
+      "Bundles carry their hook rules with them: installing a bundle wires its pre- and post-tool checks in one click",
+      "Fixed: tool hooks could never block anything on Windows — the command went through Node's quoting and failed with “'C:\\Program' is not recognized”. Version-control checks and guards now actually run",
+    ],
+  },
+  "3.0.1": {
+    title: "The supplied icon pack, and a title bar you can grab",
+    items: [
+      "New: the app icon, taskbar, tray and installer art are the packaged Orplex mark, used exactly as designed — corners are genuinely transparent, so the taskbar no longer draws a black plate around it",
+      "The tray icon is the small-size variant rather than a shrunken large one, so it reads at 16px",
+      "Fixed: the window had no minimise, maximise or close at all — the buttons were mounted but the desktop bridge behind them was missing, so a frameless window had no way to quit",
+      "Windows keeps its own copy of tray icons; the stale copy is now cleared on upgrade, so the notification area stops showing the previous art",
+      "Dev builds get a new window identity whenever an icon changes — a cached taskbar bitmap can no longer hide the new logo",
+    ],
+  },
 };
 
 /** "1.0.9" < "1.0.10" < "1.1.0" — plain numeric segment compare. */
