@@ -22,6 +22,15 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/** File bytes, or empty — a missing tray icon must not stop the launcher. */
+function maybeRead(file) {
+  try {
+    return fs.readFileSync(file);
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
 const iconPath = path.join(root, "electron", "assets", "icon.ico");
 
 function runElectron(args) {
@@ -47,7 +56,16 @@ if (process.platform !== "win32") {
   // so rewriting the same path with a new icon left the old logo on screen even
   // though the exe resources were new. A new icon now means a new path, which
   // has no cache entry at all. icon-poison.ts matches the "orplex-dev*" prefix.
-  const iconHash = crypto.createHash("sha256").update(fs.readFileSync(iconPath)).digest("hex").slice(0, 8);
+  // Hash the whole icon set, not just the .ico: Windows keys the taskbar AND the
+  // notification-area (tray) snapshot by executable path, so a change to
+  // icon32.png alone would otherwise keep the previous tray logo on screen.
+  const iconHash = crypto
+    .createHash("sha256")
+    .update(fs.readFileSync(iconPath))
+    .update(maybeRead(path.join(root, "electron", "assets", "icon32.png")))
+    .update(maybeRead(path.join(root, "electron", "assets", "tray.png")))
+    .digest("hex")
+    .slice(0, 8);
   const outExe = path.join(electronDist, `orplex-dev-${iconHash}.exe`);
   const stampFile = path.join(electronDist, `orplex-dev-${iconHash}.stamp`);
 

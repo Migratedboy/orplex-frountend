@@ -108,16 +108,26 @@ const PACKAGED_APP_ID = "tech.orplex.app";
 // .ico). Deriving the dev id from the icon bytes makes every logo change a new
 // taskbar identity, so that cache cannot survive a rebrand.
 function devAppId(): string {
-  const candidates = [
-    path.join(__dirname, "..", "electron", "assets", "icon.ico"),
-    path.join(app.getAppPath(), "electron", "assets", "icon.ico"),
-    path.join(process.cwd(), "electron", "assets", "icon.ico"),
+  // Must hash the same files the dev launcher does (scripts/dev-branded-electron.mjs):
+  // icon.ico decides the window/taskbar art, icon32.png + tray.png decide the
+  // notification-area (tray) art — and Windows caches all of them by exe path +
+  // AUMID, so every one of them has to feed the identity.
+  const roots = [
+    path.join(__dirname, "..", "electron", "assets"),
+    path.join(app.getAppPath(), "electron", "assets"),
+    path.join(process.cwd(), "electron", "assets"),
   ];
-  for (const candidate of candidates) {
+  for (const dir of roots) {
     try {
-      if (!fs.existsSync(candidate)) continue;
-      const digest = createHash("sha256").update(fs.readFileSync(candidate)).digest("hex").slice(0, 8);
-      return `tech.orplex.app.dev.${digest}`;
+      const ico = path.join(dir, "icon.ico");
+      if (!fs.existsSync(ico)) continue;
+      const hash = createHash("sha256").update(fs.readFileSync(ico));
+      for (const name of ["icon32.png", "tray.png"]) {
+        try {
+          hash.update(fs.readFileSync(path.join(dir, name)));
+        } catch {}
+      }
+      return `tech.orplex.app.dev.${hash.digest("hex").slice(0, 8)}`;
     } catch {}
   }
   return "tech.orplex.app.dev";
