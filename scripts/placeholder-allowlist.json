@@ -1,0 +1,13 @@
+{
+  "src/app/api/agent/notifications/route.ts:70": "read state tracking requires a NotificationRead table/migration; tracked as TODO",
+  "src/app/api/agent/notifications/[id]/read/route.ts:9": "read state tracking requires a NotificationRead table/migration; tracked as TODO",
+  "src/app/api/open-external/route.ts:46": "best-effort window.open; failure is non-fatal",
+  "src/components/ConnectorsPanel.tsx:647": "HTML input placeholder attribute (allowed)",
+  "src/components/SandboxArtifact.tsx:52": "sandboxed widget bridge; swallowed errors are intentional",
+  "src/components/SandboxArtifact.tsx:55": "sandboxed widget bridge; swallowed errors are intentional",
+  "src/components/SandboxArtifact.tsx:58": "sandboxed widget bridge; swallowed errors are intentional",
+  "src/lib/plugins/builtin/code-review-plugin.ts:26": "intentional string literal scanning for TODO/FIXME",
+  "src/lib/reliability/compaction-state.ts:190": "documentation comment",
+  "src/lib/strategy-router.ts:237": "documentation comment",
+  "src/lib/plugins/builtin/testgen-plugin.ts:26": "generated code template containing TODO in user code"
+}
