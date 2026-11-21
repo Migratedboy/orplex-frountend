@@ -126,6 +126,30 @@ export default function SignInPage() {
     void exchangeDesktopCode({ code: grant });
   }, []);
 
+  // The page gate redirects here with ?reason=… when it bounced a request. That
+  // used to be indistinguishable from "never signed in": the cookie was there,
+  // the signature failed, and nothing said why. Ask the local session check
+  // (key ids only — never the token) and say it plainly.
+  useEffect(() => {
+    const reason = new URLSearchParams(window.location.search).get("reason");
+    if (reason !== "unverified") return;
+    fetch("/api/system/session-check")
+      .then((r) => r.json().catch(() => null))
+      .then((d) => {
+        if (!d || d.verified) return;
+        if (d.diagnosis === "key-mismatch") {
+          setError(
+            `This app can verify sessions signed with key ${d.keys.bundled}, but the backend is signing with ${d.keys.backend}. Sign in again — the app picks up the current key automatically.`
+          );
+        } else if (d.diagnosis === "no-session-cookie") {
+          setError("Sign-in finished, but no session cookie reached this app. Sign in again.");
+        } else {
+          setError("Your session cookie could not be verified on this device. Sign in again.");
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const handleDevLogin = async () => {
     setLoading(true);
     setError("");

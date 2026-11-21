@@ -242,6 +242,7 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "\"Report issue or feature\" now opens the report form. It sent an event nothing listened for, so the button did nothing at all",
       "Pull from GitHub now lists the repositories your GitHub account can reach — private and public, owner/collaborator/organisation — with a search box, and still accepts a URL, branch and token by hand. Private clones get a credential from the backend for that one repository instead of asking you for a personal access token",
       "Connect GitHub from the project picker or from Settings → Account no longer fails with \"This action with HTTP GET is not supported by NextAuth.js\" — both use the same sign-in path as the sign-in screen",
+      "Signing in no longer bounces you straight back to the sign-in screen: the app re-reads the backend\u0027s current session key when its own copy is out of date, and tells you which key is wrong if it still cannot verify you",
       "GitHub repository access can now use a GitHub App with the device flow: the app shows a short code, you type it at github.com/login/device, and the token stays on your machine. No redirect, no browser round-trip that can land you back on the sign-in page",
       "The email row in Account is read-only with a note that your sign-in provider owns it, instead of an edit box whose Save silently changed nothing",
       "Permissions and the cost breakdown, which the old screen had, are back in the new one under their own tabs",

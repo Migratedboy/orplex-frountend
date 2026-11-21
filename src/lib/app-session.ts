@@ -15,6 +15,7 @@
 //   ORPLEX_SESSION_PUBLIC_KEY   backend + app (verify)
 
 import { SignJWT, jwtVerify, importJWK, type JWK } from "jose";
+import { bundledSessionKey, fetchSessionKey } from "@/lib/session-key";
 
 /**
  * jose v6 stopped exporting `KeyLike` from its root. Derive the same union
@@ -34,18 +35,31 @@ export interface AppSessionUser {
   image?: string | null;
 }
 
-function readJwk(envName: string): JWK | null {
-  const raw = (process.env[envName] || "").trim();
-  if (!raw) return null;
+function readJwkRaw(rawEnv: string): JWK | null {
+  if (!rawEnv) return null;
   try {
-    return JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as JWK;
+    return JSON.parse(Buffer.from(rawEnv, "base64url").toString("utf8")) as JWK;
   } catch {
     return null;
   }
 }
 
+function readJwk(envName: string): JWK | null {
+  return readJwkRaw((process.env[envName] || "").trim());
+}
+
 async function importEd25519(envName: string): Promise<SignKeyLike | Uint8Array | null> {
   const jwk = readJwk(envName);
+  if (!jwk) return null;
+  try {
+    return await importJWK(jwk, "EdDSA");
+  } catch {
+    return null;
+  }
+}
+
+async function importEncodedKey(base64urlJwk: string): Promise<SignKeyLike | Uint8Array | null> {
+  const jwk = readJwkRaw(base64urlJwk);
   if (!jwk) return null;
   try {
     return await importJWK(jwk, "EdDSA");
@@ -71,29 +85,54 @@ export async function signAppSession(user: AppSessionUser): Promise<string | nul
     .sign(key);
 }
 
-/** Verify an app session token. Null for forged, tampered or expired tokens. */
-export async function verifyAppSession(token: string | null | undefined): Promise<AppSessionUser | null> {
-  if (!token) return null;
-  const key = await importEd25519("ORPLEX_SESSION_PUBLIC_KEY");
+/** Decode a verified payload into an app user (shared by every key attempt). */
+function payloadToUser(payload: Record<string, unknown>): AppSessionUser | null {
+  const id =
+    typeof payload.id === "string" && payload.id
+      ? payload.id
+      : typeof payload.sub === "string"
+        ? payload.sub
+        : "";
+  if (!id) return null;
+  return {
+    id,
+    name: typeof payload.name === "string" ? payload.name : null,
+    email: typeof payload.email === "string" ? payload.email : null,
+    image: typeof payload.image === "string" ? payload.image : null,
+  };
+}
+
+async function verifyWith(keyB64: string, token: string): Promise<AppSessionUser | null> {
+  const key = await importEncodedKey(keyB64);
   if (!key) return null;
   try {
     const { payload } = await jwtVerify(token, key, { algorithms: ["EdDSA"] });
-    const id =
-      typeof payload.id === "string" && payload.id
-        ? payload.id
-        : typeof payload.sub === "string"
-          ? payload.sub
-          : "";
-    if (!id) return null;
-    return {
-      id,
-      name: typeof payload.name === "string" ? payload.name : null,
-      email: typeof payload.email === "string" ? payload.email : null,
-      image: typeof payload.image === "string" ? payload.image : null,
-    };
+    return payloadToUser(payload as Record<string, unknown>);
   } catch {
     return null;
   }
+}
+
+/**
+ * Verify an app session token. Null for forged, tampered or expired tokens.
+ *
+ * Tries the bundled key first (no network), then — only if that fails — the key
+ * the backend currently signs with, so a rotated key cannot sign every user out
+ * silently.
+ */
+export async function verifyAppSession(token: string | null | undefined): Promise<AppSessionUser | null> {
+  if (!token) return null;
+  const bundled = bundledSessionKey();
+  if (bundled) {
+    const user = await verifyWith(bundled, token);
+    if (user) return user;
+  }
+  const remote = await fetchSessionKey();
+  if (remote?.publicKey && remote.publicKey !== bundled) {
+    const user = await verifyWith(remote.publicKey, token);
+    if (user) return user;
+  }
+  return null;
 }
 
 /** Pull one cookie value out of a raw Cookie header. */

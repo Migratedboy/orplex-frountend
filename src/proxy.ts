@@ -29,7 +29,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
-import { appSessionUserFromRequest } from "@/lib/app-session";
+import { APP_SESSION_COOKIE, appSessionUserFromRequest, readCookie } from "@/lib/app-session";
 import { meetsMinimum } from "@/lib/app-version";
 import { buildCsp } from "@/lib/csp";
 import { isSameOriginRequest, isStateChangingMethod } from "@/lib/same-origin";
@@ -84,6 +84,10 @@ const LOCAL_ONLY_API_ROUTES = [
   // local: it reports the id of the bundle running on this port (see
   // electron/server-identity.ts), and a remote backend has no such notion.
   "/api/system/build",
+  // "Why am I signed out?" — verifies THIS build's session cookie locally and
+  // compares its key id with the backend's. A remote host has no copy of the
+  // app's cookie jar, so this question can only be answered on this machine.
+  "/api/system/session-check",
   "/api/attachments",
   "/api/attachments/extract",
   "/api/agent/workspace-cwd",
@@ -398,6 +402,7 @@ if (
         }));
       signedIn = !!token;
     }
+    let bounceReason: string | null = null;
     // The backend mints the session JWT with the BACKEND's secret, which the
     // frontend cannot verify in split mode (different secrets). The backend
     // therefore ALSO issues an Ed25519-signed app session whose PUBLIC key
@@ -408,10 +413,15 @@ if (
     if (!signedIn) {
       const appUser = await appSessionUserFromRequest(request);
       signedIn = !!appUser;
+      // Distinguish "never signed in" from "cookie present but unverifiable":
+      // the second one is a key problem (rotation / missing bundled key) and
+      // used to look identical to a plain signed-out bounce.
+      bounceReason = appUser ? null : readCookie(request.headers.get("cookie"), APP_SESSION_COOKIE) ? "unverified" : "signed-out";
     }
     if (!signedIn) {
       const signIn = new URL("/auth/signin", request.url);
       signIn.searchParams.set("callbackUrl", request.nextUrl.pathname);
+      if (bounceReason) signIn.searchParams.set("reason", bounceReason);
       return NextResponse.redirect(signIn);
     }
   }
