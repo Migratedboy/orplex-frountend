@@ -377,6 +377,9 @@ export async function getServerRunConfig(userId: string, serverId: string): Prom
     command: row.command,
     args: args.length > 0 ? args : (entry?.stdio?.args ?? []),
     env: Object.keys(env).length > 0 ? env : undefined,
+    // The SDK scopes the child environment; the manifest says which names this
+    // server is allowed to receive (it warns when the host sends others).
+    declaredEnv: (entry?.stdio?.env ?? []).map((s) => s.name),
   };
 }
 
@@ -415,6 +418,7 @@ export async function collectMcpServerConfigs(userId: string): Promise<Record<st
       command: r.command,
       args: args.length > 0 ? args : (entry?.stdio?.args ?? []),
       env: Object.keys(env).length > 0 ? env : undefined,
+      declaredEnv: (entry?.stdio?.env ?? []).map((s) => s.name),
     };
   }
   return out;

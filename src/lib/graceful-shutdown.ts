@@ -10,9 +10,9 @@ let shuttingDown = false;
 
 /**
  * Register a cleanup function to run on shutdown.
- * Examples: closing DB pools, stopping cron jobs, flushing logs.
+ * Examples: closing DB pools, stopping cron jobs, killing spawned children.
  */
-function onShutdown(fn: CleanupFn): void {
+export function onShutdown(fn: CleanupFn): void {
   cleanupFns.push(fn);
 }
 

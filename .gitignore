@@ -120,3 +120,7 @@ service-account*.json
 # Local assistant data — never commit workspace learnings.
 .orplex/workspace-memory.json
 site/
+
+# Stray build output from manual packaging checks (never committed)
+.buildcheck/
+.jest-cache/

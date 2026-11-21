@@ -49,8 +49,18 @@ export async function register(): Promise<void> {
 
   // Graceful shutdown: SIGTERM/SIGINT handlers (drain, disconnect Prisma).
   try {
-    const { startGracefulShutdown } = await import("@/lib/graceful-shutdown");
+    const { startGracefulShutdown, onShutdown } = await import("@/lib/graceful-shutdown");
     startGracefulShutdown();
+    // MCP servers are child processes this Node server spawned (npx/uvx shims
+    // that fork again). Electron quitting sends SIGTERM here; without this
+    // sweep the real server processes outlive the app and hold their pipes.
+    const { shutdownAllMcp } = await import("@orplex/sdk/mcp");
+    onShutdown(async () => {
+      const reaped = await shutdownAllMcp();
+      if (reaped.sessions || reaped.processes) {
+        console.log(`[shutdown] reaped ${reaped.sessions} MCP session(s), ${reaped.processes} child process(es)`);
+      }
+    });
   } catch (err) {
     console.error("[shutdown] failed to start:", (err as Error).message);
   }

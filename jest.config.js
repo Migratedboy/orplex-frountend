@@ -54,6 +54,12 @@ module.exports = {
   // 5+ minute hangs. Timers are now unref'd at the source; forceExit is the
   // belt-and-suspenders fallback for anything that slips through.
   forceExit: true,
+  // Jest caches compiled transforms in the OS temp directory by default. On this
+  // machine C: hovers near zero free, so every cache write failed with ENOSPC
+  // and suites died with "Test suite failed to run" before executing a line —
+  // 15 red suites that had nothing to do with the code. Keep the cache inside
+  // the repo (D:), which has room, and out of version control.
+  cacheDirectory: "<rootDir>/.jest-cache",
   // Slow suites (live-validate, browser-verify-lane) wait on real timers.
   testTimeout: 20000,
 };
