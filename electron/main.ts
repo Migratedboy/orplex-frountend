@@ -21,6 +21,8 @@ import { registerDesktopAuth, handleDesktopAuthArgv } from "./auth-desktop";
 import { registerTerminalIpc, killAllTerminalChildren } from "./terminal";
 import { createConversationStore } from "./conversations-store";
 import { killNextChildren } from "./next-children";
+import { fetchServerBuild, readBuildId, waitForMatchingBuild } from "./server-identity";
+import { clearCachesOnVersionChange } from "./version-cache";
 import { preparePreviewPartition, registerPreviewBrowser } from "./preview-views";
 import { registerFsOps } from "./fs-ops";
 import { registerPreviewExtrasIpc, activePreviewSession } from "./preview-extras";
@@ -239,6 +241,8 @@ const conversationsStore = createConversationStore({
 
 let nextProcess: ChildProcess | null = null;
 let apiProcess: ChildProcess | null = null;
+/** BUILD_ID of the standalone bundle this install ships (packaged only). */
+let bundledBuildId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
 
 function getMainWindow(): BrowserWindow | null {
@@ -1082,6 +1086,33 @@ handleAppIpc("orplex:path-for-directory", async (_e, name: string) => {
  * real listener up (callers may probe too — a blind taskkill is the failure
  * mode being guarded against).
  */
+/**
+ * The standalone bundle this install ships (packaged layout only). Resolved by
+ * the same candidate list the spawn path uses, so "what we bundle" and "what
+ * we run" can never disagree.
+ */
+function findStandaloneDir(): string | null {
+  if (isDev) return null;
+  const root = projectRoot();
+  const candidates = [
+    path.join(root, "app.asar.unpacked", ".next", "standalone"),
+    path.join(root, "app", ".next", "standalone"),
+    path.join(root, ".next", "standalone"),
+  ];
+  return candidates.find((c) => fs.existsSync(path.join(c, "server.js"))) ?? null;
+}
+
+/** Wait until nothing answers on `port` any more (a kill is not instant). */
+async function waitForPortFree(port: number, timeoutMs = 15_000): Promise<boolean> {
+  const started = Date.now();
+  const urls = loopbackProbeUrls(port);
+  for (;;) {
+    if (!(await probeAnyServer(urls, 800))) return true;
+    if (Date.now() - started >= timeoutMs) return false;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
 async function killPortListener(port: number): Promise<void> {
   if (!(await probeAnyServer(loopbackProbeUrls(port)))) return;
   const { execSync } = await import("node:child_process");
@@ -1228,6 +1259,13 @@ app.whenReady().then(async () => {
     // a packaged build still takes over a stale/zombie listener, because there
     // the port is ours alone and a zombie must not shadow the bundled server.
     let reuseUiServer = false;
+    // Identify our own build BEFORE the takeover loop, so the log can say what
+    // the stale listener is and what this install expected instead.
+    if (!isDev) {
+      const dir = findStandaloneDir();
+      bundledBuildId = dir ? readBuildId(dir) : null;
+      safeConsoleWrite(process.stdout, `[startup] bundled server build: ${bundledBuildId ?? "unknown"}\n`);
+    }
     for (const [which, port] of [
       ["ui", UI_PORT],
       ["api", API_PORT],
@@ -1238,8 +1276,26 @@ app.whenReady().then(async () => {
           reuseUiServer = true;
           continue;
         }
-        safeConsoleWrite(process.stdout, `[startup] port ${port} (${which}) held by a stale process — taking it over\n`);
+        // Say WHAT is holding the port before taking it over. In packaged mode a
+        // listener here is either a zombie from a previous run or a leftover
+        // child — and it serves the OLD build, which the window would happily
+        // render while the shell reports the NEW version.
+        const holder = which === "ui" ? await fetchServerBuild(APP_URL) : null;
+        safeConsoleWrite(
+          process.stdout,
+          `[startup] port ${port} (${which}) held by ${holder ? `build ${holder.buildId}${holder.version ? ` v${holder.version}` : ""}` : "an unidentified process"} (ours is ${bundledBuildId ?? "unknown"}) — taking it over\n`,
+        );
         await killPortListener(port);
+        if (!(await waitForPortFree(port, 20_000))) {
+          dialog.showErrorBox(
+            "Orplex Code is already running",
+            `Port ${port} is still in use by a process this app could not stop.\n\n` +
+              `Windows usually means another copy of Orplex Code is open (check the tray and Task Manager). ` +
+              `Close it and start Orplex Code again — the window would otherwise load the previous version.`,
+          );
+          app.exit(1);
+          return;
+        }
       }
     }
     if (!reuseUiServer) await startNextServer("ui");
@@ -1249,6 +1305,25 @@ app.whenReady().then(async () => {
       await waitForServer(API_PROBES);
     } else {
       safeConsoleWrite(process.stdout, `[startup] cloud mode: UI points at ${cloudApi} — no local API spawned\n`);
+    }
+    // Identity, not liveness. The probe above is satisfied by ANY responder on
+    // the port, including one that outlived an update it could not fully
+    // replace. Loading the window against it is the "updated but nothing
+    // changed" bug: new version label, old UI. Compare BUILD_IDs instead.
+    if (!reuseUiServer && bundledBuildId) {
+      const identity = await waitForMatchingBuild(APP_URL, bundledBuildId, 20_000);
+      if (!identity.ok) {
+        dialog.showErrorBox(
+          "Orplex Code started the wrong server",
+          `The app server on port ${UI_PORT} reports build ${identity.seen?.buildId ?? "none"}, ` +
+            `but this install bundles build ${bundledBuildId}.\n\n` +
+            `That happens when a previous version is still holding the port or its files could not be replaced. ` +
+            `Quit Orplex Code (including the tray icon), then start it again. If it keeps happening, reinstall from the latest installer.`,
+        );
+        app.exit(1);
+        return;
+      }
+      safeConsoleWrite(process.stdout, `[startup] server build ${identity.seen?.buildId} matches the bundled build\n`);
     }
     // Warm the dev-compile path BEFORE the window opens: dev servers compile
     // modules on first hit, and an in-flight recompile resets connections —
@@ -1269,6 +1344,25 @@ app.whenReady().then(async () => {
     app.exit(1);
     return;
   }
+  // An updated build must not inherit the previous build's HTTP cache: the
+  // window loads the same loopback origin every time, and Chromium will happily
+  // replay immutable chunk responses from the old version — the second half of
+  // "I updated and nothing changed". One clear per installed version, not per
+  // boot (a cold cache on every launch costs real startup time).
+  try {
+    const cleared = await clearCachesOnVersionChange({
+      userDataDir: app.getPath("userData"),
+      version: app.getVersion(),
+      clear: async () => {
+        await session.defaultSession.clearCache();
+      },
+    });
+    if (cleared) {
+      safeConsoleWrite(process.stdout, `[startup] cleared the renderer cache for ${app.getVersion()}\n`);
+    }
+  } catch (err) {
+    safeConsoleWrite(process.stdout, `[startup] cache clear skipped: ${(err as Error)?.message ?? err}\n`);
+  }
   buildMenu();
   createWindow();
 
@@ -1286,9 +1380,18 @@ app.whenReady().then(async () => {
   // owns all UI via update-status events; the menu's "Check for updates"
   // reuses the same check path.
   try {
-    const { registerUpdaterIpc, startUpdateSchedule } = await import("./updater");
+    const { registerUpdaterIpc, startUpdateSchedule, setBeforeInstallHook } = await import("./updater");
     registerUpdaterIpc(getMainWindow, handleAppIpc);
     startUpdateSchedule(getMainWindow);
+    // The installer replaces files underneath us. The old server must already
+    // be dead by then, or Windows keeps the previous standalone bundle on disk
+    // and the next boot serves it — new version label, old UI.
+    setBeforeInstallHook(() => {
+      try {
+        killAllTerminalChildren();
+      } catch {}
+      killNextChildren(nextProcess, apiProcess);
+    });
   } catch {
     // Updates are convenience — never block startup on them.
   }

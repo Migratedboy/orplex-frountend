@@ -334,12 +334,31 @@ export function armAutoInstall(getWindow: WindowGetter): void {
   scheduleAutoInstall(getWindow);
 }
 
+/**
+ * Set by main.ts: kill the Next children synchronously before the installer
+ * starts. Without this, nsinstall can run while the old server still has
+ * app.asar.unpacked/.next/standalone mapped, so the exe updates and the app
+ * server does not — "it updated but nothing changed".
+ */
+let beforeInstallHook: (() => void) | null = null;
+
+export function setBeforeInstallHook(hook: () => void): void {
+  beforeInstallHook = hook;
+}
+
 /** Restart into the downloaded update. */
 export async function installUpdate(): Promise<void> {
   if (!isPackagedRuntime()) return;
   if (autoInstallTimer) {
     clearTimeout(autoInstallTimer);
     autoInstallTimer = null;
+  }
+  // Quit-and-install tears the app down immediately; make "no children" true
+  // BEFORE it starts rather than hoping will-quit wins the race.
+  try {
+    beforeInstallHook?.();
+  } catch {
+    /* never block an update on cleanup */
   }
   const au = await updater();
   au.quitAndInstall(false, true);

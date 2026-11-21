@@ -232,6 +232,25 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Fixed: tool hooks could never block anything on Windows — the command went through Node's quoting and failed with “'C:\\Program' is not recognized”. Version-control checks and guards now actually run",
     ],
   },
+  "3.0.4": {
+    title: "Updates that actually take effect",
+    items: [
+      "Fixed: after an auto-update the window could still show the previous version's UI while the app reported the new version. The app now checks the build id of the server it connects to instead of just checking that something answers the port, so an old server left behind can no longer shadow the new one",
+      "Fixed: the previous version's server was not always fully stopped before the installer replaced files, which is what left the old UI in place on Windows",
+      "The renderer cache is cleared once per installed version, so a new build cannot silently reuse the previous build's cached chunks",
+      "If a stale copy of Orplex Code really is holding the port, the app says so and exits instead of quietly running the old build",
+    ],
+  },
+  "3.0.3": {
+    title: "Only the tools you need, and servers that come back",
+    items: [
+      "MCP tools are now ranked per request. With several connectors connected you can expose a couple of hundred tools; the app loads the fifteen that match what you asked for and keeps the rest one search away, instead of spending the whole prompt budget on schemas",
+      "Tool arguments are checked before the call leaves the app, so a mistyped argument is reported in the turn straight away rather than coming back from the server after a partial change",
+      "Fixed: an MCP server that crashed stayed dead until you restarted the app. It now restarts itself, gives up honestly after repeated failures, and never burns a restart on a shutdown you asked for",
+      "The marketplace index is now replay-safe: an old copy can no longer be served to pin you to content the publisher has withdrawn, indexes expire, and items are revoked by id",
+      "Item digests are unambiguous, so two different bundle contents can no longer share one fingerprint",
+    ],
+  },
   "3.0.2": {
     title: "Marketplace tools can no longer read your secrets",
     items: [

@@ -80,6 +80,10 @@ const PROXIED_AUTH_PREFIXES = ["/api/auth/", "/api/dev/"];
 // with the shared NEXTAUTH_SECRET).
 const LOCAL_ONLY_API_ROUTES = [
   "/api/system/memory",
+  // Build identity for the desktop shell's "is this MY server?" check. Must be
+  // local: it reports the id of the bundle running on this port (see
+  // electron/server-identity.ts), and a remote backend has no such notion.
+  "/api/system/build",
   "/api/attachments",
   "/api/attachments/extract",
   "/api/agent/workspace-cwd",
