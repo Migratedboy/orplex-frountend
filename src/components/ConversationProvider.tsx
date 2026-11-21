@@ -1,6 +1,8 @@
 "use client";
 
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
+import { sweepAutoArchive } from "@/lib/app-settings";
+import { archiveChat } from "@/lib/archived-chats";
 import { useSession } from "next-auth/react";
 
 import {
@@ -108,6 +110,16 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       const rows: ConversationSummary[] = await listConversations(signal);
       if (signal?.aborted) return;
       setConversations(rows);
+      // Auto-archive sweep: the General settings page offers "move chats I have
+      // not touched in N days to Archived". Without this call the setting was a
+      // switch that wrote a key nobody read.
+      const stale = sweepAutoArchive(rows);
+      if (stale.length > 0) {
+        stale.forEach((id) => archiveChat(id));
+        // Sidebar filters on the archive set, so it needs a fresh render even
+        // though the conversation list itself did not change.
+        setConversations((prev) => prev.map((c) => ({ ...c })));
+      }
       // The early return above guarantees a signed-in user here.
       if (isLocalConversationMode()) {
         const imported = await maybeImportFromCloud();

@@ -160,6 +160,13 @@ const LOCAL_ONLY_API_ROUTES = [
 // backend loopback — it must never be forwarded or it would double-proxy.
 const LOCAL_ONLY_API_PREFIXES = [
   "/api/attachments/",
+  // Repository work is device-local by definition: `git clone` writes to this
+  // machine's disk and /api/repos/clone jails the destination path. Forwarding
+  // it to a serverless backend would try to clone into Vercel's ephemeral
+  // filesystem. The routes themselves still reach the cloud when they need a
+  // provider token (see lib/backend-client.ts), so the GitHub list/clone-token
+  // hop works without shipping the clone.
+  "/api/repos/",
   // create_file staged-file children (/api/files/<id> and /status) — see the
   // LOCAL_ONLY_API_ROUTES comment above.
   "/api/files/",

@@ -30,6 +30,10 @@ export default function Rail() {
 
   const user = session?.user;
   const initial = (user?.name ?? user?.email ?? "U").trim().charAt(0).toUpperCase() || "U";
+  // Same picture the sidebar's account row shows — the initial is only a
+  // fallback for accounts with no avatar (or an avatar host that fails).
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const avatarUrl = user?.image && !avatarFailed ? user.image : null;
 
   const openAccount = () => {
     setUsageVisible(false);
@@ -102,7 +106,12 @@ export default function Rail() {
         onFocus={() => setUsageVisible(true)}
         onBlur={() => setUsageVisible(false)}
       >
-        {initial}
+        {avatarUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- arbitrary OAuth avatar host
+          <img src={avatarUrl} alt="" onError={() => setAvatarFailed(true)} />
+        ) : (
+          initial
+        )}
       </div>
       <UsagePopover visible={usageVisible} anchor={avatarRef.current} />
     </nav>

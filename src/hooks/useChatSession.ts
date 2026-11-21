@@ -12,6 +12,7 @@ import { buildWorkspaceContext } from "@/lib/client-signatures";
 import { listFilesUnderPath, parseToolCalls, replaceLastStatus } from "@/lib/tool-text";
 import { subscribeBackgroundChat, abortCurrentTask, readTaskSnapshot, clearTaskSnapshot, getCurrentTask, deriveRunPhase, runPhaseLabel, type BackgroundTask, type RunPhase } from "@/lib/background-chat";
 import { normalizeThinkingBlocks } from "@/lib/stream-reader";
+import { notifyRunFinished } from "@/lib/notifications";
 import { captureActivityTiming } from "@/lib/activity";
 import { parseContent } from "@/lib/message-content";
 import { onAgentStatus } from "@/lib/agent-events";
@@ -186,6 +187,9 @@ export function useChatSession() {
   // Last time the active task produced ANY update — a stream that goes silent
   // for the whole stall window is dead, not "still thinking".
   const lastActivityRef = useRef(0);
+  // Runs whose completion chime already played. The task object is re-rendered
+  // many times while finishing, so the id set keeps it to one chime per run.
+  const chimedRunsRef = useRef<Set<string>>(new Set());
   const clearPhaseTimer = () => {
     if (phaseTimerRef.current) {
       clearTimeout(phaseTimerRef.current);
@@ -301,6 +305,12 @@ export function useChatSession() {
         // message means a stale task completing after a newer send can never
         // clobber the newer message's placeholder.
         if (isCurrentConvo && task && (task.status === "done" || task.status === "error") && task.displayContent) {
+          // "Notification sounds" is a setting the user can actually hear: one
+          // chime per finished run, and only when the window is not focused.
+          if (task.id && !chimedRunsRef.current.has(task.id)) {
+            chimedRunsRef.current.add(task.id);
+            notifyRunFinished();
+          }
           // Last-line-of-defense: reasoning must never bleed into the main
           // answer text. Markers are NORMALIZED, not stripped — the ThinkingCard
           // (collapsible reasoning) stays in the saved message; only malformed

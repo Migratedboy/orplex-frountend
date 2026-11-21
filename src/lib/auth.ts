@@ -129,6 +129,12 @@ export const authOptions: NextAuthOptions = {
           GitHubProvider({
             clientId: process.env.GITHUB_CLIENT_ID,
             clientSecret: process.env.GITHUB_CLIENT_SECRET,
+            // `repo` is what makes "Pull from GitHub" able to LIST the user's
+            // private repositories, not just clone a URL they already know.
+            // Tokens issued before this scope was requested keep working for
+            // public repos; /api/repos/github reports needsScope and the picker
+            // offers a reconnect instead of showing a misleadingly short list.
+            authorization: { params: { scope: "read:user user:email repo" } },
             // NOTE: allowDangerousEmailAccountLinking is deliberately OFF —
             // with it, anyone can register a GitHub account on a victim's
             // email and inherit their Google-linked Orplex account (GitHub

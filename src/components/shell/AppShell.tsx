@@ -40,7 +40,7 @@ const SidebarInner = dynamic(() => import("../Sidebar"), {
 });
 
 const ArtifactPanel = dynamic(() => import("../ArtifactPanel"), { ssr: false });
-const ApprovalDialog = dynamic(() => import("../ApprovalDialog"), { ssr: false });
+const ApprovalHost = dynamic(() => import("../approval/ApprovalHost"), { ssr: false });
 const CommandPalette = dynamic(() => import("../CommandPalette"), { ssr: false });
 const MemoryPanel = dynamic(() => import("../MemoryPanel"), { ssr: false });
 const BugReportModal = dynamic(() => import("../BugReportModal"), { ssr: false });
@@ -116,6 +116,14 @@ function ShellInner({ children }: { children: React.ReactNode }) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
   // Register the global open/close functions (assigned in an effect, not render)
+  useEffect(() => {
+    // The settings page asks for the report modal with a DOM event; nothing was
+    // listening, so the button did nothing. This is the listener.
+    const openBugReport = () => setBugReportOpen(true);
+    window.addEventListener("orplex:bug-report", openBugReport);
+    return () => window.removeEventListener("orplex:bug-report", openBugReport);
+  }, []);
+
   useEffect(() => {
     artifactPanelBridge.open = (runId: string) => {
       setSelectedRunId(runId);
@@ -246,7 +254,7 @@ function ShellInner({ children }: { children: React.ReactNode }) {
           onOpenRun={(runId) => openArtifactPanel(runId)}
         />
       )}
-      <ApprovalDialog />
+      <ApprovalHost />
       <ScrollFadeManager />
       <UpdateCard />
       {tourOpen && <OnboardingTour onComplete={finishTour} />}

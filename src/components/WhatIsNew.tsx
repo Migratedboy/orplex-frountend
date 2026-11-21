@@ -232,6 +232,21 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Fixed: tool hooks could never block anything on Windows — the command went through Node's quoting and failed with “'C:\\Program' is not recognized”. Version-control checks and guards now actually run",
     ],
   },
+  "3.0.5": {
+    title: "One settings screen, and every control in it works",
+    items: [
+      "The rebuilt settings screen was never actually loaded — the app kept showing the old one. Settings now has a single screen: General, Account, Appearance, Usage, Model Providers, Database, Skills, Permissions, Keyboard shortcuts, Archived, About and Reset & Recovery",
+      "Removed switches that did nothing. \"Advanced Mode\", \"Auto-renew sessions\" and \"Include AGENTS.md\" wrote a value that no part of the app ever read, so they are gone rather than pretending to work",
+      "Notification sounds is real: a short chime when a run finishes while the window is not focused, and silence when you are watching",
+      "Auto-archive chats is real: pick 1, 7 or 30 days and untouched chats move to Archived as the app loads — previously the dropdown stored a value nobody used",
+      "\"Report issue or feature\" now opens the report form. It sent an event nothing listened for, so the button did nothing at all",
+      "Pull from GitHub now lists the repositories your GitHub account can reach — private and public, owner/collaborator/organisation — with a search box, and still accepts a URL, branch and token by hand. Private clones get a credential from the backend for that one repository instead of asking you for a personal access token",
+      "Connect GitHub from the project picker or from Settings → Account no longer fails with \"This action with HTTP GET is not supported by NextAuth.js\" — both use the same sign-in path as the sign-in screen",
+      "GitHub repository access can now use a GitHub App with the device flow: the app shows a short code, you type it at github.com/login/device, and the token stays on your machine. No redirect, no browser round-trip that can land you back on the sign-in page",
+      "The email row in Account is read-only with a note that your sign-in provider owns it, instead of an edit box whose Save silently changed nothing",
+      "Permissions and the cost breakdown, which the old screen had, are back in the new one under their own tabs",
+    ],
+  },
   "3.0.4": {
     title: "Updates that actually take effect",
     items: [

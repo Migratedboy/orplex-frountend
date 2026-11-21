@@ -8,10 +8,21 @@
 // afterAuthUrl is therefore just "/" — after OAuth or the dev bypass the
 // browser is already on the frontend and goes straight into the app.
 
-import { signIn, getProviders } from "next-auth/react";
+import { getProviders } from "next-auth/react";
 import { useState, useEffect } from "react";
+import { safeNextPath } from "@/lib/signin-mediator";
 
 const afterAuthUrl = "/";
+
+/**
+ * Where to land once the session is written. The mediator returns to
+ * /auth/signin?next=<path> when a caller asked to come back somewhere specific
+ * (e.g. Settings → Account). Validation lives in lib/signin-mediator so it can
+ * be tested without mounting the page.
+ */
+function afterAuthTarget(): string {
+  return safeNextPath(window.location.search, afterAuthUrl);
+}
 
 // Shape of window.orplexDesktop.auth, exposed by the Electron preload bridge.
 type DesktopAuth = NonNullable<NonNullable<Window["orplexDesktop"]>["auth"]>;
@@ -77,8 +88,7 @@ export default function SignInPage() {
       // on this origin by the proxy rewrite, and only a full document load
       // guarantees server components re-read it. A soft router.push can race
       // the cookie and render the signed-out tree.
-      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      window.location.href = afterAuthUrl;
+      window.location.href = afterAuthTarget();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Desktop sign-in failed. Please try again.");
       setAwaitingBrowser(false);
@@ -125,8 +135,7 @@ export default function SignInPage() {
       if (!res.ok) throw new Error(data?.error || "dev login failed");
       // Cookie is set (host-only on THIS origin via the proxy rewrite);
       // navigate into the app.
-      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      window.location.href = afterAuthUrl;
+      window.location.href = afterAuthTarget();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Dev login failed. Please try again.");
       setLoading(false);

@@ -13,6 +13,7 @@
 // component (useChatSession), so importing the SDK umbrella here would drag
 // fs/child_process modules into the browser bundle.
 import { configureApprovals } from "@orplex/sdk/lib/approval-store";
+import { configureAgentRuntime } from "@orplex/sdk/lib/runtime-config";
 
 let configured = false;
 
@@ -22,6 +23,17 @@ export function configureSdkHost(): void {
   configured = true;
 
   configureApprovals({ mode: "poll" });
+
+  // Dynamic tool routing: a user with several connectors easily reaches 200 MCP
+  // tools, and every schema costs prompt budget. Route the roster against the
+  // current turn, keep 15 schemas live, and leave the rest reachable through
+  // mcp_search_tools / mcp_describe_tool. Pinned tools are never routed away —
+  // ORPLEX_PINNED_TOOLS lets a power user hold a few permanently.
+  const pinned = (process.env.ORPLEX_PINNED_TOOLS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  configureAgentRuntime({ enableDynamicToolRouting: true, maxActiveTools: 15, pinnedTools: pinned });
 
   // Library bundles are NOT registered here: materializing them pulls filesystem
   // code and this module is client-reachable. marketplace-bundles.ts (server

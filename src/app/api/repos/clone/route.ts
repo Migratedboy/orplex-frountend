@@ -6,6 +6,8 @@ import { execFileSync } from "child_process";
 import { mkdir, rm } from "fs/promises";
 import { join, resolve, sep } from "path";
 import { randomBytes } from "crypto";
+import { backendJson } from "@/lib/backend-client";
+import { readGithubToken } from "@/lib/github-app";
 
 export const dynamic = "force-dynamic";
 
@@ -41,17 +43,31 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Could not parse repository" }, { status: 400 });
   }
 
-  // Resolve a GitHub token for private repos.
+  // Resolve a GitHub credential for private repos. A GitHub App device-flow
+  // token wins (it is the one the user just approved); the OAuth App token is
+  // the fallback.
   let token: string | null = null;
-  const account = await prisma.account.findFirst({
-    where: { userId: session.user.id, provider: "github" },
-    select: { access_token: true },
-  });
-  if (account?.access_token) token = account.access_token;
+  const credential = await readGithubToken(session.user.id);
+  if (credential) token = credential.token;
 
   // Optional manual PAT override.
   if (typeof body?.token === "string" && body.token.trim()) {
     token = body.token.trim();
+  }
+
+  // Still no credential: the desktop sign-in stores provider tokens on the
+  // cloud backend, so ask it for one for THIS repo (verified server-side).
+  // Needed for private repositories — cloning them is what the picker offers.
+  // Never written to disk; it lives only for the clone below.
+  if (!token) {
+    const remote = await backendJson<{ token?: string }>("/api/repos/github", {
+      method: "POST",
+      body: { fullName: `${repo.owner}/${repo.name}` },
+      cookieHeader: request.headers.get("cookie"),
+    });
+    if (remote?.ok && typeof remote.data?.token === "string" && remote.data.token) {
+      token = remote.data.token;
+    }
   }
 
   const baseDir = process.env.ORPLEX_REPOS_DIR || join(process.cwd(), ".orplex-repos");

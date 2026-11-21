@@ -131,7 +131,7 @@ export const TUTORIAL_STEPS: TourStep[] = [
     id: "settings",
     title: "Settings in one place",
     body: "The Settings branch covers: Profile (account + sessions), Appearance, Provider & Cost (models, usage, spend), API Keys (wire provider permissions), About, and Reset & Recovery for the dangerous buttons.",
-    resolve: () => q('[data-tour-id="nav-settings"]'),
+    resolve: () => q('[data-tour-id="rail-settings"]'),
     position: "right",
   },
   {
