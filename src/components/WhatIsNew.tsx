@@ -232,6 +232,16 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Fixed: tool hooks could never block anything on Windows — the command went through Node's quoting and failed with “'C:\\Program' is not recognized”. Version-control checks and guards now actually run",
     ],
   },
+  "3.0.2": {
+    title: "Marketplace tools can no longer read your secrets",
+    items: [
+      "Security: MCP servers downloaded from the marketplace were started with this app's entire environment — they could read your session secret and database URL. They now receive only the variables their own manifest declares, plus the bare OS baseline they need to run",
+      "Fixed: quitting the app could leave a marketplace MCP server running in the background, because only the launcher process was killed and not the process it spawned. Shutdown now terminates the whole process tree and reports what it cleaned up",
+      "MCP tool calls have configurable timeouts, and a failure now says what went wrong in plain language (timed out, crashed, needs re-authentication) instead of an opaque string",
+      "Fixed: a fresh install could show an empty model picker entry for a model OpenRouter had retired; the default list tracks the live catalogue again",
+      "Fixed: the test suite stopped dead when the Windows temp drive filled up, reporting fifteen red suites that never ran",
+    ],
+  },
   "3.0.1": {
     title: "The supplied icon pack, and a title bar you can grab",
     items: [
