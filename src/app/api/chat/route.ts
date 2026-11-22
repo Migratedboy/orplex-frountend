@@ -19,6 +19,7 @@ import { isMockAiEnabled, createMockProviderStream, buildMockActivityReplyText }
 import { M3_TOOL_DEFINITIONS, LEAN_TOOL_DEFINITIONS } from "@/lib/tool-definitions";
 import { buildSystemPrompt } from "@/lib/master-prompt";
 import { buildMcpRoster, mcpPromptSection, toOpenAiFunctions, type BuilderTool } from "@/lib/mcp/tool-builder";
+import { getAgentRuntimeConfig } from "@orplex/sdk/lib/runtime-config";
 import { listSnapshotToolsByServer } from "@/lib/mcp/tool-snapshot";
 import { refreshMissingSnapshots as refreshMissingMcpSnapshots } from "@/lib/mcp/roster-refresh";
 import { getMcpCatalogEntry } from "@/lib/mcp-catalog";
@@ -113,11 +114,23 @@ export async function POST(request: NextRequest) {
         inputSchema: t.inputSchema ?? { type: "object", properties: {} },
       }))
     );
+    // Rank the MCP surface against this turn. A user with eight connectors can
+    // expose 200 tools; sending all their schemas costs prompt budget and makes
+    // the model pick the wrong server's look-alike tool. Hidden tools stay
+    // callable through mcp_search_tools / mcp_describe_tool / mcp_call.
+    const runtime = getAgentRuntimeConfig();
+    const lastUserMessage = [...(parsed.messages ?? [])].reverse().find((m) => m.role === "user");
     const mcpRoster = buildMcpRoster([...sdkTools, ...legacyTools], {
       serverMeta: Object.fromEntries(
         [...sdkTools, ...legacyTools]
           .map((t) => [t.server, { label: getMcpCatalogEntry(t.server)?.name ?? t.server }])
       ),
+      route: {
+        enabled: runtime.enableDynamicToolRouting,
+        max: runtime.maxActiveTools,
+        pinned: runtime.pinnedTools,
+        query: typeof lastUserMessage?.content === "string" ? lastUserMessage.content : "",
+      },
     });
     const mcpSection = mcpPromptSection(mcpRoster);
 
