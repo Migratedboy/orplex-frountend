@@ -91,6 +91,13 @@ const LOCAL_ONLY_API_ROUTES = [
   "/api/attachments",
   "/api/attachments/extract",
   "/api/agent/workspace-cwd",
+  // Context meter: measured by the SAME prompt builders /api/chat runs in this
+  // process (system prompt, MCP roster, native tool schemas) against THIS
+  // machine's workspace and model set, then compacted with this app's
+  // summarizer. The cloud has neither the builders nor the workspace, so both
+  // routes must be served here — proxying them 404s the meter's numbers.
+  "/api/agent/context-usage",
+  "/api/agent/compact",
   // Agent create_file staging store: the bytes are held in THIS process's heap
   // (memory-file-store.ts) — the whole feature is "memory, not disk", and the
   // serverless backend cannot hold module state between the create and the

@@ -1,0 +1,283 @@
+/* context-ring.css — the composer's context-window meter.
+ *
+ * Ported from the reference design (context-ring.html) onto the app's tokens:
+ * every colour below has a dark value on :root and a light value under
+ * [data-theme="light"], matching the shell/theme switch the rest of the app
+ * uses. No second theme system, no inline styles for chrome.
+ */
+
+:root {
+  --ctx-panel: var(--card, #151517);
+  --ctx-line: var(--line, rgba(255, 255, 255, 0.14));
+  --ctx-text: var(--text, #f2f2f2);
+  --ctx-muted: var(--muted, #8a8a8a);
+  --ctx-track: #2a2a2c;
+  --ctx-ok: #4fd1b5;
+  --ctx-warn: #f2b84b;
+  --ctx-crit: #ef6b5b;
+  --ctx-system: #9a8cff;
+  --ctx-tools: #5aa9ff;
+  --ctx-files: #4fd1b5;
+  --ctx-messages: #f08fc0;
+  --ctx-shadow: 0 12px 32px rgba(0, 0, 0, 0.8);
+}
+
+:root[data-theme="light"] {
+  --ctx-panel: var(--card, #ffffff);
+  --ctx-line: var(--line, #d8dce3);
+  --ctx-text: var(--text, #171a20);
+  --ctx-muted: var(--muted, #667085);
+  --ctx-track: #e2e5ea;
+  --ctx-ok: #12a38a;
+  --ctx-warn: #b97d09;
+  --ctx-crit: #cf3f34;
+  --ctx-system: #6d5ef0;
+  --ctx-tools: #2f86e8;
+  --ctx-files: #12a38a;
+  --ctx-messages: #d1437f;
+  --ctx-shadow: 0 12px 32px rgba(20, 30, 50, 0.16);
+}
+
+.ctx-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  flex: none;
+  --state: var(--ctx-ok);
+}
+
+.ctx-wrap[data-state="warn"] { --state: var(--ctx-warn); }
+.ctx-wrap[data-state="crit"] { --state: var(--ctx-crit); }
+
+.ctx-ring {
+  --size: 30px;
+  --sw: 3;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--size);
+  height: var(--size);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ctx-text);
+  cursor: pointer;
+  font: inherit;
+  flex: none;
+}
+
+/* The app removes every outline and box-shadow on focus, app-wide
+   (globals.css "FOCUS RINGS OFF"). A pseudo-element border is the one focus
+   indicator that survives it, so the ring draws its own. */
+.ctx-ring::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  pointer-events: none;
+}
+
+.ctx-ring:focus-visible::after { border-color: var(--state); }
+
+.ctx-ring svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.ctx-ring .ctx-track {
+  fill: none;
+  stroke: var(--ctx-track);
+  stroke-width: var(--sw);
+}
+
+.ctx-ring .ctx-seg {
+  fill: none;
+  stroke-width: var(--sw);
+  stroke-linecap: butt;
+  transition: stroke-dasharray 0.5s cubic-bezier(0.3, 0.7, 0.2, 1), stroke-dashoffset 0.5s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+
+.ctx-ring .ctx-pct {
+  position: relative;
+  line-height: 1;
+  font-size: calc(var(--size) * 0.3);
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  color: var(--state);
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-ring .ctx-pct small {
+  font-size: 0.72em;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+/* Fixed, JS-placed popover: right → left → above/below, clamped to the window.
+   The padding IS the hover bridge, so moving the pointer across the gap keeps
+   it open. */
+.ctx-pop {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 1200;
+  padding: 0 12px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-4px);
+  transition: opacity 0.15s, transform 0.15s, visibility 0.15s;
+}
+
+.ctx-pop:not([hidden]) {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: none;
+}
+
+.ctx-pop[data-side="left"] { transform: translateX(4px); }
+.ctx-pop[data-side="above"],
+.ctx-pop[data-side="below"] { padding: 12px 0; }
+.ctx-pop[data-side="above"] { transform: translateY(4px); }
+.ctx-pop[data-side="below"] { transform: translateY(-4px); }
+
+.ctx-card {
+  width: min(288px, calc(100vw - 16px));
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--ctx-line);
+  border-radius: 14px;
+  background: var(--ctx-panel);
+  color: var(--ctx-text);
+  box-shadow: var(--ctx-shadow);
+  font-size: 12.5px;
+  line-height: 1.4;
+  scrollbar-width: thin;
+}
+
+.ctx-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.ctx-head b { font-size: 13.5px; font-weight: 600; }
+.ctx-head span { color: var(--ctx-muted); font-variant-numeric: tabular-nums; }
+
+.ctx-bar {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--ctx-track);
+}
+
+.ctx-bar i {
+  display: block;
+  height: 100%;
+  transition: width 0.5s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+
+.ctx-marks { position: relative; height: 0; }
+
+.ctx-marks u {
+  position: absolute;
+  top: -10px;
+  width: 1px;
+  height: 12px;
+  background: var(--ctx-muted);
+  opacity: 0.55;
+  text-decoration: none;
+}
+
+.ctx-rows {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.ctx-rows li {
+  display: grid;
+  grid-template-columns: 10px 1fr auto 44px;
+  align-items: center;
+  gap: 8px;
+}
+
+.ctx-rows .dot { width: 8px; height: 8px; border-radius: 2px; }
+.ctx-rows .n { font-variant-numeric: tabular-nums; }
+.ctx-rows .p { color: var(--ctx-muted); text-align: right; font-variant-numeric: tabular-nums; }
+.ctx-rows .free { color: var(--ctx-muted); }
+.ctx-rows .free .dot { background: var(--ctx-track); outline: 1px solid var(--ctx-line); }
+
+.ctx-meta {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ctx-line);
+  color: var(--ctx-muted);
+  display: grid;
+  gap: 3px;
+}
+
+.ctx-meta div { display: flex; justify-content: space-between; gap: 10px; }
+.ctx-meta b {
+  color: var(--ctx-text);
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ctx-note {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--state);
+  background: color-mix(in srgb, var(--state) 14%, transparent);
+}
+
+.ctx-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+.ctx-actions button {
+  flex: 1;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ctx-line);
+  background: transparent;
+  color: var(--ctx-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ctx-actions button:hover:not(:disabled) { border-color: var(--state); }
+.ctx-actions button:disabled { opacity: 0.6; cursor: default; }
+/* Same reset: outline can't be used, so focus recolours the border. */
+.ctx-actions button:focus-visible,
+.ctx-actions button:hover:not(:disabled) { border-color: var(--state); }
+
+/* Toolbar fit: the ring never shrinks, and never wraps the footer. */
+.prompt-bar .foot .ctx-slot {
+  display: flex;
+  align-items: center;
+  flex: none;
+  margin-right: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ctx-ring .ctx-seg,
+  .ctx-bar i,
+  .ctx-pop { transition: none; }
+}

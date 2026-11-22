@@ -1,14 +1,15 @@
-import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { NextRequest, NextResponse } from "next/server";
+import { sessionUserId } from "@/lib/server-session";
 import { getRecentChanges, computeDiff } from "@/lib/file-history";
 import { publicErrorMessage } from "@/lib/errors";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  const session = await getServerSession(jwtOnlyOptions);
-  if (!session?.user?.id) {
+export async function GET(request: NextRequest) {
+  // Same two doors as every other local route: the Changes tab is rendered by
+  // the desktop app, whose session is the Ed25519 cookie (not NextAuth).
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

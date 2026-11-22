@@ -59,6 +59,19 @@ cpSync(path.join(root, "electron-dist"), path.join(stage, "electron-dist"), { re
 cpSync(path.join(root, "electron", "app-config.json"), path.join(stage, "electron", "app-config.json"), { recursive: true });
 cpSync(path.join(root, "electron", "assets"), path.join(stage, "electron", "assets"), { recursive: true });
 
+// 2c. Notification-area icon set (resources/tray.{ico,png,tray@2x.png}). It has
+//     to live OUTSIDE the asar: the packaged tray used to load `__dirname/assets`
+//     from the compiled tree, and that copy stayed on the old logo. The builder
+//     maps `resources/ -> resources/` through extraResources, and it resolves
+//     that path against the STAGED tree — so the folder has to be staged too,
+//     otherwise the tray silently ships nothing and Windows draws a blank tile.
+const trayAssets = path.join(root, "resources");
+if (!existsSync(path.join(trayAssets, "tray.ico"))) {
+  console.error("[stage] FATAL: resources/tray.ico missing — run `node scripts/make-tray-icons.mjs`.");
+  process.exit(1);
+}
+cpSync(trayAssets, path.join(stage, "resources"), { recursive: true });
+
 // 2b. The NSIS hook named by build.nsis.include (electron/nsis/installer.nsh).
 //     electron-builder resolves `include` against buildResourcesDir
 //     (<projectDir>/build) or the project dir, so the staged tree needs the file

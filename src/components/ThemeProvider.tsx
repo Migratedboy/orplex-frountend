@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { syncThemeCookie } from "@/lib/theme-bootstrap";
 
 export type ThemePref = "light" | "dark" | "system";
 
@@ -47,6 +48,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setDark(isDark);
       document.documentElement.classList.toggle("dark", isDark);
       document.documentElement.dataset.theme = isDark ? "dark" : "light";
+      syncThemeCookie(isDark ? "dark" : "light");
     };
     apply(initial);
     // In 'system' mode follow the OS live.
@@ -64,6 +66,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setDark(isDark);
     document.documentElement.classList.toggle("dark", isDark);
     document.documentElement.dataset.theme = isDark ? "dark" : "light";
+    syncThemeCookie(isDark ? "dark" : "light");
   };
 
   const toggle = () => setPref(dark ? "light" : "dark");

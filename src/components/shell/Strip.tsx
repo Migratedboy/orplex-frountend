@@ -29,65 +29,282 @@ import {
 import { TAB_META, closedTabs, type TabId } from "@/lib/panel-state";
 import { useToast } from "@/components/Toast";
 
+/* ---------- whole-pixel tab widths ---------- */
+/**
+ * Flexbox splits a row fractionally (a 96.4px tab), which lands the tab's 1px
+ * borders — and therefore the flare curves — on half pixels; at 125%/150%
+ * Windows scaling that renders as a blurred sliver. Instead the row is measured
+ * once per layout and every tab is given an INTEGER width inside the same
+ * bounds the CSS expresses with flex (96–160, 120 floor for the active tab).
+ */
+function useSnappedTabWidths(
+  ref: React.RefObject<HTMLElement | null>,
+  bounds: { min: number; max: number; activeMin: number; reserved: number },
+  dep: unknown,
+) {
+  const { min, max, activeMin, reserved } = bounds;
+
+  const snap = useCallback(() => {
+    const box = ref.current;
+    if (!box) return;
+    const tabs = [...box.querySelectorAll<HTMLElement>(":scope > .ox-tab")];
+    if (tabs.length === 0) return;
+    const avail = Math.floor(box.clientWidth - reserved);
+    const per = Math.max(min, Math.min(max, Math.floor(avail / tabs.length)));
+    for (const tab of tabs) {
+      const want = tab.classList.contains("on") ? Math.max(per, activeMin) : per;
+      const px = `${want}px`;
+      if (tab.style.width !== px) tab.style.width = px;
+      if (tab.style.flex !== "0 0 auto") tab.style.flex = "0 0 auto";
+    }
+  }, [ref, min, max, activeMin, reserved]);
+
+  useEffect(() => {
+    snap();
+    const box = ref.current;
+    if (!box || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(snap);
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, [snap, dep, ref]);
+}
+
+/* ---------- flush side (tab sitting on a pane's own side edge) ---------- */
+/**
+ * Which side of the pane the ACTIVE TAB actually touches, measured rather than
+ * assumed: under 24px from the pane's outer edge means the tab's concave flare
+ * would be drawn on the pane's own rounded corner — two curves fighting in the
+ * same pixels. Re-measured on resize, on scroll and after the tab list settles
+ * (the row is laid out a couple of frames later).
+ * It also publishes --hairline: the used 1px stroke width (0.667px at 150%
+ * Windows scaling), which the flare CSS needs to land on the pane's border row.
+ */
+function useFlushSide(
+  activeSelector: string,
+  paneSelector: string,
+  deps: unknown[],
+): "left" | "right" | null {
+  const [side, setSide] = useState<"left" | "right" | null>(null);
+
+  useEffect(() => {
+    const compute = () => {
+      const pane = document.querySelector<HTMLElement>(paneSelector);
+      if (!pane) return;
+      const hairline = getComputedStyle(pane).borderTopWidth;
+      if (hairline) document.documentElement.style.setProperty("--hairline", hairline);
+      const tab = document.querySelector<HTMLElement>(activeSelector);
+      if (!tab) {
+        setSide((prev) => (prev === null ? prev : null));
+        return;
+      }
+      const t = tab.getBoundingClientRect();
+      const p = pane.getBoundingClientRect();
+      const fromLeft = t.left - p.left;
+      const fromRight = p.right - t.right;
+      const next: "left" | "right" | null =
+        Math.abs(fromLeft) <= 1 ? "left" : Math.abs(fromRight) <= 1 ? "right" : null;
+      setSide((prev) => (prev === next ? prev : next));
+    };
+
+    compute();
+    // The tab's box settles a couple of async layout layers later (widths are
+    // assigned by the width pass, tabs come from a persisted store).
+    const timers = [16, 64, 200].map((ms) => setTimeout(compute, ms));
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(compute) : null;
+    const pane = document.querySelector<HTMLElement>(paneSelector);
+    if (ro && pane) ro.observe(pane);
+    const list = document.querySelector<HTMLElement>(".ox-tabs-scroll");
+    list?.addEventListener("scroll", compute, { passive: true });
+    window.addEventListener("resize", compute);
+    return () => {
+      for (const timer of timers) clearTimeout(timer);
+      ro?.disconnect();
+      list?.removeEventListener("scroll", compute);
+      window.removeEventListener("resize", compute);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSelector, paneSelector, ...deps]);
+
+  return side;
+}
+
 /* ---------- horizontal tab scroller ---------- */
 /**
- * TabScroller — the tab strip scrolls sideways instead of hiding tabs.
- * The `+` button lives OUTSIDE the scroller so it is always reachable, and
- * the active tab is kept in view whenever the selection changes. A vertical
- * wheel scrolls the strip horizontally (the only axis it has), which is what
- * a mouse user expects from a tab bar in a 45px title bar.
+ * TabScroller — the conversation tab row.
+ *
+ * Layout contract: this element is the TAB AREA. It may never paint outside
+ * itself and never slides under the window-control notch, so it is
+ * `overflow: hidden` and the notch is a sibling grid column (not an overlay).
+ * Inside: a scrollable list (flex:1, min-width:0) then the `+` button
+ * (flex:none), which therefore cannot be pushed out of view.
+ *
+ * Behaviour: tabs shrink to 96px before the list scrolls, the active tab is
+ * kept in view on selection, on a new tab and on resize, the list fades at the
+ * edge that still has content, and a vertical wheel scrolls it sideways.
  */
 function TabScroller({
   label,
   children,
   action,
   activeKey,
+  count,
 }: {
   label: string;
   children: React.ReactNode;
   action?: React.ReactNode;
   activeKey?: string | null;
+  count: number;
 }) {
-  const ref = useRef<HTMLDivElement | null>(null);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const [fade, setFade] = useState({ left: false, right: false });
+  // The tab count drives the width pass: it changes when a tab is added or
+  // removed, which is exactly when the row has to be re-divided.
+  const childCount = count;
+  // 96–160px, 120 floor for the active tab; 12px is the list's end padding.
+  useSnappedTabWidths(scrollerRef, { min: 96, max: 160, activeMin: 120, reserved: 12 }, childCount);
 
-  // Keep the active tab visible: the strip remounts on selection changes, so
-  // this runs on mount and whenever the selection key changes.
-  useEffect(() => {
-    const sc = ref.current;
+  const measure = useCallback(() => {
+    const sc = scrollerRef.current;
+    if (!sc) return;
+    const max = sc.scrollWidth - sc.clientWidth;
+    const left = sc.scrollLeft > 1;
+    const right = max > 1 && sc.scrollLeft < max - 1;
+    setFade((prev) => (prev.left === left && prev.right === right ? prev : { left, right }));
+  }, []);
+
+  /** Put the active tab fully inside the visible window of the list. */
+  const revealActive = useCallback(() => {
+    const sc = scrollerRef.current;
     if (!sc) return;
     const el = sc.querySelector<HTMLElement>(".ox-tab.on");
     if (!el) return;
-    const left = el.offsetLeft;
-    const right = left + el.offsetWidth;
-    const pad = 8;
-    // Instant, not smooth: `scrollTo({ behavior: "smooth" })` is a no-op in
-    // this renderer (it never advances scrollLeft), and a tab strip should not
-    // animate its way to the active tab anyway.
-    if (left - pad < sc.scrollLeft) {
-      sc.scrollLeft = Math.max(0, left - pad);
-    } else if (right + pad > sc.scrollLeft + sc.clientWidth) {
-      sc.scrollLeft = right + pad - sc.clientWidth;
+    // 12px of breathing room matches the list's horizontal padding, which is
+    // also where the active tab's flares live.
+    const pad = 12;
+    const leftEdge = el.offsetLeft - pad;
+    const rightEdge = el.offsetLeft + el.offsetWidth + pad;
+    const viewLeft = sc.scrollLeft;
+    const viewRight = sc.scrollLeft + sc.clientWidth;
+    if (leftEdge < viewLeft) {
+      // `scrollTo({ behavior: "smooth" })` never advances in this renderer, so
+      // the position is assigned directly — it always lands, no animation. It is
+      // ROUNDED because a fractional scrollLeft puts every tab's 1px borders on
+      // a half pixel, which blurs the flare curves at 125%/150% scaling.
+      sc.scrollLeft = Math.round(Math.max(0, leftEdge));
+    } else if (rightEdge > viewRight) {
+      sc.scrollLeft = Math.round(Math.min(sc.scrollWidth - sc.clientWidth, rightEdge - sc.clientWidth));
     }
-  }, [activeKey]);
+    // The arithmetic above can run against a box that is one render behind (a
+    // tab's width depends on whether it is active), so ask the browser to do the
+    // same job on the real layout when it disagrees. `nearest` on both axes only
+    // ever moves this list — never the page — and the shell itself does not
+    // scroll. Its result is re-snapped to a whole pixel for the same reason.
+    const list = sc.getBoundingClientRect();
+    const tab = el.getBoundingClientRect();
+    if (tab.left < list.left + pad || tab.right > list.right - pad) {
+      el.scrollIntoView({ inline: "nearest", block: "nearest" });
+      const snapped = Math.round(sc.scrollLeft);
+      if (snapped !== sc.scrollLeft) sc.scrollLeft = snapped;
+    }
+    measure();
+  }, [measure]);
+
+  /**
+   * Reveal now, then again after the next layout. Two passes are needed because
+   * a tab's width depends on whether it is active (120px floor vs 96px), so the
+   * first measurement can be stale and leave the active tab over the clip edge.
+   * The second pass is a timer, NOT requestAnimationFrame: rAF never fires while
+   * the window is hidden (minimised, on another desktop, before the first
+   * paint), and the row must still be on the right tab when it appears.
+   */
+  const revealTimers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const schedule = useCallback(() => {
+    revealActive();
+    for (const t of revealTimers.current) clearTimeout(t);
+    // A tab's box can settle a couple of layers of async state later (the tab
+    // list itself comes from a persisted store), so correct the position a few
+    // times instead of trusting one measurement that may have been stale.
+    revealTimers.current = [16, 64, 200].map((ms) => setTimeout(revealActive, ms));
+  }, [revealActive]);
+
+  useEffect(() => () => { for (const t of revealTimers.current) clearTimeout(t); }, []);
+
+  // Active tab changed, or tabs were added/removed → reveal it.
+  useEffect(() => {
+    schedule();
+  }, [activeKey, childCount, schedule]);
+
+  // Anything that resizes or re-orders the row reveals again: the list box (a
+  // pane/window width change), the row's own DOM (a tab appended at the end, or
+  // the active class moving to another tab), and the window itself. React
+  // identity alone misses the last two when the active key and the count both
+  // stay the same.
+  useEffect(() => {
+    const sc = scrollerRef.current;
+    if (!sc) return;
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+    ro?.observe(sc);
+    const mo = typeof MutationObserver === "undefined" ? null : new MutationObserver(schedule);
+    mo?.observe(sc, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    window.addEventListener("resize", schedule);
+    schedule();
+    return () => {
+      ro?.disconnect();
+      mo?.disconnect();
+      window.removeEventListener("resize", schedule);
+    };
+  }, [schedule]);
 
   // Vertical wheel over the strip moves it sideways; horizontal deltas keep
   // their native behaviour. Non-passive so the page under it does not scroll.
   useEffect(() => {
-    const sc = ref.current;
+    const sc = scrollerRef.current;
     if (!sc) return;
     const onWheel = (e: WheelEvent) => {
       if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
       if (sc.scrollWidth <= sc.clientWidth) return;
       e.preventDefault();
-      sc.scrollLeft += e.deltaY;
+      sc.scrollLeft = Math.round(sc.scrollLeft + e.deltaY);
+      measure();
     };
-    sc.addEventListener('wheel', onWheel, { passive: false });
-    return () => sc.removeEventListener('wheel', onWheel);
+    sc.addEventListener("wheel", onWheel, { passive: false });
+    return () => sc.removeEventListener("wheel", onWheel);
+  }, [measure]);
+
+  // At rest the list must sit on a whole pixel: a fractional scrollLeft offsets
+  // every tab horizontally, so its 1px borders straddle half a device pixel and
+  // the flare curves come out blurred. Snapping mid-gesture would judder, so it
+  // is done once, shortly after the last scroll event.
+  useEffect(() => {
+    const sc = scrollerRef.current;
+    if (!sc) return;
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const settle = () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => {
+        t = null;
+        const snapped = Math.round(sc.scrollLeft);
+        if (Math.abs(snapped - sc.scrollLeft) > 0.02) sc.scrollLeft = snapped;
+      }, 140);
+    };
+    sc.addEventListener("scroll", settle, { passive: true });
+    return () => {
+      sc.removeEventListener("scroll", settle);
+      if (t) clearTimeout(t);
+    };
   }, []);
 
   return (
     <div className="ox-tabs">
-      <div className="ox-tabs-scroll" role="tablist" aria-label={label} ref={ref}>
+      <div
+        className="ox-tabs-scroll"
+        role="tablist"
+        aria-label={label}
+        ref={scrollerRef}
+        onScroll={measure}
+        data-fade-left={fade.left ? "1" : undefined}
+        data-fade-right={fade.right ? "1" : undefined}
+      >
         {children}
       </div>
       {action}
@@ -276,6 +493,13 @@ function ConversationTabs() {
     };
   }, [menu]);
 
+  // Which pane side the active tab touches, measured from the live layout.
+  const flush = useFlushSide(
+    ".ox-tabs:not(.ox-tabs-rp) .ox-tab.on",
+    ".ox-center",
+    [activeId, tabs.length],
+  );
+
   const canFork = isLocalConversationMode();
   const menuConv = menu ? conversations.find((c) => c.id === menu.id) : undefined;
 
@@ -284,13 +508,14 @@ function ConversationTabs() {
       <TabScroller
         label="Conversation tabs"
         activeKey={activeId}
+        count={tabs.length}
         action={(
           <button className="ox-add" aria-label="New conversation" title="New chat" onClick={newChat}>
             <Icon name="plus" size={15} />
           </button>
         )}
       >
-        {tabs.map((id) => {
+        {tabs.map((id, index) => {
           const active = id === activeId || (id === NEW_TAB_ID && !activeId && pathname === "/");
           const title = titleFor(id);
           return (
@@ -300,12 +525,22 @@ function ConversationTabs() {
               role="tab"
               aria-selected={active}
               title={title}
+              data-flush={
+                active && index === 0 && flush === "left"
+                  ? "left"
+                  : active && index === tabs.length - 1 && flush === "right"
+                    ? "right"
+                    : undefined
+              }
               onClick={(e) => { if (!(e.target as HTMLElement).closest(".ox-tx")) openTab(id); }}
               onContextMenu={(e) => { e.preventDefault(); setMenu({ id, x: e.clientX, y: e.clientY }); }}
               onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(id); } }}
             >
               <Icon name="branch" size={14} />
               <span>{title}</span>
+              {/* The pane-border patch is a real element because both of the
+                  tab's pseudo-elements are the concave flares. */}
+              {active && <span className="ox-patch" aria-hidden="true" />}
               <button
                 className="ox-tx"
                 aria-label={`Close ${title}`}
@@ -352,6 +587,15 @@ function RightPanelTabs() {
   const { setOverlayOpen } = rp;
   const [popOpen, setPopOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement | null>(null);
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  // 74–140px, 110 floor for the active tab; 34px is the "+" button plus its
+  // margins, which shares this row.
+  useSnappedTabWidths(rowRef, { min: 74, max: 140, activeMin: 110, reserved: 34 }, rp.tabs.length);
+  const flush = useFlushSide(
+    ".ox-tabs-rp .ox-tab.on",
+    ".ox-shell .ox-rpanel > .right-panel",
+    [rp.activeTab, rp.tabs.length, rp.isOpen],
+  );
 
   // Popovers over the browser view freeze its native snapshot (same contract
   // the old in-panel TabBar used via onPopoverChange).
@@ -389,8 +633,8 @@ function RightPanelTabs() {
 
   return (
     <>
-      <div className="ox-tabs ox-tabs-rp" role="tablist" aria-label="Right panel tabs">
-      {rp.tabs.map((id) => {
+      <div ref={rowRef} className="ox-tabs ox-tabs-rp" role="tablist" aria-label="Right panel tabs">
+      {rp.tabs.map((id, index) => {
         const active = id === rp.activeTab;
         const meta = TAB_META[id];
         return (
@@ -400,11 +644,19 @@ function RightPanelTabs() {
             role="tab"
             aria-selected={active}
             title={meta.label}
+            data-flush={
+              active && index === 0 && flush === "left"
+                ? "left"
+                : active && index === rp.tabs.length - 1 && flush === "right"
+                  ? "right"
+                  : undefined
+            }
             onClick={() => rp.activate(id)}
             onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); rp.close(id); } }}
           >
             <Icon name={TAB_ICONS[id] ?? "tasks"} size={14} />
             <span>{meta.label}</span>
+            {active && <span className="ox-patch" aria-hidden="true" />}
             <button className="ox-tx" aria-label={`Close ${meta.label} tab`} onClick={(e) => { e.stopPropagation(); closePanelTab(id); }}>
               <Icon name="x" size={11} />
             </button>

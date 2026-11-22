@@ -10,9 +10,8 @@
 // durable history list.
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
 import { execFile } from "node:child_process";
-import { jwtOnlyOptions as authOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { getWorkspaceCwd } from "@/lib/workspace-cwd";
 import { isGitRepo } from "@/lib/checkpoints";
 import { parsePorcelain, parseNumstat, mergeCounts, totalsOf } from "@/lib/git-changes";
@@ -36,11 +35,14 @@ function git(args: string[], cwd: string): Promise<{ ok: boolean; out: string }>
 }
 
 export async function GET(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  // Local-disk route: accept EITHER session door (NextAuth cookie or the app's
+  // Ed25519 cookie). Checking only NextAuth left a signed-in desktop user
+  // staring at "Authentication required" in the Changes tab.
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
-  const root = getWorkspaceCwd(session.user.id);
+  const root = getWorkspaceCwd(userId);
   if (!root) return NextResponse.json({ success: false, error: "no workspace" }, { status: 400 });
 
   try {

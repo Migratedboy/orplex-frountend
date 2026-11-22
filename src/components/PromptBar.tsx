@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Cancel01Icon, File02Icon, HelpCircleIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import "./PromptBar.css";
+import ContextRing from "./ContextRing";
 import { ProviderMark, modelCreatorId, modelCreatorLabel } from "./ProviderIcons";
 import { positionPromptMenu, type PromptMenuAlignment } from "@/lib/prompt-menu-position";
 
@@ -121,6 +122,10 @@ export interface PromptBarProps {
   onDraftChange?: (text: string) => void;
   onRegisterClear?: (fn: () => void) => void;
   onRegisterControls?: (c: { clear: () => void; setText: (t: string) => void }) => void;
+  /** Render the context-window meter left of the MCP chip. */
+  showContextRing?: boolean;
+  onContextCompact?: () => void;
+  onContextNew?: () => void;
   background?: string;
   color?: string;
   menuBackground?: string;
@@ -235,6 +240,9 @@ export default function PromptBar({
   conversationState,
   footerProject,
   onOpenConnectors,
+  showContextRing = false,
+  onContextCompact,
+  onContextNew,
   sources = DEFAULT_SOURCES,
   commands = DEFAULT_COMMANDS,
   models = DEFAULT_MODELS,
@@ -335,6 +343,19 @@ export default function PromptBar({
 
   const rows = openMenu === "model" ? filtered.slice(0, renderLimit) : filtered;
   const cursor = Math.min(active, Math.max(0, filtered.length - 1));
+  // The ring's buttons dispatch on their own root; listen once at window level
+  // so the actions stay owned by the chat surface, not by the meter.
+  useEffect(() => {
+    const onCompact = () => onContextCompact?.();
+    const onNew = () => onContextNew?.();
+    window.addEventListener("ctx:compact", onCompact);
+    window.addEventListener("ctx:new", onNew);
+    return () => {
+      window.removeEventListener("ctx:compact", onCompact);
+      window.removeEventListener("ctx:new", onNew);
+    };
+  }, [onContextCompact, onContextNew]);
+
   const canSend = draft.trim().length > 0 || attachments.length > 0 || canSendExtra;
   const armed = busy || canSend;
   const placeholderText = listening
@@ -962,6 +983,11 @@ export default function PromptBar({
       </div>
       <div className="foot">
         {uiState === "initial" && footerProject ? <div className="rel init-only proj">{footerProject}</div> : null}
+        {showContextRing ? (
+          <div className="rel ctx-slot">
+            <ContextRing model={model?.key ?? modelKey} mode={modeKey} effort={effort} draft={draft} />
+          </div>
+        ) : null}
         <div className="rel">
           <button type="button" className="chip prompt-bar__connector" onClick={() => onOpenConnectors?.()} aria-label="Open MCP connectors">
             <Icon name="plug" />

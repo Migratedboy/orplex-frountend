@@ -6,6 +6,7 @@ import { apiFetch } from "@/lib/api-base";
 import { useToast } from "@/components/Toast";
 import SessionInsightsPopup from "@/components/SessionInsightsPopup";
 import { useChatSession } from "@/hooks/useChatSession";
+import { saveConversation } from "@/lib/conversations-transport";
 import { AgentMode } from "@/components/ModeSelector";
 import { MessageSkeleton, ChatAreaSkeleton, WelcomeSkeleton } from "@/components/Skeleton";
 
@@ -36,6 +37,57 @@ export default function ChatPage() {
   const [fastLoading, setFastLoading] = useState(false);
   // Index of the failed bubble whose Retry is being sent (button feedback).
   const [retryingIdx, setRetryingIdx] = useState<number | null>(null);
+
+  // ── Context meter: compaction and new chat ───────────────────────────────
+  // The ring dispatches ctx:compact / ctx:new; both are real actions here —
+  // compaction rewrites the transcript through the same summarizer the agent
+  // loops use, then persists it so reloads keep the shortened history.
+  const compactContext = async () => {
+    const transcript = session.messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+    if (transcript.length < 4) {
+      toast("Nothing to compact yet — this chat is still short.", "info");
+      return;
+    }
+    try {
+      const res = await apiFetch("/api/agent/compact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: transcript, model: undefined }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+        messages?: { role: "user" | "assistant" | "system"; content: string }[];
+        evictedCount?: number;
+      };
+      if (!res.ok || !data.success || !data.messages) {
+        toast(data.error || "Compaction is not available right now.", "error");
+        return;
+      }
+      const now = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+      const compacted = data.messages.map((m) => ({
+        role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
+        content: m.content,
+        time: now,
+      }));
+      session.setMessages(() => compacted);
+      if (session.conversationId) {
+        await saveConversation({
+          conversationId: session.conversationId,
+          messages: compacted.map((m) => ({ role: m.role, content: m.content })),
+        }).catch(() => undefined);
+      }
+      window.dispatchEvent(new CustomEvent("orplex:context-compacted"));
+      toast(
+        `Compacted ${data.evictedCount ?? 0} earlier message${data.evictedCount === 1 ? "" : "s"} into one summary.`,
+        "success"
+      );
+    } catch {
+      toast("Compaction failed — nothing was changed.", "error");
+    }
+  };
 
   // ChatInput is dynamically imported (ssr:false), so its attach bridge is
   // resolved at runtime rather than imported as a value.
@@ -225,6 +277,9 @@ export default function ChatPage() {
           conversationId={session.conversationId}
           onFastAnswer={handleFastAnswer}
           lastUserMessage={session.messages.filter(m => m.role === "user").pop()?.content}
+          conversationMessages={session.messages}
+          onContextCompact={compactContext}
+          onContextNew={session.newChat}
           queue={session.queue}
           onQueueAdd={session.addToQueue}
           onQueueRemove={session.removeFromQueue}
@@ -282,6 +337,9 @@ export default function ChatPage() {
               conversationId={session.conversationId}
               onFastAnswer={handleFastAnswer}
               lastUserMessage={session.messages.filter(m => m.role === "user").pop()?.content}
+              conversationMessages={session.messages}
+              onContextCompact={compactContext}
+              onContextNew={session.newChat}
               queue={session.queue}
               onQueueAdd={session.addToQueue}
               onQueueRemove={session.removeFromQueue}

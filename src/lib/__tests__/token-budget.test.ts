@@ -12,6 +12,10 @@ import {
   reserveTokenWindow,
   prunedLog,
   tpmLimitForModel,
+  msgBudgetFor,
+  OUTPUT_RESERVE,
+  fitMessagesToBudget,
+  contextWindowForModel,
 } from "../token-budget";
 
 jest.mock("../background-chat", () => ({
@@ -164,5 +168,77 @@ describe("reserveTokenWindow — concurrent double-submit guard (Test F)", () =>
     SENT_LOG.push({ t: Date.now() - 1_000, tokens: 7000 });
     const size = SENT_LOG.length;
     expect(SENT_LOG.length).toBe(size);
+  });
+});
+describe("msgBudgetFor — the reserve matches what a request actually carries", () => {
+  // Measured on the running app with a workspace open (context meter):
+  // code mode = 4,034 system + 6,728 tools = 10,762 tokens of fixed overhead.
+  const MEASURED_OVERHEAD = 10_762;
+
+  it("leaves room for the measured system prompt and tool schemas", () => {
+    for (const window of [16_000, 32_000, 200_000, 262_000, 1_000_000]) {
+      const budget = msgBudgetFor(window);
+      expect(budget + MEASURED_OVERHEAD + OUTPUT_RESERVE).toBeLessThanOrEqual(window);
+    }
+  });
+
+  it("still compacts at half the window for large models", () => {
+    expect(msgBudgetFor(200_000)).toBe(100_000);
+    expect(msgBudgetFor(1_000_000)).toBe(500_000);
+  });
+
+  it("never returns a negative budget for tiny windows", () => {
+    expect(msgBudgetFor(8_000)).toBe(0);
+    expect(msgBudgetFor(1_000)).toBe(0);
+  });
+});
+
+describe("fitMessagesToBudget — oversized user content", () => {
+  const tokens = (s: string) => Math.ceil(s.length / 4);
+
+  it("caps a giant paste instead of sending it whole, and says so in the user's terms", () => {
+    const out = fitMessagesToBudget(
+      [{ role: "user", content: "hi" }, { role: "user", content: "x".repeat(500_000) }],
+      16_000
+    );
+    const last = out[out.length - 1];
+    expect(tokens(last.content)).toBeLessThanOrEqual(16_000);
+    expect(last.content).toContain("MESSAGE SHORTENED FOR CONTEXT BUDGET");
+    expect(last.content).not.toContain("TOOL OUTPUT SHORTENED");
+  });
+
+  it("still calls a trimmed tool result a tool result", () => {
+    const out = fitMessagesToBudget(
+      [{ role: "user", content: "read it" }, { role: "assistant", content: "y".repeat(200_000) }],
+      16_000
+    );
+    expect(out[out.length - 1].content).toContain("TOOL OUTPUT SHORTENED");
+  });
+
+  it("never exceeds the budget once the marker is added", () => {
+    for (const budget of [2_000, 8_000, 16_000, 100_000]) {
+      const out = fitMessagesToBudget([{ role: "user", content: "z".repeat(900_000) }], budget);
+      expect(tokens(out[0].content)).toBeLessThanOrEqual(budget);
+    }
+  });
+});
+
+describe("contextWindowForModel — the budget lane agrees with the meter", () => {
+  it("uses the model's real window from the app's own registry", async () => {
+    // The verified catalog is empty until a provider sweep succeeds; these
+    // registry rows are what the picker shows, so the budget must use them too.
+    expect(await contextWindowForModel("openrouter/free")).toBe(200_000);
+    expect(await contextWindowForModel("nvidia/nemotron-3-ultra-550b-a55b:free")).toBe(1_000_000);
+    expect(await contextWindowForModel("recursive/flint-v1.0:free")).toBe(262_000);
+  });
+
+  it("keeps a conservative window for a model nothing knows", async () => {
+    expect(await contextWindowForModel("nope/not-a-model")).toBe(32_000);
+    expect(await contextWindowForModel(undefined)).toBe(32_000);
+  });
+
+  it("budgets a 1M model against its own window, not the fallback", async () => {
+    const budget = msgBudgetFor(await contextWindowForModel("nvidia/nemotron-3-ultra-550b-a55b:free"));
+    expect(budget).toBe(500_000);
   });
 });

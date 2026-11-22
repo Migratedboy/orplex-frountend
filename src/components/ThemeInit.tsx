@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { syncThemeCookie } from "@/lib/theme-bootstrap";
 
 /**
  * Early theme bootstrap — runs before the app paints its UI.
@@ -18,7 +19,11 @@ export default function ThemeInit() {
       const dark = pref === "dark" || (pref === "system" && mq.matches);
       const root = document.documentElement;
       root.dataset.theme = dark ? "dark" : "light";
+      root.dataset.themeReady = "1";
       root.classList.toggle("dark", dark);
+      // Keep the cookie the server reads in step with what is on screen; it is
+      // what makes the next launch's FIRST frame correct.
+      syncThemeCookie(dark ? "dark" : "light");
     };
     apply();
     mq.addEventListener("change", apply);

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import "./fonts.css";
 import "./globals.css";
 import "../components/activity/activity.css";
@@ -7,7 +8,7 @@ import BootGate from "@/components/loader/BootGate";
 import AppLayout from "@/components/AppLayout";
 import AppProviders from "@/components/AppProviders";
 import ThemeInit from "@/components/ThemeInit";
-import { THEME_BOOTSTRAP } from "@/lib/theme-bootstrap";
+import { THEME_COOKIE, resolveTheme, themeAttributes } from "@/lib/theme-bootstrap";
 
 // Start app-level services on server startup (lazy-loaded to avoid blocking).
 // Physical split: cron jobs, graceful shutdown, error tracking and backups are
@@ -34,15 +35,16 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Resolved here, not by a script: the theme cookie is written by the theme
+  // provider, so the first byte of HTML already carries the right data-theme
+  // and the shell never paints the wrong colours for a frame.
+  const store = await cookies();
+  const theme = resolveTheme(store.get(THEME_COOKIE)?.value);
+  const themeAttrs = themeAttributes(theme);
+
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
-      <head>
-        {/* Resolve the stored theme before the first paint — see
-            src/lib/theme-bootstrap.ts. Without this the light theme flashes
-            the dark shell for a frame after hydration. */}
-        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
-      </head>
+    <html lang="en" suppressHydrationWarning {...themeAttrs}>
       <body>
         <ThemeInit />
         <Providers>

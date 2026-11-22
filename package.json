@@ -139,6 +139,10 @@
       {
         "from": "electron/assets/icon.png",
         "to": "icon.png"
+      },
+      {
+        "from": "resources",
+        "to": "resources"
       }
     ],
     "win": {

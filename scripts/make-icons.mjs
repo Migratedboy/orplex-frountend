@@ -5,8 +5,8 @@
 // density so the 512px render stays crisp.
 //   electron/assets/icon.png    — Electron window/taskbar PNG (non-win fallback)
 //   electron/assets/icon.ico    — Windows window/taskbar (16/32/48/256, PNG-in-ICO)
-//   electron/assets/icon32.png  — tray icon
-//   electron/assets/tray.png    — tray fallback
+//   (icons are INSTALLED, not generated: run scripts/install-icon-pack.mjs
+//    to copy the authored pack into every slot byte-for-byte)
 //   public/logo.png             — favicon route source + OS notification icon
 //   src/app/icon.png            — Next app icon (browser tab)
 //   electron-dist/assets/*      — mirror of the electron assets (what the
@@ -18,7 +18,7 @@
 // The ICO is a hand-rolled PNG-in-ICO container (Vista+), so sharp alone
 // suffices — no icon-editor dependency.
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
@@ -30,7 +30,6 @@ const isVector = /\.svg$/i.test(src);
 
 const sizes = {
   iconPng: 512,
-  tray: 32,
   favicon: 256,
   ico: [16, 24, 32, 48, 64, 128, 256],
 };
@@ -94,27 +93,27 @@ function buildIco(entries) {
 // The amplified glow ring only makes sense on the dark-tile art; the bare
 // mascot renders as-is.
 const makeIcon = (size) => (isVector ? pngOf(size) : withGlowBorder(size));
-const [icon512, tray32, fav256] = await Promise.all([sizes.iconPng, sizes.tray, sizes.favicon].map((s) => makeIcon(s)));
+const [icon512, fav256] = await Promise.all([sizes.iconPng, sizes.favicon].map((s) => makeIcon(s)));
 const icoEntries = (await Promise.all(sizes.ico.map((s) => makeIcon(s).then((bytes) => ({ size: s, bytes }))))).sort((a, b) => a.size - b.size);
 const icoBuf = buildIco(icoEntries);
 
 const targets = [
   [join(root, "electron/assets/icon.png"), icon512],
   [join(root, "electron/assets/icon.ico"), icoBuf],
-  [join(root, "electron/assets/icon32.png"), tray32],
-  [join(root, "electron/assets/tray.png"), tray32],
   [join(root, "public/logo.png"), fav256],
   [join(root, "src/app/icon.png"), fav256],
-  // Mirror into the compiled output the Electron shell loads from.
-  [join(root, "electron-dist/assets/icon.png"), icon512],
-  [join(root, "electron-dist/assets/icon.ico"), icoBuf],
-  [join(root, "electron-dist/assets/icon32.png"), tray32],
-  [join(root, "electron-dist/assets/tray.png"), tray32],
 ];
 
 for (const [file, data] of targets) {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, data);
   console.log(`wrote ${file} (${data.length} bytes)`);
+}
+// The compiled tree must NOT carry its own icons: `electron-dist/assets/icon.ico`
+// used to win the lookup, which kept an old logo on the taskbar after a rebrand.
+for (const name of ["icon.ico", "icon.png", "icns"]) {
+  try {
+    rmSync(join(root, "electron-dist/assets", name === "icns" ? "icon.icns" : name), { force: true });
+  } catch {}
 }
 console.log("outer-shell icons regenerated from", src);

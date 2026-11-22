@@ -7,16 +7,17 @@
 // no shell, execFile with fixed argv, output capped before it leaves the lib.
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions as authOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
 import { grepSearch, codeSearch } from "@/lib/grep-search";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  // Grep searches the disk on THIS machine, so it must accept the app's own
+  // session cookie as well as a NextAuth one.
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
 
@@ -38,7 +39,7 @@ export async function POST(request: NextRequest) {
       ? Math.min(Math.max(Math.floor(body.context), 0), 20)
       : undefined;
 
-  const cwd = getWorkspaceCwdForUser(session.user.id);
+  const cwd = getWorkspaceCwdForUser(userId);
   if (!cwd) {
     return NextResponse.json(
       { success: false, error: "No workspace registered — open a folder first" },

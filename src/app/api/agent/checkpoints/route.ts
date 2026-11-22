@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions as authOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { getWorkspaceCwd } from "@/lib/workspace-cwd";
 import { prisma } from "@/lib/prisma";
 import { publicErrorMessage } from "@/lib/errors";
@@ -25,13 +24,15 @@ async function ownsRun(runId: string, userId: string): Promise<boolean> {
 
 /** GET /api/agent/checkpoints?runId=… — the run's checkpoint timeline. */
 export async function GET(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  // Checkpoints live on THIS machine's workspace; the desktop session is the
+  // Ed25519 cookie, so NextAuth-only would 401 a signed-in user.
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
   const runId = request.nextUrl.searchParams.get("runId");
   if (!runId) return NextResponse.json({ success: false, error: "runId required" }, { status: 400 });
-  if (!(await ownsRun(runId, session.user.id))) {
+  if (!(await ownsRun(runId, userId))) {
     return NextResponse.json({ success: false, error: "Run not found" }, { status: 404 });
   }
   const rows = await prisma.runCheckpoint.findMany({
@@ -47,16 +48,18 @@ export async function GET(request: NextRequest) {
  * Paths are workspace-relative; content comes from the workspace itself.
  */
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  // Checkpoints live on THIS machine's workspace; the desktop session is the
+  // Ed25519 cookie, so NextAuth-only would 401 a signed-in user.
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
-  const root = getWorkspaceCwd(session.user.id);
+  const root = getWorkspaceCwd(userId);
   if (!root) return NextResponse.json({ success: false, error: "no workspace" }, { status: 400 });
   const body = await request.json().catch(() => null);
   const runId = typeof body?.runId === "string" ? body.runId : "";
   if (!runId) return NextResponse.json({ success: false, error: "runId required" }, { status: 400 });
-  if (!(await ownsRun(runId, session.user.id))) {
+  if (!(await ownsRun(runId, userId))) {
     return NextResponse.json({ success: false, error: "Run not found" }, { status: 404 });
   }
   const label = typeof body?.label === "string" ? body.label.slice(0, 120) : "manual";
@@ -101,11 +104,13 @@ export async function POST(request: NextRequest) {
  * Conversation rows after the checkpoint are archived (never destroyed).
  */
 export async function PUT(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  // Checkpoints live on THIS machine's workspace; the desktop session is the
+  // Ed25519 cookie, so NextAuth-only would 401 a signed-in user.
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
-  const root = getWorkspaceCwd(session.user.id);
+  const root = getWorkspaceCwd(userId);
   if (!root) return NextResponse.json({ success: false, error: "no workspace" }, { status: 400 });
   const body = await request.json().catch(() => null);
   const runId = typeof body?.runId === "string" ? body.runId : "";
@@ -113,7 +118,7 @@ export async function PUT(request: NextRequest) {
   if (!runId || sequence === null) {
     return NextResponse.json({ success: false, error: "runId and sequence required" }, { status: 400 });
   }
-  if (!(await ownsRun(runId, session.user.id))) {
+  if (!(await ownsRun(runId, userId))) {
     return NextResponse.json({ success: false, error: "Run not found" }, { status: 404 });
   }
   const cp = await prisma.runCheckpoint.findUnique({

@@ -7,8 +7,9 @@ import { GET, POST, PUT } from "../route";
 
 let mockRoot = "";
 
-jest.mock("next-auth", () => ({ getServerSession: async () => ({ user: { id: "test-user" } }) }));
-jest.mock("@/lib/auth", () => ({ jwtOnlyOptions: {} }));
+// The route authenticates through the shared helper, which tries both session
+// cookie names and then the app's own Ed25519 session.
+jest.mock("@/lib/server-session", () => ({ sessionUserId: async () => "test-user" }));
 jest.mock("@/lib/workspace-cwd", () => ({ getWorkspaceCwd: () => mockRoot }));
 
 function request(method: string, body?: unknown, query = "") {

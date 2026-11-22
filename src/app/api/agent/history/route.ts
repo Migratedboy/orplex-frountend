@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions as authOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { getWorkspaceCwd } from "@/lib/workspace-cwd";
 import {
   appendHistory,
@@ -26,11 +25,13 @@ const MAX_BODY_BYTES = 20 * 1024 * 1024; // snapshots include both previous and 
  * here must never break the write path, hence the plain error envelope.
  */
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  // Local-device data (the workspace's own history / learnings): accept the
+  // app's Ed25519 cookie as well as a NextAuth one.
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
-  const root = getWorkspaceCwd(session.user.id);
+  const root = getWorkspaceCwd(userId);
   if (!root) {
     // No workspace open — nothing durable to record against.
     return NextResponse.json({ success: false, error: "no workspace" }, { status: 400 });
@@ -95,11 +96,13 @@ export async function POST(request: NextRequest) {
  * GET /api/agent/history?since=<epochMs> — entries newest-first for hydrate.
  */
 export async function GET(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  // Local-device data (the workspace's own history / learnings): accept the
+  // app's Ed25519 cookie as well as a NextAuth one.
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
-  const root = getWorkspaceCwd(session.user.id);
+  const root = getWorkspaceCwd(userId);
   if (!root) return NextResponse.json({ success: true, entries: [], files: [] });
   if (request.nextUrl.searchParams.get("view") === "pending") {
     const history = await readHistory(root);
@@ -155,11 +158,13 @@ export async function GET(request: NextRequest) {
  * returns the content for the browser to apply locally too.
  */
 export async function PUT(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  // Local-device data (the workspace's own history / learnings): accept the
+  // app's Ed25519 cookie as well as a NextAuth one.
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
-  const root = getWorkspaceCwd(session.user.id);
+  const root = getWorkspaceCwd(userId);
   if (!root) return NextResponse.json({ success: false, error: "no workspace" }, { status: 400 });
   const body = await request.json().catch(() => null);
   if (!body || typeof body !== "object") {

@@ -672,37 +672,39 @@ function startNextServer(which: "ui" | "api"): void {
 }
 
 // === APP ICON ===============================================================
-// Finds the icon on disk no matter where the code runs from: compiled output
-// (dist-electron), the electron/ source folder, or a packaged app's resources.
-// Windows needs the .ico for a crisp taskbar icon; PNG is the fallback.
+// ONE source of truth, resolved EXPLICITLY (the old version walked up from four
+// start points and probed `assets` at every level — which meant a stale
+// `electron-dist/assets/icon.ico` left over from an earlier build WON over the
+// real artwork in `electron/assets/`. That is why a rebrand never reached the
+// taskbar: the window was handed the old .ico every launch.)
+//
+// Packaged:  <resources>/icon.ico  (electron-builder extraResources, real file)
+// Dev:       <repo>/electron/assets/icon.ico  (never a compiled copy)
+// Anything under `electron-dist/assets` is build residue and is refused.
 function resolveIconPath(): string | undefined {
-  const names = process.platform === "win32" ? ["icon.ico", "icon.png"] : ["icon.png", "icon.ico"];
-  // Start points: packaged resources (a REAL file, not inside the asar),
-  // compiled dir, app root, cwd. From each, walk UP a few levels and probe
-  // the usual icon folders at every level.
-  const starts = [process.resourcesPath || "", __dirname, app.getAppPath(), process.cwd()];
-  const subs = ["", "assets", "electron", path.join("electron", "assets"), "build", "public", "resources",
-    // Packaged app: files land inside app.asar (fs.existsSync reads through asar).
-    path.join("app.asar", "electron", "assets"), path.join("app", "electron", "assets")];
-  const seen = new Set<string>();
-  for (const name of names) {
-    for (const start of starts) {
-      if (!start) continue;
-      let dir = start;
-      for (let up = 0; up < 5; up++) {
-        for (const sub of subs) {
-          const candidate = path.join(dir, sub, name);
-          if (seen.has(candidate)) continue;
-          seen.add(candidate);
-          try {
-            if (fs.existsSync(candidate)) return candidate;
-          } catch {}
-        }
-        const parent = path.dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-      }
-    }
+  const repoRoot = path.resolve(__dirname, "..");
+  const asarRoot = path.join(app.getAppPath(), "electron", "assets");
+  const packaged = [
+    path.join(process.resourcesPath || "", "icon.ico"),
+    path.join(process.resourcesPath || "", "icon.png"),
+    path.join(process.resourcesPath || "", "resources", "tray.ico"),
+    path.join(asarRoot, "icon.ico"),
+    path.join(asarRoot, "icon.png"),
+  ];
+  const dev = [
+    path.join(repoRoot, "electron", "assets", "icon.ico"),
+    path.join(repoRoot, "electron", "assets", "icon.png"),
+    path.join(repoRoot, "build", "icon.ico"),
+  ];
+  const candidates = isDev ? [...dev, ...packaged] : [...packaged, ...dev];
+
+  for (const candidate of candidates) {
+    // Build residue must never be an icon source. Stale compiled copies are the
+    // exact thing that kept the previous logo on the taskbar.
+    if (/[\\/]electron-dist[\\/]assets[\\/]/i.test(candidate)) continue;
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {}
   }
   safeConsoleWrite(process.stdout, `[icon] NOT FOUND. __dirname=${__dirname} appPath=${app.getAppPath()} cwd=${process.cwd()}\n`);
   return undefined;
@@ -1158,6 +1160,11 @@ app.on("will-quit", () => {
   // Normal quit: mark the session clean BEFORE children die, so the next
   // boot knows there is nothing to recover. Crash paths never reach this.
   writeSessionState(true);
+  // Take the notification-area icon down with us. Without this the tray entry
+  // can outlive the process on Windows and keep showing a stale logo.
+  try {
+    (require("./tray") as typeof import("./tray")).stopTray();
+  } catch {}
   // Kill terminal children (exec + serve lanes) first so no zombie holds
   // the workspace ports, then both Next.js children.
   try {

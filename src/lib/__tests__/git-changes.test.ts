@@ -47,4 +47,24 @@ describe("parseNumstat + merge + totals", () => {
     const counts = parseNumstat(raw, true);
     expect(counts.get("src/new.ts")).toEqual({ added: 5, deleted: 1 });
   });
+
+  it("parses -z numstat records whose path stays in the same field", () => {
+    // Real `git diff --numstat -z HEAD` output: NUL separates records, the path
+    // rides along inside the record. Every ordinary file depends on this.
+    const raw = ["7\t5\tsrc/a.ts", "-	-	img.png"].join("\0");
+    const counts = parseNumstat(raw, true);
+    expect(counts.get("src/a.ts")).toEqual({ added: 7, deleted: 5 });
+    expect(counts.get("img.png")).toEqual({ added: 0, deleted: 0 });
+  });
+
+  it("keeps counts per file when porcelain and -z numstat are merged", () => {
+    const rows = parsePorcelain([" M src/a.ts", " M src/b.ts"].join("\0"), true);
+    const counts = parseNumstat(["7\t5\tsrc/a.ts", "3\t1\tsrc/b.ts"].join("\0"), true);
+    const merged = mergeCounts(rows, counts);
+    expect(merged.map((r) => [r.path, r.added, r.deleted])).toEqual([
+      ["src/a.ts", 7, 5],
+      ["src/b.ts", 3, 1],
+    ]);
+    expect(totalsOf(merged)).toEqual({ added: 10, deleted: 6 });
+  });
 });

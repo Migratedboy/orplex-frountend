@@ -33,6 +33,24 @@ function maybeRead(file) {
 }
 const iconPath = path.join(root, "electron", "assets", "icon.ico");
 
+/**
+ * Compiled icon residue is poison: `electron-dist/assets/icon.ico` used to be
+ * probed BEFORE the real artwork, so every launch handed the window a stale
+ * .ico and the taskbar kept the previous logo. Nothing reads icons from the
+ * compiled tree any more — delete any copy so it cannot come back.
+ */
+function purgeIconResidue() {
+  const dir = path.join(root, "electron-dist", "assets");
+  if (!fs.existsSync(dir)) return;
+  for (const name of fs.readdirSync(dir)) {
+    if (!/\.(ico|png|icns)$/i.test(name)) continue;
+    try {
+      fs.rmSync(path.join(dir, name), { force: true });
+      console.log(`[dev-icon] removed stale compiled icon ${name}`);
+    } catch {}
+  }
+}
+
 function runElectron(args) {
   const electronBin = require("electron"); // path to electron's cli.js
   const child = spawn(process.execPath, [electronBin, ...args], {
@@ -46,6 +64,7 @@ function runElectron(args) {
 if (process.platform !== "win32") {
   runElectron(process.argv.slice(2).length ? process.argv.slice(2) : ["."]);
 } else {
+  purgeIconResidue();
   const electronDist = path.dirname(require("electron"));
   const srcExe = path.join(electronDist, "electron.exe");
   // The branded copy MUST live next to electron.exe: Electron loads its ICU

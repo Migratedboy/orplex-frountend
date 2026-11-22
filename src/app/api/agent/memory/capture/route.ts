@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions as authOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { captureWorkspaceMemories, type CaptureInput } from "@/lib/memory";
 import { getWorkspaceKey } from "@/lib/memory";
 
@@ -17,8 +16,10 @@ export const dynamic = "force-dynamic";
  * when they wrote no files — a normal no-op, not a client error).
  */
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  // Local-device data (the workspace's own history / learnings): accept the
+  // app's Ed25519 cookie as well as a NextAuth one.
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
 

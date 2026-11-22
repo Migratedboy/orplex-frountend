@@ -6,7 +6,11 @@
 // hard-black square window icon and mush at 16px in the tray. The pack already
 // ships the right variants: build/icon.ico and .icns for packaging,
 // build/icons/* for the exact pixel sizes, assets/tray/* for the notification
-// area, and the rounded-corner tile whose corners are genuinely transparent.
+// AREA (colour 16px + 32px, plus the macOS template pair), and the rounded
+// tile whose corners are genuinely transparent.
+//
+// Nothing here is redrawn, trimmed, recoloured or rescaled: every destination
+// below is a byte-for-byte copy of a pack file.
 //
 // Usage: node scripts/install-icon-pack.mjs "C:/Users/<you>/Downloads/electron-icons (4).zip"
 //        node scripts/install-icon-pack.mjs <extracted-pack-dir>
@@ -40,11 +44,25 @@ const pack = fs.existsSync(path.join(root, "electron-icons")) ? path.join(root, 
 
 /** [source relative to the pack, destination relative to the repo] */
 const SLOTS = [
+  // --- Windows packaging (electron-builder win.icon, NSIS installer) --------
   ["build/icon.ico", "electron/assets/icon.ico"],
+  ["build/icon.ico", "build/icon.ico"],
+  // --- macOS / Linux packaging --------------------------------------------
   ["build/icon.icns", "electron/assets/icon.icns"],
+  ["build/icon.png", "build/icon.png"],
+  // --- BrowserWindow icon (taskbar / window / Alt-Tab) --------------------
   ["build/icon.png", "electron/assets/icon.png"],
   ["build/icons/32x32.png", "electron/assets/icon32.png"],
-  ["assets/tray/tray@2x.png", "electron/assets/tray.png"],
+  // --- Notification area (the "^" popup). Lives OUTSIDE the asar. ----------
+  ["build/icon.ico", "resources/tray.ico"],
+  ["assets/tray/tray.png", "resources/tray.png"],
+  ["assets/tray/tray@2x.png", "resources/tray@2x.png"],
+  ["assets/tray/trayTemplate.png", "resources/trayTemplate.png"],
+  ["assets/tray/trayTemplate@2x.png", "resources/trayTemplate@2x.png"],
+  // --- Window icon the dev shell loads from the compiled tree --------------
+  ["build/icons/32x32.png", "electron/assets/tray.png"],
+  // --- Web/favicon slots (NOT the in-app mascot: that is orplex-mascot.svg /
+  //     logo.svg and is intentionally left alone) ---------------------------
   ["build/icons/256x256.png", "public/logo.png"],
   ["build/icons/256x256.png", "src/app/icon.png"],
 ];
@@ -59,6 +77,18 @@ for (const [from, to] of SLOTS) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.copyFileSync(src, dest);
   console.log(`  ${to.padEnd(30)} <- ${from} (${(fs.statSync(dest).size / 1024).toFixed(1)} KB)`);
+}
+
+// Compiled copies of the OLD artwork are the reason a rebrand never reached the
+// taskbar: `electron-dist/assets/icon.ico` was probed before the real file.
+// Nothing reads icons from the compiled tree any more, so delete them.
+const residue = path.join(ROOT, "electron-dist", "assets");
+if (fs.existsSync(residue)) {
+  for (const name of fs.readdirSync(residue)) {
+    if (!/\.(ico|png|icns)$/i.test(name)) continue;
+    fs.rmSync(path.join(residue, name), { force: true });
+    console.log(`  removed stale electron-dist/assets/${name}`);
+  }
 }
 
 // The wordmark slot is an <img src="/orplex-logo.svg"> target. The pack ships no

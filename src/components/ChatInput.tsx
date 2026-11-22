@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useToast } from "./Toast";
+import { publishContextSnapshot } from "@/lib/context-snapshot";
 import PromptBar, { type PromptBarMode, type PromptBarModel, type PromptBarSource } from "./PromptBar";
 import ChangesBar from "./ChangesBar";
 import { useFileProcessor, formatFileSize, getFileIcon } from "@/hooks/useFileProcessor";
@@ -53,6 +54,11 @@ interface ChatInputProps {
   /** True after the user pressed Stop — the composer acknowledges it without
    *  blocking the next send (the input stays live). */
   stopped?: boolean;
+  /** The live transcript, so the context meter can measure it. */
+  conversationMessages?: { role: string; content: string }[];
+  /** Context meter actions (the chat surface owns the store). */
+  onContextCompact?: () => void;
+  onContextNew?: () => void;
 }
 
 /**
@@ -158,8 +164,17 @@ function savePickers(conversationId: string | null | undefined, state: PickerSta
  */
 export const droppedFilesBridge: { add: ((files: AttachedFile[]) => void) | null } = { add: null };
 
-export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, runPhase = "idle", requestStartedAt, agentEvents = [], turnActive, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, stopped = false }: ChatInputProps) {
+export default function ChatInput({ onSend, onStop, loading, agentRunning, isStreaming = false, runPhase = "idle", requestStartedAt, agentEvents = [], turnActive, agentMode, onModeChange, onFastAnswer, lastUserMessage, queue = [], onQueueAdd, onQueueRemove, onQueueClear, conversationId, stopped = false, conversationMessages = [], onContextCompact, onContextNew }: ChatInputProps) {
   const files = useFileProcessor();
+  // Publish what the composer is holding so the context meter (in the toolbar)
+  // can measure the same transcript/attachments the next request will carry.
+  useEffect(() => {
+    publishContextSnapshot({
+      conversationId: conversationId ?? null,
+      messages: conversationMessages.map((m) => ({ role: m.role, content: m.content })),
+      files: files.getTextFiles().map((f) => ({ name: f.name, chars: (f.content ?? "").length })),
+    });
+  }, [conversationId, conversationMessages, files]);
   // Built-in skill toggles (Settings → Skills). Disabled skills are removed
   // from the prompt-bar "/" menu so they can't be inserted.
   const [disabledSkillIds, setDisabledSkillIds] = useState<Set<string>>(() => loadDisabledSkillIds());
@@ -516,6 +531,9 @@ export default function ChatInput({ onSend, onStop, loading, agentRunning, isStr
             conversationState={isWorking ? "thinking" : lastUserMessage ? "chat" : "initial"}
             footerProject={<WorkspaceSwitcher />}
             onOpenConnectors={() => setMcpOpen(true)}
+            showContextRing
+            onContextCompact={onContextCompact}
+            onContextNew={onContextNew}
             modes={MODES}
             defaultMode={agentMode}
             sources={SOURCES}

@@ -146,17 +146,21 @@ html:not([data-theme-ready]) *::after {
  * Window frame only: window base, floating cards, title bar, icon rail.
  * Dark is the default (same as the block above); light hangs off
  * [data-theme="light"] — the switch ThemeInit/ThemeProvider already keep in
- * sync. The shell CSS references ONLY these names (no raw colors). */
+ * sync. The shell CSS references ONLY these names (no raw colors).
+ * The outline scale is SOLID, never alpha: overlapping strokes (a tab's outline
+ * over the pane's top edge, a flare over a border) must land on the same color
+ * and never composite to a brighter seam. */
 :root {
-  --shell-bg: #0b0b0b;
-  --shell-surface: #131313;
+  --shell-bg: #0a0a0a;
+  --shell-surface: #0f0f0f;
   /* OUTLINE SCALE — the shell is drawn with strokes, not shadows. Every pane,
-     the window frame and the active tab read these three. */
-  --shell-outline: rgba(255, 255, 255, 0.2);
-  --shell-outline-strong: rgba(255, 255, 255, 0.32);
-  --shell-edge: rgba(0, 0, 0, 0.85);
+     the window frame, the active tab and the small controls read these. */
+  --shell-outline: #3a3a3a;
+  --shell-outline-strong: #505050;
+  --shell-edge: #505050;
   --shell-border: var(--shell-outline);
-  --shell-shadow: 0 2px 0 var(--shell-edge);
+  --shell-text: #e8e8ea;
+  --shell-text-muted: #8a8a92;
   --shell-icon: #9a9aa2;
   --shell-icon-active: var(--accent);
   --shell-hover: rgba(255, 255, 255, 0.07);
@@ -166,13 +170,17 @@ html:not([data-theme-ready]) *::after {
   /* Window-control close hover stays red in both themes (pinned by spec). */
   --shell-close: #e5484d;
   --shell-close-fg: #ffffff;
-  /* Tiling: panes nearly touch (2px), 4px inset from the window edge. */
+  /* Drawer scrim behind the mobile sidebar. The one translucent shell color:
+     it sits OVER content by definition, so it cannot be solid. */
+  --shell-scrim: rgba(0, 0, 0, 0.45);
+  /* Tiling: 3px between panes, 5px inset from the right/bottom window edge (a
+     pane must never touch the frame, or its stroke and corners are cut off). */
   --shell-radius-pane: 12px;
   --shell-radius-lg: var(--shell-radius-pane);
   --shell-radius-md: 10px;
-  --shell-pane-gap: 2px;
+  --shell-pane-gap: 3px;
   --shell-gap: var(--shell-pane-gap);
-  --shell-inset: 4px;
+  --shell-inset: 5px;
   --titlebar-h: 45px;
   --rail-w: 52px;
   --sidebar-w: 254px;
@@ -180,11 +188,12 @@ html:not([data-theme-ready]) *::after {
 :root[data-theme="light"] {
   --shell-bg: #e4e4e9;
   --shell-surface: #fafafb;
-  --shell-outline: rgba(0, 0, 0, 0.2);
-  --shell-outline-strong: rgba(0, 0, 0, 0.34);
-  --shell-edge: rgba(0, 0, 0, 0.2);
+  --shell-outline: #b9b9c0;
+  --shell-outline-strong: #8e8e98;
+  --shell-edge: #8e8e98;
   --shell-border: var(--shell-outline);
-  --shell-shadow: 0 2px 0 var(--shell-edge);
+  --shell-text: #1c1c20;
+  --shell-text-muted: #6a6a72;
   --shell-icon: #55555c;
   --shell-icon-active: var(--accent);
   --shell-hover: rgba(0, 0, 0, 0.06);

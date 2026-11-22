@@ -53,11 +53,14 @@ export function tpmLimitForModel(model?: string): number {
   return KNOWN_TPM_MODELS[model] ?? KNOWN_TPM_MODELS[bare] ?? Number.POSITIVE_INFINITY;
 }
 
-// Real per-model context window, resolved from the model catalog (the same
-// `contextWindow` the picker already shows). There is deliberately NO global
-// default window: models here range from ~8k to 400k, so any single hardcoded
-// number either starves small-context models or overflows them.
-// Unknown/unlisted model -> deliberately small and safe.
+// Real per-model context window. There is deliberately NO global default
+// window: models here range from ~8k to 1M, so any single hardcoded number
+// either starves small-context models or overflows them.
+//
+// Resolution order is the SAME one the context meter shows the user, or the two
+// lanes disagreed: this function used to read the verified catalog only, which
+// is empty until a provider sweep succeeds — so every model measured 32k and a
+// 1M-token model compacted at 12.8k. Catalog → app registry → conservative 32k.
 const FALLBACK_CONTEXT_TOKENS = 32_000;
 // Compact at half the model's window: leaves room for the system prompt, the
 // next reply, and MCP tool schemas without ever hitting the hard limit.
@@ -66,26 +69,35 @@ const COMPACTION_TRIGGER_RATIO = 0.5;
 export async function contextWindowForModel(model?: string): Promise<number> {
   if (!model) return FALLBACK_CONTEXT_TOKENS;
   try {
-    const { getVerifiedModels } = await import("./model-catalog");
-    const { models } = await getVerifiedModels();
-    const bare = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model;
-    const hit = models.find((m) => m.id === model) || models.find((m) => m.id === bare);
-    const ctx = hit?.contextWindow;
-    return typeof ctx === "number" && ctx > 0 ? ctx : FALLBACK_CONTEXT_TOKENS;
+    const { resolveContextLimit } = await import("./context-limit");
+    const resolved = await resolveContextLimit(model);
+    if (resolved.limit > 0) return resolved.limit;
   } catch {
-    return FALLBACK_CONTEXT_TOKENS;
+    /* fall through to the safe number */
   }
+  return FALLBACK_CONTEXT_TOKENS;
 }
 
-const SYSTEM_PROMPT_TOKENS = 3300; // CODE-mode stack: M3 + techniques + enhanced (added by /api/chat)
+// Measured, not guessed: the CODE-mode stack (M3 + techniques + enhanced) plus
+// the workspace block measures 4,034 tokens on a real project; ask mode is
+// 1,172 and plan mode 3,634. Reserve the worst case.
+const SYSTEM_PROMPT_TOKENS = 4_100;
+// The 76-tool code roster is 6,728 tokens of JSON schema ON TOP of the system
+// prompt, and it rides in every code-mode request. Leaving it out of the
+// reserve meant a 16k-class window could be over-filled before the transcript
+// even started (8,000 budget + 10,762 overhead > 16,000).
+const TOOL_SCHEMA_TOKENS = 6_800;
 export const OUTPUT_RESERVE = 1800; // room for the model's reply
 // Headroom inside the window for everything that is NOT conversation history:
 // the system prompt, the reply, and MCP tool schemas. Sized from THIS model's
 // real window (never from the rate limit, and never from a global constant).
 export const msgBudgetFor = (contextWindow: number) =>
-  Math.min(
-    Math.floor(contextWindow * COMPACTION_TRIGGER_RATIO),
-    contextWindow - SYSTEM_PROMPT_TOKENS - OUTPUT_RESERVE - TPM_SAFETY
+  Math.max(
+    0,
+    Math.min(
+      Math.floor(contextWindow * COMPACTION_TRIGGER_RATIO),
+      contextWindow - SYSTEM_PROMPT_TOKENS - TOOL_SCHEMA_TOKENS - OUTPUT_RESERVE - TPM_SAFETY
+    )
   );
 export const SENT_LOG: { t: number; tokens: number }[] = [];
 
@@ -111,8 +123,13 @@ export function fitMessagesToBudget(
   if (out.length === 0) return out;
   const total = () => out.reduce((s, m) => s + estimateTokens(m.content), 0);
 
-  /** Cut at a line boundary and mark exactly what the cut was. */
+  /**
+   * Cut at a line boundary and mark exactly what the cut was. The marker is
+   * reserved out of the cap, so a trimmed message never lands ABOVE the budget
+   * it was trimmed to (it used to overshoot by the marker's own length).
+   */
   const capWithMarker = (content: string, charCap: number, marker: string) => {
+    const cap = Math.max(0, charCap - marker.length);
     // The task anchor rides the TAIL of the last message (appendTaskAnchor) so
     // oldest-first dropping can never lose it — but a plain head-slice cut the
     // anchor off exactly when the budget was tightest. Split it out: cap the
@@ -121,17 +138,26 @@ export function fitMessagesToBudget(
     if (anchorAt >= 0) {
       const anchor = content.slice(anchorAt);
       const base = content.slice(0, anchorAt);
-      const raw = base.slice(0, Math.max(0, charCap - anchor.length));
+      const raw = base.slice(0, Math.max(0, cap - anchor.length));
       let cut = raw;
       const lastNl = cut.lastIndexOf("\n");
       if (lastNl > cut.length * 0.5) cut = cut.slice(0, lastNl); // keep ≥50% of the head
       return cut + (raw.length < base.length ? marker : "") + anchor;
     }
-    let cut = content.slice(0, charCap);
+    const raw = content.slice(0, cap);
+    let cut = raw;
     const lastNl = cut.lastIndexOf("\n");
-    if (lastNl > charCap * 0.5) cut = cut.slice(0, lastNl); // keep ≥50% of the head
-    return cut + marker;
+    if (lastNl > cap * 0.5) cut = cut.slice(0, lastNl); // keep ≥50% of the head
+    return cut + (raw.length < content.length ? marker : "");
   };
+
+  // A trimmed TOOL RESULT and a trimmed USER message are not the same event:
+  // the first is the model re-reading its own output, the second is the user's
+  // paste/attachment being too big for this model — say which one happened.
+  const toolMarker =
+    "\n…[TOOL OUTPUT SHORTENED FOR CONTEXT BUDGET — the middle was cut here, the FILE ITSELF is complete; use line ranges to re-check specifics]";
+  const userMarker =
+    "\n…[MESSAGE SHORTENED FOR CONTEXT BUDGET — this message (or its attached files) was longer than the model's window allows, so the tail was cut here. Ask for the rest in a follow-up if you need it]";
 
   // 1. Cap every message except the last (tool results & old turns)
   const OLDER_CAP = 800; // tokens
@@ -140,7 +166,9 @@ export function fitMessagesToBudget(
       out[i].content = capWithMarker(
         out[i].content,
         OLDER_CAP * CHARS_PER_TOKEN,
-        "\n…[OLDER MESSAGE SHORTENED FOR CONTEXT BUDGET — the middle was cut here, the FILE ITSELF is complete]"
+        out[i].role === "user"
+          ? "\n…[OLDER MESSAGE SHORTENED FOR CONTEXT BUDGET — the middle was cut here]"
+          : toolMarker
       );
     }
   }
@@ -157,7 +185,7 @@ export function fitMessagesToBudget(
       last.content = capWithMarker(
         last.content,
         allow * CHARS_PER_TOKEN,
-        "\n…[TOOL OUTPUT SHORTENED FOR CONTEXT BUDGET — the middle was cut here, the FILE ITSELF is complete; use line ranges to re-check specifics]"
+        last.role === "user" ? userMarker : toolMarker
       );
     }
   }

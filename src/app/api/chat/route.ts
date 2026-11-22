@@ -15,6 +15,7 @@ import {
   parseJsonRequest,
 } from "@/lib/chat-middleware";
 import { sseTransform } from "@/lib/ai-providers";
+import { tapProviderUsage } from "@/lib/provider-usage-tap";
 import { isMockAiEnabled, createMockProviderStream, buildMockActivityReplyText } from "@/lib/mock-ai";
 import { M3_TOOL_DEFINITIONS, LEAN_TOOL_DEFINITIONS } from "@/lib/tool-definitions";
 import { buildSystemPrompt } from "@/lib/master-prompt";
@@ -538,7 +539,9 @@ const routedSupportsVision = canSendImageParts(
   }
 
     // --- Step 9: Return SSE stream ---
-    return new Response(sseTransform(stream), {
+    // The context meter prefers the provider's own prompt_tokens over our
+    // chars/4 estimate; the tap reads them off a branch of this stream.
+    return new Response(sseTransform(tapProviderUsage(stream, parsed.conversationId ?? null)), {
       headers: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",

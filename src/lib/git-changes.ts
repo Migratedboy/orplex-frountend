@@ -89,7 +89,11 @@ export function parsePorcelain(raw: string, z: boolean): GitChangeRow[] {
 
 /**
  * Parse `git diff --numstat` output ("added<TAB>deleted<TAB>path"). Binary
- * files show "-" as counts → 0. -z rename entries: "a\td\t\0src\0dst\0".
+ * files show "-" as counts → 0. With `-z` each record is NUL-terminated and a
+ * plain record keeps its path INSIDE the same field ("a\td\tpath\0"), while a
+ * rename leaves the path empty and puts the two paths in the next fields
+ * ("a\td\t\0src\0dst\0"). Both shapes have to be handled or every ordinary
+ * file loses its line counts.
  * Returns a path-keyed map of line counts.
  */
 export function parseNumstat(raw: string, z: boolean): Map<string, { added: number; deleted: number }> {
@@ -97,19 +101,28 @@ export function parseNumstat(raw: string, z: boolean): Map<string, { added: numb
   const num = (s: string) => (s === "-" ? 0 : Number.parseInt(s, 10) || 0);
   if (z) {
     const fields = raw.split("\0");
-    for (let i = 0; i < fields.length; ) {
+    for (let i = 0; i < fields.length; i++) {
       const field = fields[i];
-      if (!field || !field.includes("\t")) { i++; continue; }
-      const [a, d] = field.split("\t");
+      const t1 = field.indexOf("\t");
+      if (t1 < 0) continue;
+      const t2 = field.indexOf("\t", t1 + 1);
+      if (t2 < 0) continue;
+      const added = num(field.slice(0, t1));
+      const deleted = num(field.slice(t1 + 1, t2));
+      const path = field.slice(t2 + 1);
+      if (path) {
+        // Ordinary record: the path is part of this field.
+        out.set(path, { added, deleted });
+        continue;
+      }
+      // Rename record: paths follow as separate NUL-terminated fields.
       const src = fields[i + 1] ?? "";
       const dst = fields[i + 2] ?? "";
-      if (dst) {
-        out.set(`${src} -> ${dst}`, { added: num(a), deleted: num(d) });
-        out.set(dst, { added: num(a), deleted: num(d) });
-        i += 3;
-      } else {
-        out.set(src, { added: num(a), deleted: num(d) });
-        i += 2;
+      i += 2;
+      if (src && dst) {
+        out.set(`${src} -> ${dst}`, { added, deleted });
+        out.set(dst, { added, deleted });
+        out.set(src, { added, deleted });
       }
     }
     return out;

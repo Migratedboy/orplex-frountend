@@ -464,6 +464,26 @@
   border-radius: 10px;
 }
 
+/* The footer holds the context meter now, so at narrow widths the model label
+   gives up space first instead of pushing the row onto a second line (the
+   meter itself never shrinks). */
+.prompt-bar .foot .prompt-bar__model-pill {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.prompt-bar .foot .prompt-bar__model-trigger {
+  min-width: 0;
+}
+
+/* Below this width the model name is the first thing to shorten, so the meter
+   keeps its place on the toolbar instead of forcing a second row. */
+@media (max-width: 1080px) {
+  .prompt-bar .foot .prompt-bar__model-trigger > b {
+    max-width: 84px;
+  }
+}
+
 .prompt-bar[data-state="initial"] .prompt-bar__model-pill {
   border-color: transparent;
 }
