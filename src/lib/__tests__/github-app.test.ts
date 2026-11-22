@@ -65,35 +65,49 @@ describe("configuration", () => {
 });
 
 describe("which app the device flow uses", () => {
-  it("prefers the OAuth App and asks for repo scope", async () => {
-    // An OAuth token needs no install step; a GitHub App token does. Ordering is
-    // the difference between "type a code" and "type a code, then install".
-    process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
+  it("tries the GitHub App first, with no OAuth scope", async () => {
+    // The App is the app's own integration: installation-scoped Contents
+    // access, permissions held on the App itself. Its token needs no OAuth
+    // scope string, so none is sent.
     process.env.GITHUB_APP_CLIENT_ID = "Iv23liApp";
+    process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
     (global.fetch as jest.Mock).mockResolvedValueOnce(
       json({ device_code: "d", user_code: "U-1", expires_in: 900, interval: 5 })
     );
 
     const flow = await startDeviceFlow("user-1");
-    expect(flow?.source).toBe("oauth");
+    expect(flow?.source).toBe("app");
     const sent = String((global.fetch as jest.Mock).mock.calls[0][1].body);
-    expect(sent).toContain("client_id=Ov23liOauth");
-    expect(sent).toContain("scope=repo");
+    expect(sent).toContain("client_id=Iv23liApp");
+    expect(sent).not.toContain("scope=");
   });
 
-  it("does not silently fall back to the GitHub App when the OAuth app has device flow off", async () => {
-    // A GitHub App token is installation-scoped: using it shows GitHub's
-    // app-permission consent screen and then an install step, which is a
-    // second authorisation for something the OAuth App already grants.
-    // So the flow stops and says why; the UI offers browser sign-in instead.
-    process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
+  it("falls through to the OAuth App when the GitHub App has device flow off", async () => {
+    // One disabled app must not turn the button into an error: the OAuth App
+    // needs no installation, so the user still gets a code.
     process.env.GITHUB_APP_CLIENT_ID = "Iv23liApp";
-    (global.fetch as jest.Mock).mockResolvedValueOnce(json({ error: "device_flow_disabled", error_description: "nope" }, 400));
+    process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(json({ error: "device_flow_disabled", error_description: "nope" }, 400))
+      .mockResolvedValueOnce(json({ device_code: "d", user_code: "U-2", expires_in: 900, interval: 5 }));
 
-    await expect(startDeviceFlow("user-1")).rejects.toThrow(/device_flow_disabled|nope/);
-    expect((global.fetch as jest.Mock).mock.calls).toHaveLength(1);
+    const flow = await startDeviceFlow("user-1");
+    expect(flow?.source).toBe("oauth");
+    expect(flow?.userCode).toBe("U-2");
+    const second = String((global.fetch as jest.Mock).mock.calls[1][1].body);
+    expect(second).toContain("client_id=Ov23liOauth");
+    expect(second).toContain("scope=repo");
   });
 
+  it("reports GitHub's words when every configured app refuses", async () => {
+    process.env.GITHUB_APP_CLIENT_ID = "Iv23liApp";
+    process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(json({ error: "device_flow_disabled", error_description: "app disabled" }, 400))
+      .mockResolvedValueOnce(json({ error: "device_flow_disabled", error_description: "oauth disabled" }, 400));
+
+    await expect(startDeviceFlow("user-1")).rejects.toThrow(/device_flow_disabled|disabled/);
+  });
   it("stores an OAuth device token under provider github, not github-app", async () => {
     // Otherwise the repo list would treat it like an App token and nag about an
     // installation that the OAuth flow never needed.

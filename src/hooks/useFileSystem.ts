@@ -591,7 +591,23 @@ export function useFileSystem() {
       if (cached !== undefined) return cached;
 
       const handle = fileHandlesRef.current.get(path);
-      if (!handle) return `[Error: file not found at path "${path}"]`;
+      if (!handle) {
+        // Path-attached workspaces (cloned or created by the New project
+        // dialog, or re-opened from the roster) have an absolute path on the
+        // server and NO browser FileSystemDirectoryHandle. Reading through
+        // handles alone answered `file not found at path .gitignore` for a
+        // file plainly listed in the Files panel — for the viewer and for the
+        // AI alike. Fall back to the server that owns the folder.
+        const res = await apiFetch(`/api/agent/fs?file=${encodeURIComponent(path)}`);
+        if (!res.ok) {
+          const detail = await res.json().catch(() => null);
+          const why = (detail as { error?: string } | null)?.error || `HTTP ${res.status}`;
+          return `[Error: file not found at path "${path}" (${why})]`;
+        }
+        const text = await res.text();
+        setFileContents((prev) => insertWithBudget(prev, path, text));
+        return text;
+      }
 
       const file = await handle.getFile();
 

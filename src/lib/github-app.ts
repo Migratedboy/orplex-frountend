@@ -90,23 +90,32 @@ export interface DeviceClient {
 /**
  * Which app the device flow should talk to.
  *
- * OAuth App only, deliberately. An OAuth App token needs no installation and
- * `repo` covers every repository the user can reach, so the user types one code
- * and is done. A GitHub App token is scoped to its installations instead — and
- * authorising it shows GitHub's *app permission* screen ("Read-only access to
- * Email addresses", "Hide unchanged permissions"), which is a second, scarier
- * consent for something the OAuth App already covers. It also lands the user in
- * an install-then-refresh loop when the app is not installed on any repository.
+ * The GitHub App is tried FIRST: its token is what the app's own repo plumbing
+ * is built around (installation-scoped Contents access), and its permissions
+ * live on the App, so the consent screen asks exactly for what the App holds.
  *
- * So the GitHub App is no longer a device-flow candidate at all: if the OAuth
- * App has device flow switched off (a one-checkbox condition on GitHub's side),
- * `startDeviceFlow` returns the error and the UI offers browser sign-in, which
- * is the same OAuth App through a redirect.
+ * The OAuth App is the fallback: an OAuth token needs no installation at all,
+ * so if the App has device flow switched off (a one-checkbox condition on
+ * GitHub's side that must not turn into a dead button) the user still gets a
+ * code instead of an error. Tokens are stored per kind — App under
+ * "github-app", OAuth under "github" — so the install prompt can never fire for
+ * an OAuth token.
+ *
+ * NOTE on the consent screen: the "Read-only access to Email addresses" line is
+ * a PERMISSION of the GitHub App (Email addresses: Read-only), not something
+ * this code requests. It disappears only when that permission is unchecked in
+ * the App's settings on GitHub (Settings → Developer settings → GitHub Apps →
+ * this app → Permissions & events).
  */
 export function deviceClients(): DeviceClient[] {
+  const out: DeviceClient[] = [];
+  const app = githubAppClientId();
+  if (app) out.push({ clientId: app, scope: "", kind: "app" });
   const oauth = (process.env.GITHUB_DEVICE_CLIENT_ID || "").trim();
-  if (!oauth || oauth.includes("your_")) return [];
-  return [{ clientId: oauth, scope: DEVICE_SCOPE, kind: "oauth" }];
+  if (oauth && !oauth.includes("your_") && !out.some((c) => c.clientId === oauth)) {
+    out.push({ clientId: oauth, scope: DEVICE_SCOPE, kind: "oauth" });
+  }
+  return out;
 }
 
 export function githubAppSlug(): string | null {
