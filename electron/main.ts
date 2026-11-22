@@ -75,6 +75,7 @@ installPipeResilience();
         lightweight?: boolean;
         sessionPublicKey?: string;
         githubAppClientId?: string;
+        githubDeviceClientId?: string;
       };
       if (cfg.apiUrl && !process.env.ORPLEX_API_URL) process.env.ORPLEX_API_URL = cfg.apiUrl;
       // Desktop sign-in starts on the MEDIATOR SITE (the OAuth round-trip and
@@ -95,6 +96,11 @@ installPipeResilience();
       // here and must never be — device flow does not use one.
       if (cfg.githubAppClientId && !process.env.GITHUB_APP_CLIENT_ID) {
         process.env.GITHUB_APP_CLIENT_ID = cfg.githubAppClientId;
+      }
+      // Preferred device-flow app: an OAuth App, whose token needs no install
+      // step. Public id, no secret — safe to ship.
+      if (cfg.githubDeviceClientId && !process.env.GITHUB_DEVICE_CLIENT_ID) {
+        process.env.GITHUB_DEVICE_CLIENT_ID = cfg.githubDeviceClientId;
       }
       return;
     }

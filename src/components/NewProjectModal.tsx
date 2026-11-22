@@ -25,7 +25,6 @@ export default function NewProjectModal({
   const [mode, setMode] = useState<"menu" | "clone">("menu");
   const [url, setUrl] = useState("");
   const [branch, setBranch] = useState("");
-  const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +42,11 @@ export default function NewProjectModal({
   const [repos, setRepos] = useState<Repo[] | null>(null);
   const [connected, setConnected] = useState<boolean | null>(null);
   const [needsScope, setNeedsScope] = useState(false);
+  // A GitHub App token is not enough on its own: the app must also be INSTALLED
+  // on the repositories. Until it is, GitHub returns an empty list — which used
+  // to read as "you have no repositories" and left the user stuck.
+  const [needsInstall, setNeedsInstall] = useState(false);
+  const [installUrl, setInstallUrl] = useState<string | null>(null);
   const [login, setLogin] = useState<string | null>(null);
   const [repoMsg, setRepoMsg] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -116,6 +120,8 @@ export default function NewProjectModal({
       }
       setConnected(data?.connected !== false);
       setNeedsScope(data?.needsScope === true);
+      setNeedsInstall(data?.needsInstall === true);
+      setInstallUrl(typeof data?.installUrl === "string" ? data.installUrl : null);
       setLogin(typeof data?.login === "string" ? data.login : null);
       setRepos(Array.isArray(data?.repos) ? (data.repos as Repo[]) : []);
       setRepoMsg(typeof data?.error === "string" ? data.error : null);
@@ -191,7 +197,6 @@ export default function NewProjectModal({
     setMode("menu");
     setUrl("");
     setBranch("");
-    setToken("");
     setError(null);
     setSelected(null);
     setQuery("");
@@ -208,13 +213,13 @@ export default function NewProjectModal({
   };
 
   const handleClone = async () => {
-    if (!url.trim()) { setError("Repository URL is required"); return; }
+    if (!url.trim()) { setError("Pick a repository from the list first."); return; }
     setBusy(true); setError(null);
     try {
       const res = await apiFetch("/api/repos/clone", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim(), branch: branch.trim() || undefined, token: token.trim() || undefined }),
+        body: JSON.stringify({ url: url.trim(), branch: branch.trim() || undefined }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data?.success) {
@@ -367,7 +372,7 @@ export default function NewProjectModal({
               >
                 <div style={{ fontSize: 24 }}>🐙</div>
                 <div style={{ fontWeight: 700, fontSize: 14, color: "#1a1c1d" }}>Pull from GitHub</div>
-                <div style={{ fontSize: 12, color: "#5f5e5e", lineHeight: 1.4 }}>Pick one of your repositories, or paste a URL</div>
+                <div style={{ fontSize: 12, color: "#5f5e5e", lineHeight: 1.4 }}>Pick one of your repositories to clone</div>
               </button>
               <button
                 className="np-option"
@@ -412,7 +417,7 @@ export default function NewProjectModal({
                 {repos !== null && connected === false && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 12, borderRadius: 12, border: "1.5px dashed #e4e4e7", background: "rgba(255,255,255,0.6)" }}>
                     <span style={{ fontSize: 13, color: "#5f5e5e", lineHeight: 1.45 }}>
-                      Connect GitHub to list the repositories you can clone. You can still paste a URL below.
+                      Connect GitHub to list the repositories you can clone.
                     </span>
                     {device ? (
                       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -449,7 +454,21 @@ export default function NewProjectModal({
                         {deviceBusy ? "Starting…" : "Connect GitHub"}
                       </button>
                     )}
-                    {deviceErr && <div style={{ fontSize: 12, color: "#ba1a1a" }}>{deviceErr}</div>}
+                    {deviceErr && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ fontSize: 12, color: "#ba1a1a", lineHeight: 1.45 }}>{deviceErr}</div>
+                        {/* Device flow needs a checkbox at GitHub that only the
+                            app's owner can tick. Do not strand the user on a red
+                            line: the browser sign-in path already works with the
+                            same account and lists the same repositories. */}
+                        <button
+                          onClick={() => startMediatorSignIn("github", "/")}
+                          style={{ alignSelf: "flex-start", padding: "6px 12px", borderRadius: 9, border: "1.5px solid #e4e4e7", background: "#fff", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
+                        >
+                          Use browser sign-in instead
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -507,6 +526,29 @@ export default function NewProjectModal({
                         })}
                       </div>
                     )}
+                    {needsInstall && !device && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 12, borderRadius: 12, border: "1.5px solid #f2d0b0", background: "#fff8f1" }}>
+                        <span style={{ fontSize: 13, color: "#1a1c1d", lineHeight: 1.45 }}>
+                          GitHub is connected, but the app is not installed on any repository yet, so there is
+                          nothing to list. Authorising your account and installing the app are two separate
+                          steps: the second one is what grants read access to your repos.
+                        </span>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <button
+                            onClick={() => openExternal(installUrl || "https://github.com/settings/installations")}
+                            style={{ padding: "8px 14px", borderRadius: 10, border: "none", background: ACCENT, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                          >
+                            Install the app on your repositories
+                          </button>
+                          <button
+                            onClick={() => void loadRepos()}
+                            style={{ padding: "8px 12px", borderRadius: 10, border: "1.5px solid #e4e4e7", background: "#fff", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
+                          >
+                            I installed it — refresh
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     {needsScope && !device && (
                       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12, color: "#8a6a4a" }}>
                         <span>Private repositories need a reconnect.</span>
@@ -540,48 +582,19 @@ export default function NewProjectModal({
                 )}
               </div>
 
-              <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "2px 0" }}>
-                <div style={{ flex: 1, height: 1, background: "rgba(0,0,0,0.08)" }} />
-                <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", color: "#8a8a8a", textTransform: "uppercase" }}>
-                  Or clone by URL
-                </span>
-                <div style={{ flex: 1, height: 1, background: "rgba(0,0,0,0.08)" }} />
-              </div>
-
-              <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#5f5e5e", textTransform: "uppercase" }}>Repository URL</span>
-                <input
-                  className="np-input"
-                  style={inputStyle}
-                  value={url}
-                  onChange={(e) => { setUrl(e.target.value); setSelected(null); }}
-                  placeholder="https://github.com/owner/repo"
-                  autoFocus={connected === false}
-                />
-              </label>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#5f5e5e", textTransform: "uppercase" }}>Branch</span>
-                  <input
-                    className="np-input"
-                    style={inputStyle}
-                    value={branch}
-                    onChange={(e) => setBranch(e.target.value)}
-                    placeholder="main"
-                  />
-                </label>
-                <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#5f5e5e", textTransform: "uppercase" }}>Token (optional)</span>
-                  <input
-                    className="np-input"
-                    style={{ ...inputStyle, fontFamily: "monospace" }}
-                    type="password"
-                    value={token}
-                    onChange={(e) => setToken(e.target.value)}
-                    placeholder="ghp_…"
-                  />
-                </label>
-              </div>
+              {selected ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 13, color: "#1a1c1d" }}>
+                  <span style={{ color: "#5f5e5e" }}>Cloning</span>
+                  <strong>{selected}</strong>
+                  {branch.trim() && (
+                    <span style={{ fontSize: 12, color: "#8a8a8a" }}>branch {branch.trim()}</span>
+                  )}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: "#8a8a8a" }}>
+                  No repository selected yet — pick one from the list above.
+                </div>
+              )}
               {error && (
                 <div
                   style={{
@@ -615,7 +628,7 @@ export default function NewProjectModal({
                 </button>
                 <button
                   onClick={() => void handleClone()}
-                  disabled={busy}
+                  disabled={busy || !selected}
                   style={{
                     flex: 1,
                     padding: "10px 16px",

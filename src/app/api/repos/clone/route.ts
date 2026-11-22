@@ -43,17 +43,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Could not parse repository" }, { status: 400 });
   }
 
-  // Resolve a GitHub credential for private repos. A GitHub App device-flow
-  // token wins (it is the one the user just approved); the OAuth App token is
-  // the fallback.
+  // Resolve a GitHub credential for private repos: the device-flow / OAuth token
+  // stored on this machine, else a per-repo credential from the backend. There
+  // is deliberately no client-supplied token — the picker only offers real
+  // repositories, and accepting a PAT over the wire would be a second, unaudited
+  // way in.
   let token: string | null = null;
   const credential = await readGithubToken(session.user.id);
   if (credential) token = credential.token;
-
-  // Optional manual PAT override.
-  if (typeof body?.token === "string" && body.token.trim()) {
-    token = body.token.trim();
-  }
 
   // Still no credential: the desktop sign-in stores provider tokens on the
   // cloud backend, so ask it for one for THIS repo (verified server-side).

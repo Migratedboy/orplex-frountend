@@ -102,6 +102,46 @@ describe("GET /api/repos/github", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  it("says install-the-app when a GitHub App token reaches no repositories", async () => {
+    // A user-to-server token only sees repositories the app is INSTALLED on.
+    // Authorising is not installing, so an empty list here means the second
+    // half of the flow is missing — not that the account has no repos.
+    findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ access_token: "ghu_app", scope: "repo" });
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(gh([]))
+      .mockResolvedValueOnce(gh({ login: "migratedboy" }))
+      .mockResolvedValueOnce(gh({ total_count: 0, installations: [] }));
+
+    const body = await (await GET(req())).json();
+    expect(body.needsInstall).toBe(true);
+    expect(typeof body.installUrl).toBe("string");
+  });
+
+  it("does not cry install when the app is installed but the account is empty", async () => {
+    findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ access_token: "ghu_app", scope: "repo" });
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(gh([]))
+      .mockResolvedValueOnce(gh({ login: "migratedboy" }))
+      .mockResolvedValueOnce(gh({ total_count: 1 }));
+
+    const body = await (await GET(req())).json();
+    expect(body.needsInstall).toBe(false);
+  });
+
+  it("never claims a missing install for an OAuth token", async () => {
+    findFirst.mockResolvedValueOnce({ access_token: "gho_oauth", scope: "repo" });
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(gh([]))
+      .mockResolvedValueOnce(gh({ login: "migratedboy" }));
+
+    const body = await (await GET(req())).json();
+    expect(body.needsInstall).toBe(false);
+    expect(body.source).toBe("oauth");
+  });
   it("lists repositories, deduplicates and flags missing scope", async () => {
     findFirst.mockResolvedValue({ access_token: "tok", scope: "read:user" });
     (global.fetch as jest.Mock)

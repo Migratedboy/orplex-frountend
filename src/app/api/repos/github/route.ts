@@ -85,6 +85,36 @@ async function resolveUserId(request: NextRequest): Promise<string | null> {
 }
 
 /** List repos with a locally stored token. */
+/**
+ * Is the GitHub App installed anywhere? A user-to-server token only reaches
+ * repositories the app is installed on, so an empty /user/repos list can mean
+ * "no install" rather than "no repos". Those two need different advice.
+ */
+async function hasInstallation(token: string): Promise<boolean | null> {
+  try {
+    const res = await fetch(`${GITHUB_API}/user/installations?per_page=1`, {
+      headers: ghHeaders(token),
+      cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as { total_count?: unknown } | null;
+    if (!body) return null;
+    if (typeof body.total_count === "number") return body.total_count > 0;
+    return Array.isArray((body as { installations?: unknown }).installations)
+      ? ((body as { installations: unknown[] }).installations.length > 0)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where to send someone who has authorised but not installed the app yet. */
+function installLink(): string {
+  const slug = (process.env.GITHUB_APP_SLUG || "").trim();
+  return slug ? `https://github.com/apps/${slug}/installations/new` : "https://github.com/settings/installations";
+}
+
 async function listWithLocalToken(
   token: string
 ): Promise<{ repos: GitHubRepoSummary[]; error?: string; status?: number }> {
@@ -172,6 +202,13 @@ export async function GET(request: NextRequest) {
       connected: true,
       login,
       needsScope: !scopeHasRepo(credential.scope),
+      // Only meaningful for the App token: an OAuth token lists what the user
+      // owns regardless of installs.
+      needsInstall:
+        credential.source === "github-app" && repos.length === 0
+          ? (await hasInstallation(credential.token)) === false
+          : false,
+      installUrl: installLink(),
       repos,
       source: credential.source,
       ...(error ? { error } : {}),

@@ -8,5 +8,7 @@
     "//4": "authUrl: where desktop sign-in STARTS - the mediator site's login page in app mode. The site owns the whole OAuth round-trip (provider redirect URIs are registered there), mints a short-lived token after sign-in and deep-links orplex://auth back to this app. The backend origin (apiUrl) stays the app's API target.",
     "authUrl": "https://orplex-code.vercel.app/login?app=auth",
     "githubAppClientId": "Iv23liagFft3rdBLgH3D",
-    "//5": "GitHub App client id for the device flow (Pull from GitHub). Public by design: device flow uses no secret and no redirect URI, so the id is safe to ship."
+    "//5": "GitHub App client id for the device flow (Pull from GitHub). Public by design: device flow uses no secret and no redirect URI, so the id is safe to ship.",
+    "githubDeviceClientId": "Ov23lidjZQcpTl9JLBHc",
+    "//6": "Client id of the OAuth App, used for the device flow (Pull from GitHub). Preferred over githubAppClientId because an OAuth token needs no install step: the user types one code and the repo list is complete."
 }

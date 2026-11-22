@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { jwtOnlyOptions as authOptions } from "@/lib/auth";
 import { appSessionUserFromRequest } from "@/lib/app-session";
 import {
-  githubAppClientId,
+  deviceClients,
   githubAppSlug,
   pollDeviceFlow,
   startDeviceFlow,
@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
   if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
-  if (!githubAppClientId()) return unconfigured();
+  if (deviceClients().length === 0) return unconfigured();
 
   try {
     const flow = await startDeviceFlow(userId);
@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
   if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
-  if (!githubAppClientId()) return unconfigured();
+  if (deviceClients().length === 0) return unconfigured();
 
   const flowId = new URL(request.url).searchParams.get("flow") || "";
   if (!flowId) {

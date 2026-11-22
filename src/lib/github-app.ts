@@ -39,6 +39,7 @@ export interface DeviceFlowStart {
   verificationUri: string;
   expiresIn: number;
   interval: number;
+  source: "oauth" | "app";
 }
 
 export type DevicePollStatus = "pending" | "slow_down" | "authorized" | "expired" | "denied" | "error";
@@ -51,6 +52,9 @@ export interface DevicePollResult {
 
 interface FlowState {
   deviceCode: string;
+  clientId: string;
+  scope: string;
+  kind: "oauth" | "app";
   interval: number;
   expiresAt: number;
   userId: string;
@@ -71,6 +75,39 @@ export function githubAppClientId(): string | null {
   // app's client secret — device flow never uses one.
   const raw = (process.env.GITHUB_APP_CLIENT_ID || process.env.NEXT_PUBLIC_GITHUB_APP_CLIENT_ID || "").trim();
   return raw && !raw.includes("your_") ? raw : null;
+}
+
+/** Scopes the device flow asks for when the credential comes from an OAuth App. */
+export const DEVICE_SCOPE = "repo read:user user:email";
+
+export interface DeviceClient {
+  clientId: string;
+  scope: string;
+  /** oauth → token behaves like a normal OAuth token (no install needed). */
+  kind: "oauth" | "app";
+}
+
+/**
+ * Which app the device flow should talk to.
+ *
+ * An OAuth App ALSO supports device flow, and its token needs no installation:
+ * `repo` covers every repository the user can reach, so the user types one code
+ * and is done. A GitHub App token is scoped to its installations instead, which
+ * forces a second "install the app" step on every user — fine for a server, too
+ * much to ask of someone just trying to clone their project.
+ *
+ * So: prefer the OAuth App when GITHUB_DEVICE_CLIENT_ID is configured, and fall
+ * back to the GitHub App. Both are tried in order because either one may have
+ * device flow switched off, and that is a one-checkbox condition on GitHub's
+ * side that must not turn into a dead button here.
+ */
+export function deviceClients(): DeviceClient[] {
+  const out: DeviceClient[] = [];
+  const oauth = (process.env.GITHUB_DEVICE_CLIENT_ID || "").trim();
+  if (oauth && !oauth.includes("your_")) out.push({ clientId: oauth, scope: DEVICE_SCOPE, kind: "oauth" });
+  const app = githubAppClientId();
+  if (app && !out.some((c) => c.clientId === app)) out.push({ clientId: app, scope: "", kind: "app" });
+  return out;
 }
 
 export function githubAppSlug(): string | null {
@@ -97,50 +134,82 @@ async function postForm(url: string, body: Record<string, string>): Promise<Reco
     cache: "no-store",
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`GitHub responded ${res.status}`);
-  return (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  // GitHub answers 400/401 WITH a JSON explanation (`device_flow_disabled`,
+  // `incorrect_client_credentials`). Throwing the bare status turned that into
+  // "GitHub responded 400" and threw away the only part the user can act on.
+  const parsed = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    const detail =
+      (typeof parsed.error_description === "string" && parsed.error_description) ||
+      (typeof parsed.error === "string" && parsed.error) ||
+      "";
+    throw new Error(detail ? `GitHub refused the request: ${detail}` : `GitHub responded ${res.status}`);
+  }
+  return parsed;
 }
 
-/** Ask GitHub for a user code. */
+/** Ask GitHub for a user code, trying each configured app in turn. */
 export async function startDeviceFlow(userId: string): Promise<DeviceFlowStart | null> {
-  const clientId = githubAppClientId();
-  if (!clientId) return null;
+  const clients = deviceClients();
+  if (clients.length === 0) return null;
   prune();
-  const body = await postForm(DEVICE_CODE_URL, { client_id: clientId });
-  // GitHub answers 200 with an `error` body for an app that has not enabled
-  // device flow (`device_flow_disabled`) — surface its own words instead of
-  // pretending the app is unconfigured, which reads as "nothing to see here".
-  const ghError = typeof body.error === "string" ? body.error : "";
-  if (ghError) {
-    const detail = typeof body.error_description === "string" ? body.error_description : ghError;
-    throw new Error(`GitHub refused the device code: ${detail}`);
+
+  let lastError: Error | null = null;
+  for (const client of clients) {
+    let body: Record<string, unknown>;
+    try {
+      body = await postForm(DEVICE_CODE_URL, {
+        client_id: client.clientId,
+        ...(client.scope ? { scope: client.scope } : {}),
+      });
+    } catch (e) {
+      // postForm throws on a non-2xx (GitHub uses 400 for "device flow off").
+      // One disabled app must not abort the others — that is the whole reason
+      // there is an ordered candidate list.
+      lastError = e instanceof Error ? e : new Error("GitHub refused the device code");
+      continue;
+    }
+    // GitHub answers 200 with an `error` body for an app that has not enabled
+    // device flow (`device_flow_disabled`) — surface its own words instead of
+    // pretending the app is unconfigured, which reads as "nothing to see here".
+    // A 400 from one app is not fatal: the next candidate may be enabled.
+    const ghError = typeof body.error === "string" ? body.error : "";
+    if (ghError) {
+      const detail = typeof body.error_description === "string" ? body.error_description : ghError;
+      lastError = new Error(`GitHub refused the device code: ${detail}`);
+      continue;
+    }
+    const deviceCode = typeof body.device_code === "string" ? body.device_code : "";
+    const userCode = typeof body.user_code === "string" ? body.user_code : "";
+    if (!deviceCode || !userCode) continue;
+    const expiresIn = Number(body.expires_in) || 900;
+    const interval = Math.max(1, Number(body.interval) || 5);
+    const flowId = crypto.randomUUID();
+    flows.set(flowId, {
+      deviceCode,
+      clientId: client.clientId,
+      scope: client.scope,
+      kind: client.kind,
+      interval,
+      expiresAt: Date.now() + expiresIn * 1000,
+      userId,
+      status: "pending",
+    });
+    return {
+      flowId,
+      userCode,
+      verificationUri: typeof body.verification_uri === "string" ? body.verification_uri : VERIFICATION_URI,
+      expiresIn,
+      interval,
+      source: client.kind,
+    };
   }
-  const deviceCode = typeof body.device_code === "string" ? body.device_code : "";
-  const userCode = typeof body.user_code === "string" ? body.user_code : "";
-  if (!deviceCode || !userCode) return null;
-  const expiresIn = Number(body.expires_in) || 900;
-  const interval = Math.max(1, Number(body.interval) || 5);
-  const flowId = crypto.randomUUID();
-  flows.set(flowId, {
-    deviceCode,
-    interval,
-    expiresAt: Date.now() + expiresIn * 1000,
-    userId,
-    status: "pending",
-  });
-  return {
-    flowId,
-    userCode,
-    verificationUri: typeof body.verification_uri === "string" ? body.verification_uri : VERIFICATION_URI,
-    expiresIn,
-    interval,
-  };
+  if (lastError) throw lastError;
+  return null;
 }
 
 /** Poll GitHub once for a started flow; stores the token when it lands. */
 export async function pollDeviceFlow(flowId: string, userId: string): Promise<DevicePollResult> {
-  const clientId = githubAppClientId();
-  if (!clientId) return { status: "error", message: "GitHub App is not configured" };
   const flow = flows.get(flowId);
   if (!flow || flow.userId !== userId) return { status: "expired" };
   if (flow.expiresAt < Date.now()) {
@@ -151,7 +220,7 @@ export async function pollDeviceFlow(flowId: string, userId: string): Promise<De
 
   try {
     const body = await postForm(ACCESS_TOKEN_URL, {
-      client_id: clientId,
+      client_id: flow.clientId,
       device_code: flow.deviceCode,
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     });
@@ -174,9 +243,9 @@ export async function pollDeviceFlow(flowId: string, userId: string): Promise<De
 
     const token = typeof body.access_token === "string" ? body.access_token : "";
     if (!token) return { status: "error", message: "GitHub returned no token" };
-    const scope = typeof body.scope === "string" ? body.scope : "";
+    const scope = typeof body.scope === "string" ? body.scope : flow.scope;
     const login = await fetchLogin(token);
-    await saveAppToken(userId, token, scope, login);
+    await saveAppToken(userId, token, scope, login, flow.kind);
     flow.status = "authorized";
     flow.login = login;
     flows.set(flowId, flow);
@@ -205,21 +274,30 @@ async function fetchLogin(token: string): Promise<string | null> {
   }
 }
 
-/** Persist the device-flow token locally for this user. */
+/**
+ * Persist a device-flow token locally for this user.
+ *
+ * An OAuth-App token is stored under provider "github" because it behaves like
+ * any other OAuth token: `repo` reaches every repository, no installation. A
+ * GitHub App token stays under "github-app" so the repository list knows an
+ * empty result may mean "not installed yet" rather than "no repos".
+ */
 export async function saveAppToken(
   userId: string,
   token: string,
   scope: string,
-  login: string | null
+  login: string | null,
+  kind: "oauth" | "app" = "app"
 ): Promise<void> {
+  const provider = kind === "oauth" ? "github" : GITHUB_APP_PROVIDER;
   const providerAccountId = login || "default";
   await prisma.account.upsert({
-    where: { provider_providerAccountId: { provider: GITHUB_APP_PROVIDER, providerAccountId } },
+    where: { provider_providerAccountId: { provider, providerAccountId } },
     update: { userId, access_token: token, scope, token_type: "bearer" },
     create: {
       userId,
       type: "oauth",
-      provider: GITHUB_APP_PROVIDER,
+      provider,
       providerAccountId,
       access_token: token,
       scope,
@@ -229,24 +307,27 @@ export async function saveAppToken(
 }
 
 /**
- * The credential to use for repository work: a GitHub App token (device flow)
- * wins over an OAuth App token, because the App token is what the user just
- * approved and carries the narrower scope.
+ * The credential to use for repository work.
+ *
+ * An OAuth-App token comes first: `repo` reaches every repository the user can
+ * see and needs no installation, which is what makes "Pull from GitHub" a
+ * one-step flow. A GitHub App token is the fallback — narrower, but it exists
+ * when the OAuth app has device flow switched off.
  */
 export async function readGithubToken(
   userId: string
 ): Promise<{ token: string; scope: string | null; source: "github-app" | "oauth" } | null> {
-  const app = await prisma.account.findFirst({
-    where: { userId, provider: GITHUB_APP_PROVIDER },
-    select: { access_token: true, scope: true },
-  });
-  if (app?.access_token) return { token: app.access_token, scope: app.scope, source: "github-app" };
-
   const oauth = await prisma.account.findFirst({
     where: { userId, provider: "github" },
     select: { access_token: true, scope: true },
   });
   if (oauth?.access_token) return { token: oauth.access_token, scope: oauth.scope, source: "oauth" };
+
+  const app = await prisma.account.findFirst({
+    where: { userId, provider: GITHUB_APP_PROVIDER },
+    select: { access_token: true, scope: true },
+  });
+  if (app?.access_token) return { token: app.access_token, scope: app.scope, source: "github-app" };
   return null;
 }
 
