@@ -3,16 +3,14 @@
 // servers keep running in the background) and streams its output live.
 
 import { NextRequest } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { runInShell, onShellOutput, killShell } from "@/lib/shell-session";
 import { isCommandAllowed } from "@/lib/exec-guard";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(jwtOnlyOptions);
-  const userId = session?.user?.id;
+  const userId = await sessionUserId(request);
   if (!userId) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
   }

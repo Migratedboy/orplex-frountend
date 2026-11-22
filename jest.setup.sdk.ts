@@ -13,7 +13,15 @@
 // 3. The plugin library. The SDK's hook gate asks the host for bundles through
 //    configureLibraryBundles(); the app registers the marketplace provider, so
 //    tests register the fixture. Without it no library rules ever reach a gate.
+import path from "node:path";
+import os from "node:os";
 import { configureApprovals } from "@orplex/sdk";
+
+// 0. Workspace registry file. workspace-cwd.ts keeps a durable device-local map
+//    there and treats it as the shared truth across route chunks; tests must not
+//    read or write the developer's real registrations (they did, and left junk
+//    rows behind).
+process.env.ORPLEX_WORKSPACES_FILE = path.join(os.tmpdir(), `orplex-jest-workspaces-${process.pid}.json`);
 import { configureLibraryBundles } from "@orplex/sdk/lib/plugin-library-state";
 import { materializeBundles } from "@orplex/sdk/lib/plugin-library";
 import { __setMcpCatalogForTests } from "./src/lib/marketplace-client";

@@ -9,6 +9,7 @@
    event this component dispatches. */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import { useConversations } from "./ConversationProvider";
@@ -165,14 +166,14 @@ export default function Sidebar() {
   const { data: session, status } = useSession();
   const { conversations, renameConversation, deleteConversation, refresh } = useConversations();
   const [, setArchTick] = useState(0);
-  const { projects } = useWorkspace();
-  const { openFolder, reopenProject, attachPath, directoryName } = useFileSystemContext();
+  const { projects, remember } = useWorkspace();
+  const { reopenProject, attachPath, directoryName } = useFileSystemContext();
   const { toast } = useToast();
   const { dark, toggle: toggleTheme } = useTheme();
   const { activeRuns, pendingApprovals } = useActiveRunCount();
   const { task, isRunning } = useBackgroundChat();
 
-  const [width, setWidth] = useState(272);
+  const [width, setWidth] = useState(254);
   const [drag, setDrag] = useState(false);
   const [searchOn, setSearchOn] = useState(false);
   const [q, setQ] = useState("");
@@ -196,7 +197,7 @@ export default function Sidebar() {
     return () => window.removeEventListener("orplex:archived-changed", on);
   }, []);
   useEffect(() => {
-    let w = 272;
+    let w = 254;
     try {
       const stored = Number(localStorage.getItem("orplex.sidebarWidth"));
       if (Number.isFinite(stored) && stored >= 220 && stored <= 420) {
@@ -272,6 +273,31 @@ export default function Sidebar() {
     tipTimer.current = setTimeout(() => setTip({ chat, rect }), 350);
   }, []);
 
+  /**
+   * Opening a chat must also switch the workspace to the project it belongs to.
+   * Otherwise the Files panel (and every agent command) keeps pointing at
+   * whatever project was attached last, so a chat in "private" showed the
+   * previous folder's files. Silent: choosing a chat is not a folder action,
+   * so it must not fire the "terminal commands will run in …" toast.
+   */
+  const syncWorkspaceForChat = useCallback(
+    async (workspaceName?: string | null) => {
+      if (!workspaceName || workspaceName === directoryName) return;
+      try {
+        const { listProjects } = await import("@/lib/project-registry");
+        const entry = listProjects(window.localStorage).find((p) => p.name === workspaceName);
+        if (entry?.lastPath) {
+          await attachPath(entry.lastPath, { silent: true });
+          return;
+        }
+        await reopenProject(workspaceName);
+      } catch {
+        // Best effort: the chat still opens, Files stays on the last folder.
+      }
+    },
+    [directoryName, attachPath, reopenProject]
+  );
+
   const loadConversation = (id: string) => {
     router.push(`/?c=${encodeURIComponent(id)}`);
     announceConversationOpen(id);
@@ -279,6 +305,25 @@ export default function Sidebar() {
   };
 
   const newChat = () => {
+    router.push("/");
+    window.dispatchEvent(new CustomEvent("orplex:new-chat"));
+    setMobileOpen(false);
+  };
+
+  /**
+   * A project just came into existence (fresh folder, or a fresh clone). Do the
+   * three things that make it a project here: register the folder as the
+   * workspace, list it under Projects, and open an empty chat inside it — the
+   * same end state as the per-project "new chat" action, minus the folder
+   * prompt the user has already answered in the modal.
+   */
+  const handleProjectCreated = async (path: string, name: string) => {
+    try {
+      remember(name); // Projects row (reads + syncs the roster)
+      await attachPath(path); // workspace cwd, file tree, lastPath
+    } catch {
+      toast(`Created "${name}" at ${path}, but it could not be opened.`, "error");
+    }
     router.push("/");
     window.dispatchEvent(new CustomEvent("orplex:new-chat"));
     setMobileOpen(false);
@@ -348,6 +393,9 @@ export default function Sidebar() {
     window.addEventListener("mouseup", up);
   };
 
+  // Portal target for popovers (absent during SSR).
+  const popover = typeof document === "undefined" ? null : document.body;
+
   const ql = q.trim().toLowerCase();
   const match = (c: ChatLike) => !ql || c.title.toLowerCase().includes(ql);
   const menuChat = menu ? conversations.find((c) => c.id === menu.id) : undefined;
@@ -355,7 +403,12 @@ export default function Sidebar() {
   const renderChat = (c: ChatLike) => (
     <ChatRow key={c.id} chat={c} q={ql} active={c.id === activeChatId}
       menuOpen={menu?.id === c.id}
-      renaming={renamingId === c.id} onSelect={loadConversation}
+      renaming={renamingId === c.id}
+      /* Switching chats switches project context with it. */
+      onSelect={(id) => {
+        void syncWorkspaceForChat(conversations.find((x) => x.id === id)?.workspaceName ?? c.workspaceName);
+        loadConversation(id);
+      }}
       onMenu={(id, x, y) => { setTip(null); setMenu({ id, x, y }); }}
       onRename={rename} onHover={onHover} />
   );
@@ -508,8 +561,6 @@ export default function Sidebar() {
             </div>
           </div>
         ) : null}
-        <NavRow icon="gear" label="Settings" active={pathname.startsWith("/settings")}
-          onClick={() => { router.push("/settings"); setMobileOpen(false); }} tourId="nav-settings" />
         <div className={styles.user}>
           <div className={styles.av}>
             {session?.user?.image ? (
@@ -537,25 +588,31 @@ export default function Sidebar() {
 
       <div className={styles.grip} onMouseDown={startResize} aria-hidden="true" />
 
-      {tip && !menu && (
-        <div className={styles.tip} style={{ left: tip.rect.right + 14, top: tip.rect.top - 6 }}>
-          <div className={styles.a}><Icon n="chat" /><span>{tip.chat.title}</span></div>
-          <div className={styles.b}><Icon n="clock" />
-            <span>{isLocalConversationMode() ? "Stored on this device" : "Stored in the cloud"}</span>
+      {/* Hover card and row menu go to <body>: .sb is position:sticky, which
+          creates a stacking context, so anything rendered inside the rail can
+          never paint over the chat column (composer, welcome chips). */}
+      {popover && tip && !menu && createPortal(
+        <div className={styles.portalLayer}>
+          <div className={styles.tip} style={{ left: tip.rect.right + 14, top: tip.rect.top - 6 }}>
+            <div className={styles.a}><Icon n="chat" /><span>{tip.chat.title}</span></div>
+            <div className={styles.b}><Icon n="clock" />
+              <span>{isLocalConversationMode() ? "Stored on this device" : "Stored in the cloud"}</span>
+            </div>
           </div>
-        </div>
+        </div>,
+        popover
       )}
-      {menu && menuChat ? <ChatMenu pos={menu} chat={menuChat} onAct={menuAct} onClose={() => setMenu(null)} /> : null}
+      {popover && menu && menuChat ? createPortal(
+        <div className={styles.portalLayer}>
+          <ChatMenu pos={menu} chat={menuChat} onAct={menuAct} onClose={() => setMenu(null)} />
+        </div>,
+        popover
+      ) : null}
       <NewProjectModal
         open={newProjectOpen}
         onClose={() => setNewProjectOpen(false)}
-        openFolder={openFolder}
-        onCloned={(path, name) => {
-          toast(`Cloned ${name} → ${path}`, "success");
-          if (typeof window !== "undefined" && window.orplexDesktop?.revealPath) {
-            void window.orplexDesktop.revealPath(path);
-          }
-        }}
+        projects={projects.map((p) => p.name)}
+        onCreated={handleProjectCreated}
       />
     </>
   );

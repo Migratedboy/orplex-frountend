@@ -90,24 +90,23 @@ export interface DeviceClient {
 /**
  * Which app the device flow should talk to.
  *
- * An OAuth App ALSO supports device flow, and its token needs no installation:
+ * OAuth App only, deliberately. An OAuth App token needs no installation and
  * `repo` covers every repository the user can reach, so the user types one code
- * and is done. A GitHub App token is scoped to its installations instead, which
- * forces a second "install the app" step on every user — fine for a server, too
- * much to ask of someone just trying to clone their project.
+ * and is done. A GitHub App token is scoped to its installations instead — and
+ * authorising it shows GitHub's *app permission* screen ("Read-only access to
+ * Email addresses", "Hide unchanged permissions"), which is a second, scarier
+ * consent for something the OAuth App already covers. It also lands the user in
+ * an install-then-refresh loop when the app is not installed on any repository.
  *
- * So: prefer the OAuth App when GITHUB_DEVICE_CLIENT_ID is configured, and fall
- * back to the GitHub App. Both are tried in order because either one may have
- * device flow switched off, and that is a one-checkbox condition on GitHub's
- * side that must not turn into a dead button here.
+ * So the GitHub App is no longer a device-flow candidate at all: if the OAuth
+ * App has device flow switched off (a one-checkbox condition on GitHub's side),
+ * `startDeviceFlow` returns the error and the UI offers browser sign-in, which
+ * is the same OAuth App through a redirect.
  */
 export function deviceClients(): DeviceClient[] {
-  const out: DeviceClient[] = [];
   const oauth = (process.env.GITHUB_DEVICE_CLIENT_ID || "").trim();
-  if (oauth && !oauth.includes("your_")) out.push({ clientId: oauth, scope: DEVICE_SCOPE, kind: "oauth" });
-  const app = githubAppClientId();
-  if (app && !out.some((c) => c.clientId === app)) out.push({ clientId: app, scope: "", kind: "app" });
-  return out;
+  if (!oauth || oauth.includes("your_")) return [];
+  return [{ clientId: oauth, scope: DEVICE_SCOPE, kind: "oauth" }];
 }
 
 export function githubAppSlug(): string | null {

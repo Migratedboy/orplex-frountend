@@ -17,6 +17,9 @@ import { dirname, join } from "node:path";
 const MAX_PATH_LENGTH = 500;
 /** Registered paths per user. Small: one open folder per session. */
 const workspaceCwds = new Map<string, string>();
+/** Users cleared in THIS process: without a tombstone the persist-merge below
+ *  would keep re-adding their old entry from the file. */
+const clearedUsers = new Set<string>();
 
 /**
  * Durable, DEVICE-LOCAL registry file: <ORPLEX_WORKSPACES_FILE> (the desktop
@@ -34,19 +37,27 @@ function workspaceFilePath(): string {
 
 /** Seed the map from the durable file. Never throws. */
 function loadWorkspaceFile(): void {
+  for (const [uid, path] of Object.entries(readWorkspaceFile())) {
+    workspaceCwds.set(uid, path);
+  }
+}
+
+/** The durable file as a plain map (empty when absent/unreadable). */
+function readWorkspaceFile(): Record<string, string> {
   try {
     const raw = readFileSync(workspaceFilePath(), "utf8");
     const parsed = JSON.parse(raw) as Record<string, string>;
     if (parsed && typeof parsed === "object") {
+      const out: Record<string, string> = {};
       for (const [uid, path] of Object.entries(parsed)) {
-        if (typeof uid === "string" && typeof path === "string" && path) {
-          workspaceCwds.set(uid, path);
-        }
+        if (typeof uid === "string" && typeof path === "string" && path) out[uid] = path;
       }
+      return out;
     }
   } catch {
-    // No file yet (or unreadable) → start from the empty in-memory map.
+    // No file yet (or unreadable) → nothing durable to merge.
   }
+  return {};
 }
 
 /** Persist the mapping (atomic tmp + rename). Never throws. */
@@ -54,8 +65,13 @@ function persistWorkspaceFile(): void {
   try {
     const file = workspaceFilePath();
     mkdirSync(dirname(file), { recursive: true });
+    // Merge with what is already on disk: each route handler has its own copy
+    // of the Map (see getWorkspaceCwdForUser), so writing only this chunk's
+    // entries would delete every other chunk's registrations.
+    const merged = { ...readWorkspaceFile(), ...Object.fromEntries(workspaceCwds) };
+    for (const uid of clearedUsers) delete merged[uid];
     const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(Object.fromEntries(workspaceCwds), null, 1), "utf8");
+    writeFileSync(tmp, JSON.stringify(merged, null, 1), "utf8");
     renameSync(tmp, file);
   } catch {
     // A read-only disk must not break the registration itself.
@@ -108,6 +124,7 @@ export async function setWorkspaceCwd(path: string, userId: string): Promise<boo
     if (!isForeignOsPath(path)) return false;
   }
   workspaceCwds.set(uid, path);
+  clearedUsers.delete(uid);
   // Durable DEVICE-LOCAL copy: the in-memory map dies with the process, and a
   // restart must not break merges of runs whose worktrees point at this
   // workspace (or the Plugins page, which is scoped to this folder).
@@ -122,10 +139,27 @@ export async function setWorkspaceCwd(path: string, userId: string): Promise<boo
   return true;
 }
 
-/** Current workspace cwd for a user, or null when no folder is open. */
+/**
+ * Current workspace cwd for a user, or null when no folder is open.
+ *
+ * The durable file wins over the in-memory map because route handlers do NOT
+ * share module state: Next bundles each route separately, so the Map that
+ * `setWorkspaceCwd` writes in /api/agent/workspace-cwd is a DIFFERENT instance
+ * from the one /api/agent/fs reads. That divergence is exactly the "Files panel
+ * always shows the first project's files" bug: the fs chunk was seeded at its
+ * own module load and never learned about later registrations. Reading the file
+ * (a few hundred bytes) makes every route agree.
+ */
 export function getWorkspaceCwdForUser(userId: string): string | null {
   const uid = sanitizeUserId(userId);
-  return uid ? (workspaceCwds.get(uid) ?? null) : null;
+  if (!uid) return null;
+  if (clearedUsers.has(uid)) return workspaceCwds.get(uid) ?? null;
+  const durable = readWorkspaceFile()[uid];
+  if (typeof durable === "string" && durable.length > 0) {
+    workspaceCwds.set(uid, durable);
+    return durable;
+  }
+  return workspaceCwds.get(uid) ?? null;
 }
 
 /**
@@ -159,7 +193,11 @@ export async function resolveWorkspaceCwd(userId: string): Promise<string | null
 /** Clear a user's registration (folder closed / session reset). */
 export function clearWorkspaceCwd(userId: string): void {
   const uid = sanitizeUserId(userId);
-  if (uid) workspaceCwds.delete(uid);
+  if (!uid) return;
+  workspaceCwds.delete(uid);
+  clearedUsers.add(uid);
+  // Persist, or the next read would resurrect the folder from the file.
+  persistWorkspaceFile();
 }
 
 /**

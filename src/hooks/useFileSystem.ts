@@ -381,7 +381,9 @@ export function useFileSystem() {
   // absolute path (sets name + workspace-cwd registration directly), and the
   // tree is built from the local /api/agent/fs listing with the SAME skip
   // list as scanDirectory. The AI reads server-side via workspace-cwd.
-  const attachPath = useCallback(async (absPath: string): Promise<{ fileCount: number }> => {
+  const attachPath = useCallback(
+    async (absPath: string, opts?: { silent?: boolean }): Promise<{ fileCount: number }> => {
+    const quiet = opts?.silent === true;
     const name = absPath.split(/[\\/]/).filter(Boolean).pop() || "workspace";
     fileHandlesRef.current.clear();
     setFileContents({});
@@ -392,6 +394,32 @@ export function useFileSystem() {
       const { setProjectPath } = await import("@/lib/project-registry");
       setProjectPath(window.localStorage, name, absPath);
     } catch {}
+
+    // Register the workspace FIRST. The file tree below is built by asking the
+    // server for `dir=` relative to the workspace cwd; registering it afterwards
+    // meant the tree was assembled against the PREVIOUS folder, so a freshly
+    // attached project reported "0 files available" until something else
+    // refreshed it.
+    try {
+      const res = await apiFetch("/api/agent/workspace-cwd", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: absPath }),
+      });
+      if (res.ok) {
+        if (!quiet) toast(`Terminal commands will run in "${absPath}"`, "success");
+      } else {
+        const detail = await res.json().catch(() => null);
+        toast(
+          `Could not register "${absPath}" as the workspace (HTTP ${res.status}${
+            (detail as { error?: string } | null)?.error ? ` — ${(detail as { error?: string }).error}` : ""
+          }). AI and manual commands will fail until this succeeds.`,
+          "error"
+        );
+      }
+    } catch {
+      if (!quiet) toast(`Could not register "${absPath}" as the workspace — is the app server reachable?`, "error");
+    }
 
     const SKIP = new Set([
       ".git", "node_modules", ".next", "dist", ".freebuff",
@@ -422,27 +450,6 @@ export function useFileSystem() {
     const counter = { files: 0 };
     const tree = await buildTree("", 0, counter);
     setFileTree(tree);
-
-    try {
-      const res = await apiFetch("/api/agent/workspace-cwd", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: absPath }),
-      });
-      if (res.ok) {
-        toast(`Terminal commands will run in "${absPath}"`, "success");
-      } else {
-        const detail = await res.json().catch(() => null);
-        toast(
-          `Could not register "${absPath}" as the workspace (HTTP ${res.status}${
-            (detail as { error?: string } | null)?.error ? ` — ${(detail as { error?: string }).error}` : ""
-          }). AI and manual commands will fail until this succeeds.`,
-          "error"
-        );
-      }
-    } catch {
-      toast(`Could not register "${absPath}" as the workspace — is the app server reachable?`, "error");
-    }
 
     return { fileCount: counter.files };
   }, [toast]);
@@ -548,6 +555,26 @@ export function useFileSystem() {
     } catch (err: any) {
       outcome = { status: "failed", name, message: `Could not reopen "${name}": ${err?.message || "unknown error"}` };
     }
+
+    // A project created from this app's own picker (or by the New project
+    // dialog's clone/create) has an absolute path in the roster but no
+    // FileSystemDirectoryHandle in IndexedDB — handles only exist for folders
+    // picked through showDirectoryPicker. Those projects used to answer
+    // "opened on another device, re-pick the folder", which was both untrue and
+    // a dead end: the path is right there. Attach it directly.
+    if (outcome.status === "not-found") {
+      try {
+        const { listProjects } = await import("@/lib/project-registry");
+        const entry = listProjects(window.localStorage).find((p) => p.name === name);
+        if (entry?.lastPath) {
+          const { fileCount } = await attachPath(entry.lastPath);
+          outcome = { status: "ok", name, message: `Re-opened "${name}" — ${fileCount} files available.`, fileCount };
+        }
+      } catch {
+        // Keep the original not-found outcome: the caller may still have a path.
+      }
+    }
+
     if (outcome.status === "ok") {
       toast(outcome.message, "success");
     } else {
@@ -555,7 +582,7 @@ export function useFileSystem() {
       toast(outcome.message, outcome.status === "denied" ? "info" : "error");
     }
     return outcome;
-  }, [openFolderHandle, toast, prefetchedHandlesRef]);
+  }, [attachPath, openFolderHandle, toast, prefetchedHandlesRef]);
 
   const readFile = useCallback(async (path: string): Promise<string> => {
     try {

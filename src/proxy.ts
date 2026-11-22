@@ -175,6 +175,11 @@ const LOCAL_ONLY_API_PREFIXES = [
   // LOCAL_ONLY_API_ROUTES comment above.
   "/api/files/",
   "/api/conversations/",
+  // Creating a project writes a FOLDER ON THIS MACHINE. Prefix entry, so
+  // /api/projects/create is served locally while /api/projects (the synced
+  // roster: GET/PUT/DELETE) keeps going to the cloud. Forwarding the create
+  // call made it 404 against a backend that has no such route.
+  "/api/projects/",
   // Playbook children (/api/playbook/<id>, /api/playbook/capture) — the
   // device-local JSON store, see LOCAL_ONLY_API_ROUTES.
   "/api/playbook/",

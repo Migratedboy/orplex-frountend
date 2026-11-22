@@ -1,0 +1,457 @@
+/*
+ * New project modal — translated 1:1 from new-project-modal.html.
+ *
+ * Every value below is copied from the reference. Tokens are scoped to .wrap
+ * (the backdrop) instead of :root so nothing here can leak into, or be
+ * overridden by, the rest of the app; the light set hangs off the app's own
+ * html[data-theme="light"] (ThemeProvider writes exactly that attribute).
+ *
+ * The font is bundled (public/fonts) because the desktop app must look the
+ * same offline.
+ */
+
+@font-face {
+  font-family: "Google Sans Flex";
+  font-style: normal;
+  font-weight: 400 700;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("/fonts/googlesansflex-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Google Sans Flex";
+  font-style: normal;
+  font-weight: 400 700;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("/fonts/googlesansflex-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+.wrap {
+  /* dark (reference :root) */
+  --bg: #101210;
+  --modal: #161816;
+  --modal-edge: #444644;
+  --text: #f1f3f0;
+  --muted: #9a9e99;
+  --placeholder: #8c908b;
+
+  --wrap: #222622;
+  --wrap-edge: #454a45;
+  --wrap-side: #4d524d;
+  --wrap-ledge: #4d524d;
+  --field: #2d2f2d;
+  --field-edge: #4e514e;
+  --field-side: #565956;
+  --field-ledge: #565956;
+  --btn: #202320;
+  --btn-edge: #434643;
+  --btn-side: #484b48;
+  --btn-ledge: #4c4f4c;
+  --box: #0e0e0e;
+  --box-edge: #3e3e3e;
+  --box-ledge: #3e3e3e;
+
+  --accent: #ffcd9b;
+  --accent-hi: #ffd9b3;
+  --accent-2: #ffa756;
+  --accent-edge: #ffa756;
+  --accent-ledge: #ffa756;
+  --on-accent: #2b1b0e;
+  --backdrop: rgba(0, 0, 0, 0.72);
+  --hover: #242724;
+  --btn-hover: #272a27;
+  /* Not in the reference: the error colour every panel needs. Chosen to sit on
+     --modal in both themes. */
+  --danger: #ff9b8a;
+
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--backdrop);
+  color: var(--text);
+  font-family: "Google Sans Flex", "Google Sans", "Roboto Flex", "Segoe UI", system-ui, sans-serif;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+  box-sizing: border-box;
+}
+
+/* light (reference :root[data-theme="light"]) — driven by the app's theme. */
+:global(html[data-theme="light"]) .wrap {
+  --bg: #e8e3db;
+  --modal: #fffdfa;
+  --modal-edge: #d6cfc5;
+  --text: #1f1b16;
+  --muted: #7b746b;
+  --placeholder: #9d968c;
+
+  --wrap: #f1ede6;
+  --wrap-edge: #d9d2c7;
+  --wrap-side: #d2cabe;
+  --wrap-ledge: #cfc6ba;
+  --field: #f6f3ee;
+  --field-edge: #d3cbc0;
+  --field-side: #cbc3b7;
+  --field-ledge: #c6bdb0;
+  --btn: #f6f3ee;
+  --btn-edge: #d6cec3;
+  --btn-side: #d0c8bc;
+  --btn-ledge: #c6bdb0;
+  --box: #f8f5f0;
+  --box-edge: #d6cec3;
+  --box-ledge: #d6cec3;
+
+  --backdrop: rgba(30, 22, 14, 0.45);
+  --hover: #efe9e0;
+  --btn-hover: #efeae2;
+  --danger: #b3261e;
+  color-scheme: light;
+}
+
+.wrap *,
+.wrap *::before,
+.wrap *::after {
+  box-sizing: border-box;
+}
+
+.wrap button {
+  /* NOT the font shorthand: it resets font-weight, and every weight in the
+     reference (600 tabs/button, 700 folder + accent) was being flattened to
+     400 by it. */
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+.wrap :focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+}
+
+.modal {
+  width: 100%;
+  max-width: 440px;
+  padding: 16px 16px 12px;
+  background: var(--modal);
+  border: 1px solid var(--modal-edge);
+  border-bottom-width: 4px;
+  border-radius: 16px;
+}
+
+.modalHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 34px;
+  padding-left: 0;
+}
+.modalHead h2 {
+  margin: 0;
+  font-size: 19px;
+  line-height: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.close {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text);
+}
+.close:hover {
+  background: var(--hover);
+}
+
+.tabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+  padding: 4px;
+  background: var(--wrap);
+  border: 1px solid;
+  border-bottom-width: 3px;
+  border-color: var(--wrap-edge) var(--wrap-side) var(--wrap-ledge) var(--wrap-side);
+  border-radius: 12px;
+  margin-bottom: 14px;
+}
+.tab {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: none;
+  border: 0;
+  border-radius: 10px;
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.tab:hover {
+  color: var(--text);
+}
+.tab[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.tab svg {
+  flex: none;
+}
+
+.input {
+  display: block;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+  border: 1px solid;
+  border-bottom-width: 3px;
+  border-color: var(--field-edge) var(--field-side) var(--field-ledge) var(--field-side);
+  border-radius: 11px;
+  margin-bottom: 14px;
+}
+.input::placeholder {
+  color: var(--placeholder);
+}
+.input:focus {
+  outline: none;
+  border-color: var(--accent) var(--accent) var(--accent-ledge) var(--accent);
+}
+
+.panel {
+  display: none;
+}
+.panelActive {
+  display: block;
+}
+
+/* (0,2,0) so the base `.wrap button` rule cannot outrank it. */
+.modal .folderBtn {
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: 0;
+  padding: 10px 12px;
+  font-weight: 700;
+  border-radius: 9px;
+}
+.folderBtn:hover {
+  color: var(--accent-hi);
+}
+.folderName {
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 4px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.box {
+  background: var(--box);
+  border: 1px solid var(--box-edge);
+  border-bottom: 3px solid var(--box-ledge);
+  border-radius: 12px;
+  padding: 14px 12px 12px;
+}
+.box p {
+  margin: 0 0 12px;
+  line-height: 20px;
+}
+
+.btnAccent {
+  display: block;
+  width: 100%;
+  height: 33px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+  border: 1px solid var(--accent-edge);
+  border-bottom: 3px solid var(--accent-ledge);
+  border-radius: 10px;
+  transition: background 0.15s, transform 0.08s;
+}
+.btnAccent:hover {
+  background: var(--accent-hi);
+}
+.btnAccent:active {
+  transform: translateY(2px);
+  border-bottom-width: 1px;
+}
+.btnAccent:disabled {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+.boxRepos {
+  padding: 12px 12px 14px;
+}
+.inputSearch {
+  height: 33px;
+  margin-bottom: 6px;
+  font-size: 14px;
+  border-radius: 10px;
+}
+
+.repoList {
+  height: 198px;
+  overflow-y: auto;
+  margin: 0 -4px;
+  padding: 0 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--field-side) transparent;
+}
+.repo {
+  width: 100%;
+  height: 39px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 8px;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+}
+.repo:hover {
+  background: var(--hover);
+}
+.repo[aria-selected="true"] {
+  background: rgba(255, 205, 155, 0.14);
+  box-shadow: inset 0 0 0 1px var(--accent-2);
+}
+.repoName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repoTag {
+  flex: none;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  padding-right: 6px;
+}
+.repoEmpty {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  text-align: center;
+  padding: 0 8px;
+}
+.repoEmptyStack {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  padding: 0 8px;
+}
+.retry {
+  height: 30px;
+  padding: 0 14px;
+  background: var(--btn);
+  color: var(--text);
+  font-weight: 600;
+  border: 1px solid var(--btn-edge);
+  border-bottom: 3px solid var(--btn-ledge);
+  border-radius: 10px;
+}
+.retry:hover {
+  background: var(--btn-hover);
+}
+.retry:active {
+  transform: translateY(2px);
+  border-bottom-width: 1px;
+}
+
+/* device-code state (needed by the real GitHub flow) */
+.codeRow {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  margin: 0 0 12px;
+}
+.code {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 22px;
+  letter-spacing: 0.16em;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 16px;
+}
+.btnCreate {
+  height: 37px;
+  padding: 0 16px;
+  background: var(--btn);
+  color: var(--muted);
+  font-weight: 600;
+  border: 1px solid;
+  border-bottom-width: 3px;
+  border-color: var(--btn-edge) var(--btn-side) var(--btn-ledge) var(--btn-side);
+  border-radius: 12px;
+  transition: color 0.15s, background 0.15s, transform 0.08s;
+}
+.btnCreate.ready {
+  color: var(--text);
+}
+.btnCreate:hover {
+  background: var(--btn-hover);
+}
+.btnCreate:active {
+  transform: translateY(2px);
+  border-bottom-width: 1px;
+}
+.btnCreate:disabled {
+  cursor: progress;
+}
+
+.errorLine {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--danger);
+}
+.hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wrap *,
+  .wrap *::before,
+  .wrap *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

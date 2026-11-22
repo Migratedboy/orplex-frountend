@@ -11,14 +11,13 @@
 // is LOCAL_ONLY: the disk it touches is the user's own.
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
 import { readdir, stat, writeFile, mkdir, rename, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { jwtOnlyOptions as authOptions } from "@/lib/auth";
 import { getWorkspaceCwd } from "@/lib/workspace-cwd";
 import { safeJoinWorkspace, appendHistory } from "@/lib/workspace-history";
 import { validateEntryName, normalizeRelPath, MAX_PATH_LENGTH } from "@/lib/fs-ops-validate";
 import { publicErrorMessage } from "@/lib/errors";
+import { sessionUserId } from "@/lib/server-session";
 
 export const dynamic = "force-dynamic";
 
@@ -41,9 +40,9 @@ function jail(root: string, rel: unknown): { abs: string; rel: string } | null {
 }
 
 export async function GET(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return err(401, "Authentication required");
-  const root = getWorkspaceCwd(session.user.id);
+  const userId = await sessionUserId(request);
+  if (!userId) return err(401, "Authentication required");
+  const root = getWorkspaceCwd(userId);
   if (!root) return err(400, "no workspace");
 
   try {
@@ -103,9 +102,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return err(401, "Authentication required");
-  const root = getWorkspaceCwd(session.user.id);
+  const userId = await sessionUserId(request);
+  if (!userId) return err(401, "Authentication required");
+  const root = getWorkspaceCwd(userId);
   if (!root) return err(400, "no workspace");
 
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;

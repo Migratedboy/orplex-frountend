@@ -22,19 +22,21 @@ const SESSION_COOKIE_NAMES = [
 /** The signed-in user's id from either cookie name, or null. */
 export async function sessionUserId(req: NextRequest): Promise<string | null> {
   const secret = process.env.NEXTAUTH_SECRET;
-  // No local secret (the packaged app): fall back to the app's own Ed25519
-  // session cookie, which the backend signs and the app verifies with the
-  // shipped public key. Without this every local route rejected the user.
-  if (!secret) {
-    const appUser = await appSessionUserFromRequest(req);
-    return appUser?.id ?? null;
+  if (secret) {
+    for (const cookieName of SESSION_COOKIE_NAMES) {
+      try {
+        const token = await getToken({ req, secret, cookieName });
+        const id = (token as { id?: unknown } | null)?.id;
+        if (typeof id === "string" && id.length > 0 && id.length <= 128) return id;
+      } catch {}
+    }
   }
-  for (const cookieName of SESSION_COOKIE_NAMES) {
-    try {
-      const token = await getToken({ req, secret, cookieName });
-      const id = (token as { id?: unknown } | null)?.id;
-      if (typeof id === "string" && id.length > 0 && id.length <= 128) return id;
-    } catch {}
-  }
-  return null;
+  // Fall back to the app's own Ed25519 session cookie — the backend signs it and
+  // the app verifies it with the shipped public key. This is not only the
+  // no-secret case: a dev machine HAS a local NEXTAUTH_SECRET, yet a user who
+  // signed in through the cloud carries only the app session. Without this
+  // fallback, clone/create answered "Authentication required" to a signed-in
+  // user (the repo list worked, the clone refused).
+  const appUser = await appSessionUserFromRequest(req);
+  return appUser?.id ?? null;
 }

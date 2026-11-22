@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { checkBurstLimit } from "@/lib/rate-limiter";
 import { isCommandAllowed } from "@/lib/exec-guard";
 import { TIMEOUTS, LIMITS } from "@/lib/constants";
@@ -8,8 +7,7 @@ import { getWorkspaceCwdForUser } from "@/lib/workspace-cwd";
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(jwtOnlyOptions);
-    const userId = session?.user?.id;
+    const userId = await sessionUserId(request);
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

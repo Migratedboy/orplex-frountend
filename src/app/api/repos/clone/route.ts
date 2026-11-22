@@ -1,13 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { jwtOnlyOptions as authOptions } from "@/lib/auth";
+import { sessionUserId } from "@/lib/server-session";
 import { prisma } from "@/lib/prisma";
 import { execFileSync } from "child_process";
-import { mkdir, rm } from "fs/promises";
-import { join, resolve, sep } from "path";
-import { randomBytes } from "crypto";
+import { rm, stat } from "fs/promises";
+import { join } from "path";
 import { backendJson } from "@/lib/backend-client";
 import { readGithubToken } from "@/lib/github-app";
+import { resolveProjectDir, createProjectDir } from "@/lib/project-paths";
 
 export const dynamic = "force-dynamic";
 
@@ -27,8 +26,8 @@ function safeDestName(name: string): string {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await sessionUserId(request);
+  if (!userId) {
     return NextResponse.json({ success: false, error: "Authentication required" }, { status: 401 });
   }
 
@@ -49,7 +48,7 @@ export async function POST(request: NextRequest) {
   // repositories, and accepting a PAT over the wire would be a second, unaudited
   // way in.
   let token: string | null = null;
-  const credential = await readGithubToken(session.user.id);
+  const credential = await readGithubToken(userId);
   if (credential) token = credential.token;
 
   // Still no credential: the desktop sign-in stores provider tokens on the
@@ -67,13 +66,46 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const baseDir = process.env.ORPLEX_REPOS_DIR || join(process.cwd(), ".orplex-repos");
-  await mkdir(baseDir, { recursive: true });
-  const destName = `${safeDestName(repo.owner)}-${safeDestName(repo.name)}-${randomBytes(3).toString("hex")}`;
-  const dest = resolve(baseDir, destName);
-  // Path jail: dest must be inside baseDir.
-  if (!dest.startsWith(resolve(baseDir) + sep)) {
-    return NextResponse.json({ success: false, error: "Invalid destination" }, { status: 400 });
+  // Destination: <parent>/<name>. The name is the project name the user typed,
+  // so the folder on disk is the project in the sidebar — the old
+  // "<owner>-<repo>-<random>" directory made every clone look like a stranger.
+  const wanted = typeof body?.name === "string" ? body.name.trim() : "";
+  const parent = body?.parent;
+  let dest: string;
+  let projectName: string;
+  if (wanted) {
+    const target = await resolveProjectDir(wanted, parent);
+    if (!target.ok) {
+      return NextResponse.json({ success: false, error: target.error }, { status: target.status });
+    }
+    // A folder that already exists is a real error: git would either refuse or
+    // (with an empty dir) quietly clone into foreign surroundings.
+    if (await stat(target.path).catch(() => null)) {
+      return NextResponse.json(
+        { success: false, error: `A folder named "${target.name}" already exists there` },
+        { status: 409 }
+      );
+    }
+    const made = await createProjectDir(target.name, parent);
+    if (!made.ok) {
+      return NextResponse.json({ success: false, error: made.error }, { status: made.status });
+    }
+    dest = made.path;
+    projectName = made.name;
+  } else {
+    // Legacy path (no name): a scratch directory next to the app data.
+    const baseDir = process.env.ORPLEX_REPOS_DIR || join(process.cwd(), ".orplex-repos");
+    const made = await createProjectDir(`${safeDestName(repo.owner)}-${safeDestName(repo.name)}`, baseDir).catch(
+      () => null
+    );
+    if (!made || !made.ok) {
+      return NextResponse.json(
+        { success: false, error: made && !made.ok ? made.error : "Could not create the clone destination" },
+        { status: made && !made.ok ? made.status : 500 }
+      );
+    }
+    dest = made.path;
+    projectName = made.name;
   }
 
   // Build an authenticated clone URL when we have a token.
@@ -98,15 +130,15 @@ export async function POST(request: NextRequest) {
 
   // Persist a local registry entry so the repo can be listed/pulled later.
   try {
-    const registryPath = join(baseDir, "repos.json");
+    const registryPath = join(dest, "..", "repos.json");
     let registry: Array<Record<string, unknown>> = [];
     try {
       const raw = await (await import("fs/promises")).readFile(registryPath, "utf-8");
       registry = JSON.parse(raw);
     } catch {}
     registry.push({
-      userId: session.user.id,
-      name: destName,
+      userId: userId,
+      name: projectName,
       displayName: `${repo.owner}/${repo.name}`,
       url,
       path: dest,
@@ -121,9 +153,9 @@ export async function POST(request: NextRequest) {
   // Persist a ProjectRecord so the repo shows up in the synced roster.
   try {
     await prisma.projectRecord.upsert({
-      where: { userId_name: { userId: session.user.id, name: destName } },
+      where: { userId_name: { userId: userId, name: projectName } },
       update: { lastOpenedAt: new Date() },
-      create: { userId: session.user.id, name: destName, displayName: `${repo.owner}/${repo.name}` },
+      create: { userId: userId, name: projectName, displayName: `${repo.owner}/${repo.name}` },
     });
   } catch {
     // Non-fatal: clone succeeded even if roster sync fails.
@@ -132,7 +164,8 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     success: true,
     path: dest,
-    name: `${repo.owner}/${repo.name}`,
+    name: projectName,
+    fullName: `${repo.owner}/${repo.name}`,
     branch: branch || "default",
   });
 }

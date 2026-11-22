@@ -81,16 +81,17 @@ describe("which app the device flow uses", () => {
     expect(sent).toContain("scope=repo");
   });
 
-  it("falls through to the GitHub App when the OAuth app has device flow off", async () => {
+  it("does not silently fall back to the GitHub App when the OAuth app has device flow off", async () => {
+    // A GitHub App token is installation-scoped: using it shows GitHub's
+    // app-permission consent screen and then an install step, which is a
+    // second authorisation for something the OAuth App already grants.
+    // So the flow stops and says why; the UI offers browser sign-in instead.
     process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
     process.env.GITHUB_APP_CLIENT_ID = "Iv23liApp";
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce(json({ error: "device_flow_disabled", error_description: "nope" }, 400))
-      .mockResolvedValueOnce(json({ device_code: "d", user_code: "U-2", expires_in: 900, interval: 5 }));
+    (global.fetch as jest.Mock).mockResolvedValueOnce(json({ error: "device_flow_disabled", error_description: "nope" }, 400));
 
-    const flow = await startDeviceFlow("user-1");
-    expect(flow?.source).toBe("app");
-    expect(flow?.userCode).toBe("U-2");
+    await expect(startDeviceFlow("user-1")).rejects.toThrow(/device_flow_disabled|nope/);
+    expect((global.fetch as jest.Mock).mock.calls).toHaveLength(1);
   });
 
   it("stores an OAuth device token under provider github, not github-app", async () => {
@@ -116,7 +117,7 @@ describe("which app the device flow uses", () => {
 });
 describe("startDeviceFlow", () => {
   it("asks GitHub for a code and hands the user code to the client", async () => {
-    process.env.GITHUB_APP_CLIENT_ID = "Iv1.abc123";
+    process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
     (global.fetch as jest.Mock).mockResolvedValueOnce(
       json({
         device_code: "dev-secret",
@@ -135,13 +136,13 @@ describe("startDeviceFlow", () => {
   });
 
   it("returns null when GitHub omits the codes", async () => {
-    process.env.GITHUB_APP_CLIENT_ID = "Iv1.abc123";
+    process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
     (global.fetch as jest.Mock).mockResolvedValueOnce(json({}));
     expect(await startDeviceFlow("user-1")).toBeNull();
   });
 
   it("surfaces GitHub's own refusal in words, including on a 400 (device flow off)", async () => {
-    process.env.GITHUB_APP_CLIENT_ID = "Iv23li";
+    process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
     (global.fetch as jest.Mock).mockResolvedValueOnce(
       json(
         { error: "device_flow_disabled", error_description: "Device Flow must be explicitly enabled for this App" },
@@ -152,7 +153,7 @@ describe("startDeviceFlow", () => {
   });
 
   it("does not answer a bare status when GitHub sends no explanation", async () => {
-    process.env.GITHUB_APP_CLIENT_ID = "Iv23li";
+    process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
     (global.fetch as jest.Mock).mockResolvedValueOnce(json({}, 500));
     await expect(startDeviceFlow("user-1")).rejects.toThrow(/GitHub responded 500/);
   });
@@ -160,7 +161,7 @@ describe("startDeviceFlow", () => {
 
 describe("pollDeviceFlow", () => {
   async function started() {
-    process.env.GITHUB_APP_CLIENT_ID = "Iv1.abc123";
+    process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
     (global.fetch as jest.Mock).mockResolvedValueOnce(
       json({ device_code: "dev-secret", user_code: "CODE-1", expires_in: 900, interval: 5 })
     );
@@ -180,21 +181,23 @@ describe("pollDeviceFlow", () => {
     expect(await pollDeviceFlow(flow.flowId, "user-1")).toEqual({ status: "slow_down" });
   });
 
-  it("stores the token locally on success and reports the login", async () => {
+  it("stores an OAuth token under provider github and reports the login", async () => {
     const flow = await started();
     (global.fetch as jest.Mock)
-      .mockResolvedValueOnce(json({ access_token: "ghu_token", scope: "repo", token_type: "bearer" }))
+      .mockResolvedValueOnce(json({ access_token: "gho_token", scope: "repo", token_type: "bearer" }))
       .mockResolvedValueOnce(json({ login: "migratedboy" }));
 
     const result = await pollDeviceFlow(flow.flowId, "user-1");
     expect(result).toEqual({ status: "authorized", login: "migratedboy" });
+    // provider "github" (not "github-app") is what keeps the repo list from
+    // demanding an installation the OAuth flow never needed.
     expect(upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { provider_providerAccountId: { provider: GITHUB_APP_PROVIDER, providerAccountId: "migratedboy" } },
+        where: { provider_providerAccountId: { provider: "github", providerAccountId: "migratedboy" } },
         create: expect.objectContaining({
           userId: "user-1",
-          provider: GITHUB_APP_PROVIDER,
-          access_token: "ghu_token",
+          provider: "github",
+          access_token: "gho_token",
         }),
       })
     );
@@ -218,7 +221,7 @@ describe("pollDeviceFlow", () => {
   });
 
   it("treats an unknown flow as expired", async () => {
-    process.env.GITHUB_APP_CLIENT_ID = "Iv1.abc123";
+    process.env.GITHUB_DEVICE_CLIENT_ID = "Ov23liOauth";
     expect(await pollDeviceFlow("nope", "user-1")).toEqual({ status: "expired" });
   });
 
