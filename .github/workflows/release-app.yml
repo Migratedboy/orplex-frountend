@@ -175,13 +175,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.os }}
+          # One glob per ARTIFACT KIND plus a catch-all for blockmaps: the
+          # per-extension list silently dropped a blockmap whenever a target
+          # changed its suffix (e.g. mac .zip, a renamed NSIS artifact), which
+          # leaves the update feed pointing at a file with no diff map.
           path: |
             release/*.exe
-            release/*.exe.blockmap
             release/*.dmg
-            release/*.dmg.blockmap
+            release/*.zip
             release/*.AppImage
-            release/*.AppImage.blockmap
+            release/*.blockmap
             release/latest*.yml
           retention-days: 1
           if-no-files-found: ignore
