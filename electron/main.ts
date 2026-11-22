@@ -74,6 +74,7 @@ installPipeResilience();
         authUrl?: string;
         lightweight?: boolean;
         sessionPublicKey?: string;
+        githubAppClientId?: string;
       };
       if (cfg.apiUrl && !process.env.ORPLEX_API_URL) process.env.ORPLEX_API_URL = cfg.apiUrl;
       // Desktop sign-in starts on the MEDIATOR SITE (the OAuth round-trip and
@@ -87,6 +88,13 @@ installPipeResilience();
       // to /auth/signin right after a successful sign-in.
       if (cfg.sessionPublicKey && !process.env.ORPLEX_SESSION_PUBLIC_KEY) {
         process.env.ORPLEX_SESSION_PUBLIC_KEY = cfg.sessionPublicKey;
+      }
+      // A GitHub App CLIENT ID is public (no secret, no redirect URI, device flow
+      // only) so it ships with the app: "Pull from GitHub" works on a fresh
+      // install without the user configuring anything. The client SECRET is not
+      // here and must never be — device flow does not use one.
+      if (cfg.githubAppClientId && !process.env.GITHUB_APP_CLIENT_ID) {
+        process.env.GITHUB_APP_CLIENT_ID = cfg.githubAppClientId;
       }
       return;
     }

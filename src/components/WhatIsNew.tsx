@@ -232,6 +232,14 @@ export const WHATS_NEW: Record<string, { title: string; items: string[] }> = {
       "Fixed: tool hooks could never block anything on Windows — the command went through Node's quoting and failed with “'C:\\Program' is not recognized”. Version-control checks and guards now actually run",
     ],
   },
+  "3.0.6": {
+    title: "Pull from GitHub, signed in",
+    items: [
+      "Pull from GitHub is preconfigured: the app ships the Orplex GitHub App client id, so connecting a repository needs no setup on your side. Click Connect GitHub, type the short code at github.com/login/device, and the app lists every repository you can reach",
+      "The GitHub token for that flow is stored only on your machine and is used for cloning. It is never sent to the Orplex cloud, and no personal access token has to live on disk",
+      "Sign-in survives a backend key rotation. If the app cannot verify your session it now says which reason it is instead of silently showing the sign-in screen again",
+    ],
+  },
   "3.0.5": {
     title: "One settings screen, and every control in it works",
     items: [

@@ -84,8 +84,16 @@ describe("startDeviceFlow", () => {
 
   it("returns null when GitHub omits the codes", async () => {
     process.env.GITHUB_APP_CLIENT_ID = "Iv1.abc123";
-    (global.fetch as jest.Mock).mockResolvedValueOnce(json({ error: "bad_verification_code" }));
+    (global.fetch as jest.Mock).mockResolvedValueOnce(json({}));
     expect(await startDeviceFlow("user-1")).toBeNull();
+  });
+
+  it("surfaces GitHub's own refusal in words (device flow not enabled)", async () => {
+    process.env.GITHUB_APP_CLIENT_ID = "Ov23li";
+    (global.fetch as jest.Mock).mockResolvedValueOnce(
+      json({ error: "device_flow_disabled", error_description: "Device Flow must be explicitly enabled for this App" })
+    );
+    await expect(startDeviceFlow("user-1")).rejects.toThrow(/Device Flow must be explicitly enabled/);
   });
 });
 

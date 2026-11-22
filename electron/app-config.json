@@ -1,10 +1,12 @@
 {
-    "//":  "Shipped app configuration. Read by the Electron MAIN process at boot.",
-    "lightweight":  true,
-    "sessionPublicKey":  "eyJjcnYiOiJFZDI1NTE5IiwieCI6ImhxdmZXMDlfcG5pMy1URmJmYUpCTkFPOWlzRmZLOU40RElEX2RjbEZRTFkiLCJrdHkiOiJPS1AifQ",
-    "//3":  "PUBLIC key (Ed25519) the app uses to verify the backend-signed app session. Public by design - the private key stays in the backend\u0027s Vercel env.",
-    "//2":  "A packaged app has no .env next to it (and must never ship one: it holds the DB password), so the cloud backend origin + lightweight mode live here. Repo-root .env and real shell env still win, which keeps local dev unchanged.",
-    "apiUrl":  "https://orplex-backend.vercel.app",
-    "//4":  "authUrl: where desktop sign-in STARTS - the mediator site\u0027s login page in app mode. The site owns the whole OAuth round-trip (provider redirect URIs are registered there), mints a short-lived token after sign-in and deep-links orplex://auth back to this app. The backend origin (apiUrl) stays the app\u0027s API target.",
-    "authUrl":  "https://orplex-code.vercel.app/login?app=auth"
+    "//": "Shipped app configuration. Read by the Electron MAIN process at boot.",
+    "lightweight": true,
+    "sessionPublicKey": "eyJjcnYiOiJFZDI1NTE5IiwieCI6ImhxdmZXMDlfcG5pMy1URmJmYUpCTkFPOWlzRmZLOU40RElEX2RjbEZRTFkiLCJrdHkiOiJPS1AifQ",
+    "//3": "PUBLIC key (Ed25519) the app uses to verify the backend-signed app session. Public by design - the private key stays in the backend's Vercel env.",
+    "//2": "A packaged app has no .env next to it (and must never ship one: it holds the DB password), so the cloud backend origin + lightweight mode live here. Repo-root .env and real shell env still win, which keeps local dev unchanged.",
+    "apiUrl": "https://orplex-backend.vercel.app",
+    "//4": "authUrl: where desktop sign-in STARTS - the mediator site's login page in app mode. The site owns the whole OAuth round-trip (provider redirect URIs are registered there), mints a short-lived token after sign-in and deep-links orplex://auth back to this app. The backend origin (apiUrl) stays the app's API target.",
+    "authUrl": "https://orplex-code.vercel.app/login?app=auth",
+    "githubAppClientId": "Iv23liagFft3rdBLgH3D",
+    "//5": "GitHub App client id for the device flow (Pull from GitHub). Public by design: device flow uses no secret and no redirect URI, so the id is safe to ship."
 }

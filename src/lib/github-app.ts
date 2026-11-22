@@ -107,6 +107,14 @@ export async function startDeviceFlow(userId: string): Promise<DeviceFlowStart |
   if (!clientId) return null;
   prune();
   const body = await postForm(DEVICE_CODE_URL, { client_id: clientId });
+  // GitHub answers 200 with an `error` body for an app that has not enabled
+  // device flow (`device_flow_disabled`) — surface its own words instead of
+  // pretending the app is unconfigured, which reads as "nothing to see here".
+  const ghError = typeof body.error === "string" ? body.error : "";
+  if (ghError) {
+    const detail = typeof body.error_description === "string" ? body.error_description : ghError;
+    throw new Error(`GitHub refused the device code: ${detail}`);
+  }
   const deviceCode = typeof body.device_code === "string" ? body.device_code : "";
   const userCode = typeof body.user_code === "string" ? body.user_code : "";
   if (!deviceCode || !userCode) return null;
