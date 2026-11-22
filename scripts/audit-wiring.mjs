@@ -30,7 +30,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const API_DIR = path.join(ROOT, "src", "app", "api");
 const SCAN_DIRS = ["src", "scripts", "electron"].map((d) => path.join(ROOT, d));
 const CODE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
-const SKIP_PARTS = new Set(["node_modules", ".next", "coverage", ".git", ".docusaurus", "build", "dist"]);
+// Never source, at any depth.
+const SKIP_PARTS = new Set(["node_modules", ".next", "coverage", ".git", ".docusaurus"]);
+// Build OUTPUT folders are only build outputs at the top of the tree.
+// Blanket-skipping the NAMES hid a real route — src/app/api/system/build — from
+// discovery, which made every reference to /api/system/build look broken.
+const SKIP_TOP_LEVEL = new Set(["build", "dist"]);
 
 // References to routes that do not exist on purpose. Files are glob patterns
 // relative to the repo root (eval fixtures define mock endpoints for agent
@@ -48,13 +53,17 @@ const REF_ALLOWLIST = new Set([
   "/api/mcpx",
   "/api/mcp/connections/supabase/disconnect",
   "/api/recordings",
+  // Endpoints that live in the CLOUD BACKEND repo (orplex-backend), not here:
+  // src/lib/session-key.ts fetches `${backendBaseUrl()}/api/system/session-key`
+  // to learn the key that signs app sessions. Nothing to wire in this app.
+  "/api/system/session-key",
 ]);
 
 const strict = process.argv.includes("--strict");
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
-function walk(dir, acc = []) {
+function walk(dir, acc = [], depth = 0) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -63,8 +72,9 @@ function walk(dir, acc = []) {
   }
   for (const e of entries) {
     if (SKIP_PARTS.has(e.name)) continue;
+    if (depth === 0 && SKIP_TOP_LEVEL.has(e.name)) continue;
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) walk(p, acc);
+    if (e.isDirectory()) walk(p, acc, depth + 1);
     else acc.push(p);
   }
   return acc;
