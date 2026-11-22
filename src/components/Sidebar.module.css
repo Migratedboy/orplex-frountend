@@ -1,29 +1,31 @@
 /* Sidebar.module.css — ported 1:1 from orplex-sidebar-react.html tokens/structure.
    Class names mirror the prototype. Light values live on .sb; the app's
    dark mode is html.dark (ThemeProvider), so dark tokens hang off that. */
-.sb {
+.sb,
+.portalLayer {
   --side:#f6f5f3; --main:#ffffff; --raise:#e9e6e1; --hover:#eeece8; --border:#e4e1dc;
   --text:#1c1c1b; --muted:#77756f; --accent:#F97316; --accent-soft:rgba(249,115,22,.14); --accent-text:#c2410c;
   --pop:#ffffff; --shadow:0 8px 24px rgba(0,0,0,.14); --danger:#dc2626;
   --sans:Inter,"Segoe UI",system-ui,-apple-system,sans-serif;
 }
-:global(html.dark) .sb {
+:global(html.dark) .sb,
+:global(html.dark) .portalLayer {
   --side:#1b1c1c; --main:#141515; --raise:#2c2d2d; --hover:#242525; --border:#2a2b2b;
   --text:#e8e8e6; --muted:#8d8f8e; --accent-soft:rgba(249,115,22,.18); --accent-text:#fdba74;
   --pop:#222323; --shadow:0 8px 24px rgba(0,0,0,.45); --danger:#f87171;
 }
-.sb button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; }
-.sb svg.i { width:18px; height:18px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.sb button, .portalLayer button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; }
+.sb svg.i, .portalLayer svg.i { width:18px; height:18px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 
-/* .sb is the positioned rail (flex child of AppLayout .app-root) */
+/* .sb fills the shell's sidebar card (shell.css owns the card surface, border
+   and radius), so it paints nothing of its own and never adds a divider. */
 .sb {
-  height:100vh; background:var(--side); position:sticky; top:0; flex:none; overflow:hidden;
-  border-right:1px solid var(--border);
-  transition:width .22s ease;
+  height:100%; background:transparent; position:relative; flex:none; overflow:hidden;
+  transition:width .2s ease;
   font-family:var(--sans); color:var(--text); font-size:14px;
 }
 .sb.drag { transition:none; }
-.sbInner { height:100%; display:flex; flex-direction:column; padding:14px 10px 10px; min-width:220px; }
+.sbInner { height:100%; display:flex; flex-direction:column; padding:12px; min-width:220px; }
 .grip { position:absolute; top:0; right:-3px; width:6px; height:100%; cursor:col-resize; z-index:5; }
 .grip:hover, .sb.drag .grip { background:var(--accent-soft); }
 
@@ -48,7 +50,6 @@
 .ibtn:hover { background:var(--hover); color:var(--text); }
 .search { margin:0 4px 8px; }
 .search input { width:100%; height:34px; border-radius:8px; border:1px solid var(--border); background:var(--main); color:var(--text); padding:0 10px; font:inherit; outline:none; }
-.search input:focus { border-color:var(--accent); }
 
 .scroll { flex:1; overflow-y:auto; overflow-x:hidden; margin:0 -4px; padding:0 4px; }
 .scroll::-webkit-scrollbar { width:6px; }
@@ -57,7 +58,6 @@
 .row { display:flex; align-items:center; gap:10px; width:100%; height:34px; padding:0 10px; border-radius:8px; text-align:left; color:var(--text); position:relative; cursor:pointer; outline:none; }
 .row:hover, .row:focus-visible { background:var(--hover); }
 .row.active { background:var(--raise); }
-.row:focus-visible { box-shadow:0 0 0 2px var(--accent) inset; }
 .row .lbl { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .row > .i { color:var(--muted); }
 .row:hover > .i, .row.active > .i { color:var(--text); }
@@ -107,6 +107,12 @@
 .user .n b { display:block; font-size:13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .user .n small { color:var(--muted); font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block; }
 
+/* Chat hover card + chat menu are portaled to <body> (Sidebar.tsx) so they
+   paint above the chat column: the sticky .sb rail creates a stacking context,
+   which used to trap them under the composer. This layer re-supplies the rail's
+   tokens/font and sits above the composer but below toasts. */
+.portalLayer { position:fixed; inset:0; z-index:150; pointer-events:none; font-family:var(--sans); color:var(--text); font-size:14px; }
+.portalLayer .menu { pointer-events:auto; }
 .tip, .menu { position:fixed; z-index:30; background:var(--pop); border:1px solid var(--border); border-radius:10px; box-shadow:var(--shadow); overflow:hidden; }
 .tip { min-width:230px; pointer-events:none; animation:fade .12s; }
 .tip .a { padding:11px 14px; font-weight:600; font-size:13.5px; display:flex; gap:10px; align-items:center; }

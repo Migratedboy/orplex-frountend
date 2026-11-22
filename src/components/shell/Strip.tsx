@@ -29,6 +29,72 @@ import {
 import { TAB_META, closedTabs, type TabId } from "@/lib/panel-state";
 import { useToast } from "@/components/Toast";
 
+/* ---------- horizontal tab scroller ---------- */
+/**
+ * TabScroller — the tab strip scrolls sideways instead of hiding tabs.
+ * The `+` button lives OUTSIDE the scroller so it is always reachable, and
+ * the active tab is kept in view whenever the selection changes. A vertical
+ * wheel scrolls the strip horizontally (the only axis it has), which is what
+ * a mouse user expects from a tab bar in a 45px title bar.
+ */
+function TabScroller({
+  label,
+  children,
+  action,
+  activeKey,
+}: {
+  label: string;
+  children: React.ReactNode;
+  action?: React.ReactNode;
+  activeKey?: string | null;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  // Keep the active tab visible: the strip remounts on selection changes, so
+  // this runs on mount and whenever the selection key changes.
+  useEffect(() => {
+    const sc = ref.current;
+    if (!sc) return;
+    const el = sc.querySelector<HTMLElement>(".ox-tab.on");
+    if (!el) return;
+    const left = el.offsetLeft;
+    const right = left + el.offsetWidth;
+    const pad = 8;
+    // Instant, not smooth: `scrollTo({ behavior: "smooth" })` is a no-op in
+    // this renderer (it never advances scrollLeft), and a tab strip should not
+    // animate its way to the active tab anyway.
+    if (left - pad < sc.scrollLeft) {
+      sc.scrollLeft = Math.max(0, left - pad);
+    } else if (right + pad > sc.scrollLeft + sc.clientWidth) {
+      sc.scrollLeft = right + pad - sc.clientWidth;
+    }
+  }, [activeKey]);
+
+  // Vertical wheel over the strip moves it sideways; horizontal deltas keep
+  // their native behaviour. Non-passive so the page under it does not scroll.
+  useEffect(() => {
+    const sc = ref.current;
+    if (!sc) return;
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      if (sc.scrollWidth <= sc.clientWidth) return;
+      e.preventDefault();
+      sc.scrollLeft += e.deltaY;
+    };
+    sc.addEventListener('wheel', onWheel, { passive: false });
+    return () => sc.removeEventListener('wheel', onWheel);
+  }, []);
+
+  return (
+    <div className="ox-tabs">
+      <div className="ox-tabs-scroll" role="tablist" aria-label={label} ref={ref}>
+        {children}
+      </div>
+      {action}
+    </div>
+  );
+}
+
 /* ---------- history arrows ---------- */
 function HistoryArrows() {
   const router = useRouter();
@@ -215,7 +281,15 @@ function ConversationTabs() {
 
   return (
     <>
-      <div className="ox-tabs" role="tablist" aria-label="Conversation tabs">
+      <TabScroller
+        label="Conversation tabs"
+        activeKey={activeId}
+        action={(
+          <button className="ox-add" aria-label="New conversation" title="New chat" onClick={newChat}>
+            <Icon name="plus" size={15} />
+          </button>
+        )}
+      >
         {tabs.map((id) => {
           const active = id === activeId || (id === NEW_TAB_ID && !activeId && pathname === "/");
           const title = titleFor(id);
@@ -243,10 +317,7 @@ function ConversationTabs() {
             </div>
           );
         })}
-        <button className="ox-add" aria-label="New conversation" title="New chat" onClick={newChat}>
-          <Icon name="plus" size={15} />
-        </button>
-      </div>
+      </TabScroller>
       {menu && (
         <div className="ox-tabmenu" style={{ left: Math.min(menu.x, window.innerWidth - 190), top: menu.y + 4 }} role="menu">
           <button role="menuitem" onClick={() => openTab(menu.id)}>
@@ -308,8 +379,17 @@ function RightPanelTabs() {
 
   const closed = closedTabs(rp.tabs);
 
+  // Closing the panel's only tab means closing the panel: an open pane with no
+  // tabs in it has nothing to show, and the group's "x" is the panel's close.
+  const closePanelTab = (id: TabId) => {
+    const wasLast = rp.isOpen && rp.tabs.length <= 1;
+    rp.close(id);
+    if (wasLast) rp.toggle();
+  };
+
   return (
-    <div className="ox-tabs" role="tablist" aria-label="Right panel tabs">
+    <>
+      <div className="ox-tabs ox-tabs-rp" role="tablist" aria-label="Right panel tabs">
       {rp.tabs.map((id) => {
         const active = id === rp.activeTab;
         const meta = TAB_META[id];
@@ -325,7 +405,7 @@ function RightPanelTabs() {
           >
             <Icon name={TAB_ICONS[id] ?? "tasks"} size={14} />
             <span>{meta.label}</span>
-            <button className="ox-tx" aria-label={`Close ${meta.label} tab`} onClick={(e) => { e.stopPropagation(); rp.close(id); }}>
+            <button className="ox-tx" aria-label={`Close ${meta.label} tab`} onClick={(e) => { e.stopPropagation(); closePanelTab(id); }}>
               <Icon name="x" size={11} />
             </button>
           </div>
@@ -361,18 +441,28 @@ function RightPanelTabs() {
         </div>
       )}
     </div>
+    </>
   );
 }
-
 /* ---------- the strip ---------- */
 export default function Strip() {
   const { sidebarCollapsed } = useShell();
   // ONE notification poller for the whole shell: bell + toast stack consume it.
   const notif = useNotificationCenter();
 
+  // Double-clicking empty strip space toggles maximize, like a real title bar.
+  // Drag regions do not forward double-clicks reliably in a frameless window,
+  // and any tab/button must keep its own click behaviour.
+  const onStripDoubleClick = (e: React.MouseEvent<HTMLElement>) => {
+    const el = e.target as HTMLElement;
+    if (el.closest("button, .ox-tab, input, a")) return;
+    const win = (window as unknown as { orplexDesktop?: { window?: { toggleMaximize?: () => void } } }).orplexDesktop?.window;
+    win?.toggleMaximize?.();
+  };
+
   return (
     <>
-      <header className="ox-strip" data-tour-id="strip">
+      <header className="ox-strip" data-tour-id="strip" onDoubleClick={onStripDoubleClick}>
         <div className="ox-lead">
           <HistoryArrows />
           {!sidebarCollapsed && (
@@ -382,11 +472,11 @@ export default function Strip() {
             </div>
           )}
         </div>
-        <ConversationTabs />
-        <div className="ox-rzone">
+        <div className="ox-tabs-zone">
+          <ConversationTabs />
           <RightPanelTabs />
-          <WindowControls />
         </div>
+        <WindowControls />
       </header>
       <NotifToasts notif={notif} />
     </>

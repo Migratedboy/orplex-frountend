@@ -7,6 +7,7 @@ import BootGate from "@/components/loader/BootGate";
 import AppLayout from "@/components/AppLayout";
 import AppProviders from "@/components/AppProviders";
 import ThemeInit from "@/components/ThemeInit";
+import { THEME_BOOTSTRAP } from "@/lib/theme-bootstrap";
 
 // Start app-level services on server startup (lazy-loaded to avoid blocking).
 // Physical split: cron jobs, graceful shutdown, error tracking and backups are
@@ -36,6 +37,12 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="dark" suppressHydrationWarning>
+      <head>
+        {/* Resolve the stored theme before the first paint — see
+            src/lib/theme-bootstrap.ts. Without this the light theme flashes
+            the dark shell for a frame after hydration. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
+      </head>
       <body>
         <ThemeInit />
         <Providers>

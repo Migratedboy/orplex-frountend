@@ -447,7 +447,6 @@
   margin-top: 10px;
 }
 
-
 .prompt-bar[data-state="initial"] .foot {
   padding: 0 12px;
 }
@@ -456,7 +455,6 @@
   margin-right: auto;
   margin-left: -10px;
 }
-
 
 .prompt-bar__model-pill {
   display: flex;
@@ -834,14 +832,22 @@
   border: 0;
   border-radius: 10px;
   background: transparent;
-  color: var(--pb-ink);
+  /* Theme ink, not --pb-ink: the composer surface follows the theme (light in
+     light mode), so a chip pinned to the prompt bar's dark ink disappears on
+     it. --text/--hover are the page tokens and stay legible in both. */
+  color: var(--text);
   font: inherit;
   font-size: 13.5px;
 }
 
+.prompt-bar .ws-chip svg {
+  color: var(--muted, var(--text));
+}
+
 .prompt-bar .ws-chip:hover,
 .prompt-bar .ws-chip[aria-expanded="true"] {
-  background: var(--pb-hover);
+  background: var(--hover);
+  color: var(--text);
 }
 
 .prompt-bar .ws-menu {
@@ -888,14 +894,6 @@
   color: var(--pb-blue);
 }
 
-.prompt-bar__menu:focus-within,
-.prompt-bar .ib:focus-visible,
-.prompt-bar .chip:focus-visible,
-.prompt-bar .ws-chip:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--pb-blue);
-}
-
 .prompt-bar-suggestions {
   margin: 0 auto;
   width: min(760px, 100%);
@@ -932,11 +930,6 @@
 
 .prompt-bar-suggestions .qa-chip-badge {
   display: none;
-}
-
-.prompt-bar-suggestions .qa-chip:focus-visible {
-  outline: 2px solid var(--pb-blue, #79b0f5);
-  outline-offset: 2px;
 }
 
 @keyframes prompt-bar-pop {
